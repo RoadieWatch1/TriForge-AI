@@ -1,18 +1,19 @@
 import { Store } from './store';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Replace these with your actual LemonSqueezy variant IDs after creating
-// your products at https://app.lemonsqueezy.com
-// ─────────────────────────────────────────────────────────────────────────────
 export const LEMONSQUEEZY = {
-  STORE_ID:          'YOUR_STORE_ID',          // e.g. "12345"
-  PRO_VARIANT_ID:    'YOUR_PRO_VARIANT_ID',    // e.g. "98765"
-  BIZ_VARIANT_ID:    'YOUR_BIZ_VARIANT_ID',    // e.g. "98766"
+  STORE_ID: 'triforgeai',
 
-  // Checkout URLs — replace after creating products
-  PRO_CHECKOUT:      'https://triforge.lemonsqueezy.com/checkout/buy/YOUR_PRO_LINK',
-  BIZ_CHECKOUT:      'https://triforge.lemonsqueezy.com/checkout/buy/YOUR_BIZ_LINK',
-  CUSTOMER_PORTAL:   'https://app.lemonsqueezy.com/my-orders',
+  // Pro — monthly and annual variant IDs both map to the pro tier
+  PRO_VARIANT_IDS:  ['1340837', '1340778'],   // [monthly, annual]
+  PRO_VARIANT_ID:   '1340837',                // primary (monthly) — used for single-ID checks
+
+  // Business — monthly and annual variant IDs both map to the business tier
+  BIZ_VARIANT_IDS:  ['1341153', '1340852'],   // [monthly, annual]
+  BIZ_VARIANT_ID:   '1341153',                // primary (monthly)
+
+  PRO_CHECKOUT:    'https://triforgeai.lemonsqueezy.com/checkout/buy/1a814c5e-80b4-4fb1-a479-cd3a7e240739',
+  BIZ_CHECKOUT:    'https://triforgeai.lemonsqueezy.com/checkout/buy/a23b1020-1585-4f3c-b2d6-cfdf1431d05f',
+  CUSTOMER_PORTAL: 'https://app.lemonsqueezy.com/my-orders',
 };
 
 export type Tier = 'free' | 'pro' | 'business';
@@ -84,10 +85,9 @@ export async function validateLicense(key: string, instanceName = 'triforge-desk
     }
 
     const variantId = String(data.meta.variant_id);
-    let tier: Tier = 'free';
-    if (variantId === LEMONSQUEEZY.BIZ_VARIANT_ID)       tier = 'business';
-    else if (variantId === LEMONSQUEEZY.PRO_VARIANT_ID)  tier = 'pro';
-    else                                                  tier = 'pro'; // any valid key → at least pro
+    let tier: Tier = 'pro'; // any valid LS key → at least pro
+    if (LEMONSQUEEZY.BIZ_VARIANT_IDS.includes(variantId))       tier = 'business';
+    else if (LEMONSQUEEZY.PRO_VARIANT_IDS.includes(variantId))  tier = 'pro';
 
     return {
       tier,
