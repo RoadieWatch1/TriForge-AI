@@ -10,8 +10,7 @@
 				"--extensionDevelopmentPath=${workspaceFolder}/packages/vscode-ext"
 			],
 			"outFiles": [
-				"${workspaceFolder}/packages/vscode-ext/out/**/*.js",
-				"${workspaceFolder}/packages/engine/out/**/*.js"
+				"${workspaceFolder}/packages/vscode-ext/out/extension.js"
 			]
 		}
 	]

@@ -1,71 +1,56 @@
-# triforge-ai README
+# TriForge AI
 
-This is the README for your extension "triforge-ai". After writing up a brief description, we recommend including the following sections.
+A VS Code extension that runs a **tri-model AI consensus engine** — OpenAI, Claude, and Gemini debate every code change before it's applied to your project.
 
-## Features
+## How It Works
 
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
+Instead of trusting a single AI, TriForge runs a structured debate:
 
-For example if there is an image subfolder under your extension project workspace:
+1. One model **plans** which files to change
+2. One model **drafts** the changes
+3. The other two **review and vote** — they must agree on the exact same content (SHA-256 verified)
+4. All three approve → changes applied. Disagreement → logged for your review.
 
-\!\[feature X\]\(images/feature-x.png\)
+The number of active providers determines the mode automatically:
 
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
+| API keys configured | Mode | Behavior |
+|---|---|---|
+| 1 | Single | Advisory chat |
+| 2 | Pair | Builder + Reviewer |
+| 3 | Consensus | Full 3-way debate |
+
+## Getting Started
+
+1. Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`)
+2. Run **TriForge AI: Add/Update API Key** for each provider you want to use
+3. Open the chat with `Ctrl+Shift+T` (or `Cmd+Shift+T` on Mac)
+
+## Commands
+
+| Command | Description |
+|---|---|
+| `TriForge AI: Open Chat` | Open the main chat panel (`Ctrl+Shift+T`) |
+| `TriForge AI: Add/Update API Key` | Store an API key for OpenAI, Claude, or Gemini |
+| `TriForge AI: Remove API Key` | Remove a stored API key |
+| `TriForge AI: Check Provider Status` | See which providers are active |
+| `TriForge AI: Export Debate as Markdown` | Save the full AI debate log |
+| `Explain Code` | Explain selected code (right-click menu) |
+| `Write Tests` | Generate tests for selected code |
+| `Refactor Code` | Refactor selected code via consensus |
+| `Find Bugs` | Analyze selected code for bugs |
+
+## Settings
+
+| Setting | Default | Description |
+|---|---|---|
+| `triforgeAi.mode` | `guided` | `guided` (beginner) or `professional` (full debate logs) |
+| `triforgeAi.maxIterations` | `4` | Max debate rounds per file (1–10) |
+| `triforgeAi.riskTolerance` | `medium` | `low`, `medium`, or `high` — controls how conservative the engine is |
+| `triforgeAi.autoApprove` | `false` | Auto-apply low-risk patches without a confirmation prompt |
+| `triforgeAi.openai.model` | `gpt-4o` | OpenAI model to use |
+| `triforgeAi.claude.model` | `claude-sonnet-4-20250514` | Claude model to use |
+| `triforgeAi.gemini.model` | `gemini-2.0-flash` | Gemini model to use |
 
 ## Requirements
 
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
-
-## Extension Settings
-
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
-
-For example:
-
-This extension contributes the following settings:
-
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
-
-## Known Issues
-
-Calling out known issues can help limit users opening duplicate issues against your extension.
-
-## Release Notes
-
-Users appreciate release notes as you update your extension.
-
-### 1.0.0
-
-Initial release of ...
-
-### 1.0.1
-
-Fixed issue #.
-
-### 1.1.0
-
-Added features X, Y, and Z.
-
----
-
-## Following extension guidelines
-
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
-
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
-
-## Working with Markdown
-
-You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
-
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
-
-## For more information
-
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
-
-**Enjoy!**
+At least one API key from OpenAI, Anthropic, or Google AI Studio. All keys are stored securely in VS Code's Secret Storage.

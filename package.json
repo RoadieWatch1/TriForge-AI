@@ -5,7 +5,9 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run compile --workspaces --if-present",
-    "typecheck": "tsc --build packages/engine packages/vscode-ext"
+    "build": "tsc -p packages/engine/tsconfig.json && node packages/vscode-ext/esbuild.js",
+    "build:prod": "tsc -p packages/engine/tsconfig.json && node packages/vscode-ext/esbuild.js --production",
+    "watch": "node packages/vscode-ext/esbuild.js --watch",
+    "typecheck": "tsc --build packages/engine && tsc -p packages/vscode-ext/tsconfig.json --noEmit"
   }
 }

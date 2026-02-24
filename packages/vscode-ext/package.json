@@ -76,10 +76,18 @@
         }
       ],
       "triforge-ai.submenu": [
-        { "command": "triforge-ai.explainSelection" },
-        { "command": "triforge-ai.writeTests" },
-        { "command": "triforge-ai.refactorCode" },
-        { "command": "triforge-ai.findBugs" }
+        {
+          "command": "triforge-ai.explainSelection"
+        },
+        {
+          "command": "triforge-ai.writeTests"
+        },
+        {
+          "command": "triforge-ai.refactorCode"
+        },
+        {
+          "command": "triforge-ai.findBugs"
+        }
       ]
     },
     "keybindings": [
@@ -95,7 +103,10 @@
       "properties": {
         "triforgeAi.mode": {
           "type": "string",
-          "enum": ["guided", "professional"],
+          "enum": [
+            "guided",
+            "professional"
+          ],
           "default": "guided",
           "description": "UI mode: Guided (quick actions, beginner-friendly) or Professional (debate logs, iteration control)"
         },
@@ -123,7 +134,11 @@
         },
         "triforgeAi.riskTolerance": {
           "type": "string",
-          "enum": ["low", "medium", "high"],
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
           "default": "medium",
           "description": "Think Tank risk tolerance: controls how conservative TriForge is when suggesting actions"
         },
@@ -136,24 +151,25 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run build:engine && node esbuild.js --production",
+    "build:engine": "tsc -p ../engine/tsconfig.json",
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "typecheck": "tsc -p ./ --noEmit",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src",
     "test": "vscode-test"
   },
-  "dependencies": {
-    "@triforge/engine": "*"
-  },
   "devDependencies": {
-    "@types/vscode": "^1.109.0",
+    "@triforge/engine": "*",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
-    "typescript-eslint": "^8.54.0",
+    "@types/vscode": "^1.109.0",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
+    "esbuild": "^0.27.3",
     "eslint": "^9.39.2",
     "typescript": "^5.9.3",
-    "@vscode/test-cli": "^0.0.12",
-    "@vscode/test-electron": "^2.5.2"
+    "typescript-eslint": "^8.54.0"
   }
 }
