@@ -1,10 +1,12 @@
-import { ipcMain, shell } from 'electron';
+import { ipcMain, shell, dialog } from 'electron';
 import { Store } from './store';
 import { transcribeAudio, textToSpeech } from './voice';
 import { validateLicense, loadLicense, deactivateLicense, LEMONSQUEEZY } from './license';
 import { isAtMessageLimit, canUse, TIERS } from './subscription';
 import { hashPin, verifyPin, isValidPin } from './auth';
 import { buildSystemPrompt } from './systemPrompt';
+import { scanForPhotos, listDirectory, organizeDirectory, getCommonDirs } from './filesystem';
+import { listPrinters, printFile, printText } from './printer';
 import {
   ProviderManager,
   Orchestrator,
@@ -211,6 +213,75 @@ export function setupIpc(store: Store): void {
   ipcMain.handle('auth:clear', () => {
     store.clearAuth();
     return { ok: true };
+  });
+
+  // ── File System ──────────────────────────────────────────────────────────────
+  ipcMain.handle('files:commonDirs', () => getCommonDirs());
+
+  ipcMain.handle('files:listDir', (_e, dirPath: string) => {
+    const perms = store.getPermissions();
+    const filesGranted = perms.find(p => p.key === 'files')?.granted;
+    if (!filesGranted) return { files: [], subdirs: [], error: 'PERMISSION_DENIED:files' };
+    return listDirectory(dirPath);
+  });
+
+  ipcMain.handle('files:scanPhotos', (_e, startPath?: string) => {
+    const perms = store.getPermissions();
+    const filesGranted = perms.find(p => p.key === 'files')?.granted;
+    if (!filesGranted) return { photos: [], error: 'PERMISSION_DENIED:files' };
+    const photos = scanForPhotos(startPath);
+    return { photos };
+  });
+
+  ipcMain.handle('files:organize', (_e, dirPath: string) => {
+    const perms = store.getPermissions();
+    const filesGranted = perms.find(p => p.key === 'files')?.granted;
+    if (!filesGranted) return { moved: 0, folders: [], errors: ['PERMISSION_DENIED:files'] };
+    return organizeDirectory(dirPath);
+  });
+
+  ipcMain.handle('files:openFile', (_e, filePath: string) => {
+    shell.openPath(filePath);
+  });
+
+  ipcMain.handle('files:showInFolder', (_e, filePath: string) => {
+    shell.showItemInFolder(filePath);
+  });
+
+  ipcMain.handle('files:pickFile', async (_e, filters?: Electron.FileFilter[]) => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: filters ?? [{ name: 'All Files', extensions: ['*'] }],
+    });
+    return result.canceled ? null : result.filePaths[0];
+  });
+
+  ipcMain.handle('files:pickDir', async () => {
+    const result = await dialog.showOpenDialog({ properties: ['openDirectory'] });
+    return result.canceled ? null : result.filePaths[0];
+  });
+
+  // ── Printer ───────────────────────────────────────────────────────────────────
+  ipcMain.handle('print:list', async () => {
+    const perms = store.getPermissions();
+    const printerGranted = perms.find(p => p.key === 'printer')?.granted;
+    if (!printerGranted) return { printers: [], error: 'PERMISSION_DENIED:printer' };
+    const printers = await listPrinters();
+    return { printers };
+  });
+
+  ipcMain.handle('print:file', async (_e, filePath: string, printerName?: string) => {
+    const perms = store.getPermissions();
+    const printerGranted = perms.find(p => p.key === 'printer')?.granted;
+    if (!printerGranted) return { ok: false, error: 'PERMISSION_DENIED:printer' };
+    return printFile(filePath, printerName);
+  });
+
+  ipcMain.handle('print:text', async (_e, content: string, printerName?: string) => {
+    const perms = store.getPermissions();
+    const printerGranted = perms.find(p => p.key === 'printer')?.granted;
+    if (!printerGranted) return { ok: false, error: 'PERMISSION_DENIED:printer' };
+    return printText(content, printerName);
   });
 
   // ── System ───────────────────────────────────────────────────────────────────

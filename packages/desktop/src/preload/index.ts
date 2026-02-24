@@ -82,6 +82,25 @@ const api = {
     verify:  (username: string, pin: string) => ipcRenderer.invoke('auth:verify', username, pin) as Promise<{ valid: boolean }>,
     clear:   () => ipcRenderer.invoke('auth:clear') as Promise<{ ok: boolean }>,
   },
+
+  // File system
+  files: {
+    commonDirs:   () => ipcRenderer.invoke('files:commonDirs') as Promise<Record<string, string>>,
+    listDir:      (dirPath: string) => ipcRenderer.invoke('files:listDir', dirPath) as Promise<{ files: Array<{ name: string; path: string; size: number; modified: string; extension: string }>; subdirs: string[]; error?: string }>,
+    scanPhotos:   (startPath?: string) => ipcRenderer.invoke('files:scanPhotos', startPath) as Promise<{ photos: Array<{ name: string; path: string; size: number; modified: string; extension: string }>; error?: string }>,
+    organize:     (dirPath: string) => ipcRenderer.invoke('files:organize', dirPath) as Promise<{ moved: number; folders: string[]; errors: string[] }>,
+    openFile:     (filePath: string) => ipcRenderer.invoke('files:openFile', filePath),
+    showInFolder: (filePath: string) => ipcRenderer.invoke('files:showInFolder', filePath),
+    pickFile:     (filters?: Array<{ name: string; extensions: string[] }>) => ipcRenderer.invoke('files:pickFile', filters) as Promise<string | null>,
+    pickDir:      () => ipcRenderer.invoke('files:pickDir') as Promise<string | null>,
+  },
+
+  // Printer
+  print: {
+    list:  () => ipcRenderer.invoke('print:list') as Promise<{ printers: Array<{ name: string; isDefault: boolean; status: string }>; error?: string }>,
+    file:  (filePath: string, printerName?: string) => ipcRenderer.invoke('print:file', filePath, printerName) as Promise<{ ok: boolean; error?: string }>,
+    text:  (content: string, printerName?: string) => ipcRenderer.invoke('print:text', content, printerName) as Promise<{ ok: boolean; error?: string }>,
+  },
 };
 
 contextBridge.exposeInMainWorld('triforge', api);

@@ -27,12 +27,12 @@ const PROVIDER_COLORS: Record<string, string> = {
 };
 
 const QUICK_ACTIONS = [
-  { label: '💡 Build me an app', prompt: 'Build me a web application for ' },
-  { label: '📦 Plan a project', prompt: 'Create a full project plan for ' },
-  { label: '📈 Investment idea', prompt: 'Suggest an investment strategy for ' },
-  { label: '🗺️ Create a route', prompt: 'Create an optimized route plan for ' },
-  { label: '📝 Write content', prompt: 'Write professional content for ' },
-  { label: '🔍 Research topic', prompt: 'Research and summarize everything about ' },
+  { label: '📸 Find my photos',     prompt: 'Find all my photos on this computer' },
+  { label: '🗂️ Organize Downloads', prompt: 'Organize my Downloads folder — sort everything into Photos, Documents, Videos, and Music sub-folders' },
+  { label: '🖨️ Print a document',   prompt: 'I want to print a document. List the available printers and help me print.' },
+  { label: '💡 Build me an app',    prompt: 'Build me a web application for ' },
+  { label: '📈 Investment idea',    prompt: 'Suggest an investment strategy for ' },
+  { label: '🔍 Research topic',     prompt: 'Research and summarize everything about ' },
 ];
 
 const MSG_LIMITS: Record<string, number> = { free: 30, pro: Infinity, business: Infinity };
@@ -154,6 +154,83 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     }
   };
 
+  // ── System actions (photo, files, print) ─────────────────────────────────
+  const addSystemMessage = (content: string) => {
+    setMessages(m => [...m, { id: Date.now().toString(), role: 'system', content, timestamp: new Date() }]);
+  };
+
+  const runFindPhotos = async () => {
+    addSystemMessage('📸 Scanning your computer for photos…');
+    try {
+      const result = await window.triforge.files.scanPhotos();
+      if (result.error === 'PERMISSION_DENIED:files') {
+        addSystemMessage('⚠️ Files permission is not enabled. Go to Settings → Permissions → Files & Folders to enable it.');
+        return;
+      }
+      const count = result.photos.length;
+      if (count === 0) {
+        addSystemMessage('No photos found in Pictures, Desktop, or Downloads.');
+        return;
+      }
+      const preview = result.photos.slice(0, 5).map(p => `• ${p.name} — ${new Date(p.modified).toLocaleDateString()}`).join('\n');
+      addSystemMessage(`📸 Found ${count} photo${count > 1 ? 's' : ''}. Most recent:\n${preview}${count > 5 ? `\n…and ${count - 5} more.` : ''}`);
+    } catch {
+      addSystemMessage('⚠️ Could not scan for photos.');
+    }
+  };
+
+  const runOrganizeDownloads = async () => {
+    const dirs = await window.triforge.files.commonDirs();
+    const downloads = dirs['Downloads'];
+    if (!downloads) { addSystemMessage('⚠️ Could not find Downloads folder.'); return; }
+    addSystemMessage(`🗂️ Organizing ${downloads}…`);
+    try {
+      const result = await window.triforge.files.organize(downloads);
+      if (result.errors.some(e => e.includes('PERMISSION_DENIED'))) {
+        addSystemMessage('⚠️ Files permission is not enabled. Go to Settings → Permissions → Files & Folders.');
+        return;
+      }
+      if (result.moved === 0) {
+        addSystemMessage('🗂️ Downloads is already organized — no files needed moving.');
+        return;
+      }
+      const folderNames = result.folders.map(f => f.split(/[\\/]/).pop()).join(', ');
+      addSystemMessage(`✅ Organized ${result.moved} file${result.moved > 1 ? 's' : ''} into: ${folderNames || 'sub-folders'}.${result.errors.length ? `\n⚠️ ${result.errors.length} file(s) could not be moved.` : ''}`);
+    } catch {
+      addSystemMessage('⚠️ Could not organize Downloads.');
+    }
+  };
+
+  const runPickAndPrint = async () => {
+    const filePath = await window.triforge.files.pickFile([
+      { name: 'Documents & Images', extensions: ['pdf', 'doc', 'docx', 'txt', 'png', 'jpg', 'jpeg'] },
+      { name: 'All Files', extensions: ['*'] },
+    ]);
+    if (!filePath) return;
+    addSystemMessage(`🖨️ Checking available printers…`);
+    try {
+      const { printers, error } = await window.triforge.print.list();
+      if (error === 'PERMISSION_DENIED:printer') {
+        addSystemMessage('⚠️ Printer permission is not enabled. Go to Settings → Permissions → Printer.');
+        return;
+      }
+      if (printers.length === 0) {
+        addSystemMessage('⚠️ No printers found. Make sure your printer is connected and installed.');
+        return;
+      }
+      const defaultPrinter = printers.find(p => p.isDefault) ?? printers[0];
+      addSystemMessage(`🖨️ Sending "${filePath.split(/[\\/]/).pop()}" to ${defaultPrinter.name}…`);
+      const result = await window.triforge.print.file(filePath, defaultPrinter.name);
+      if (result.ok) {
+        addSystemMessage(`✅ Print job sent to ${defaultPrinter.name} successfully.`);
+      } else {
+        addSystemMessage(`⚠️ Print failed: ${result.error}`);
+      }
+    } catch {
+      addSystemMessage('⚠️ Could not complete print job.');
+    }
+  };
+
   const hasKeys = Object.values(keyStatus).some(Boolean);
 
   const msgLimit = MSG_LIMITS[tier] ?? 30;
@@ -215,7 +292,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         <div ref={bottomRef} />
       </div>
 
-      {/* Quick actions (shown when empty) */}
+      {/* Quick actions (shown when chat is empty) */}
       {messages.length <= 1 && !sending && (
         <div style={styles.quickActions}>
           {QUICK_ACTIONS.map(a => (
@@ -227,6 +304,32 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           ))}
         </div>
       )}
+
+      {/* System action toolbar */}
+      <div style={styles.actionToolbar}>
+        <button style={styles.actionBtn} onClick={runFindPhotos} title="Scan your computer for photos">
+          📸 <span style={styles.actionLabel}>Find Photos</span>
+        </button>
+        <button style={styles.actionBtn} onClick={runOrganizeDownloads} title="Sort Downloads into sub-folders">
+          🗂️ <span style={styles.actionLabel}>Organize Downloads</span>
+        </button>
+        <button style={styles.actionBtn} onClick={runPickAndPrint} title="Pick a file and print it">
+          🖨️ <span style={styles.actionLabel}>Print</span>
+        </button>
+        <button style={styles.actionBtn} onClick={async () => {
+          const dir = await window.triforge.files.pickDir();
+          if (dir) {
+            const result = await window.triforge.files.listDir(dir);
+            if (result.error) { addSystemMessage(`⚠️ ${result.error}`); return; }
+            const summary = `📁 ${dir}\n${result.subdirs.length} folders, ${result.files.length} files\n` +
+              result.files.slice(0, 8).map(f => `• ${f.name}`).join('\n') +
+              (result.files.length > 8 ? `\n…and ${result.files.length - 8} more` : '');
+            addSystemMessage(summary);
+          }
+        }} title="Browse a folder">
+          📁 <span style={styles.actionLabel}>Browse Folder</span>
+        </button>
+      </div>
 
       {/* Input area */}
       <div style={styles.inputArea}>
@@ -368,7 +471,21 @@ const styles: Record<string, React.CSSProperties> = {
   quickActions: { display: 'flex', flexWrap: 'wrap', gap: 8, padding: '0 16px 12px' },
   quickBtn: { background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 20, color: 'var(--text-secondary)', fontSize: 12, padding: '6px 14px', cursor: 'pointer', transition: 'all 0.2s' },
 
-  inputArea: { display: 'flex', alignItems: 'flex-end', gap: 10, padding: '12px 16px', borderTop: '1px solid var(--border)', background: 'var(--bg-surface)', flexShrink: 0 },
+  actionToolbar: {
+    display: 'flex', gap: 6, padding: '6px 16px 0', flexShrink: 0, overflowX: 'auto',
+    borderTop: '1px solid var(--border)',
+  },
+  actionBtn: {
+    display: 'flex', alignItems: 'center', gap: 5,
+    background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+    borderRadius: 8, color: 'var(--text-secondary)', fontSize: 12,
+    padding: '5px 10px', cursor: 'pointer', whiteSpace: 'nowrap' as const,
+    transition: 'background 0.15s',
+    flexShrink: 0,
+  },
+  actionLabel: { fontSize: 11, fontWeight: 500 },
+
+  inputArea: { display: 'flex', alignItems: 'flex-end', gap: 10, padding: '10px 16px 12px', background: 'var(--bg-surface)', flexShrink: 0 },
   inputWrapper: { flex: 1 },
   textarea: {
     width: '100%', background: 'var(--bg-input)', border: '1px solid var(--border)',
