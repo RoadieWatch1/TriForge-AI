@@ -1,110 +1,11 @@
 {
-  "name": "triforge-ai",
-  "displayName": "triforge-ai",
-  "description": "A beginner-friendly VS Code chat extension with tri-model AI consensus",
-  "version": "0.0.1",
-  "engines": {
-    "vscode": "^1.109.0"
-  },
-  "categories": [
-    "Other"
+  "name": "triforge-monorepo",
+  "private": true,
+  "workspaces": [
+    "packages/*"
   ],
-  "activationEvents": [
-    "onCommand:triforge-ai.openChat"
-  ],
-  "main": "./out/extension.js",
-  "contributes": {
-    "commands": [
-      {
-        "command": "triforge-ai.openChat",
-        "title": "TriForge AI: Open Chat",
-        "category": "TriForge AI"
-      },
-      {
-        "command": "triforge-ai.setApiKey",
-        "title": "TriForge AI: Add/Update API Key",
-        "category": "TriForge AI"
-      },
-      {
-        "command": "triforge-ai.removeApiKey",
-        "title": "TriForge AI: Remove API Key",
-        "category": "TriForge AI"
-      },
-      {
-        "command": "triforge-ai.checkProviderStatus",
-        "title": "TriForge AI: Check Provider Status",
-        "category": "TriForge AI"
-      },
-      {
-        "command": "triforge-ai.explainSelection",
-        "title": "Explain with TriForge AI",
-        "category": "TriForge AI"
-      },
-      {
-        "command": "triforge-ai.exportDebate",
-        "title": "TriForge AI: Export Debate as Markdown",
-        "category": "TriForge AI"
-      }
-    ],
-    "menus": {
-      "editor/context": [
-        {
-          "command": "triforge-ai.explainSelection",
-          "when": "editorHasSelection",
-          "group": "triforge@1"
-        }
-      ]
-    },
-    "configuration": {
-      "title": "TriForge AI",
-      "properties": {
-        "triforgeAi.mode": {
-          "type": "string",
-          "enum": ["guided", "professional"],
-          "default": "guided",
-          "description": "UI mode: Guided (quick actions, beginner-friendly) or Professional (debate logs, iteration control)"
-        },
-        "triforgeAi.maxIterations": {
-          "type": "number",
-          "default": 4,
-          "minimum": 1,
-          "maximum": 10,
-          "description": "Maximum debate rounds in consensus mode (Professional mode)"
-        },
-        "triforgeAi.openai.model": {
-          "type": "string",
-          "default": "gpt-4o",
-          "description": "OpenAI model to use"
-        },
-        "triforgeAi.qwen.model": {
-          "type": "string",
-          "default": "qwen-plus",
-          "description": "Qwen model to use (e.g. qwen-plus, qwen-max, or a specific model ID like qwen3.5-72b-instruct)"
-        },
-        "triforgeAi.claude.model": {
-          "type": "string",
-          "default": "claude-sonnet-4-20250514",
-          "description": "Anthropic Claude model to use"
-        }
-      }
-    }
-  },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
-    "pretest": "npm run compile && npm run lint",
-    "lint": "eslint src",
-    "test": "vscode-test"
-  },
-  "devDependencies": {
-    "@types/vscode": "^1.109.0",
-    "@types/mocha": "^10.0.10",
-    "@types/node": "22.x",
-    "typescript-eslint": "^8.54.0",
-    "eslint": "^9.39.2",
-    "typescript": "^5.9.3",
-    "@vscode/test-cli": "^0.0.12",
-    "@vscode/test-electron": "^2.5.2"
+    "build": "npm run compile --workspaces --if-present",
+    "typecheck": "tsc --build packages/engine packages/vscode-ext"
   }
 }

@@ -1,0 +1,18 @@
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"name": "Run Extension",
+			"type": "extensionHost",
+			"request": "launch",
+			"preLaunchTask": "build",
+			"args": [
+				"--extensionDevelopmentPath=${workspaceFolder}/packages/vscode-ext"
+			],
+			"outFiles": [
+				"${workspaceFolder}/packages/vscode-ext/out/**/*.js",
+				"${workspaceFolder}/packages/engine/out/**/*.js"
+			]
+		}
+	]
+}

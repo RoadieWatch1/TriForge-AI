@@ -3,3 +3,8 @@ dist
 node_modules
 .vscode-test/
 *.vsix
+*.tsbuildinfo
+# compiled JS/maps that land in src/ from misconfigured builds
+**/src/**/*.js
+**/src/**/*.js.map
+**/src/**/*.d.ts
