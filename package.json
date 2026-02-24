@@ -5,9 +5,11 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "tsc -p packages/engine/tsconfig.json && node packages/vscode-ext/esbuild.js",
-    "build:prod": "tsc -p packages/engine/tsconfig.json && node packages/vscode-ext/esbuild.js --production",
+    "build": "tsc -p packages/engine/tsconfig.json && node packages/vscode-ext/esbuild.js && node packages/desktop/esbuild.js",
+    "build:prod": "tsc -p packages/engine/tsconfig.json && node packages/vscode-ext/esbuild.js --production && node packages/desktop/esbuild.js --production",
+    "build:desktop": "tsc -p packages/engine/tsconfig.json && node packages/desktop/esbuild.js",
+    "dev:desktop": "node packages/desktop/esbuild.js --dev",
     "watch": "node packages/vscode-ext/esbuild.js --watch",
-    "typecheck": "tsc --build packages/engine && tsc -p packages/vscode-ext/tsconfig.json --noEmit"
+    "typecheck": "tsc --build packages/engine && tsc -p packages/vscode-ext/tsconfig.json --noEmit && tsc -p packages/desktop/tsconfig.json --noEmit"
   }
 }

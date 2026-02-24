@@ -2,7 +2,22 @@
 	"version": "0.2.0",
 	"configurations": [
 		{
-			"name": "Run Extension",
+			"name": "Run Desktop App",
+			"type": "node",
+			"request": "launch",
+			"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
+			"runtimeArgs": ["${workspaceFolder}/packages/desktop"],
+			"preLaunchTask": "build:desktop",
+			"outFiles": [
+				"${workspaceFolder}/packages/desktop/out/**/*.js"
+			],
+			"env": {
+				"NODE_ENV": "development"
+			},
+			"sourceMaps": true
+		},
+		{
+			"name": "Run VS Code Extension",
 			"type": "extensionHost",
 			"request": "launch",
 			"preLaunchTask": "build",

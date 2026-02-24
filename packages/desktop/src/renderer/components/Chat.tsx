@@ -1,0 +1,327 @@
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { VoiceButton } from './VoiceButton';
+
+interface Message {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  provider?: string;
+  timestamp: Date;
+  speaking?: boolean;
+}
+
+interface Props {
+  mode: string;
+  keyStatus: Record<string, boolean>;
+}
+
+const PROVIDER_COLORS: Record<string, string> = {
+  openai: '#10a37f',
+  claude: '#d97706',
+  gemini: '#4285f4',
+};
+
+const QUICK_ACTIONS = [
+  { label: '💡 Build me an app', prompt: 'Build me a web application for ' },
+  { label: '📦 Plan a project', prompt: 'Create a full project plan for ' },
+  { label: '📈 Investment idea', prompt: 'Suggest an investment strategy for ' },
+  { label: '🗺️ Create a route', prompt: 'Create an optimized route plan for ' },
+  { label: '📝 Write content', prompt: 'Write professional content for ' },
+  { label: '🔍 Research topic', prompt: 'Research and summarize everything about ' },
+];
+
+export function Chat({ mode, keyStatus }: Props) {
+  const [messages, setMessages] = useState<Message[]>([
+    {
+      id: '0',
+      role: 'system',
+      content: getWelcomeMessage(mode, keyStatus),
+      timestamp: new Date(),
+    },
+  ]);
+  const [input, setInput] = useState('');
+  const [sending, setSending] = useState(false);
+  const [speaking, setSpeaking] = useState<string | null>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  const speakMessage = useCallback(async (msgId: string, text: string) => {
+    if (!keyStatus.openai) return;
+    setSpeaking(msgId);
+    try {
+      const result = await window.triforge.voice.speak(text);
+      if (result.audio) {
+        const bytes = Uint8Array.from(atob(result.audio), c => c.charCodeAt(0));
+        const blob = new Blob([bytes], { type: 'audio/mpeg' });
+        const url = URL.createObjectURL(blob);
+        if (audioRef.current) {
+          audioRef.current.src = url;
+          await audioRef.current.play();
+          audioRef.current.onended = () => {
+            URL.revokeObjectURL(url);
+            setSpeaking(null);
+          };
+        }
+      }
+    } catch {
+      setSpeaking(null);
+    }
+  }, [keyStatus]);
+
+  const sendMessage = useCallback(async (text: string) => {
+    if (!text.trim() || sending) return;
+    setInput('');
+    setSending(true);
+
+    const userMsg: Message = {
+      id: Date.now().toString(),
+      role: 'user',
+      content: text.trim(),
+      timestamp: new Date(),
+    };
+    setMessages(m => [...m, userMsg]);
+
+    try {
+      const history = messages
+        .filter(m => m.role !== 'system')
+        .map(m => ({ role: m.role, content: m.content }));
+
+      const result = await window.triforge.chat.send(text.trim(), history);
+
+      const aiMsg: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: result.error ? `⚠️ ${result.error}` : (result.text ?? ''),
+        provider: result.provider,
+        timestamp: new Date(),
+      };
+      setMessages(m => [...m, aiMsg]);
+
+      // Auto-speak if no error
+      if (!result.error && result.text && keyStatus.openai) {
+        speakMessage(aiMsg.id, result.text);
+      }
+    } catch (e) {
+      setMessages(m => [...m, {
+        id: Date.now().toString(),
+        role: 'assistant',
+        content: `⚠️ ${e instanceof Error ? e.message : 'Something went wrong'}`,
+        timestamp: new Date(),
+      }]);
+    } finally {
+      setSending(false);
+      inputRef.current?.focus();
+    }
+  }, [messages, sending, keyStatus, speakMessage]);
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage(input);
+    }
+  };
+
+  const hasKeys = Object.values(keyStatus).some(Boolean);
+
+  return (
+    <div style={styles.container}>
+      {/* Status bar */}
+      <div style={styles.statusBar}>
+        <div style={styles.statusDots}>
+          {(['openai', 'claude', 'gemini'] as const).map(p => (
+            <div key={p} style={{ ...styles.dot, background: keyStatus[p] ? PROVIDER_COLORS[p] : 'var(--text-muted)' }}
+              title={`${p}: ${keyStatus[p] ? 'active' : 'not configured'}`}
+            />
+          ))}
+        </div>
+        <span style={styles.modeLabel}>{MODE_LABELS[mode] ?? mode}</span>
+      </div>
+
+      {/* Messages */}
+      <div style={styles.messages}>
+        {messages.map(msg => (
+          <MessageBubble
+            key={msg.id}
+            msg={msg}
+            isSpeaking={speaking === msg.id}
+            canSpeak={!!keyStatus.openai}
+            onSpeak={() => speakMessage(msg.id, msg.content)}
+          />
+        ))}
+        {sending && <TypingIndicator />}
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Quick actions (shown when empty) */}
+      {messages.length <= 1 && !sending && (
+        <div style={styles.quickActions}>
+          {QUICK_ACTIONS.map(a => (
+            <button key={a.label} style={styles.quickBtn}
+              onClick={() => setInput(a.prompt)}
+            >
+              {a.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Input area */}
+      <div style={styles.inputArea}>
+        <VoiceButton
+          onTranscript={(text) => sendMessage(text)}
+          onError={(err) => setMessages(m => [...m, { id: Date.now().toString(), role: 'system', content: `🎙️ ${err}`, timestamp: new Date() }])}
+          disabled={!hasKeys || sending}
+        />
+        <div style={styles.inputWrapper}>
+          <textarea
+            ref={inputRef}
+            style={styles.textarea}
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder={hasKeys ? 'Message TriForge AI… (Enter to send, Shift+Enter for newline)' : 'Add an API key in Settings to get started →'}
+            rows={1}
+            disabled={!hasKeys || sending}
+          />
+        </div>
+        <button
+          style={{ ...styles.sendBtn, ...((!input.trim() || sending || !hasKeys) ? styles.sendBtnDisabled : {}) }}
+          onClick={() => sendMessage(input)}
+          disabled={!input.trim() || sending || !hasKeys}
+          title="Send (Enter)"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+          </svg>
+        </button>
+      </div>
+
+      {/* Hidden audio element for TTS playback */}
+      <audio ref={audioRef} style={{ display: 'none' }} />
+    </div>
+  );
+}
+
+function MessageBubble({ msg, isSpeaking, canSpeak, onSpeak }: {
+  msg: Message; isSpeaking: boolean; canSpeak: boolean; onSpeak: () => void;
+}) {
+  const isUser = msg.role === 'user';
+  const isSystem = msg.role === 'system';
+
+  if (isSystem) {
+    return (
+      <div style={styles.systemMsg}>
+        <span>{msg.content}</span>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ ...styles.bubbleRow, ...(isUser ? styles.bubbleRowUser : {}) }}>
+      {!isUser && <div style={styles.avatar}>⚡</div>}
+      <div style={{ ...styles.bubble, ...(isUser ? styles.bubbleUser : styles.bubbleAi) }}>
+        <div style={styles.bubbleContent}>{msg.content}</div>
+        <div style={styles.bubbleMeta}>
+          {msg.provider && (
+            <span style={{ ...styles.providerTag, color: PROVIDER_COLORS[msg.provider.toLowerCase()] ?? 'var(--text-muted)' }}>
+              {msg.provider}
+            </span>
+          )}
+          <span style={styles.timestamp}>
+            {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          </span>
+          {!isUser && canSpeak && (
+            <button style={{ ...styles.speakBtn, ...(isSpeaking ? styles.speakBtnActive : {}) }}
+              onClick={onSpeak} title="Read aloud">
+              🔊
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TypingIndicator() {
+  return (
+    <div style={styles.bubbleRow}>
+      <div style={styles.avatar}>⚡</div>
+      <div style={{ ...styles.bubble, ...styles.bubbleAi, padding: '12px 16px' }}>
+        <div style={styles.typingDots}>
+          <span /><span /><span />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function getWelcomeMessage(mode: string, keys: Record<string, boolean>): string {
+  const active = Object.entries(keys).filter(([, v]) => v).map(([k]) => k);
+  if (active.length === 0) {
+    return '👋 Welcome to TriForge AI! To get started, go to Settings → API Keys and add at least one key (OpenAI, Claude, or Gemini).';
+  }
+  if (active.length === 1) {
+    return `👋 Welcome! I'm running in single-provider mode with ${active[0]}. Add more API keys to unlock full consensus mode.`;
+  }
+  return `👋 Welcome to TriForge AI! Your personal think tank is active with ${active.length} AI models in ${MODE_LABELS[mode] ?? mode} mode. What do you need help with today?`;
+}
+
+const MODE_LABELS: Record<string, string> = {
+  none: 'No providers',
+  single: 'Single provider',
+  pair: 'Pair mode',
+  consensus: 'Consensus mode',
+};
+
+const styles: Record<string, React.CSSProperties> = {
+  container: { display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' },
+
+  statusBar: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 16px', borderBottom: '1px solid var(--border)', flexShrink: 0 },
+  statusDots: { display: 'flex', gap: 5 },
+  dot: { width: 8, height: 8, borderRadius: '50%', transition: 'background 0.3s' },
+  modeLabel: { fontSize: 11, color: 'var(--text-muted)', marginLeft: 4, fontWeight: 500 },
+
+  messages: { flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: 12 },
+
+  systemMsg: { textAlign: 'center', color: 'var(--text-secondary)', fontSize: 13, padding: '8px 16px', background: 'var(--bg-elevated)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' },
+
+  bubbleRow: { display: 'flex', gap: 10, alignItems: 'flex-end', maxWidth: '80%' },
+  bubbleRowUser: { alignSelf: 'flex-end', flexDirection: 'row-reverse' },
+  avatar: { width: 28, height: 28, borderRadius: '50%', background: 'linear-gradient(135deg, var(--accent), var(--purple))', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, flexShrink: 0 },
+  bubble: { borderRadius: 'var(--radius)', padding: '10px 14px', maxWidth: '100%', wordBreak: 'break-word' },
+  bubbleUser: { background: 'var(--user-bubble)', color: 'var(--text-primary)' },
+  bubbleAi: { background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-primary)' },
+  bubbleContent: { fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap' },
+  bubbleMeta: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 },
+  providerTag: { fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' },
+  timestamp: { fontSize: 11, color: 'var(--text-muted)' },
+  speakBtn: { fontSize: 12, background: 'none', border: 'none', cursor: 'pointer', opacity: 0.5, padding: '0 2px' },
+  speakBtnActive: { opacity: 1 },
+
+  typingDots: { display: 'flex', gap: 4, alignItems: 'center' },
+
+  quickActions: { display: 'flex', flexWrap: 'wrap', gap: 8, padding: '0 16px 12px' },
+  quickBtn: { background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 20, color: 'var(--text-secondary)', fontSize: 12, padding: '6px 14px', cursor: 'pointer', transition: 'all 0.2s' },
+
+  inputArea: { display: 'flex', alignItems: 'flex-end', gap: 10, padding: '12px 16px', borderTop: '1px solid var(--border)', background: 'var(--bg-surface)', flexShrink: 0 },
+  inputWrapper: { flex: 1 },
+  textarea: {
+    width: '100%', background: 'var(--bg-input)', border: '1px solid var(--border)',
+    borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)', fontSize: 14,
+    padding: '10px 14px', resize: 'none', outline: 'none', fontFamily: 'var(--font)',
+    lineHeight: 1.5, maxHeight: 120, overflowY: 'auto',
+  },
+  sendBtn: {
+    width: 40, height: 40, borderRadius: '50%',
+    background: 'linear-gradient(135deg, var(--accent), var(--purple))',
+    border: 'none', color: '#fff', cursor: 'pointer',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    flexShrink: 0, transition: 'opacity 0.2s',
+  },
+  sendBtnDisabled: { opacity: 0.3, cursor: 'not-allowed' },
+};

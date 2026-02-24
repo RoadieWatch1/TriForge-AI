@@ -1,0 +1,25 @@
+{
+  "name": "@triforge/desktop",
+  "version": "0.0.1",
+  "private": true,
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "node esbuild.js --dev",
+    "build": "node esbuild.js",
+    "build:prod": "node esbuild.js --production",
+    "start": "electron .",
+    "package": "npm run build:prod && electron-builder --config electron-builder.json"
+  },
+  "devDependencies": {
+    "@triforge/engine": "*",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/node": "22.x",
+    "electron": "^34.0.0",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.27.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.9.3"
+  }
+}

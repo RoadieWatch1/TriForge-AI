@@ -33,6 +33,20 @@
 			}
 		},
 		{
+			"label": "build:desktop",
+			"type": "shell",
+			"command": "npm run build:desktop",
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"problemMatcher": "$esbuild-watch",
+			"presentation": {
+				"reveal": "always",
+				"panel": "shared",
+				"clear": true
+			}
+		},
+		{
 			"label": "typecheck",
 			"type": "shell",
 			"command": "npm run typecheck",
