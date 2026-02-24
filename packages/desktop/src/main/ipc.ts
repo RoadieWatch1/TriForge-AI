@@ -3,6 +3,7 @@ import { Store } from './store';
 import { transcribeAudio, textToSpeech } from './voice';
 import { validateLicense, loadLicense, deactivateLicense, LEMONSQUEEZY } from './license';
 import { isAtMessageLimit, canUse, TIERS } from './subscription';
+import { hashPin, verifyPin, isValidPin } from './auth';
 import {
   ProviderManager,
   Orchestrator,
@@ -181,6 +182,32 @@ export function setupIpc(store: Store): void {
   ipcMain.handle('profile:get', () => store.getUserProfile());
   ipcMain.handle('profile:set', (_e, profile: Record<string, string>) => {
     store.setUserProfile(profile);
+  });
+
+  // ── Session Auth (PIN lock) ───────────────────────────────────────────────────
+  ipcMain.handle('auth:status', () => {
+    const auth = store.getAuth();
+    return { hasPin: store.hasAuth(), username: auth.username };
+  });
+
+  ipcMain.handle('auth:setup', (_e, username: string, pin: string) => {
+    if (!username.trim()) return { ok: false, error: 'Username is required.' };
+    if (!isValidPin(pin)) return { ok: false, error: 'PIN must be exactly 7 digits.' };
+    const { hash, salt } = hashPin(pin);
+    store.setAuth(username.trim(), hash, salt);
+    return { ok: true };
+  });
+
+  ipcMain.handle('auth:verify', (_e, username: string, pin: string) => {
+    const stored = store.getAuth();
+    if (!stored.pinHash || !stored.salt || !stored.username) return { valid: false };
+    if (stored.username.toLowerCase() !== username.trim().toLowerCase()) return { valid: false };
+    return { valid: verifyPin(pin, stored.pinHash, stored.salt) };
+  });
+
+  ipcMain.handle('auth:clear', () => {
+    store.clearAuth();
+    return { ok: true };
   });
 
   // ── System ───────────────────────────────────────────────────────────────────

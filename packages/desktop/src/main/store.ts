@@ -37,6 +37,12 @@ export interface StoredLicense {
   lastChecked: string | null;
 }
 
+export interface StoredAuth {
+  username: string | null;
+  pinHash: string | null;
+  salt: string | null;
+}
+
 interface StoreData {
   kv: Record<string, string>;
   secrets: Record<string, string>;
@@ -48,6 +54,7 @@ interface StoreData {
   license: StoredLicense;
   // message usage: key = "YYYY-MM" → count
   messageUsage: Record<string, number>;
+  auth: StoredAuth;
 }
 
 function emptyData(): StoreData {
@@ -60,6 +67,7 @@ function emptyData(): StoreData {
     firstRunDone: false, userProfile: {}, nextMemoryId: 1,
     license: { key: null, tier: 'free', valid: false, email: null, expiresAt: null, activatedAt: null, lastChecked: null },
     messageUsage: {},
+    auth: { username: null, pinHash: null, salt: null },
   };
 }
 
@@ -136,6 +144,26 @@ export class Store implements StorageAdapter {
 
   async clearLicense(): Promise<void> {
     this.data.license = { key: null, tier: 'free', valid: false, email: null, expiresAt: null, activatedAt: null, lastChecked: null };
+    this.save();
+  }
+
+  // Session auth (PIN lock)
+  getAuth(): StoredAuth {
+    return this.data.auth ?? { username: null, pinHash: null, salt: null };
+  }
+
+  hasAuth(): boolean {
+    const a = this.getAuth();
+    return !!(a.pinHash && a.salt && a.username);
+  }
+
+  setAuth(username: string, pinHash: string, salt: string): void {
+    this.data.auth = { username, pinHash, salt };
+    this.save();
+  }
+
+  clearAuth(): void {
+    this.data.auth = { username: null, pinHash: null, salt: null };
     this.save();
   }
 

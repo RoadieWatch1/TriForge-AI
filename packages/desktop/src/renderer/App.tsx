@@ -1,10 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import type { Permission } from '../main/store';
 import { PermissionWizard } from './components/PermissionWizard';
 import { Chat } from './components/Chat';
 import { LicensePanel } from './components/LicensePanel';
+import { LockScreen } from './components/LockScreen';
 
 type Screen = 'chat' | 'settings' | 'memory' | 'plan';
+
+const LOCK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
 export function App() {
   const [ready, setReady] = useState(false);
@@ -18,20 +21,54 @@ export function App() {
   const [tier, setTier] = useState<string>('free');
   const [messagesThisMonth, setMessagesThisMonth] = useState(0);
 
+  // Session lock state
+  const [hasPin, setHasPin] = useState(false);
+  const [locked, setLocked] = useState(false);
+  const [lockUsername, setLockUsername] = useState<string | null>(null);
+  const lockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Inactivity timer ─────────────────────────────────────────────────────────
+  const resetLockTimer = useCallback(() => {
+    if (!hasPin) return;
+    if (lockTimerRef.current) clearTimeout(lockTimerRef.current);
+    lockTimerRef.current = setTimeout(() => setLocked(true), LOCK_TIMEOUT_MS);
+  }, [hasPin]);
+
+  // Attach global activity listeners once hasPin is known
+  useEffect(() => {
+    if (!hasPin) return;
+    const handleActivity = () => resetLockTimer();
+    window.addEventListener('mousemove', handleActivity);
+    window.addEventListener('keydown', handleActivity);
+    window.addEventListener('click', handleActivity);
+    resetLockTimer(); // start the timer
+    return () => {
+      window.removeEventListener('mousemove', handleActivity);
+      window.removeEventListener('keydown', handleActivity);
+      window.removeEventListener('click', handleActivity);
+      if (lockTimerRef.current) clearTimeout(lockTimerRef.current);
+    };
+  }, [hasPin, resetLockTimer]);
+
+  // ── Init ─────────────────────────────────────────────────────────────────────
   useEffect(() => {
     async function init() {
-      const [isFirst, perms, keys, lic, usage] = await Promise.all([
+      const [isFirst, perms, keys, lic, usage, authStatus] = await Promise.all([
         window.triforge.permissions.isFirstRun(),
         window.triforge.permissions.get(),
         window.triforge.keys.status(),
         window.triforge.license.load(),
         window.triforge.usage.get(),
+        window.triforge.auth.status(),
       ]);
       setFirstRun(isFirst);
       setPermissions(perms);
       setKeyStatus(keys);
       setTier(lic.tier ?? 'free');
       setMessagesThisMonth(usage.messagesThisMonth);
+      setHasPin(authStatus.hasPin);
+      setLockUsername(authStatus.username);
+      if (authStatus.hasPin) setLocked(true); // require PIN on every launch
       if (!isFirst) {
         try {
           const m = await window.triforge.engine.mode();
@@ -73,9 +110,29 @@ export function App() {
     try { setMode(await window.triforge.engine.mode()); } catch { /* ok */ }
   };
 
-  if (!ready) return <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center' }}><span style={{ color: 'var(--text-muted)', fontSize: 13 }}>Starting…</span></div>;
+  const handleUnlock = () => {
+    setLocked(false);
+    resetLockTimer();
+  };
+
+  const handleLock = () => setLocked(true);
+
+  const handlePinChanged = async () => {
+    const status = await window.triforge.auth.status();
+    setHasPin(status.hasPin);
+    setLockUsername(status.username);
+  };
+
+  if (!ready) return (
+    <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center' }}>
+      <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>Starting…</span>
+    </div>
+  );
 
   if (firstRun) return <PermissionWizard permissions={permissions} onComplete={handleWizardDone} />;
+
+  // Show lock screen if PIN is set and app is locked
+  if (locked && hasPin) return <LockScreen username={lockUsername} onUnlock={handleUnlock} />;
 
   return (
     <div style={styles.shell}>
@@ -83,7 +140,13 @@ export function App() {
       <div style={styles.titlebar}>
         <div style={styles.trafficLights} />
         <span style={styles.appName}>⚡ TriForge AI</span>
-        <div style={styles.titlebarSpacer} />
+        <div style={styles.titlebarRight}>
+          {hasPin && (
+            <button style={styles.lockBtn} onClick={handleLock} title="Lock TriForge">
+              🔒
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Body */}
@@ -116,9 +179,12 @@ export function App() {
               setApiKeys={setApiKeys}
               permissions={permissions}
               saving={saving}
+              hasPin={hasPin}
+              lockUsername={lockUsername}
               onSaveKey={saveKey}
               onRemoveKey={removeKey}
               onUpdatePermissions={setPermissions}
+              onPinChanged={handlePinChanged}
             />
           )}
           {screen === 'memory' && <MemoryScreen />}
@@ -137,9 +203,12 @@ interface SettingsProps {
   setApiKeys: (fn: (prev: Record<string, string>) => Record<string, string>) => void;
   permissions: Permission[];
   saving: string | null;
+  hasPin: boolean;
+  lockUsername: string | null;
   onSaveKey: (p: string) => void;
   onRemoveKey: (p: string) => void;
   onUpdatePermissions: (perms: Permission[]) => void;
+  onPinChanged: () => void;
 }
 
 const PROVIDERS = [
@@ -148,7 +217,7 @@ const PROVIDERS = [
   { id: 'gemini', label: 'Google Gemini', placeholder: 'AIza…', color: '#4285f4' },
 ];
 
-function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, onSaveKey, onRemoveKey, onUpdatePermissions }: SettingsProps) {
+function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, hasPin, lockUsername, onSaveKey, onRemoveKey, onUpdatePermissions, onPinChanged }: SettingsProps) {
   const togglePermission = async (key: string) => {
     const perm = permissions.find(p => p.key === key);
     if (!perm) return;
@@ -194,6 +263,12 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, o
         </div>
       ))}
 
+      <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>Session Lock</h2>
+      <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
+        Protect TriForge with a username and 7-digit PIN. Locks automatically after 30 minutes of inactivity.
+      </p>
+      <PinSection hasPin={hasPin} lockUsername={lockUsername} onPinChanged={onPinChanged} />
+
       <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>Permissions</h2>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
         Control what TriForge AI is allowed to do on your behalf.
@@ -212,6 +287,114 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, o
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── PIN Setup/Management Section ─────────────────────────────────────────────
+
+function PinSection({ hasPin, lockUsername, onPinChanged }: { hasPin: boolean; lockUsername: string | null; onPinChanged: () => void }) {
+  const [newUsername, setNewUsername] = useState('');
+  const [newPin, setNewPin] = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  const handlePinInput = (val: string, setter: (v: string) => void) => {
+    setter(val.replace(/\D/g, '').slice(0, 7));
+    setError(null);
+  };
+
+  const setupPin = async () => {
+    if (!newUsername.trim()) { setError('Enter a username.'); return; }
+    if (newPin.length !== 7) { setError('PIN must be exactly 7 digits.'); return; }
+    if (newPin !== confirmPin) { setError('PINs do not match.'); return; }
+    setSaving(true);
+    setError(null);
+    try {
+      const result = await window.triforge.auth.setup(newUsername.trim(), newPin);
+      if (result.ok) {
+        setSuccess('Session lock enabled.');
+        setNewUsername(''); setNewPin(''); setConfirmPin('');
+        onPinChanged();
+      } else {
+        setError(result.error ?? 'Failed to set PIN.');
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const removePin = async () => {
+    setRemoving(true);
+    setError(null);
+    try {
+      await window.triforge.auth.clear();
+      setSuccess('Session lock removed.');
+      onPinChanged();
+    } finally {
+      setRemoving(false);
+    }
+  };
+
+  if (hasPin) {
+    return (
+      <div style={styles.pinCard}>
+        <div style={styles.pinActiveRow}>
+          <span style={{ color: '#10a37f', fontWeight: 600, fontSize: 13 }}>🔒 Lock active</span>
+          <span style={{ color: 'var(--text-secondary)', fontSize: 13 }}>User: <strong>{lockUsername}</strong></span>
+        </div>
+        <button style={styles.removeBtn} onClick={removePin} disabled={removing}>
+          {removing ? 'Removing…' : 'Remove lock'}
+        </button>
+        {success && <div style={styles.successMsg}>{success}</div>}
+        {error && <div style={styles.errorMsg}>{error}</div>}
+      </div>
+    );
+  }
+
+  return (
+    <div style={styles.pinCard}>
+      <div style={styles.pinFields}>
+        <input
+          style={styles.keyField}
+          placeholder="Username"
+          value={newUsername}
+          onChange={e => { setNewUsername(e.target.value); setError(null); }}
+          autoComplete="off"
+        />
+        <input
+          style={styles.keyField}
+          type="tel"
+          inputMode="numeric"
+          pattern="[0-9]*"
+          placeholder="7-digit PIN"
+          value={newPin}
+          onChange={e => handlePinInput(e.target.value, setNewPin)}
+          maxLength={7}
+        />
+        <input
+          style={styles.keyField}
+          type="tel"
+          inputMode="numeric"
+          pattern="[0-9]*"
+          placeholder="Confirm PIN"
+          value={confirmPin}
+          onChange={e => handlePinInput(e.target.value, setConfirmPin)}
+          maxLength={7}
+        />
+        <button
+          style={{ ...styles.saveBtn, ...(saving ? styles.saveBtnDisabled : {}) }}
+          onClick={setupPin}
+          disabled={saving}
+        >
+          {saving ? 'Saving…' : 'Enable lock'}
+        </button>
+      </div>
+      {error && <div style={styles.errorMsg}>{error}</div>}
+      {success && <div style={styles.successMsg}>{success}</div>}
     </div>
   );
 }
@@ -295,9 +478,14 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--bg-surface)', borderBottom: '1px solid var(--border)',
     flexShrink: 0, userSelect: 'none',
   },
-  trafficLights: { width: 60 }, // space for macOS traffic lights
+  trafficLights: { width: 60 },
   appName: { fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', textAlign: 'center', flex: 1 },
-  titlebarSpacer: { width: 60 },
+  titlebarRight: { width: 60, display: 'flex', justifyContent: 'flex-end', alignItems: 'center' },
+  lockBtn: {
+    background: 'none', border: 'none', cursor: 'pointer',
+    fontSize: 16, padding: '2px 4px', borderRadius: 4,
+    WebkitAppRegion: 'no-drag' as never,
+  },
 
   body: { display: 'flex', flex: 1, overflow: 'hidden' },
 
@@ -331,6 +519,13 @@ const styles: Record<string, React.CSSProperties> = {
   saveBtn: { background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer' },
   saveBtnDisabled: { opacity: 0.4, cursor: 'not-allowed' },
   removeBtn: { background: 'none', border: '1px solid var(--border)', color: 'var(--text-secondary)', borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: 'pointer' },
+
+  pinCard: { background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 },
+  pinActiveRow: { display: 'flex', alignItems: 'center', gap: 16 },
+  pinFields: { display: 'flex', flexDirection: 'column', gap: 8 },
+
+  errorMsg: { background: '#ef444420', border: '1px solid #ef4444', borderRadius: 8, color: '#ef4444', fontSize: 13, padding: '8px 12px' },
+  successMsg: { background: '#10a37f20', border: '1px solid #10a37f', borderRadius: 8, color: '#10a37f', fontSize: 13, padding: '8px 12px' },
 
   permRow: { display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 10, padding: '10px 14px', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' },
   toggle: { flexShrink: 0, width: 36, height: 20, borderRadius: 10, background: 'var(--bg-input)', border: '1px solid var(--border)', cursor: 'pointer', position: 'relative', transition: 'background 0.2s', marginTop: 2 },

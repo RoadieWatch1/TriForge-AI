@@ -74,6 +74,14 @@ const api = {
   usage: {
     get: () => ipcRenderer.invoke('usage:get') as Promise<{ messagesThisMonth: number }>,
   },
+
+  // Session auth (PIN lock)
+  auth: {
+    status:  () => ipcRenderer.invoke('auth:status') as Promise<{ hasPin: boolean; username: string | null }>,
+    setup:   (username: string, pin: string) => ipcRenderer.invoke('auth:setup', username, pin) as Promise<{ ok: boolean; error?: string }>,
+    verify:  (username: string, pin: string) => ipcRenderer.invoke('auth:verify', username, pin) as Promise<{ valid: boolean }>,
+    clear:   () => ipcRenderer.invoke('auth:clear') as Promise<{ ok: boolean }>,
+  },
 };
 
 contextBridge.exposeInMainWorld('triforge', api);
