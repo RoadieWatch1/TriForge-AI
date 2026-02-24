@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import type { Permission } from '../main/store';
 import { PermissionWizard } from './components/PermissionWizard';
 import { Chat } from './components/Chat';
+import { LicensePanel } from './components/LicensePanel';
 
-type Screen = 'chat' | 'settings' | 'memory';
+type Screen = 'chat' | 'settings' | 'memory' | 'plan';
 
 export function App() {
   const [ready, setReady] = useState(false);
@@ -14,17 +15,23 @@ export function App() {
   const [screen, setScreen] = useState<Screen>('chat');
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({ openai: '', claude: '', gemini: '' });
   const [saving, setSaving] = useState<string | null>(null);
+  const [tier, setTier] = useState<string>('free');
+  const [messagesThisMonth, setMessagesThisMonth] = useState(0);
 
   useEffect(() => {
     async function init() {
-      const [isFirst, perms, keys] = await Promise.all([
+      const [isFirst, perms, keys, lic, usage] = await Promise.all([
         window.triforge.permissions.isFirstRun(),
         window.triforge.permissions.get(),
         window.triforge.keys.status(),
+        window.triforge.license.load(),
+        window.triforge.usage.get(),
       ]);
       setFirstRun(isFirst);
       setPermissions(perms);
       setKeyStatus(keys);
+      setTier(lic.tier ?? 'free');
+      setMessagesThisMonth(usage.messagesThisMonth);
       if (!isFirst) {
         try {
           const m = await window.triforge.engine.mode();
@@ -83,14 +90,25 @@ export function App() {
       <div style={styles.body}>
         {/* Sidebar */}
         <nav style={styles.sidebar}>
-          <NavBtn icon="💬" label="Chat" active={screen === 'chat'} onClick={() => setScreen('chat')} />
-          <NavBtn icon="🧠" label="Memory" active={screen === 'memory'} onClick={() => setScreen('memory')} />
+          <NavBtn icon="💬" label="Chat"     active={screen === 'chat'}     onClick={() => setScreen('chat')} />
+          <NavBtn icon="🧠" label="Memory"   active={screen === 'memory'}   onClick={() => setScreen('memory')} />
           <NavBtn icon="⚙️" label="Settings" active={screen === 'settings'} onClick={() => setScreen('settings')} />
+          <div style={{ flex: 1 }} />
+          <NavBtn icon="💎" label="Plan"     active={screen === 'plan'}     onClick={() => setScreen('plan')} />
         </nav>
 
         {/* Main content */}
         <main style={styles.main}>
-          {screen === 'chat' && <Chat mode={mode} keyStatus={keyStatus} />}
+          {screen === 'chat' && (
+            <Chat
+              mode={mode}
+              keyStatus={keyStatus}
+              tier={tier}
+              messagesThisMonth={messagesThisMonth}
+              onMessageSent={() => setMessagesThisMonth(n => n + 1)}
+              onUpgradeClick={() => setScreen('plan')}
+            />
+          )}
           {screen === 'settings' && (
             <SettingsScreen
               keyStatus={keyStatus}
@@ -104,6 +122,7 @@ export function App() {
             />
           )}
           {screen === 'memory' && <MemoryScreen />}
+          {screen === 'plan' && <LicensePanel onTierChange={setTier} />}
         </main>
       </div>
     </div>

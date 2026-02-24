@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { VoiceButton } from './VoiceButton';
+import { UpgradeGate } from './UpgradeGate';
 
 interface Message {
   id: string;
@@ -13,6 +14,10 @@ interface Message {
 interface Props {
   mode: string;
   keyStatus: Record<string, boolean>;
+  tier: string;
+  messagesThisMonth: number;
+  onMessageSent: () => void;
+  onUpgradeClick: () => void;
 }
 
 const PROVIDER_COLORS: Record<string, string> = {
@@ -30,7 +35,9 @@ const QUICK_ACTIONS = [
   { label: '🔍 Research topic', prompt: 'Research and summarize everything about ' },
 ];
 
-export function Chat({ mode, keyStatus }: Props) {
+const MSG_LIMITS: Record<string, number> = { free: 30, pro: Infinity, business: Infinity };
+
+export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, onUpgradeClick }: Props) {
   const [messages, setMessages] = useState<Message[]>([
     {
       id: '0',
@@ -42,9 +49,15 @@ export function Chat({ mode, keyStatus }: Props) {
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [speaking, setSpeaking] = useState<string | null>(null);
+  const [gate, setGate] = useState<{ feature: string; neededTier: 'pro' | 'business' } | null>(null);
+  const [checkoutUrls, setCheckoutUrls] = useState<{ pro: string; business: string; portal: string }>({ pro: '', business: '', portal: '' });
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    window.triforge.license.checkoutUrls().then(setCheckoutUrls).catch(() => {});
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -93,6 +106,21 @@ export function Chat({ mode, keyStatus }: Props) {
 
       const result = await window.triforge.chat.send(text.trim(), history);
 
+      // Handle paywall errors returned from IPC
+      if (result.error === 'MESSAGE_LIMIT_REACHED') {
+        setGate({ feature: 'MESSAGE_LIMIT_REACHED', neededTier: 'pro' });
+        setSending(false);
+        return;
+      }
+      if (result.error?.startsWith('FEATURE_LOCKED:')) {
+        const feature = result.error.split(':')[1] ?? 'unknown';
+        setGate({ feature, neededTier: feature === 'browser' || feature === 'email' || feature === 'financeTrading' ? 'business' : 'pro' });
+        setSending(false);
+        return;
+      }
+
+      onMessageSent();
+
       const aiMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
@@ -128,8 +156,25 @@ export function Chat({ mode, keyStatus }: Props) {
 
   const hasKeys = Object.values(keyStatus).some(Boolean);
 
+  const msgLimit = MSG_LIMITS[tier] ?? 30;
+  const unlimited = msgLimit === Infinity;
+  const remaining = unlimited ? Infinity : Math.max(0, msgLimit - messagesThisMonth);
+  const atLimit = !unlimited && remaining <= 0;
+
   return (
     <div style={styles.container}>
+      {/* Upgrade gate overlay */}
+      {gate && (
+        <UpgradeGate
+          feature={gate.feature}
+          neededTier={gate.neededTier}
+          onClose={() => setGate(null)}
+          onUpgrade={(url) => { window.triforge.system.openExternal(url); setGate(null); }}
+          proCheckout={checkoutUrls.pro}
+          bizCheckout={checkoutUrls.business}
+        />
+      )}
+
       {/* Status bar */}
       <div style={styles.statusBar}>
         <div style={styles.statusDots}>
@@ -140,6 +185,19 @@ export function Chat({ mode, keyStatus }: Props) {
           ))}
         </div>
         <span style={styles.modeLabel}>{MODE_LABELS[mode] ?? mode}</span>
+        <div style={{ flex: 1 }} />
+        {/* Message quota */}
+        {unlimited
+          ? <span style={styles.quotaLabel}>∞ unlimited</span>
+          : (
+            <button style={{ ...styles.quotaLabel, ...(atLimit ? styles.quotaAtLimit : {}), background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+              onClick={onUpgradeClick}
+              title={atLimit ? 'Upgrade to send more messages' : `${remaining} messages remaining this month`}
+            >
+              {atLimit ? '⚠ Limit reached — Upgrade' : `${remaining} / ${msgLimit} msgs`}
+            </button>
+          )
+        }
       </div>
 
       {/* Messages */}
@@ -285,6 +343,8 @@ const styles: Record<string, React.CSSProperties> = {
   statusDots: { display: 'flex', gap: 5 },
   dot: { width: 8, height: 8, borderRadius: '50%', transition: 'background 0.3s' },
   modeLabel: { fontSize: 11, color: 'var(--text-muted)', marginLeft: 4, fontWeight: 500 },
+  quotaLabel: { fontSize: 11, color: 'var(--text-muted)', fontWeight: 500 },
+  quotaAtLimit: { color: '#ef4444', fontWeight: 700 },
 
   messages: { flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: 12 },
 

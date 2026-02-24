@@ -1,6 +1,8 @@
 import { ipcMain, shell } from 'electron';
 import { Store } from './store';
 import { transcribeAudio, textToSpeech } from './voice';
+import { validateLicense, loadLicense, deactivateLicense, LEMONSQUEEZY } from './license';
+import { isAtMessageLimit, canUse, TIERS } from './subscription';
 import {
   ProviderManager,
   Orchestrator,
@@ -69,6 +71,38 @@ export function setupIpc(store: Store): void {
     return pm.getMode();
   });
 
+  // ── License ───────────────────────────────────────────────────────────────────
+  ipcMain.handle('license:load', async () => {
+    return loadLicense(store);
+  });
+
+  ipcMain.handle('license:activate', async (_e, key: string) => {
+    const result = await validateLicense(key);
+    await store.setLicense({ ...result, lastChecked: new Date().toISOString() });
+    return result;
+  });
+
+  ipcMain.handle('license:deactivate', async () => {
+    const cached = await store.getLicense();
+    if (cached.key) {
+      await deactivateLicense(cached.key, 'triforge-desktop');
+    }
+    await store.clearLicense();
+    return { tier: 'free' };
+  });
+
+  ipcMain.handle('license:tiers', () => TIERS);
+  ipcMain.handle('license:checkoutUrls', () => ({
+    pro: LEMONSQUEEZY.PRO_CHECKOUT,
+    business: LEMONSQUEEZY.BIZ_CHECKOUT,
+    portal: LEMONSQUEEZY.CUSTOMER_PORTAL,
+  }));
+
+  // ── Usage ─────────────────────────────────────────────────────────────────────
+  ipcMain.handle('usage:get', () => ({
+    messagesThisMonth: store.getMonthlyMessageCount(),
+  }));
+
   // ── Chat (single message, non-streaming) ─────────────────────────────────────
   ipcMain.handle('chat:send', async (_e, message: string, history: Array<{ role: string; content: string }>) => {
     const { providerManager: pm } = await getEngine();
@@ -77,13 +111,23 @@ export function setupIpc(store: Store): void {
       return { error: 'No API keys configured. Add at least one in Settings.' };
     }
 
+    // Enforce message limit
+    const license = await store.getLicense();
+    const tier = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const used = store.getMonthlyMessageCount();
+    if (isAtMessageLimit(used, tier)) {
+      return { error: 'MESSAGE_LIMIT_REACHED', tier };
+    }
+
+    // Enforce voice/consensus gating happens in voice handlers
+    // but for chat we just check message limit
     try {
-      // Use the primary provider for simple chat
       const primary = providers[0];
       const response = await primary.generateResponse([
         ...history,
         { role: 'user', content: message },
       ]);
+      store.incrementMessageCount();
       return { text: response, provider: primary.name };
     } catch (err: unknown) {
       return { error: err instanceof Error ? err.message : String(err) };
@@ -103,6 +147,11 @@ export function setupIpc(store: Store): void {
 
   // ── Voice: Speech-to-Text ─────────────────────────────────────────────────────
   ipcMain.handle('voice:transcribe', async (_e, audioBuffer: Buffer) => {
+    const license = await store.getLicense();
+    const tier = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!canUse('voice', tier)) {
+      return { error: 'FEATURE_LOCKED:voice' };
+    }
     try {
       const result = await transcribeAudio(audioBuffer, store);
       return { text: result.text };

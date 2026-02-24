@@ -60,6 +60,20 @@ const api = {
     openExternal: (url: string) => ipcRenderer.invoke('system:openExternal', url),
     platform: process.platform,
   },
+
+  // License & subscription
+  license: {
+    load:        () => ipcRenderer.invoke('license:load') as Promise<{ tier: string; valid: boolean; key: string | null; email: string | null; expiresAt: string | null; error: string | null }>,
+    activate:    (key: string) => ipcRenderer.invoke('license:activate', key) as Promise<{ tier: string; valid: boolean; key: string | null; email: string | null; error: string | null }>,
+    deactivate:  () => ipcRenderer.invoke('license:deactivate') as Promise<void>,
+    tiers:       () => ipcRenderer.invoke('license:tiers') as Promise<unknown>,
+    checkoutUrls:() => ipcRenderer.invoke('license:checkoutUrls') as Promise<{ pro: string; business: string; portal: string }>,
+  },
+
+  // Usage stats
+  usage: {
+    get: () => ipcRenderer.invoke('usage:get') as Promise<{ messagesThisMonth: number }>,
+  },
 };
 
 contextBridge.exposeInMainWorld('triforge', api);

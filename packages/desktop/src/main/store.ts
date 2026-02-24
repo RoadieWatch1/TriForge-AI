@@ -27,6 +27,16 @@ export const DEFAULT_PERMISSIONS: Permission[] = [
   { key: 'finance_t', label: 'Finance — Trade',       description: 'Propose and execute investment trades',        category: 'finance',       granted: false, requireConfirm: true, budgetLimit: 0 },
 ];
 
+export interface StoredLicense {
+  key: string | null;
+  tier: string;
+  valid: boolean;
+  email: string | null;
+  expiresAt: string | null;
+  activatedAt: string | null;
+  lastChecked: string | null;
+}
+
 interface StoreData {
   kv: Record<string, string>;
   secrets: Record<string, string>;
@@ -35,6 +45,9 @@ interface StoreData {
   firstRunDone: boolean;
   userProfile: Record<string, string>;
   nextMemoryId: number;
+  license: StoredLicense;
+  // message usage: key = "YYYY-MM" → count
+  messageUsage: Record<string, number>;
 }
 
 function emptyData(): StoreData {
@@ -42,7 +55,12 @@ function emptyData(): StoreData {
   for (const p of DEFAULT_PERMISSIONS) {
     perms[p.key] = { granted: false, budgetLimit: p.budgetLimit, requireConfirm: p.requireConfirm };
   }
-  return { kv: {}, secrets: {}, permissions: perms, memory: [], firstRunDone: false, userProfile: {}, nextMemoryId: 1 };
+  return {
+    kv: {}, secrets: {}, permissions: perms, memory: [],
+    firstRunDone: false, userProfile: {}, nextMemoryId: 1,
+    license: { key: null, tier: 'free', valid: false, email: null, expiresAt: null, activatedAt: null, lastChecked: null },
+    messageUsage: {},
+  };
 }
 
 export class Store implements StorageAdapter {
@@ -105,6 +123,41 @@ export class Store implements StorageAdapter {
 
   getUserProfile(): Record<string, string> { return this.data.userProfile; }
   setUserProfile(profile: Record<string, string>): void { this.data.userProfile = profile; this.save(); }
+
+  // License
+  async getLicense(): Promise<StoredLicense> {
+    return this.data.license ?? { key: null, tier: 'free', valid: false, email: null, expiresAt: null, activatedAt: null, lastChecked: null };
+  }
+
+  async setLicense(license: StoredLicense): Promise<void> {
+    this.data.license = license;
+    this.save();
+  }
+
+  async clearLicense(): Promise<void> {
+    this.data.license = { key: null, tier: 'free', valid: false, email: null, expiresAt: null, activatedAt: null, lastChecked: null };
+    this.save();
+  }
+
+  // Message usage (resets each calendar month)
+  private monthKey(): string {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  }
+
+  getMonthlyMessageCount(): number {
+    return this.data.messageUsage[this.monthKey()] ?? 0;
+  }
+
+  incrementMessageCount(): number {
+    const k = this.monthKey();
+    this.data.messageUsage[k] = (this.data.messageUsage[k] ?? 0) + 1;
+    // Prune old months (keep last 3)
+    const keys = Object.keys(this.data.messageUsage).sort();
+    while (keys.length > 3) { delete this.data.messageUsage[keys.shift()!]; }
+    this.save();
+    return this.data.messageUsage[k];
+  }
 
   addMemory(type: 'fact' | 'goal' | 'preference' | 'business', content: string): void {
     this.data.memory.unshift({ id: this.data.nextMemoryId++, type, content, created_at: Date.now() });
