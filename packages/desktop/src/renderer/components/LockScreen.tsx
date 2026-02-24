@@ -114,7 +114,7 @@ export function LockScreen({ username: knownUser, onUnlock }: Props) {
         </button>
 
         <p style={styles.hint}>
-          Say <strong style={{ color: 'var(--accent)' }}>TriForge</strong> to activate
+          Locks automatically after <strong style={{ color: 'var(--accent)' }}>30 minutes</strong> of inactivity
         </p>
       </div>
     </div>

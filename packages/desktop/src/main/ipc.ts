@@ -4,6 +4,7 @@ import { transcribeAudio, textToSpeech } from './voice';
 import { validateLicense, loadLicense, deactivateLicense, LEMONSQUEEZY } from './license';
 import { isAtMessageLimit, canUse, TIERS } from './subscription';
 import { hashPin, verifyPin, isValidPin } from './auth';
+import { buildSystemPrompt } from './systemPrompt';
 import {
   ProviderManager,
   Orchestrator,
@@ -120,11 +121,13 @@ export function setupIpc(store: Store): void {
       return { error: 'MESSAGE_LIMIT_REACHED', tier };
     }
 
-    // Enforce voice/consensus gating happens in voice handlers
-    // but for chat we just check message limit
+    // Build system prompt with user identity, memories, and tier capabilities
+    const systemPrompt = await buildSystemPrompt(store);
+
     try {
       const primary = providers[0];
       const response = await primary.generateResponse([
+        { role: 'system', content: systemPrompt },
         ...history,
         { role: 'user', content: message },
       ]);
