@@ -291,32 +291,47 @@ export function setupIpc(store: Store): void {
   });
 
   // ── App Builder ───────────────────────────────────────────────────────────────
-  ipcMain.handle('appbuilder:generate', async (_e, spec: { appType: string; audience: string; features: string; style: string; extras: string }) => {
+  ipcMain.handle('appbuilder:generate', async (_e, spec: { appType: string; audience: string; features: string; dataSave: string; style: string; extras: string }) => {
     const { providerManager: pm } = await getEngine();
     const providers = await pm.getActiveProviders();
     if (providers.length === 0) {
       return { error: 'No API keys configured. Add at least one in Settings.' };
     }
-    const prompt = `Build a complete, self-contained web application with these specifications:
+
+    const wantsAccounts = /account|login|sign.?in|user|auth/i.test(spec.dataSave);
+    const wantsSave    = !/no|none|fresh|don.?t|do not/i.test(spec.dataSave);
+    let dataNotes = '';
+    if (wantsAccounts) {
+      dataNotes = `- Use localStorage to persist all data locally (no real backend)
+- Show a clear notice in the app UI: "Data is saved on this device only. For multi-device sync or real accounts, a backend service would be needed."`;
+    } else if (wantsSave) {
+      dataNotes = `- Use localStorage to persist all user data so it survives page refreshes and browser restarts
+- Auto-save on every change — no manual save button needed`;
+    } else {
+      dataNotes = `- No data persistence needed — app resets on refresh`;
+    }
+
+    const prompt = `Build a complete, self-contained web application:
 
 App Type: ${spec.appType}
 Target Users: ${spec.audience}
 Core Features: ${spec.features}
-Visual Style: ${spec.style}${spec.extras ? `\nAdditional Requirements: ${spec.extras}` : ''}
+Data / Persistence: ${spec.dataSave}
+Visual Style: ${spec.style}${spec.extras ? `\nExtra Requirements: ${spec.extras}` : ''}
 
 Technical requirements:
-- Single HTML file with ALL CSS and JavaScript inline (no external dependencies)
-- Professional, modern, mobile-responsive design
-- All features must be functional and interactive
-- Include realistic sample/demo data so the app looks populated
-- No external CDN links — everything self-contained
+- Single HTML file with ALL CSS and JavaScript inline (no external dependencies, no CDN)
+- Professional, polished, mobile-responsive design
+- All features functional and interactive with realistic sample data
+${dataNotes}
+- Smooth UX: hover effects, transitions, clear empty states, helpful placeholder text
 
-Reply with ONLY the complete HTML file content. Start immediately with <!DOCTYPE html> and end with </html>. No explanations, no markdown code blocks.`;
+Reply with ONLY the complete HTML. Start immediately with <!DOCTYPE html> and end with </html>. No markdown, no explanations.`;
 
     try {
       const primary = providers[0];
       const response = await primary.generateResponse([
-        { role: 'system', content: 'You are an expert web developer. When asked to build an app, you reply with ONLY the complete HTML file — no explanations, no markdown, just raw HTML starting with <!DOCTYPE html>.' },
+        { role: 'system', content: 'You are an expert full-stack web developer. When asked to build an app, output ONLY the complete single-file HTML — no explanations, no markdown fences, just raw HTML starting with <!DOCTYPE html>.' },
         { role: 'user', content: prompt },
       ]);
       return { html: response };
@@ -334,6 +349,18 @@ Reply with ONLY the complete HTML file content. Start immediately with <!DOCTYPE
       return { path: buildDir };
     } catch (err: unknown) {
       return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // Write HTML to a temp file and open it in the user's default browser
+  ipcMain.handle('appbuilder:openPreview', async (_e, html: string) => {
+    try {
+      const tmpFile = path.join(os.tmpdir(), `triforge-preview-${Date.now()}.html`);
+      await fs.promises.writeFile(tmpFile, html, 'utf8');
+      await shell.openPath(tmpFile);
+      return { ok: true };
+    } catch (err: unknown) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
 }

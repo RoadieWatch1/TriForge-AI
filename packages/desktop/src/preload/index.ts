@@ -37,10 +37,12 @@ const api = {
 
   // App Builder
   appBuilder: {
-    generate: (spec: { appType: string; audience: string; features: string; style: string; extras: string }) =>
+    generate: (spec: { appType: string; audience: string; features: string; dataSave: string; style: string; extras: string }) =>
       ipcRenderer.invoke('appbuilder:generate', spec) as Promise<{ html?: string; error?: string }>,
     save: (appName: string, html: string) =>
       ipcRenderer.invoke('appbuilder:save', appName, html) as Promise<{ path?: string; error?: string }>,
+    openPreview: (html: string) =>
+      ipcRenderer.invoke('appbuilder:openPreview', html) as Promise<{ ok: boolean; error?: string }>,
   },
 
   // Voice
