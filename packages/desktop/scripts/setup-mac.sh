@@ -75,6 +75,9 @@ cd "$REPO_DIR"
 # ── 6. Install npm dependencies ───────────────────────────────────────────────
 echo ""
 echo "📦  Installing npm dependencies…"
+# Force a clean install so platform-specific binaries (app-builder-bin) are
+# downloaded for THIS machine's architecture.
+rm -rf node_modules
 npm install
 
 # ── 7. Build ──────────────────────────────────────────────────────────────────
