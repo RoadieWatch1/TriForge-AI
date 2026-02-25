@@ -65,7 +65,8 @@ export function setupIpc(store: Store): void {
   // ── Provider mode ─────────────────────────────────────────────────────────────
   ipcMain.handle('engine:mode', async () => {
     const { providerManager: pm } = await getEngine();
-    return pm.detectMode();
+    const result = pm.detectMode();
+    return result?.mode ?? 'none';
   });
 
   // ── License ───────────────────────────────────────────────────────────────────
