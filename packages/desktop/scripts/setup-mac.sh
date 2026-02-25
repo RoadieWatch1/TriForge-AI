@@ -7,7 +7,7 @@
 #   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/RoadieWatch1/TriForge-AI/master/packages/desktop/scripts/setup-mac.sh)"
 #
 # OR if you already have the repo:
-#   bash packages/desktop/scripts/setup-mac.sh
+#   bash ~/triforge-ai/packages/desktop/scripts/setup-mac.sh
 # ─────────────────────────────────────────────────────────────────────────────
 set -e
 
@@ -33,7 +33,6 @@ fi
 if ! command -v brew &>/dev/null; then
   echo "🍺  Installing Homebrew…"
   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-  # Add brew to PATH for Apple Silicon
   if [ -f "/opt/homebrew/bin/brew" ]; then
     eval "$(/opt/homebrew/bin/brew shellenv)"
     echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> "$HOME/.zprofile"
@@ -42,16 +41,40 @@ else
   echo "✅  Homebrew present"
 fi
 
-# ── 3. Node.js (v20 LTS) ─────────────────────────────────────────────────────
-# electron-builder 25.x requires Node 18-22. Node 23+ breaks app-builder-bin's
-# postinstall download script, so we pin to node@20 regardless of what else is installed.
-brew install node@20 2>/dev/null || true
-brew link node@20 --force --overwrite 2>/dev/null || true
-# Prepend node@20 to PATH for this script session (Apple Silicon path)
-if [ -f "/opt/homebrew/opt/node@20/bin/node" ]; then
-  export PATH="/opt/homebrew/opt/node@20/bin:$PATH"
+# ── 3. Node.js (v20 LTS — required by electron-builder / app-builder-bin) ────
+# Node 23+ breaks app-builder-bin's postinstall binary download. Pin to v20.
+echo "🔧  Pinning Node.js to v20 LTS…"
+brew install node@20 || true
+
+# Unlink any other node version so node@20 wins
+brew unlink node     2>/dev/null || true
+brew unlink node@21  2>/dev/null || true
+brew unlink node@22  2>/dev/null || true
+brew unlink node@23  2>/dev/null || true
+brew unlink node@24  2>/dev/null || true
+brew unlink node@25  2>/dev/null || true
+
+brew link node@20 --force --overwrite || true
+
+# Prepend node@20 bin to PATH for this script session (Apple Silicon path)
+NODE20_BIN="/opt/homebrew/opt/node@20/bin"
+if [ -d "$NODE20_BIN" ]; then
+  export PATH="$NODE20_BIN:$PATH"
 fi
-echo "✅  Node.js $(node -v) (pinned to v20 LTS)"
+
+# Clear bash's command-location cache so the new PATH takes effect immediately
+hash -r 2>/dev/null || true
+
+# Verify we're actually on v20
+CURRENT_NODE="$(node -v 2>/dev/null || echo 'none')"
+if [[ "$CURRENT_NODE" != v20* ]]; then
+  echo ""
+  echo "❌  Could not activate Node.js v20 (got $CURRENT_NODE)."
+  echo "    Please run:  export PATH=\"/opt/homebrew/opt/node@20/bin:\$PATH\""
+  echo "    Then re-run this script."
+  exit 1
+fi
+echo "✅  Node.js $CURRENT_NODE (v20 LTS active)"
 
 # ── 4. Git ───────────────────────────────────────────────────────────────────
 if ! command -v git &>/dev/null; then
@@ -76,10 +99,10 @@ cd "$REPO_DIR"
 
 # ── 6. Install npm dependencies ───────────────────────────────────────────────
 echo ""
-echo "📦  Installing npm dependencies…"
-# Force a clean install so platform-specific binaries (app-builder-bin) are
-# downloaded for THIS machine's architecture.
-rm -rf node_modules
+echo "📦  Installing npm dependencies (Node $(node -v))…"
+# Force a clean install so platform-specific binaries (app-builder-bin arm64)
+# are freshly downloaded for THIS machine using the correct Node version.
+rm -rf node_modules packages/*/node_modules
 npm install
 
 # ── 7. Build ──────────────────────────────────────────────────────────────────
@@ -93,13 +116,10 @@ echo "🎨  Generating icons…"
 node packages/desktop/scripts/make-icon.js
 bash packages/desktop/scripts/make-icons-mac.sh
 
-# ── 9. Package DMG ───────────────────────────────────────────────────────────
+# ── 9. Package DMG ────────────────────────────────────────────────────────────
 echo ""
 echo "📦  Packaging TriForge AI.dmg…"
 cd packages/desktop
-
-# electron-builder.json already declares targets for arm64 + x64.
-# electronVersion is pinned in the config so npm-workspaces hoisting is not a problem.
 npx electron-builder --mac
 
 # ── 10. Open dist folder ──────────────────────────────────────────────────────
@@ -113,5 +133,4 @@ echo ""
 echo "   Double-click the .dmg to install TriForge AI."
 echo ""
 
-# Open the dist folder in Finder
 open "$DIST_DIR" 2>/dev/null || true
