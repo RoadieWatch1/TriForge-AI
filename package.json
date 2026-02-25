@@ -16,5 +16,8 @@
     "package:win": "npm run build:desktop && npm run icon && cd packages/desktop && npx electron-builder --win",
     "watch": "node packages/vscode-ext/esbuild.js --watch",
     "typecheck": "node_modules/.bin/tsc --build packages/engine && node_modules/.bin/tsc -p packages/vscode-ext/tsconfig.json --noEmit && node_modules/.bin/tsc -p packages/desktop/tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
   }
 }
