@@ -110,10 +110,16 @@ export class Store implements StorageAdapter {
   // StorageAdapter interface
   async getSecret(key: string): Promise<string | undefined> { return this.data.secrets[key]; }
   async setSecret(key: string, value: string): Promise<void> { this.data.secrets[key] = value; this.save(); }
+  async storeSecret(key: string, value: string): Promise<void> { return this.setSecret(key, value); }
   async deleteSecret(key: string): Promise<void> { delete this.data.secrets[key]; this.save(); }
-  async get(key: string): Promise<string | undefined> { return this.data.kv[key]; }
-  async set(key: string, value: string): Promise<void> { this.data.kv[key] = value; this.save(); }
-  async delete(key: string): Promise<void> { delete this.data.kv[key]; this.save(); }
+  // Sync generic get with default — used by ProviderManager for session history
+  get<T>(key: string, defaultValue: T): T {
+    const raw = this.data.kv[key];
+    if (raw === undefined) return defaultValue;
+    try { return JSON.parse(raw) as T; } catch { return defaultValue; }
+  }
+  // Sync update — used by ProviderManager.saveSessions()
+  update(key: string, value: unknown): void { this.data.kv[key] = JSON.stringify(value); this.save(); }
 
   getPermissions(): Permission[] {
     return DEFAULT_PERMISSIONS.map(p => ({ ...p, ...this.data.permissions[p.key] }));

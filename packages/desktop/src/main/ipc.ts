@@ -9,12 +9,11 @@ import { scanForPhotos, listDirectory, organizeDirectory, getCommonDirs } from '
 import { listPrinters, printFile, printText } from './printer';
 import {
   ProviderManager,
-  Orchestrator,
   IntentEngine,
+  type ProviderName,
 } from '@triforge/engine';
 
 let providerManager: ProviderManager | null = null;
-let orchestrator: Orchestrator | null = null;
 let intentEngine: IntentEngine | null = null;
 
 export function setupIpc(store: Store): void {
@@ -23,15 +22,12 @@ export function setupIpc(store: Store): void {
   async function getEngine() {
     if (!providerManager) {
       providerManager = new ProviderManager(store);
-      await providerManager.init();
-    }
-    if (!orchestrator) {
-      orchestrator = new Orchestrator(providerManager, store);
     }
     if (!intentEngine) {
-      intentEngine = new IntentEngine(providerManager);
+      const providers = await providerManager.getActiveProviders();
+      intentEngine = new IntentEngine(providers);
     }
-    return { providerManager, orchestrator, intentEngine };
+    return { providerManager, intentEngine };
   }
 
   // ── Permissions ─────────────────────────────────────────────────────────────
@@ -47,32 +43,29 @@ export function setupIpc(store: Store): void {
 
   // ── API Keys ─────────────────────────────────────────────────────────────────
   ipcMain.handle('keys:set', async (_e, provider: string, key: string) => {
-    await store.setSecret(provider, key);
-    providerManager = null; // force re-init with new keys
-    orchestrator = null;
-    intentEngine = null;
+    if (!providerManager) providerManager = new ProviderManager(store);
+    await providerManager.setKey(provider as ProviderName, key);
+    intentEngine = null; // reset so next call re-resolves active providers
   });
 
   ipcMain.handle('keys:delete', async (_e, provider: string) => {
-    await store.deleteSecret(provider);
-    providerManager = null;
-    orchestrator = null;
+    if (!providerManager) providerManager = new ProviderManager(store);
+    await providerManager.removeKey(provider as ProviderName);
     intentEngine = null;
   });
 
   ipcMain.handle('keys:status', async () => {
-    const providers = ['openai', 'claude', 'gemini'];
+    if (!providerManager) providerManager = new ProviderManager(store);
+    const statuses = await providerManager.getStatus();
     const status: Record<string, boolean> = {};
-    for (const p of providers) {
-      status[p] = !!(await store.getSecret(p));
-    }
+    for (const s of statuses) status[s.name] = s.connected;
     return status;
   });
 
   // ── Provider mode ─────────────────────────────────────────────────────────────
   ipcMain.handle('engine:mode', async () => {
     const { providerManager: pm } = await getEngine();
-    return pm.getMode();
+    return pm.detectMode();
   });
 
   // ── License ───────────────────────────────────────────────────────────────────
@@ -110,7 +103,7 @@ export function setupIpc(store: Store): void {
   // ── Chat (single message, non-streaming) ─────────────────────────────────────
   ipcMain.handle('chat:send', async (_e, message: string, history: Array<{ role: string; content: string }>) => {
     const { providerManager: pm } = await getEngine();
-    const providers = pm.getActiveProviders();
+    const providers = await pm.getActiveProviders();
     if (providers.length === 0) {
       return { error: 'No API keys configured. Add at least one in Settings.' };
     }
