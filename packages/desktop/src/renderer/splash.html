@@ -262,5 +262,52 @@
   </div>
 
   <div class="version">v0.0.1</div>
+
+  <script>
+    // ── TriForge vocal greeting via Web Speech API ──────────────────────────────
+    // Built into Electron/Chromium — no API key, no network, works on first launch.
+    (function () {
+      if (!window.speechSynthesis) return;
+
+      var spoken = false;
+
+      function greet() {
+        if (spoken) return;
+        spoken = true;
+
+        var msg = new SpeechSynthesisUtterance();
+        msg.text   = 'TriForge A.I., online. Three minds, forged into one.';
+        msg.rate   = 0.90;   // slightly slower = more authoritative
+        msg.pitch  = 0.80;   // slightly deeper
+        msg.volume = 1.0;
+
+        // Voice priority: best natural voices per platform
+        var voices = speechSynthesis.getVoices();
+        var preferred = (
+          voices.find(function(v){ return v.name === 'Samantha'; })            || // macOS
+          voices.find(function(v){ return v.name === 'Alex'; })                || // macOS older
+          voices.find(function(v){ return /Aria.*Natural/i.test(v.name); })    || // Windows 11
+          voices.find(function(v){ return /Microsoft Aria/i.test(v.name); })   || // Windows 11
+          voices.find(function(v){ return /Google US English/i.test(v.name);}  ) // Chrome
+        );
+        if (preferred) msg.voice = preferred;
+
+        // Small pause so the splash animation has started before the voice kicks in
+        setTimeout(function () {
+          speechSynthesis.speak(msg);
+        }, 350);
+      }
+
+      // Voices may load asynchronously on first call
+      var voices = speechSynthesis.getVoices();
+      if (voices.length > 0) {
+        greet();
+      } else {
+        speechSynthesis.addEventListener('voiceschanged', greet, { once: true });
+        // Safety fallback: if voiceschanged never fires, speak with default voice
+        setTimeout(greet, 800);
+      }
+    })();
+  </script>
 </body>
 </html>
