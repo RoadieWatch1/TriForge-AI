@@ -4,14 +4,14 @@
 # Installs all prerequisites, clones the repo, builds, and packages the DMG.
 #
 # Usage (on the Mac Mini, in Terminal):
-#   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/YOUR_ORG/triforge-ai/main/packages/desktop/scripts/setup-mac.sh)"
+#   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/RoadieWatch1/TriForge-AI/master/packages/desktop/scripts/setup-mac.sh)"
 #
 # OR if you already have the repo:
 #   bash packages/desktop/scripts/setup-mac.sh
 # ─────────────────────────────────────────────────────────────────────────────
 set -e
 
-REPO_URL="https://github.com/YOUR_ORG/triforge-ai.git"   # ← change this
+REPO_URL="https://github.com/RoadieWatch1/TriForge-AI.git"
 REPO_DIR="$HOME/triforge-ai"
 
 echo ""
