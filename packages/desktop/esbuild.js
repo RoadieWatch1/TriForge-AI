@@ -64,7 +64,8 @@ const rendererConfig = {
 async function build() {
   // Copy static renderer files
   fs.mkdirSync(out('renderer'), { recursive: true });
-  fs.copyFileSync(src('renderer/index.html'), out('renderer/index.html'));
+  fs.copyFileSync(src('renderer/index.html'),  out('renderer/index.html'));
+  fs.copyFileSync(src('renderer/splash.html'), out('renderer/splash.html'));
   fs.mkdirSync(out('renderer'), { recursive: true });
   // Copy CSS (esbuild handles JS/TS; we copy CSS manually)
   const cssFile = src('renderer/styles/global.css');

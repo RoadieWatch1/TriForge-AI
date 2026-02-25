@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TriForge AI</title>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      width: 100vw;
+      height: 100vh;
+      background: linear-gradient(145deg, #0d0d0f 0%, #100b22 60%, #150a2e 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      color: #fff;
+      overflow: hidden;
+      -webkit-app-region: drag;
+      user-select: none;
+    }
+
+    /* Subtle radial glow behind the bolt */
+    .glow-ring {
+      position: absolute;
+      width: 220px;
+      height: 220px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(99,102,241,0.18) 0%, transparent 70%);
+      animation: ringPulse 2.4s ease-in-out infinite;
+    }
+
+    .bolt {
+      position: relative;
+      font-size: 72px;
+      line-height: 1;
+      filter: drop-shadow(0 0 18px rgba(255, 224, 60, 0.75));
+      animation: boltPulse 2.4s ease-in-out infinite;
+      z-index: 1;
+    }
+
+    .name {
+      font-size: 30px;
+      font-weight: 700;
+      letter-spacing: 3px;
+      margin-top: 18px;
+      background: linear-gradient(90deg, #a78bfa 0%, #818cf8 50%, #60a5fa 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .tagline {
+      font-size: 11px;
+      color: #6366f1;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      margin-top: 6px;
+      opacity: 0.85;
+    }
+
+    /* Three bouncing dots loader */
+    .loader {
+      display: flex;
+      gap: 9px;
+      margin-top: 44px;
+    }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #6366f1;
+      animation: dotBounce 1.3s ease-in-out infinite;
+    }
+    .dot:nth-child(2) { animation-delay: 0.18s; background: #818cf8; }
+    .dot:nth-child(3) { animation-delay: 0.36s; background: #a78bfa; }
+
+    /* Version pill at bottom */
+    .version {
+      position: absolute;
+      bottom: 18px;
+      font-size: 10px;
+      color: rgba(255,255,255,0.2);
+      letter-spacing: 1px;
+    }
+
+    /* ── Animations ─────────────────────────────── */
+    @keyframes boltPulse {
+      0%, 100% {
+        transform: scale(1);
+        filter: drop-shadow(0 0 14px rgba(255, 224, 60, 0.65));
+      }
+      50% {
+        transform: scale(1.07);
+        filter: drop-shadow(0 0 30px rgba(255, 224, 60, 1));
+      }
+    }
+
+    @keyframes ringPulse {
+      0%, 100% { transform: scale(0.9); opacity: 0.5; }
+      50%       { transform: scale(1.1); opacity: 1;   }
+    }
+
+    @keyframes dotBounce {
+      0%, 60%, 100% { transform: translateY(0);    opacity: 0.4; }
+      30%           { transform: translateY(-10px); opacity: 1;   }
+    }
+  </style>
+</head>
+<body>
+  <div class="glow-ring"></div>
+  <div class="bolt">⚡</div>
+  <div class="name">TriForge AI</div>
+  <div class="tagline">The Body of 3 AIs</div>
+  <div class="loader">
+    <div class="dot"></div>
+    <div class="dot"></div>
+    <div class="dot"></div>
+  </div>
+  <div class="version">v0.0.1</div>
+</body>
+</html>
