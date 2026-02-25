@@ -9,6 +9,11 @@
     "build:prod": "tsc -p packages/engine/tsconfig.json && node packages/vscode-ext/esbuild.js --production && node packages/desktop/esbuild.js --production",
     "build:desktop": "tsc -p packages/engine/tsconfig.json && node packages/desktop/esbuild.js",
     "dev:desktop": "node packages/desktop/esbuild.js --dev",
+    "start:desktop": "npx electron packages/desktop",
+    "icon": "node packages/desktop/scripts/make-icon.js",
+    "icon:mac": "node packages/desktop/scripts/make-icon.js && bash packages/desktop/scripts/make-icons-mac.sh",
+    "package:mac": "npm run build:desktop && npm run icon:mac && cd packages/desktop && npx electron-builder --mac",
+    "package:win": "npm run build:desktop && npm run icon && cd packages/desktop && npx electron-builder --win",
     "watch": "node packages/vscode-ext/esbuild.js --watch",
     "typecheck": "tsc --build packages/engine && tsc -p packages/vscode-ext/tsconfig.json --noEmit && tsc -p packages/desktop/tsconfig.json --noEmit"
   }
