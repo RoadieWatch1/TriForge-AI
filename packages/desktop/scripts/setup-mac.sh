@@ -43,13 +43,15 @@ else
 fi
 
 # ── 3. Node.js (v20 LTS) ─────────────────────────────────────────────────────
-if ! command -v node &>/dev/null || [[ $(node -v | cut -d. -f1 | tr -d 'v') -lt 18 ]]; then
-  echo "📦  Installing Node.js 20 LTS…"
-  brew install node@20
-  brew link node@20 --force --overwrite 2>/dev/null || true
-else
-  echo "✅  Node.js $(node -v) present"
+# electron-builder 25.x requires Node 18-22. Node 23+ breaks app-builder-bin's
+# postinstall download script, so we pin to node@20 regardless of what else is installed.
+brew install node@20 2>/dev/null || true
+brew link node@20 --force --overwrite 2>/dev/null || true
+# Prepend node@20 to PATH for this script session (Apple Silicon path)
+if [ -f "/opt/homebrew/opt/node@20/bin/node" ]; then
+  export PATH="/opt/homebrew/opt/node@20/bin:$PATH"
 fi
+echo "✅  Node.js $(node -v) (pinned to v20 LTS)"
 
 # ── 4. Git ───────────────────────────────────────────────────────────────────
 if ! command -v git &>/dev/null; then
