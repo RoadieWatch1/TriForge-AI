@@ -43,6 +43,16 @@ const api = {
       ipcRenderer.invoke('appbuilder:save', appName, html) as Promise<{ path?: string; error?: string }>,
     openPreview: (html: string) =>
       ipcRenderer.invoke('appbuilder:openPreview', html) as Promise<{ ok: boolean; error?: string }>,
+    analyze: (
+      spec: { appType: string; audience: string; features: string; dataSave: string; style: string; extras: string },
+      html: string,
+    ) => ipcRenderer.invoke('appbuilder:analyze', spec, html) as Promise<{
+      services: Array<{
+        name: string; emoji: string; tagline: string;
+        what: string; where: string; why: string;
+        how: string[]; free: boolean; freeNote?: string;
+      }>;
+    }>,
   },
 
   // Voice

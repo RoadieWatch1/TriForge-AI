@@ -11,6 +11,18 @@ interface Spec {
   extras: string;
 }
 
+interface ServiceInfo {
+  name: string;
+  emoji: string;
+  tagline: string;
+  what: string;
+  where: string;
+  why: string;
+  how: string[];
+  free: boolean;
+  freeNote?: string;
+}
+
 const QUESTIONS: Array<{ id: keyof Spec; prompt: string; placeholder: string; hint?: string }> = [
   {
     id: 'appType',
@@ -31,7 +43,7 @@ const QUESTIONS: Array<{ id: keyof Spec; prompt: string; placeholder: string; hi
     id: 'dataSave',
     prompt: 'Should the app remember data between visits?',
     placeholder: 'e.g., yes save my entries / no fresh start each time / yes + user accounts',
-    hint: 'We use browser storage — data stays on this device. Say "no" if you just want to preview.',
+    hint: 'We use browser storage by default. Say "user accounts" if each person needs their own login.',
   },
   {
     id: 'style',
@@ -72,24 +84,30 @@ export function AppBuilder({ onBack }: Props) {
   const [revising, setRevising] = useState(false);
   const [revisionInput, setRevisionInput] = useState('');
   const [openingPreview, setOpeningPreview] = useState(false);
+  const [services, setServices] = useState<ServiceInfo[] | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const revisionRef = useRef<HTMLTextAreaElement>(null);
 
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, [questionIndex]);
+  useEffect(() => { inputRef.current?.focus(); }, [questionIndex]);
+  useEffect(() => { if (revising) revisionRef.current?.focus(); }, [revising]);
 
-  useEffect(() => {
-    if (revising) revisionRef.current?.focus();
-  }, [revising]);
-
+  // Build step animation
   useEffect(() => {
     if (phase !== 'building') return;
-    const interval = setInterval(() => {
-      setBuildStep(s => (s + 1) % BUILD_STEPS.length);
-    }, 1600);
+    const interval = setInterval(() => setBuildStep(s => (s + 1) % BUILD_STEPS.length), 1600);
     return () => clearInterval(interval);
   }, [phase]);
+
+  // Kick off analysis when we enter done phase
+  useEffect(() => {
+    if (phase !== 'done' || !html || services !== null) return;
+    setAnalyzing(true);
+    window.triforge.appBuilder.analyze(answers, html)
+      .then(r => setServices(r.services ?? []))
+      .catch(() => setServices([]))
+      .finally(() => setAnalyzing(false));
+  }, [phase]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const nextQuestion = () => {
     const q = QUESTIONS[questionIndex];
@@ -110,7 +128,7 @@ export function AppBuilder({ onBack }: Props) {
     try {
       const result = await window.triforge.appBuilder.generate(spec);
       if (result.error || !result.html) {
-        setError(result.error ?? 'No HTML was generated. Please try again.');
+        setError(result.error ?? 'No HTML generated. Please try again.');
         setQuestionIndex(QUESTIONS.length - 1);
         setCurrentAnswer(spec.extras);
         setPhase('questions');
@@ -122,11 +140,8 @@ export function AppBuilder({ onBack }: Props) {
       }
       setHtml(cleanHtml);
       const slug = spec.appType
-        .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, '')
-        .trim()
-        .replace(/\s+/g, '-')
-        .slice(0, 30) || 'my-app';
+        .toLowerCase().replace(/[^a-z0-9\s]/g, '').trim()
+        .replace(/\s+/g, '-').slice(0, 30) || 'my-app';
       setAppName(slug);
       setPhase('preview');
     } catch (e) {
@@ -142,8 +157,8 @@ export function AppBuilder({ onBack }: Props) {
     const revisedSpec: Spec = {
       ...answers,
       extras: answers.extras
-        ? `${answers.extras}. REVISION REQUEST: ${revisionInput.trim()}`
-        : `REVISION REQUEST: ${revisionInput.trim()}`,
+        ? `${answers.extras}. REVISION: ${revisionInput.trim()}`
+        : `REVISION: ${revisionInput.trim()}`,
     };
     setRevising(false);
     setRevisionInput('');
@@ -159,6 +174,7 @@ export function AppBuilder({ onBack }: Props) {
         setError(result.error);
       } else {
         setSavedPath(result.path ?? '');
+        setServices(null); // reset so analysis runs fresh
         setPhase('done');
       }
     } finally {
@@ -168,11 +184,8 @@ export function AppBuilder({ onBack }: Props) {
 
   const handleOpenPreview = async () => {
     setOpeningPreview(true);
-    try {
-      await window.triforge.appBuilder.openPreview(html);
-    } finally {
-      setOpeningPreview(false);
-    }
+    try { await window.triforge.appBuilder.openPreview(html); }
+    finally { setOpeningPreview(false); }
   };
 
   const reset = () => {
@@ -185,14 +198,15 @@ export function AppBuilder({ onBack }: Props) {
     setSavedPath('');
     setRevising(false);
     setRevisionInput('');
+    setServices(null);
   };
 
-  // ── Questions phase ────────────────────────────────────────────────────────
+  // ── Questions ──────────────────────────────────────────────────────────────
   if (phase === 'questions') {
     const q = QUESTIONS[questionIndex];
-    const progress = (questionIndex / QUESTIONS.length) * 100;
     const isOptional = questionIndex === QUESTIONS.length - 1;
     const canAdvance = !!currentAnswer.trim() || isOptional;
+    const progress = (questionIndex / QUESTIONS.length) * 100;
 
     return (
       <div style={s.page}>
@@ -205,9 +219,7 @@ export function AppBuilder({ onBack }: Props) {
         {error && <div style={s.errorBanner}>{error}</div>}
 
         <div style={s.card}>
-          <div style={s.progressTrack}>
-            <div style={{ ...s.progressBar, width: `${progress}%` }} />
-          </div>
+          <div style={s.progressTrack}><div style={{ ...s.progressBar, width: `${progress}%` }} /></div>
           <div style={s.progressLabel}>Step {questionIndex + 1} of {QUESTIONS.length}</div>
 
           <div style={s.questionText}>{q.prompt}</div>
@@ -227,9 +239,7 @@ export function AppBuilder({ onBack }: Props) {
               <button style={s.secondaryBtn} onClick={() => {
                 setQuestionIndex(i => i - 1);
                 setCurrentAnswer(answers[QUESTIONS[questionIndex - 1].id]);
-              }}>
-                ← Back
-              </button>
+              }}>← Back</button>
             )}
             <div style={{ flex: 1 }} />
             <button
@@ -249,7 +259,7 @@ export function AppBuilder({ onBack }: Props) {
     );
   }
 
-  // ── Building phase ─────────────────────────────────────────────────────────
+  // ── Building ───────────────────────────────────────────────────────────────
   if (phase === 'building') {
     return (
       <div style={s.page}>
@@ -268,7 +278,7 @@ export function AppBuilder({ onBack }: Props) {
     );
   }
 
-  // ── Preview phase ──────────────────────────────────────────────────────────
+  // ── Preview ────────────────────────────────────────────────────────────────
   if (phase === 'preview') {
     return (
       <div style={s.page}>
@@ -286,17 +296,10 @@ export function AppBuilder({ onBack }: Props) {
 
         {error && <div style={s.errorBanner}>{error}</div>}
 
-        {/* Live in-app preview */}
         <div style={s.previewWrapper}>
-          <iframe
-            srcDoc={html}
-            style={s.iframe}
-            sandbox="allow-scripts allow-forms allow-modals"
-            title="App Preview"
-          />
+          <iframe srcDoc={html} style={s.iframe} sandbox="allow-scripts allow-forms allow-modals" title="App Preview" />
         </div>
 
-        {/* Controls */}
         <div style={s.previewActions}>
           <div style={s.nameRow}>
             <label style={s.nameLabel}>App name:</label>
@@ -311,12 +314,8 @@ export function AppBuilder({ onBack }: Props) {
           </div>
 
           <div style={s.actionRow}>
-            <button style={s.secondaryBtn} onClick={() => setRevising(r => !r)}>
-              ✏️ Request Changes
-            </button>
-            <button style={s.secondaryBtn} onClick={reset}>
-              🔄 Start Over
-            </button>
+            <button style={s.secondaryBtn} onClick={() => setRevising(r => !r)}>✏️ Request Changes</button>
+            <button style={s.secondaryBtn} onClick={reset}>🔄 Start Over</button>
             <button
               style={{ ...s.primaryBtn, ...(saving || !appName.trim() ? s.primaryBtnDisabled : {}) }}
               onClick={handleSave}
@@ -334,21 +333,17 @@ export function AppBuilder({ onBack }: Props) {
                 style={s.revisionInput}
                 value={revisionInput}
                 onChange={e => setRevisionInput(e.target.value)}
-                placeholder="e.g., make the header blue, add a delete button, show a total at the bottom…"
+                placeholder="e.g., make the header blue, add a delete button, show totals at the bottom…"
                 rows={3}
                 onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleRevise(); } }}
               />
               <div style={s.btnRow}>
-                <button style={s.secondaryBtn} onClick={() => { setRevising(false); setRevisionInput(''); }}>
-                  Cancel
-                </button>
+                <button style={s.secondaryBtn} onClick={() => { setRevising(false); setRevisionInput(''); }}>Cancel</button>
                 <button
                   style={{ ...s.primaryBtn, ...(!revisionInput.trim() ? s.primaryBtnDisabled : {}) }}
                   onClick={handleRevise}
                   disabled={!revisionInput.trim()}
-                >
-                  🔨 Apply Changes
-                </button>
+                >🔨 Apply Changes</button>
               </div>
             </div>
           )}
@@ -357,7 +352,7 @@ export function AppBuilder({ onBack }: Props) {
     );
   }
 
-  // ── Done / Launch Guide phase ──────────────────────────────────────────────
+  // ── Done / Launch Guide ────────────────────────────────────────────────────
   return (
     <div style={s.page}>
       <div style={s.header}>
@@ -367,6 +362,7 @@ export function AppBuilder({ onBack }: Props) {
       </div>
 
       <div style={s.launchPage}>
+
         {/* Hero */}
         <div style={s.launchHero}>
           <div style={s.doneIcon}>🎉</div>
@@ -374,34 +370,32 @@ export function AppBuilder({ onBack }: Props) {
           <div style={s.donePath}>{savedPath}</div>
         </div>
 
-        {/* Step 1 */}
-        <LaunchStep
-          num={1}
-          title="Test your app"
-          desc="Open it in your browser to make sure everything looks and works the way you expect."
-        >
-          <button style={s.stepBtn} onClick={() => window.triforge.files.showInFolder(savedPath)}>
-            📁 Show App Folder
-          </button>
-          <button
-            style={{ ...s.stepBtn, ...s.stepBtnPrimary }}
-            onClick={() => window.triforge.system.openExternal(`file://${savedPath}/index.html`)}
-          >
-            🌐 Open in Browser
-          </button>
+        {/* Step 1 — Test */}
+        <LaunchStep num={1} title="Test your app" desc="Open it in your browser to make sure everything works the way you expect.">
+          <div style={s.stepBtnRow}>
+            <button style={s.stepBtn} onClick={() => window.triforge.files.showInFolder(savedPath)}>
+              📁 Show App Folder
+            </button>
+            <button
+              style={{ ...s.stepBtn, ...s.stepBtnPrimary }}
+              onClick={() => window.triforge.system.openExternal(`file://${savedPath}/index.html`)}
+            >
+              🌐 Open in Browser
+            </button>
+          </div>
         </LaunchStep>
 
-        {/* Step 2 */}
+        {/* Step 2 — Go Live */}
         <LaunchStep
           num={2}
-          title="Put it online — free in 2 minutes"
-          desc="Netlify Drop is the easiest way to share your app with the world. No account needed to start."
+          title="Put it online — free, no account needed"
+          desc="Netlify Drop lets anyone share a web app in under 2 minutes. It's like dropping a file onto the internet."
         >
           <ol style={s.stepList}>
-            <li>Click <strong style={{ color: 'var(--accent)' }}>Show App Folder</strong> to open the folder on your computer.</li>
-            <li>Click <strong style={{ color: 'var(--accent)' }}>Open Netlify Drop</strong> — it will open in your browser.</li>
-            <li>Drag your app folder into the big drop zone on the Netlify page.</li>
-            <li>Netlify gives you a free link instantly, e.g. <code style={s.code}>your-app-1234.netlify.app</code></li>
+            <li>Click <strong style={{ color: 'var(--accent)' }}>Show App Folder</strong> — your app files will appear on screen.</li>
+            <li>Click <strong style={{ color: 'var(--accent)' }}>Open Netlify Drop</strong> — it opens a page in your browser.</li>
+            <li>Drag your app folder into the big upload box on that page. Wait a few seconds.</li>
+            <li>Netlify gives you a free shareable link instantly, like: <code style={s.code}>your-app-1234.netlify.app</code></li>
           </ol>
           <div style={s.stepBtnRow}>
             <button style={s.stepBtn} onClick={() => window.triforge.files.showInFolder(savedPath)}>
@@ -416,36 +410,155 @@ export function AppBuilder({ onBack }: Props) {
           </div>
         </LaunchStep>
 
-        {/* Step 3 */}
+        {/* Step 3 — Share */}
         <LaunchStep
           num={3}
           title="Share your link"
-          desc="Once Netlify gives you a link, share it anywhere — it works on phones, tablets, and computers."
+          desc="Your Netlify link works on any phone, tablet, or computer — send it to anyone."
         >
           <div style={s.tipBox}>
-            <div style={s.tipRow}>💡 <span>To <strong>update your app</strong> later: build a new version here, then drag the new folder to Netlify again — it replaces the old one automatically.</span></div>
-            <div style={s.tipRow}>💡 <span>Want a <strong>custom domain</strong> like myapp.com? Netlify lets you connect one for free in Settings.</span></div>
-            <div style={s.tipRow}>🔒 <span>Need <strong>real user accounts</strong> or a database? Look into <strong>Supabase.com</strong> — it's free to start and works great with any web app.</span></div>
+            <TipRow icon="🔁">To <strong>update your app</strong>: build a new version here, then drag the new folder to Netlify — it replaces the old version automatically.</TipRow>
+            <TipRow icon="🌐">Want a <strong>custom domain</strong> like myapp.com? In Netlify, go to Site Settings → Domain Management and follow the steps.</TipRow>
           </div>
         </LaunchStep>
 
-        {/* Bottom actions */}
+        {/* Tech Stack Guide — AI analysis */}
+        <TechStackGuide analyzing={analyzing} services={services} />
+
+        {/* Footer */}
         <div style={s.launchFooter}>
           <button style={s.secondaryBtn} onClick={onBack}>← Back to Chat</button>
           <button style={s.primaryBtn} onClick={reset}>🛠️ Build Another App</button>
         </div>
+
       </div>
     </div>
   );
 }
 
-// ── Launch Step helper ────────────────────────────────────────────────────────
+// ── Tech Stack Guide component ─────────────────────────────────────────────
+
+function TechStackGuide({ analyzing, services }: { analyzing: boolean; services: ServiceInfo[] | null }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  if (analyzing) {
+    return (
+      <div style={s.techCard}>
+        <div style={s.techHeader}>
+          <span style={s.techIcon}>🔍</span>
+          <div>
+            <div style={s.techTitle}>Analyzing your app's tech needs…</div>
+            <div style={s.techSubtitle}>We're checking if your app needs any outside services to be fully production-ready.</div>
+          </div>
+        </div>
+        <div style={s.analyzeSpinner}>⚡ Thinking…</div>
+      </div>
+    );
+  }
+
+  if (!services || services.length === 0) {
+    return (
+      <div style={s.techCard}>
+        <div style={s.techHeader}>
+          <span style={s.techIcon}>✅</span>
+          <div>
+            <div style={s.techTitle}>No extra services needed</div>
+            <div style={s.techSubtitle}>Your app is fully self-contained. Everything runs in the browser — nothing to sign up for.</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={s.techCard}>
+      <div style={s.techHeader}>
+        <span style={s.techIcon}>🔧</span>
+        <div>
+          <div style={s.techTitle}>Your app's tech guide</div>
+          <div style={s.techSubtitle}>
+            To make your app fully production-ready, you may eventually need these services.
+            Click each one to learn exactly what it is, why you need it, and how to set it up — step by step.
+          </div>
+        </div>
+      </div>
+
+      <div style={s.serviceList}>
+        {services.map(svc => (
+          <ServiceCard
+            key={svc.name}
+            svc={svc}
+            open={expanded === svc.name}
+            onToggle={() => setExpanded(expanded === svc.name ? null : svc.name)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ServiceCard({ svc, open, onToggle }: { svc: ServiceInfo; open: boolean; onToggle: () => void }) {
+  return (
+    <div style={{ ...s.serviceCard, ...(open ? s.serviceCardOpen : {}) }}>
+      {/* Header row — always visible */}
+      <button style={s.serviceCardBtn} onClick={onToggle}>
+        <span style={s.serviceEmoji}>{svc.emoji}</span>
+        <div style={s.serviceCardLeft}>
+          <div style={s.serviceName}>{svc.name}</div>
+          <div style={s.serviceTagline}>{svc.tagline}</div>
+        </div>
+        <div style={s.serviceCardRight}>
+          {svc.free && (
+            <span style={s.freeBadge}>FREE to start</span>
+          )}
+          <span style={s.chevron}>{open ? '▲' : '▼'}</span>
+        </div>
+      </button>
+
+      {/* Expanded detail */}
+      {open && (
+        <div style={s.serviceDetail}>
+          <DetailBlock label="WHAT IS IT?" icon="📖" text={svc.what} />
+          <DetailBlock label="WHY YOUR APP NEEDS IT" icon="🎯" text={svc.why} />
+
+          <div style={s.detailBlock}>
+            <div style={s.detailLabel}>⚡ HOW TO GET STARTED</div>
+            <ol style={s.howList}>
+              {svc.how.map((step, i) => (
+                <li key={i} style={s.howStep}>{step}</li>
+              ))}
+            </ol>
+          </div>
+
+          {svc.freeNote && (
+            <div style={s.freeNote}>💰 {svc.freeNote}</div>
+          )}
+
+          <button
+            style={s.serviceLink}
+            onClick={() => window.triforge.system.openExternal(svc.where)}
+          >
+            🌐 Go to {svc.name} →
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DetailBlock({ label, icon, text }: { label: string; icon: string; text: string }) {
+  return (
+    <div style={s.detailBlock}>
+      <div style={s.detailLabel}>{icon} {label}</div>
+      <div style={s.detailText}>{text}</div>
+    </div>
+  );
+}
+
+// ── Small helpers ──────────────────────────────────────────────────────────
 
 function LaunchStep({ num, title, desc, children }: {
-  num: number;
-  title: string;
-  desc: string;
-  children?: React.ReactNode;
+  num: number; title: string; desc: string; children?: React.ReactNode;
 }) {
   return (
     <div style={s.launchStep}>
@@ -461,13 +574,20 @@ function LaunchStep({ num, title, desc, children }: {
   );
 }
 
+function TipRow({ icon, children }: { icon: string; children: React.ReactNode }) {
+  return (
+    <div style={s.tipRow}>
+      <span>{icon}</span>
+      <span style={s.tipText}>{children}</span>
+    </div>
+  );
+}
+
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const s: Record<string, React.CSSProperties> = {
-  page: {
-    display: 'flex', flexDirection: 'column', height: '100%',
-    background: 'var(--bg-base)', overflow: 'hidden',
-  },
+  page: { display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--bg-base)', overflow: 'hidden' },
+
   header: {
     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
     padding: '14px 20px', borderBottom: '1px solid var(--border)',
@@ -489,11 +609,9 @@ const s: Record<string, React.CSSProperties> = {
     borderRadius: 12, padding: 28, margin: '32px auto', width: '100%',
     maxWidth: 560, display: 'flex', flexDirection: 'column', gap: 18,
   },
-
   progressTrack: { height: 4, background: 'var(--bg-input)', borderRadius: 2, overflow: 'hidden' },
   progressBar: { height: '100%', background: 'var(--accent)', borderRadius: 2, transition: 'width 0.4s' },
   progressLabel: { fontSize: 11, color: 'var(--text-muted)', textAlign: 'right' as const },
-
   questionText: { fontSize: 18, fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.4 },
   questionHint: { fontSize: 12, color: 'var(--text-muted)', marginTop: -10 },
   answerInput: {
@@ -516,10 +634,7 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: 13, cursor: 'pointer',
   },
 
-  tip: {
-    textAlign: 'center' as const, fontSize: 12, color: 'var(--text-muted)',
-    marginTop: 8, flexShrink: 0,
-  },
+  tip: { textAlign: 'center' as const, fontSize: 12, color: 'var(--text-muted)', marginTop: 8, flexShrink: 0 },
   kbd: {
     background: 'var(--bg-elevated)', border: '1px solid var(--border)',
     borderRadius: 4, padding: '1px 6px', fontSize: 11, color: 'var(--text-secondary)',
@@ -572,9 +687,9 @@ const s: Record<string, React.CSSProperties> = {
     fontFamily: 'var(--font)', boxSizing: 'border-box' as const,
   },
 
-  // Done / launch guide styles
+  // Done / Launch page
   launchPage: {
-    flex: 1, overflowY: 'auto' as const, padding: '24px 24px 32px',
+    flex: 1, overflowY: 'auto' as const, padding: '24px 24px 40px',
     display: 'flex', flexDirection: 'column', gap: 16,
   },
   launchHero: {
@@ -605,7 +720,6 @@ const s: Record<string, React.CSSProperties> = {
   stepTitle: { fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 },
   stepDesc: { fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 },
   stepContent: { marginLeft: 42 },
-
   stepList: {
     margin: '0 0 14px', paddingLeft: 20,
     display: 'flex', flexDirection: 'column', gap: 8,
@@ -632,12 +746,77 @@ const s: Record<string, React.CSSProperties> = {
     borderRadius: 10, padding: '12px 16px',
     display: 'flex', flexDirection: 'column', gap: 10,
   },
-  tipRow: {
-    display: 'flex', gap: 8, fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5,
+  tipRow: { display: 'flex', gap: 10, alignItems: 'flex-start' },
+  tipText: { fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 },
+
+  launchFooter: { display: 'flex', gap: 12, justifyContent: 'center', paddingTop: 8 },
+
+  // Tech stack guide
+  techCard: {
+    background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+    borderRadius: 12, padding: '18px 20px',
+    display: 'flex', flexDirection: 'column', gap: 16,
+  },
+  techHeader: { display: 'flex', gap: 14, alignItems: 'flex-start' },
+  techIcon: { fontSize: 24, flexShrink: 0, marginTop: 2 },
+  techTitle: { fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 },
+  techSubtitle: { fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 },
+  analyzeSpinner: {
+    textAlign: 'center' as const, fontSize: 13, color: 'var(--accent)',
+    padding: '12px 0', animation: 'pulse 1.5s ease infinite',
   },
 
-  launchFooter: {
-    display: 'flex', gap: 12, justifyContent: 'center',
-    paddingTop: 8,
+  serviceList: { display: 'flex', flexDirection: 'column', gap: 8 },
+
+  serviceCard: {
+    border: '1px solid var(--border)', borderRadius: 10,
+    overflow: 'hidden',
+  },
+  serviceCardOpen: {
+    border: '1px solid var(--accent)',
+  },
+  serviceCardBtn: {
+    display: 'flex', alignItems: 'center', gap: 12, width: '100%',
+    background: 'var(--bg-base)', border: 'none', padding: '12px 16px',
+    cursor: 'pointer', textAlign: 'left' as const,
+  },
+  serviceEmoji: { fontSize: 22, flexShrink: 0 },
+  serviceCardLeft: { flex: 1 },
+  serviceName: { fontSize: 14, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 },
+  serviceTagline: { fontSize: 12, color: 'var(--text-secondary)' },
+  serviceCardRight: { display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 },
+  freeBadge: {
+    fontSize: 10, fontWeight: 700, color: '#10a37f',
+    background: '#10a37f22', border: '1px solid #10a37f55',
+    borderRadius: 20, padding: '2px 8px', textTransform: 'uppercase' as const,
+    letterSpacing: '0.06em',
+  },
+  chevron: { fontSize: 11, color: 'var(--text-muted)' },
+
+  serviceDetail: {
+    background: 'var(--bg-elevated)', borderTop: '1px solid var(--border)',
+    padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 14,
+  },
+  detailBlock: { display: 'flex', flexDirection: 'column', gap: 6 },
+  detailLabel: {
+    fontSize: 10, fontWeight: 800, color: 'var(--accent)',
+    letterSpacing: '0.08em', textTransform: 'uppercase' as const,
+  },
+  detailText: { fontSize: 13, color: 'var(--text-primary)', lineHeight: 1.6 },
+  howList: {
+    margin: 0, paddingLeft: 20,
+    display: 'flex', flexDirection: 'column', gap: 8,
+  },
+  howStep: { fontSize: 13, color: 'var(--text-primary)', lineHeight: 1.6 },
+  freeNote: {
+    fontSize: 12, color: '#10a37f',
+    background: '#10a37f15', border: '1px solid #10a37f44',
+    borderRadius: 8, padding: '8px 12px',
+  },
+  serviceLink: {
+    background: 'linear-gradient(135deg, var(--accent), var(--purple))',
+    color: '#fff', border: 'none', borderRadius: 8, padding: '8px 16px',
+    fontSize: 13, fontWeight: 600, cursor: 'pointer',
+    alignSelf: 'flex-start' as const,
   },
 };

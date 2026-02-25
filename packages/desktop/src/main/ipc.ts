@@ -363,4 +363,80 @@ Reply with ONLY the complete HTML. Start immediately with <!DOCTYPE html> and en
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
+
+  // Analyze the generated app and return a plain-English guide for every 3rd-party service it needs
+  ipcMain.handle('appbuilder:analyze', async (_e,
+    spec: { appType: string; audience: string; features: string; dataSave: string; style: string; extras: string },
+    html: string,
+  ) => {
+    const { providerManager: pm } = await getEngine();
+    const providers = await pm.getActiveProviders();
+    if (providers.length === 0) return { services: [] };
+
+    const specSummary = [
+      `App type: ${spec.appType}`,
+      `Users: ${spec.audience}`,
+      `Features: ${spec.features}`,
+      `Data saving: ${spec.dataSave}`,
+      spec.extras ? `Extra: ${spec.extras}` : '',
+    ].filter(Boolean).join(' | ');
+
+    // Send only the first 4000 chars of HTML to keep tokens low
+    const htmlSnippet = html.slice(0, 4000);
+
+    const prompt = `You are a friendly tech advisor helping a non-technical person understand what third-party services their new web app would need to be fully production-ready.
+
+App description: ${specSummary}
+
+Generated app (first part of HTML):
+${htmlSnippet}
+
+Identify ONLY services the app genuinely needs to work as described beyond what localStorage can provide.
+Examples: user authentication, a real database, payment processing, email sending, SMS, maps, real-time sync, file storage.
+Do NOT list: localStorage, CSS frameworks, icon libraries, or anything already self-contained in the HTML.
+
+For each service, respond in this EXACT JSON format (array):
+[
+  {
+    "name": "Service Name",
+    "emoji": "fitting emoji",
+    "tagline": "5 words or less — what it does",
+    "what": "One plain-English sentence. No jargon. Imagine explaining to a grandparent.",
+    "where": "https://official-website.com",
+    "why": "One sentence: why does THIS specific app need it?",
+    "how": [
+      "Step 1 — plain action (e.g., Go to supabase.com and click Start for Free)",
+      "Step 2 — plain action",
+      "Step 3 — plain action",
+      "Step 4 — plain action (optional)"
+    ],
+    "free": true,
+    "freeNote": "e.g., Free up to 500MB, no credit card needed"
+  }
+]
+
+If the app works fine with browser localStorage and needs no external services, return exactly: []
+
+Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
+
+    try {
+      const primary = providers[0];
+      const response = await primary.generateResponse([
+        {
+          role: 'system',
+          content: 'You are a helpful technical advisor. You output ONLY valid JSON arrays — no markdown fences, no explanation text, just the raw JSON array starting with [ and ending with ].',
+        },
+        { role: 'user', content: prompt },
+      ]);
+
+      const text = (response as string).trim()
+        .replace(/^```(?:json)?\r?\n?/, '')
+        .replace(/\r?\n?```$/, '');
+
+      const parsed = JSON.parse(text);
+      return { services: Array.isArray(parsed) ? parsed : [] };
+    } catch {
+      return { services: [] };
+    }
+  });
 }
