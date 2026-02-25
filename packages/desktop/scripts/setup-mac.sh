@@ -93,13 +93,9 @@ echo ""
 echo "📦  Packaging TriForge AI.dmg…"
 cd packages/desktop
 
-# Detect architecture
-ARCH=$(uname -m)
-if [ "$ARCH" = "arm64" ]; then
-  npx electron-builder --mac dmg --arm64
-else
-  npx electron-builder --mac dmg --x64
-fi
+# electron-builder.json already declares targets for arm64 + x64.
+# electronVersion is pinned in the config so npm-workspaces hoisting is not a problem.
+npx electron-builder --mac
 
 # ── 10. Open dist folder ──────────────────────────────────────────────────────
 DIST_DIR="$REPO_DIR/packages/desktop/dist"

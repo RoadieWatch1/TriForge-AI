@@ -2,6 +2,7 @@
   "appId": "ai.triforge.desktop",
   "productName": "TriForge AI",
   "copyright": "Copyright © 2025 TriForge AI",
+  "electronVersion": "34.0.0",
   "directories": {
     "output": "dist",
     "buildResources": "assets"
