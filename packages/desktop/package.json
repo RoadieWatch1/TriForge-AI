@@ -1,6 +1,8 @@
 {
   "name": "@triforge/desktop",
   "version": "0.0.1",
+  "description": "TriForge AI — Personal Think Tank powered by three AI minds",
+  "author": "TriForge AI",
   "private": true,
   "main": "./out/main/index.js",
   "scripts": {
