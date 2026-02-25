@@ -1,4 +1,4 @@
-import { app, BrowserWindow, nativeTheme } from 'electron';
+import { app, BrowserWindow, nativeTheme, globalShortcut } from 'electron';
 import path from 'path';
 import { Store } from './store';
 import { setupIpc } from './ipc';
@@ -58,6 +58,14 @@ function createWindow(): void {
   if (process.env.NODE_ENV === 'development') {
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   }
+
+  // Cmd+Option+I (Mac) / F12 (all) opens DevTools for debugging
+  globalShortcut.register('CommandOrControl+Alt+I', () => {
+    mainWindow?.webContents.toggleDevTools();
+  });
+  globalShortcut.register('F12', () => {
+    mainWindow?.webContents.toggleDevTools();
+  });
 
   // Minimize to tray on close
   mainWindow.on('close', (e) => {

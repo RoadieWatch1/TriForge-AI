@@ -1,6 +1,6 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { App } from './App';
+import { App, ErrorBoundary } from './App';
 import './styles/global.css';
 
 // Declare window.triforge type
@@ -13,4 +13,8 @@ declare global {
 const root = document.getElementById('root');
 if (!root) throw new Error('Root element not found');
 
-createRoot(root).render(<App />);
+createRoot(root).render(
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>
+);

@@ -5,6 +5,31 @@ import { Chat } from './components/Chat';
 import { LicensePanel } from './components/LicensePanel';
 import { LockScreen } from './components/LockScreen';
 
+// ── Error Boundary ───────────────────────────────────────────────────────────
+export class ErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { error: Error | null }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ padding: 32, color: '#f0f0f5', fontFamily: 'monospace', background: '#0d0d0f', height: '100vh', overflowY: 'auto' }}>
+          <div style={{ color: '#ef4444', fontSize: 18, fontWeight: 700, marginBottom: 16 }}>⚠ TriForge render error</div>
+          <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, color: '#8b8b9e' }}>{this.state.error.message}{'\n\n'}{this.state.error.stack}</pre>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 type Screen = 'chat' | 'settings' | 'memory' | 'plan';
 
 const LOCK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
