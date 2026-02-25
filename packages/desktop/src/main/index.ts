@@ -17,8 +17,8 @@ let store: Store | null = null;
 // ── Splash screen ──────────────────────────────────────────────────────────────
 function createSplash(): BrowserWindow {
   const splash = new BrowserWindow({
-    width: 480,
-    height: 300,
+    width: 620,
+    height: 420,
     frame: false,
     resizable: false,
     center: true,
@@ -88,7 +88,7 @@ app.whenReady().then(async () => {
 
   // 4. When renderer is ready, enforce a minimum splash duration then swap windows
   mainWindow?.once('ready-to-show', () => {
-    const minSplashMs = 1500;
+    const minSplashMs = 5500;
     const elapsed = Date.now() - splashStart;
     const delay = Math.max(0, minSplashMs - elapsed);
     setTimeout(() => {

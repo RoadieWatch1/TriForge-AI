@@ -110,7 +110,7 @@ const styles: Record<string, React.CSSProperties> = {
   overlay: {
     position: 'fixed', inset: 0,
     background: 'var(--bg-base)',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    display: 'flex', flexDirection: 'column', alignItems: 'center',
     zIndex: 100,
     overflowY: 'auto',
     padding: '24px 16px',
@@ -122,6 +122,8 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 'var(--radius-lg)',
     padding: '32px',
     display: 'flex', flexDirection: 'column', gap: 24,
+    // margin: auto centers when content fits; collapses to 0 when scrolling needed
+    marginTop: 'auto', marginBottom: 'auto',
   },
   header: { textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 },
   logo: { fontSize: 40 },
