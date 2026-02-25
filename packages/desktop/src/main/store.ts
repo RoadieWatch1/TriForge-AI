@@ -94,14 +94,24 @@ export class Store implements StorageAdapter {
         }
       }
     } catch {
+      // Back up the corrupted file so users don't permanently lose data
+      try {
+        if (fs.existsSync(this.filePath)) {
+          fs.copyFileSync(this.filePath, this.filePath + '.bak');
+        }
+      } catch { /* best effort */ }
       this.data = emptyData();
     }
   }
 
   private save(): void {
     try {
-      fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-      fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2), 'utf8');
+      const dir = path.dirname(this.filePath);
+      fs.mkdirSync(dir, { recursive: true });
+      // Atomic write: write to .tmp then rename so a crash mid-save never corrupts the store
+      const tmp = this.filePath + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), 'utf8');
+      fs.renameSync(tmp, this.filePath);
     } catch (e) {
       console.error('Store save error:', e);
     }

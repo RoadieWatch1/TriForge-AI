@@ -4,6 +4,7 @@ import { PermissionWizard } from './components/PermissionWizard';
 import { Chat } from './components/Chat';
 import { LicensePanel } from './components/LicensePanel';
 import { LockScreen } from './components/LockScreen';
+import { AppBuilder } from './components/AppBuilder';
 
 // ── Error Boundary ───────────────────────────────────────────────────────────
 export class ErrorBoundary extends React.Component<
@@ -30,7 +31,7 @@ export class ErrorBoundary extends React.Component<
   }
 }
 
-type Screen = 'chat' | 'settings' | 'memory' | 'plan';
+type Screen = 'chat' | 'settings' | 'memory' | 'plan' | 'builder';
 
 const LOCK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -179,6 +180,7 @@ export function App() {
         {/* Sidebar */}
         <nav style={styles.sidebar}>
           <NavBtn icon="💬" label="Chat"     active={screen === 'chat'}     onClick={() => setScreen('chat')} />
+          <NavBtn icon="🛠️" label="Builder"  active={screen === 'builder'}  onClick={() => setScreen('builder')} />
           <NavBtn icon="🧠" label="Memory"   active={screen === 'memory'}   onClick={() => setScreen('memory')} />
           <NavBtn icon="⚙️" label="Settings" active={screen === 'settings'} onClick={() => setScreen('settings')} />
           <div style={{ flex: 1 }} />
@@ -195,8 +197,10 @@ export function App() {
               messagesThisMonth={messagesThisMonth}
               onMessageSent={() => setMessagesThisMonth(n => n + 1)}
               onUpgradeClick={() => setScreen('plan')}
+              onBuildApp={() => setScreen('builder')}
             />
           )}
+          {screen === 'builder' && <AppBuilder onBack={() => setScreen('chat')} />}
           {screen === 'settings' && (
             <SettingsScreen
               keyStatus={keyStatus}
@@ -495,7 +499,7 @@ function NavBtn({ icon, label, active, onClick }: { icon: string; label: string;
 
 // ── Styles ──────────────────────────────────────────────────────────────────
 
-const styles: Record<string, React.CSSProperties> = {
+const styles: Record<string, React.CSSProperties & { WebkitAppRegion?: string }> = {
   shell: { display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden', background: 'var(--bg-base)' },
   titlebar: {
     display: 'flex', alignItems: 'center', height: 38, padding: '0 16px',

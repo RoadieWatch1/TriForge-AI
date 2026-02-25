@@ -35,6 +35,14 @@ const api = {
       ipcRenderer.invoke('thinktank:run', goal) as Promise<{ plan?: unknown; error?: string }>,
   },
 
+  // App Builder
+  appBuilder: {
+    generate: (spec: { appType: string; audience: string; features: string; style: string; extras: string }) =>
+      ipcRenderer.invoke('appbuilder:generate', spec) as Promise<{ html?: string; error?: string }>,
+    save: (appName: string, html: string) =>
+      ipcRenderer.invoke('appbuilder:save', appName, html) as Promise<{ path?: string; error?: string }>,
+  },
+
   // Voice
   voice: {
     transcribe: (audioBuffer: Buffer) =>

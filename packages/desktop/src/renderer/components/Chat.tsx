@@ -18,6 +18,7 @@ interface Props {
   messagesThisMonth: number;
   onMessageSent: () => void;
   onUpgradeClick: () => void;
+  onBuildApp: () => void;
 }
 
 const PROVIDER_COLORS: Record<string, string> = {
@@ -37,7 +38,7 @@ const QUICK_ACTIONS = [
 
 const MSG_LIMITS: Record<string, number> = { free: 30, pro: Infinity, business: Infinity };
 
-export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, onUpgradeClick }: Props) {
+export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, onUpgradeClick, onBuildApp }: Props) {
   const [messages, setMessages] = useState<Message[]>([
     {
       id: '0',
@@ -69,17 +70,23 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     try {
       const result = await window.triforge.voice.speak(text);
       if (result.audio) {
-        const bytes = Uint8Array.from(atob(result.audio), c => c.charCodeAt(0));
-        const blob = new Blob([bytes], { type: 'audio/mpeg' });
-        const url = URL.createObjectURL(blob);
-        if (audioRef.current) {
-          audioRef.current.src = url;
-          await audioRef.current.play();
-          audioRef.current.onended = () => {
-            URL.revokeObjectURL(url);
-            setSpeaking(null);
-          };
+        try {
+          const bytes = Uint8Array.from(atob(result.audio), c => c.charCodeAt(0));
+          const blob = new Blob([bytes], { type: 'audio/mpeg' });
+          const url = URL.createObjectURL(blob);
+          if (audioRef.current) {
+            audioRef.current.src = url;
+            await audioRef.current.play();
+            audioRef.current.onended = () => {
+              URL.revokeObjectURL(url);
+              setSpeaking(null);
+            };
+          }
+        } catch {
+          setSpeaking(null);
         }
+      } else {
+        setSpeaking(null);
       }
     } catch {
       setSpeaking(null);
@@ -92,7 +99,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     setSending(true);
 
     const userMsg: Message = {
-      id: Date.now().toString(),
+      id: crypto.randomUUID(),
       role: 'user',
       content: text.trim(),
       timestamp: new Date(),
@@ -122,7 +129,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       onMessageSent();
 
       const aiMsg: Message = {
-        id: (Date.now() + 1).toString(),
+        id: crypto.randomUUID(),
         role: 'assistant',
         content: result.error ? `⚠️ ${result.error}` : (result.text ?? ''),
         provider: result.provider,
@@ -130,13 +137,13 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       };
       setMessages(m => [...m, aiMsg]);
 
-      // Auto-speak if no error
-      if (!result.error && result.text && keyStatus.openai) {
+      // Auto-speak if no error (requires OpenAI key + Pro/Business tier)
+      if (!result.error && result.text && keyStatus.openai && (tier === 'pro' || tier === 'business')) {
         speakMessage(aiMsg.id, result.text);
       }
     } catch (e) {
       setMessages(m => [...m, {
-        id: Date.now().toString(),
+        id: crypto.randomUUID(),
         role: 'assistant',
         content: `⚠️ ${e instanceof Error ? e.message : 'Something went wrong'}`,
         timestamp: new Date(),
@@ -154,9 +161,14 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     }
   };
 
+  const clearChat = () => {
+    setMessages([{ id: crypto.randomUUID(), role: 'system', content: getWelcomeMessage(mode, keyStatus), timestamp: new Date() }]);
+    setInput('');
+  };
+
   // ── System actions (photo, files, print) ─────────────────────────────────
   const addSystemMessage = (content: string) => {
-    setMessages(m => [...m, { id: Date.now().toString(), role: 'system', content, timestamp: new Date() }]);
+    setMessages(m => [...m, { id: crypto.randomUUID(), role: 'system', content, timestamp: new Date() }]);
   };
 
   const runFindPhotos = async () => {
@@ -263,6 +275,11 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         </div>
         <span style={styles.modeLabel}>{MODE_LABELS[mode] ?? mode}</span>
         <div style={{ flex: 1 }} />
+        {messages.length > 1 && (
+          <button style={styles.clearBtn} onClick={clearChat} title="Clear chat history">
+            ✕ Clear
+          </button>
+        )}
         {/* Message quota */}
         {unlimited
           ? <span style={styles.quotaLabel}>∞ unlimited</span>
@@ -297,7 +314,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         <div style={styles.quickActions}>
           {QUICK_ACTIONS.map(a => (
             <button key={a.label} style={styles.quickBtn}
-              onClick={() => setInput(a.prompt)}
+              onClick={() => a.label === '💡 Build me an app' ? onBuildApp() : setInput(a.prompt)}
             >
               {a.label}
             </button>
@@ -396,6 +413,11 @@ function MessageBubble({ msg, isSpeaking, canSpeak, onSpeak }: {
           <span style={styles.timestamp}>
             {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </span>
+          {!isUser && (
+            <button style={styles.speakBtn} onClick={() => navigator.clipboard.writeText(msg.content)} title="Copy">
+              📋
+            </button>
+          )}
           {!isUser && canSpeak && (
             <button style={{ ...styles.speakBtn, ...(isSpeaking ? styles.speakBtnActive : {}) }}
               onClick={onSpeak} title="Read aloud">
@@ -448,6 +470,7 @@ const styles: Record<string, React.CSSProperties> = {
   modeLabel: { fontSize: 11, color: 'var(--text-muted)', marginLeft: 4, fontWeight: 500 },
   quotaLabel: { fontSize: 11, color: 'var(--text-muted)', fontWeight: 500 },
   quotaAtLimit: { color: '#ef4444', fontWeight: 700 },
+  clearBtn: { fontSize: 11, background: 'none', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text-muted)', padding: '2px 8px', cursor: 'pointer', marginRight: 6 },
 
   messages: { flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: 12 },
 

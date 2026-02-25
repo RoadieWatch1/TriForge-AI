@@ -66,7 +66,7 @@ export function LicensePanel({ onTierChange }: Props) {
     try {
       const result = await window.triforge.license.activate(trimmed);
       if (result.valid) {
-        setLicense(result);
+        setLicense({ expiresAt: null, ...result });
         setKeyInput('');
         setSuccess(`✓ Activated! You're now on the ${result.tier} plan.`);
         onTierChange(result.tier);
@@ -153,10 +153,7 @@ export function LicensePanel({ onTierChange }: Props) {
       ) : (
         <>
           <p style={styles.hint}>
-            Enter your license key to unlock Pro or Business features.{' '}
-            <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-              Dev keys: <code>TF-DEV-PRO</code> or <code>TF-DEV-BIZ</code>
-            </span>
+            Enter your license key to unlock Pro or Business features.
           </p>
           <div style={styles.keyInputRow}>
             <input

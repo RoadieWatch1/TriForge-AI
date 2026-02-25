@@ -1,4 +1,7 @@
-import { ipcMain, shell, dialog } from 'electron';
+import { ipcMain, shell, dialog, app } from 'electron';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 import { Store } from './store';
 import { transcribeAudio, textToSpeech } from './voice';
 import { validateLicense, loadLicense, deactivateLicense, LEMONSQUEEZY } from './license';
@@ -45,12 +48,16 @@ export function setupIpc(store: Store): void {
   ipcMain.handle('keys:set', async (_e, provider: string, key: string) => {
     if (!providerManager) providerManager = new ProviderManager(store);
     await providerManager.setKey(provider as ProviderName, key);
-    intentEngine = null; // reset so next call re-resolves active providers
+    // Reset both so next call picks up the new provider list
+    providerManager = null;
+    intentEngine = null;
   });
 
   ipcMain.handle('keys:delete', async (_e, provider: string) => {
     if (!providerManager) providerManager = new ProviderManager(store);
     await providerManager.removeKey(provider as ProviderName);
+    // Reset both so next call picks up the updated provider list
+    providerManager = null;
     intentEngine = null;
   });
 
@@ -281,5 +288,52 @@ export function setupIpc(store: Store): void {
   // ── System ───────────────────────────────────────────────────────────────────
   ipcMain.handle('system:openExternal', (_e, url: string) => {
     shell.openExternal(url);
+  });
+
+  // ── App Builder ───────────────────────────────────────────────────────────────
+  ipcMain.handle('appbuilder:generate', async (_e, spec: { appType: string; audience: string; features: string; style: string; extras: string }) => {
+    const { providerManager: pm } = await getEngine();
+    const providers = await pm.getActiveProviders();
+    if (providers.length === 0) {
+      return { error: 'No API keys configured. Add at least one in Settings.' };
+    }
+    const prompt = `Build a complete, self-contained web application with these specifications:
+
+App Type: ${spec.appType}
+Target Users: ${spec.audience}
+Core Features: ${spec.features}
+Visual Style: ${spec.style}${spec.extras ? `\nAdditional Requirements: ${spec.extras}` : ''}
+
+Technical requirements:
+- Single HTML file with ALL CSS and JavaScript inline (no external dependencies)
+- Professional, modern, mobile-responsive design
+- All features must be functional and interactive
+- Include realistic sample/demo data so the app looks populated
+- No external CDN links — everything self-contained
+
+Reply with ONLY the complete HTML file content. Start immediately with <!DOCTYPE html> and end with </html>. No explanations, no markdown code blocks.`;
+
+    try {
+      const primary = providers[0];
+      const response = await primary.generateResponse([
+        { role: 'system', content: 'You are an expert web developer. When asked to build an app, you reply with ONLY the complete HTML file — no explanations, no markdown, just raw HTML starting with <!DOCTYPE html>.' },
+        { role: 'user', content: prompt },
+      ]);
+      return { html: response };
+    } catch (err: unknown) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('appbuilder:save', async (_e, appName: string, html: string) => {
+    try {
+      const desktop = app.getPath('desktop');
+      const buildDir = path.join(desktop, 'TriForge Builds', appName);
+      await fs.promises.mkdir(buildDir, { recursive: true });
+      await fs.promises.writeFile(path.join(buildDir, 'index.html'), html, 'utf8');
+      return { path: buildDir };
+    } catch (err: unknown) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
   });
 }

@@ -5,16 +5,41 @@ interface Props {
   onUnlock: () => void;
 }
 
+const MAX_ATTEMPTS = 3;
+const LOCKOUT_MS = 30_000;
+
 export function LockScreen({ username: knownUser, onUnlock }: Props) {
   const [username, setUsername] = useState(knownUser ?? '');
   const [pin, setPin] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [verifying, setVerifying] = useState(false);
   const [shake, setShake] = useState(false);
+  const [failCount, setFailCount] = useState(0);
+  const [lockedUntil, setLockedUntil] = useState(0);
+  const [countdown, setCountdown] = useState(0);
   const pinRef = useRef<HTMLInputElement>(null);
 
+  // Countdown ticker
   useEffect(() => {
-    // Auto-focus username or PIN on mount
+    if (lockedUntil === 0) return;
+    const tick = () => {
+      const remaining = Math.ceil((lockedUntil - Date.now()) / 1000);
+      if (remaining <= 0) {
+        setLockedUntil(0);
+        setCountdown(0);
+        setFailCount(0);
+        setError(null);
+        pinRef.current?.focus();
+      } else {
+        setCountdown(remaining);
+      }
+    };
+    tick();
+    const id = setInterval(tick, 500);
+    return () => clearInterval(id);
+  }, [lockedUntil]);
+
+  useEffect(() => {
     if (!knownUser) {
       document.getElementById('lock-username')?.focus();
     } else {
@@ -29,7 +54,7 @@ export function LockScreen({ username: knownUser, onUnlock }: Props) {
   };
 
   const verify = async () => {
-    if (!username.trim() || pin.length !== 7) return;
+    if (!username.trim() || pin.length !== 7 || lockedUntil > Date.now()) return;
     setVerifying(true);
     setError(null);
     try {
@@ -37,11 +62,19 @@ export function LockScreen({ username: knownUser, onUnlock }: Props) {
       if (result.valid) {
         onUnlock();
       } else {
-        setError('Wrong username or PIN. Try again.');
+        const newCount = failCount + 1;
+        setFailCount(newCount);
         setPin('');
         pinRef.current?.focus();
         setShake(true);
         setTimeout(() => setShake(false), 500);
+        if (newCount >= MAX_ATTEMPTS) {
+          const until = Date.now() + LOCKOUT_MS;
+          setLockedUntil(until);
+          setError(`Too many failed attempts. Try again in ${LOCKOUT_MS / 1000}s.`);
+        } else {
+          setError(`Wrong username or PIN. ${MAX_ATTEMPTS - newCount} attempt${MAX_ATTEMPTS - newCount !== 1 ? 's' : ''} remaining.`);
+        }
       }
     } catch {
       setError('Could not verify. Please try again.');
@@ -99,18 +132,18 @@ export function LockScreen({ username: knownUser, onUnlock }: Props) {
         />
 
         {/* Error */}
-        {error && <div style={styles.errorMsg}>{error}</div>}
+        {error && <div style={styles.errorMsg}>{countdown > 0 ? `Locked — try again in ${countdown}s` : error}</div>}
 
         {/* Unlock button */}
         <button
           style={{
             ...styles.unlockBtn,
-            ...(!username.trim() || pin.length !== 7 || verifying ? styles.unlockBtnDisabled : {}),
+            ...(!username.trim() || pin.length !== 7 || verifying || lockedUntil > Date.now() ? styles.unlockBtnDisabled : {}),
           }}
           onClick={verify}
-          disabled={!username.trim() || pin.length !== 7 || verifying}
+          disabled={!username.trim() || pin.length !== 7 || verifying || lockedUntil > Date.now()}
         >
-          {verifying ? 'Verifying…' : 'Unlock'}
+          {verifying ? 'Verifying…' : countdown > 0 ? `Locked (${countdown}s)` : 'Unlock'}
         </button>
 
         <p style={styles.hint}>
@@ -123,7 +156,7 @@ export function LockScreen({ username: knownUser, onUnlock }: Props) {
 
 // ── Styles ──────────────────────────────────────────────────────────────────
 
-const styles: Record<string, React.CSSProperties> = {
+const styles: Record<string, React.CSSProperties & { WebkitAppRegion?: string }> = {
   overlay: {
     position: 'fixed', inset: 0, zIndex: 9999,
     background: 'var(--bg-base)',
