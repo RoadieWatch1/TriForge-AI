@@ -128,7 +128,7 @@ export const TIERS: Record<Tier, TierConfig> = {
   business: {
     name: 'Business',
     price: '$49',
-    annualPrice: '$39',
+    annualPrice: '$40',
     tagline: 'Governance-first AI for serious work',
     maxMessagesPerMonth: Infinity,
     memoryLimit: 200,
