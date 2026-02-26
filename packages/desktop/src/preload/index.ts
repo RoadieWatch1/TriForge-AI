@@ -170,6 +170,17 @@ const api = {
     pickDir:      () => ipcRenderer.invoke('files:pickDir') as Promise<string | null>,
   },
 
+  // Auto-updater
+  updater: {
+    check:   () => ipcRenderer.invoke('updater:check') as Promise<void>,
+    install: () => ipcRenderer.invoke('updater:install') as Promise<void>,
+    onStatus: (cb: (s: { state: string; version?: string; percent?: number; message?: string }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, s: { state: string; version?: string; percent?: number; message?: string }) => cb(s);
+      ipcRenderer.on('updater:status', handler);
+      return () => ipcRenderer.removeListener('updater:status', handler);
+    },
+  },
+
   // Printer
   print: {
     list:  () => ipcRenderer.invoke('print:list') as Promise<{ printers: Array<{ name: string; isDefault: boolean; status: string }>; error?: string }>,

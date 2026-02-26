@@ -3,6 +3,7 @@ import path from 'path';
 import { Store } from './store';
 import { setupIpc } from './ipc';
 import { setupTray } from './tray';
+import { setupAutoUpdater } from './updater';
 
 // Single instance lock
 if (!app.requestSingleInstanceLock()) {
@@ -105,6 +106,8 @@ app.whenReady().then(async () => {
       mainWindow?.show();
       mainWindow?.focus();
     }, delay);
+    // Wire auto-updater now that we have a live window reference
+    if (mainWindow) setupAutoUpdater(mainWindow);
   });
 
   setupTray(

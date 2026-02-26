@@ -47,6 +47,7 @@ export function App() {
   const [saving, setSaving] = useState<string | null>(null);
   const [tier, setTier] = useState<string>('free');
   const [messagesThisMonth, setMessagesThisMonth] = useState(0);
+  const [updateStatus, setUpdateStatus] = useState<{ state: string; version?: string; percent?: number } | null>(null);
 
   // Session lock state
   const [hasPin, setHasPin] = useState(false);
@@ -105,6 +106,16 @@ export function App() {
       setReady(true);
     }
     init();
+  }, []);
+
+  useEffect(() => {
+    return window.triforge.updater.onStatus(s => {
+      if (s.state === 'available' || s.state === 'downloading' || s.state === 'downloaded') {
+        setUpdateStatus(s);
+      } else if (s.state === 'up-to-date' || s.state === 'error') {
+        setUpdateStatus(null);
+      }
+    });
   }, []);
 
   const refreshKeys = async () => {
@@ -175,6 +186,27 @@ export function App() {
           )}
         </div>
       </div>
+
+      {/* Auto-update banner */}
+      {updateStatus && (
+        <div style={styles.updateBanner}>
+          {updateStatus.state === 'available' && (
+            <span>⬇ Update v{updateStatus.version} available — downloading…</span>
+          )}
+          {updateStatus.state === 'downloading' && (
+            <span>⬇ Downloading update… {updateStatus.percent}%</span>
+          )}
+          {updateStatus.state === 'downloaded' && (
+            <>
+              <span>✅ Update v{updateStatus.version} ready to install</span>
+              <button style={styles.updateInstallBtn} onClick={() => window.triforge.updater.install()}>
+                Restart &amp; Install
+              </button>
+              <button style={styles.updateDismissBtn} onClick={() => setUpdateStatus(null)}>Later</button>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Body */}
       <div style={styles.body}>
@@ -536,6 +568,22 @@ const styles: Record<string, React.CSSProperties & { WebkitAppRegion?: string }>
     background: 'none', border: 'none', cursor: 'pointer',
     fontSize: 16, padding: '2px 4px', borderRadius: 4,
     WebkitAppRegion: 'no-drag' as never,
+  },
+
+  updateBanner: {
+    display: 'flex', alignItems: 'center', gap: 12,
+    background: 'linear-gradient(90deg, var(--accent)22, var(--purple)22)',
+    borderBottom: '1px solid var(--accent)44',
+    padding: '6px 16px', fontSize: 12, color: 'var(--text-primary)',
+    flexShrink: 0,
+  },
+  updateInstallBtn: {
+    background: 'var(--accent)', color: '#fff', border: 'none',
+    borderRadius: 6, padding: '3px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer',
+  },
+  updateDismissBtn: {
+    background: 'none', border: 'none', color: 'var(--text-muted)',
+    fontSize: 12, cursor: 'pointer', padding: 0,
   },
 
   body: { display: 'flex', flex: 1, overflow: 'hidden' },
