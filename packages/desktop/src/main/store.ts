@@ -213,5 +213,10 @@ export class Store implements StorageAdapter {
     return this.data.memory.slice(0, limit);
   }
 
+  deleteMemory(id: number): void {
+    this.data.memory = this.data.memory.filter(m => m.id !== id);
+    this.save();
+  }
+
   close(): void { /* no-op for file store */ }
 }

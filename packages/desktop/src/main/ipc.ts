@@ -141,6 +141,61 @@ export function setupIpc(store: Store): void {
     }
   });
 
+  // ── Consensus Chat (all active providers in parallel + synthesis) ─────────────
+  ipcMain.handle('chat:consensus', async (_e, message: string, history: Array<{ role: string; content: string }>) => {
+    const { providerManager: pm } = await getEngine();
+    const providers = await pm.getActiveProviders();
+    if (providers.length === 0) {
+      return { error: 'No API keys configured. Add at least one in Settings.' };
+    }
+
+    const license = await store.getLicense();
+    const tierVal = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const used = store.getMonthlyMessageCount();
+    if (isAtMessageLimit(used, tierVal)) {
+      return { error: 'MESSAGE_LIMIT_REACHED', tier: tierVal };
+    }
+
+    const systemPrompt = await buildSystemPrompt(store);
+    const msgs = [
+      { role: 'system', content: systemPrompt },
+      ...history,
+      { role: 'user', content: message },
+    ];
+
+    // Run all providers in parallel
+    const settled = await Promise.allSettled(
+      providers.map(p =>
+        (p.generateResponse as (m: typeof msgs) => Promise<string>)(msgs)
+          .then(text => ({ provider: p.name as string, text }))
+      )
+    );
+
+    const responses = settled
+      .filter((r): r is PromiseFulfilledResult<{ provider: string; text: string }> => r.status === 'fulfilled')
+      .map(r => r.value)
+      .filter(r => r.text);
+
+    if (responses.length === 0) {
+      return { error: 'All providers failed. Check your API keys in Settings.' };
+    }
+
+    // Synthesize when multiple providers responded
+    let synthesis = responses[0].text;
+    if (responses.length > 1) {
+      try {
+        const synthMsgs = [
+          { role: 'system', content: 'You are a synthesis engine. Combine the perspectives below into one clear, definitive answer. Lead with the key insight. Note any meaningful disagreements between models.' },
+          { role: 'user', content: `User asked: "${message}"\n\n${responses.map(r => `${r.provider}:\n${r.text}`).join('\n\n---\n\n')}\n\nSynthesize into one final, comprehensive answer.` },
+        ];
+        synthesis = await (providers[0].generateResponse as (m: typeof synthMsgs) => Promise<string>)(synthMsgs);
+      } catch { /* use primary response as fallback */ }
+    }
+
+    store.incrementMessageCount();
+    return { responses, synthesis };
+  });
+
   // ── Think Tank (full consensus for complex goals) ─────────────────────────────
   ipcMain.handle('thinktank:run', async (_e, goal: string) => {
     const { intentEngine: ie } = await getEngine();
@@ -182,6 +237,10 @@ export function setupIpc(store: Store): void {
   ipcMain.handle('memory:get', () => store.getMemory());
   ipcMain.handle('memory:add', (_e, type: string, content: string) => {
     store.addMemory(type as 'fact' | 'goal' | 'preference' | 'business', content);
+  });
+  ipcMain.handle('memory:delete', (_e, id: number) => {
+    store.deleteMemory(id);
+    return store.getMemory();
   });
 
   // ── User profile ──────────────────────────────────────────────────────────────

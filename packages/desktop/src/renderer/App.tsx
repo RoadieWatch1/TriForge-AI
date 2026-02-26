@@ -443,17 +443,34 @@ function MemoryScreen() {
     if (!input.trim()) return;
     await window.triforge.memory.add(type, input.trim());
     setInput('');
-    const updated = await window.triforge.memory.get();
+    setMemories(await window.triforge.memory.get());
+  };
+
+  const deleteMemory = async (id: number) => {
+    const updated = await window.triforge.memory.delete(id);
     setMemories(updated);
   };
 
-  const TYPE_COLORS: Record<string, string> = { fact: 'var(--teal)', goal: 'var(--accent)', preference: 'var(--purple)', business: '#f59e0b' };
+  const TYPE_COLORS: Record<string, string> = {
+    fact: 'var(--teal)', goal: 'var(--accent)',
+    preference: 'var(--purple)', business: '#f59e0b',
+  };
+
+  const formatAge = (ts: number) => {
+    const diff = Date.now() - ts;
+    const d = Math.floor(diff / 86400000);
+    if (d === 0) return 'today';
+    if (d === 1) return 'yesterday';
+    if (d < 30) return `${d}d ago`;
+    return new Date(ts).toLocaleDateString();
+  };
 
   return (
     <div style={styles.settingsPage}>
       <h2 style={styles.sectionTitle}>Long-term Memory</h2>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 20 }}>
-        Things TriForge always remembers about you. The more you add, the more personalized it gets.
+        Things TriForge always remembers about you. The more you add, the smarter and more personal it gets.
+        <span style={{ color: 'var(--text-muted)', marginLeft: 8 }}>({memories.length} saved)</span>
       </p>
 
       <div style={styles.memoryInput}>
@@ -473,12 +490,14 @@ function MemoryScreen() {
         <button style={styles.saveBtn} onClick={addMemory} disabled={!input.trim()}>Add</button>
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 20 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 20 }}>
         {memories.length === 0 && <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>No memories yet. Add some above.</p>}
         {memories.map(m => (
           <div key={m.id} style={styles.memoryRow}>
             <span style={{ ...styles.memoryType, color: TYPE_COLORS[m.type] ?? 'var(--text-muted)' }}>{m.type}</span>
             <span style={styles.memoryContent}>{m.content}</span>
+            <span style={styles.memoryAge}>{formatAge(m.created_at)}</span>
+            <button style={styles.memoryDeleteBtn} onClick={() => deleteMemory(m.id)} title="Delete memory">✕</button>
           </div>
         ))}
       </div>
@@ -566,7 +585,9 @@ const styles: Record<string, React.CSSProperties & { WebkitAppRegion?: string }>
 
   memoryInput: { display: 'flex', gap: 8 },
   typeSelect: { background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: 6, padding: '6px 10px', fontSize: 13 },
-  memoryRow: { display: 'flex', alignItems: 'flex-start', gap: 10, padding: '8px 12px', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' },
-  memoryType: { fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', minWidth: 64 },
-  memoryContent: { fontSize: 13, color: 'var(--text-primary)' },
+  memoryRow: { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' },
+  memoryType: { fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', minWidth: 64, flexShrink: 0 },
+  memoryContent: { fontSize: 13, color: 'var(--text-primary)', flex: 1 },
+  memoryAge: { fontSize: 11, color: 'var(--text-muted)', flexShrink: 0, whiteSpace: 'nowrap' },
+  memoryDeleteBtn: { background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: 13, cursor: 'pointer', padding: '0 2px', flexShrink: 0, opacity: 0.5 },
 };

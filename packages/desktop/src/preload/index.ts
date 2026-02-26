@@ -26,7 +26,14 @@ const api = {
   // Chat
   chat: {
     send: (message: string, history: Array<{ role: string; content: string }>) =>
-      ipcRenderer.invoke('chat:send', message, history) as Promise<{ text?: string; provider?: string; error?: string }>,
+      ipcRenderer.invoke('chat:send', message, history) as Promise<{ text?: string; provider?: string; error?: string; tier?: string }>,
+    consensus: (message: string, history: Array<{ role: string; content: string }>) =>
+      ipcRenderer.invoke('chat:consensus', message, history) as Promise<{
+        responses?: Array<{ provider: string; text: string }>;
+        synthesis?: string;
+        error?: string;
+        tier?: string;
+      }>,
   },
 
   // Think Tank
@@ -67,6 +74,7 @@ const api = {
   memory: {
     get: () => ipcRenderer.invoke('memory:get') as Promise<Array<{ id: number; type: string; content: string; created_at: number }>>,
     add: (type: string, content: string) => ipcRenderer.invoke('memory:add', type, content),
+    delete: (id: number) => ipcRenderer.invoke('memory:delete', id) as Promise<Array<{ id: number; type: string; content: string; created_at: number }>>,
   },
 
   // User profile
