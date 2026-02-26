@@ -17,7 +17,7 @@
     "target": [
       { "target": "dmg", "arch": ["arm64"] }
     ],
-    "icon": "assets/icon.icns",
+    "icon": "assets/icon.png",
     "hardenedRuntime": false,
     "gatekeeperAssess": false
   },
@@ -31,7 +31,7 @@
   },
   "win": {
     "target": [{ "target": "nsis", "arch": ["x64"] }],
-    "icon": "assets/icon.ico"
+    "icon": "assets/icon.png"
   },
   "linux": {
     "target": [{ "target": "AppImage", "arch": ["x64"] }],

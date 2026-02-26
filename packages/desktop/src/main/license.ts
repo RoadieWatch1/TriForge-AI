@@ -63,14 +63,6 @@ interface LemonValidateResponse {
 export async function validateLicense(key: string, instanceName = 'triforge-desktop'): Promise<LicenseStatus> {
   const trimmed = key.trim().toUpperCase();
 
-  // Special dev/test key — skips network call
-  if (trimmed === 'TF-DEV-PRO') {
-    return { tier: 'pro', valid: true, key: trimmed, email: 'dev@triforge.ai', expiresAt: null, activatedAt: new Date().toISOString(), error: null };
-  }
-  if (trimmed === 'TF-DEV-BIZ') {
-    return { tier: 'business', valid: true, key: trimmed, email: 'dev@triforge.ai', expiresAt: null, activatedAt: new Date().toISOString(), error: null };
-  }
-
   try {
     const res = await fetch('https://api.lemonsqueezy.com/v1/licenses/validate', {
       method: 'POST',

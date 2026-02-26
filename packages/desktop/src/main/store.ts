@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { app } from 'electron';
+import { app, safeStorage } from 'electron';
 import type { StorageAdapter } from '@triforge/engine';
 
 export interface Permission {
@@ -92,6 +92,17 @@ export class Store implements StorageAdapter {
             this.data.permissions[p.key] = { granted: false, budgetLimit: p.budgetLimit, requireConfirm: p.requireConfirm };
           }
         }
+        // Migrate any plaintext secrets to safeStorage encryption
+        if (safeStorage.isEncryptionAvailable()) {
+          let migrated = false;
+          for (const [k, v] of Object.entries(this.data.secrets)) {
+            if (!v.startsWith('enc:')) {
+              this.data.secrets[k] = this.encryptSecret(v);
+              migrated = true;
+            }
+          }
+          if (migrated) this.save();
+        }
       }
     } catch {
       // Back up the corrupted file so users don't permanently lose data
@@ -117,9 +128,30 @@ export class Store implements StorageAdapter {
     }
   }
 
+  // Encrypt a value with the OS keychain (safeStorage). Falls back to plaintext
+  // on platforms where encryption is unavailable. Encrypted values are prefixed
+  // with 'enc:' so we can detect them on read and handle migration gracefully.
+  private encryptSecret(value: string): string {
+    if (safeStorage.isEncryptionAvailable()) {
+      try { return 'enc:' + safeStorage.encryptString(value).toString('base64'); } catch { /* fall through */ }
+    }
+    return value;
+  }
+
+  private decryptSecret(raw: string): string {
+    if (raw.startsWith('enc:')) {
+      try { return safeStorage.decryptString(Buffer.from(raw.slice(4), 'base64')); } catch { return ''; }
+    }
+    return raw; // plaintext (pre-encryption or safeStorage unavailable)
+  }
+
   // StorageAdapter interface
-  async getSecret(key: string): Promise<string | undefined> { return this.data.secrets[key]; }
-  async setSecret(key: string, value: string): Promise<void> { this.data.secrets[key] = value; this.save(); }
+  async getSecret(key: string): Promise<string | undefined> {
+    const raw = this.data.secrets[key];
+    if (raw === undefined) return undefined;
+    return this.decryptSecret(raw);
+  }
+  async setSecret(key: string, value: string): Promise<void> { this.data.secrets[key] = this.encryptSecret(value); this.save(); }
   async storeSecret(key: string, value: string): Promise<void> { return this.setSecret(key, value); }
   async deleteSecret(key: string): Promise<void> { delete this.data.secrets[key]; this.save(); }
   // Sync generic get with default — used by ProviderManager for session history
