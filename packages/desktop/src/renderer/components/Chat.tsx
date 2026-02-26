@@ -62,7 +62,7 @@ const QUICK_ACTIONS = [
   { label: '🔍 Research topic',     prompt: 'Research and summarize everything about ' },
 ];
 
-const MSG_LIMITS: Record<string, number> = { free: 30, pro: Infinity, business: Infinity };
+const MSG_LIMITS: Record<string, number> = { free: 30, pro: 300, business: Infinity };
 
 const MODE_LABELS: Record<string, string> = {
   none:      'No providers',
@@ -206,8 +206,10 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   const handleGateError = (error: string) => {
     if (error === 'MESSAGE_LIMIT_REACHED') { setGate({ feature: 'MESSAGE_LIMIT_REACHED', neededTier: 'pro' }); return true; }
     if (error.startsWith('FEATURE_LOCKED:')) {
-      const feat = error.split(':')[1] ?? 'unknown';
-      setGate({ feature: feat, neededTier: feat === 'browser' || feat === 'email' || feat === 'financeTrading' ? 'business' : 'pro' });
+      const parts = error.split(':');
+      const feat = parts[1] ?? 'unknown';
+      const neededTier = (parts[2] === 'business' ? 'business' : 'pro') as 'pro' | 'business';
+      setGate({ feature: feat, neededTier });
       return true;
     }
     return false;
@@ -362,7 +364,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   const fireWorkflow = (workflowId: string) => {
     if (tier === 'free') {
       setShowWorkflows(false);
-      setGate({ feature: 'workflowTemplates', neededTier: 'pro' });
+      setGate({ feature: 'WORKFLOW_TEMPLATES', neededTier: 'pro' });
       return;
     }
     setShowWorkflows(false);

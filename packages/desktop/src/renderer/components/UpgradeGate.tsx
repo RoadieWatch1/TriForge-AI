@@ -10,16 +10,47 @@ interface Props {
 }
 
 const FEATURE_LABELS: Record<string, string> = {
-  voice:             'Voice input & speech output',
-  consensus:         'Full 3-model consensus mode',
-  memory:            'Long-term memory',
-  browser:           'Browser automation',
-  email:             'Email & Calendar integration',
-  financeView:       'Finance dashboard',
-  financeTrading:    'Investment trading',
-  unlimitedMessages: 'Unlimited messages',
+  // UPPER_SNAKE_CASE capability keys (current)
+  MULTI_PROVIDER:      'Multiple AI providers',
+  THINK_TANK:          'Think Tank (3-AI consensus)',
+  VOICE:               'Voice input & speech output',
+  EXECUTION_PLANS:     'Execution plan generation',
+  WORKFLOW_TEMPLATES:  'One-click workflow templates',
+  DECISION_LEDGER:     'Decision Ledger',
+  EXPORT_TOOLS:        'Export to Markdown & PDF',
+  APP_ANALYSIS:        'App Builder Services Guide',
+  FINANCE_DASHBOARD:   'Finance dashboard',
+  BROWSER_AUTOMATION:  'Browser automation',
+  EMAIL_CALENDAR:      'Email & Calendar access',
+  FINANCE_TRADING:     'Investment trading',
+  WORKFLOW_REPLAY:     'Workflow replay from Ledger',
+  GOVERNANCE_PROFILES: 'Governance profiles',
+  UNLIMITED_MESSAGES:  'Unlimited messages',
+  // Special system codes
   MESSAGE_LIMIT_REACHED: 'Unlimited messages',
 };
+
+const PRO_FEATURES = [
+  '300 messages / month',
+  'Think Tank — 3-AI consensus',
+  'Voice I/O (Whisper + TTS)',
+  'Execution plan generation',
+  'One-click workflow templates',
+  'Decision Ledger + export',
+  'Long-term memory (50 entries)',
+  'App Builder Services Guide',
+];
+
+const BIZ_FEATURES = [
+  'Unlimited messages',
+  'Everything in Pro',
+  'Browser automation',
+  'Email & Calendar access',
+  'Investment trading',
+  'Workflow replay from Ledger',
+  'Governance profiles',
+  'Memory up to 200 entries',
+];
 
 export function UpgradeGate({ feature, neededTier, onClose, onUpgrade, proCheckout, bizCheckout }: Props) {
   const isPro = neededTier === 'pro';
@@ -27,9 +58,6 @@ export function UpgradeGate({ feature, neededTier, onClose, onUpgrade, proChecko
   const tierPrice = isPro ? '$19/mo' : '$49/mo';
   const featureLabel = FEATURE_LABELS[feature] ?? feature;
   const checkoutUrl = isPro ? proCheckout : bizCheckout;
-
-  const PRO_FEATURES = ['Unlimited messages', '3-model consensus', 'Voice I/O', 'Long-term memory', 'Finance dashboard'];
-  const BIZ_FEATURES = ['Everything in Pro', 'Browser automation', 'Email & Calendar', 'Investment trading', 'CRM / lead management'];
   const features = isPro ? PRO_FEATURES : BIZ_FEATURES;
 
   return (

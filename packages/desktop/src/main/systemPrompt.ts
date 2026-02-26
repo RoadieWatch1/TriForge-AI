@@ -1,5 +1,5 @@
 import type { Store } from './store';
-import { TIERS } from './subscription';
+import { TIERS, hasCapability } from './subscription';
 import type { Tier } from './license';
 
 /**
@@ -26,8 +26,8 @@ export async function buildSystemPrompt(store: Store): Promise<string> {
   // ── System tools available right now ──────────────────────────────────────
   const hasFiles   = grantedPerms.some(p => p.key === 'files');
   const hasPrinter = grantedPerms.some(p => p.key === 'printer');
-  const hasBrowser = grantedPerms.some(p => p.key === 'browser') && tierCfg.browserAutomation;
-  const hasEmail   = grantedPerms.some(p => p.key === 'email_s' || p.key === 'email_r') && tierCfg.emailCalendar;
+  const hasBrowser = grantedPerms.some(p => p.key === 'browser') && hasCapability('BROWSER_AUTOMATION', tier);
+  const hasEmail   = grantedPerms.some(p => p.key === 'email_s' || p.key === 'email_r') && hasCapability('EMAIL_CALENDAR', tier);
 
   const systemTools: string[] = [];
   if (hasFiles) {
@@ -65,11 +65,11 @@ export async function buildSystemPrompt(store: Store): Promise<string> {
   const aiCaps: string[] = [
     'Deep research, analysis, writing, planning, strategy, coding, math',
   ];
-  if (tierCfg.consensusMode) aiCaps.push('Multi-model consensus: 3 AI brains (GPT, Claude, Gemini) debate and converge on the best answer');
-  if (tierCfg.voice)         aiCaps.push('Voice input (Whisper STT) and spoken responses (TTS)');
-  if (tierCfg.longTermMemory) aiCaps.push('Persistent long-term memory of the user\'s life, goals, and preferences');
-  if (tierCfg.financeView)   aiCaps.push('Finance dashboard and portfolio analysis');
-  if (tierCfg.financeTrading) aiCaps.push('Investment trade proposals and execution');
+  if (hasCapability('THINK_TANK', tier))       aiCaps.push('Multi-model consensus: 3 AI brains (GPT, Claude, Gemini) debate and converge on the best answer');
+  if (hasCapability('VOICE', tier))            aiCaps.push('Voice input (Whisper STT) and spoken responses (TTS)');
+  if (tier !== 'free')                         aiCaps.push('Persistent long-term memory of the user\'s life, goals, and preferences');
+  if (hasCapability('FINANCE_DASHBOARD', tier)) aiCaps.push('Finance dashboard and portfolio analysis');
+  if (hasCapability('FINANCE_TRADING', tier))  aiCaps.push('Investment trade proposals and execution');
 
   return `You are TriForge AI — the unified body of three AI minds (GPT-4, Claude, Gemini), acting as a single decisive, loyal personal assistant for ${userName}.
 

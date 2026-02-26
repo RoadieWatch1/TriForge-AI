@@ -17,20 +17,6 @@ interface TierConfig {
   maxMessagesPerMonth: number;
   memoryLimit: number;
   providers: number;
-  voice: boolean;
-  consensusMode: boolean;
-  longTermMemory: boolean;
-  executionPlans: boolean;
-  workflowTemplates: boolean;
-  workflowReplay: boolean;
-  ledger: boolean;
-  exportTools: boolean;
-  appBuilderAnalysis: boolean;
-  browserAutomation: boolean;
-  emailCalendar: boolean;
-  financeView: boolean;
-  financeTrading: boolean;
-  governanceProfiles: boolean;
   checkoutUrl: string;
 }
 

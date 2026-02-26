@@ -1,35 +1,106 @@
 import type { Tier } from './license';
 import { LEMONSQUEEZY } from './license';
 
-// ── Tier definitions ─────────────────────────────────────────────────────────
+// ── Capability type ───────────────────────────────────────────────────────────
+
+export type Capability =
+  | 'MULTI_PROVIDER'       // use more than 1 AI simultaneously
+  | 'THINK_TANK'           // 3-way consensus synthesis
+  | 'VOICE'                // Whisper STT + TTS
+  | 'EXECUTION_PLANS'      // generate + run execution plans
+  | 'WORKFLOW_TEMPLATES'   // one-click business workflow packs
+  | 'DECISION_LEDGER'      // auto-saved searchable Think Tank log
+  | 'EXPORT_TOOLS'         // export ledger as MD / PDF
+  | 'APP_ANALYSIS'         // App Builder Services Guide analysis
+  | 'FINANCE_DASHBOARD'    // read-only finance view
+  | 'BROWSER_AUTOMATION'   // browser control
+  | 'EMAIL_CALENDAR'       // read/write email & calendar
+  | 'FINANCE_TRADING'      // live investment order placement
+  | 'WORKFLOW_REPLAY'      // replay past plans from Ledger
+  | 'GOVERNANCE_PROFILES'  // custom permission profiles
+  | 'UNLIMITED_MESSAGES';  // no monthly cap
+
+// ── Per-tier capability sets ──────────────────────────────────────────────────
+
+const FREE_CAPS: ReadonlySet<Capability> = new Set<Capability>([]);
+
+const PRO_CAPS: ReadonlySet<Capability> = new Set<Capability>([
+  'MULTI_PROVIDER',
+  'THINK_TANK',
+  'VOICE',
+  'EXECUTION_PLANS',
+  'WORKFLOW_TEMPLATES',
+  'DECISION_LEDGER',
+  'EXPORT_TOOLS',
+  'APP_ANALYSIS',
+  'FINANCE_DASHBOARD',
+]);
+
+const BUSINESS_CAPS: ReadonlySet<Capability> = new Set<Capability>([
+  ...PRO_CAPS,
+  'BROWSER_AUTOMATION',
+  'EMAIL_CALENDAR',
+  'FINANCE_TRADING',
+  'WORKFLOW_REPLAY',
+  'GOVERNANCE_PROFILES',
+  'UNLIMITED_MESSAGES',
+]);
+
+export const TIER_CAPABILITIES: Record<Tier, ReadonlySet<Capability>> = {
+  free:     FREE_CAPS,
+  pro:      PRO_CAPS,
+  business: BUSINESS_CAPS,
+};
+
+// ── Capability helpers ────────────────────────────────────────────────────────
+
+/** Returns true if the given tier has the given capability. */
+export function hasCapability(cap: Capability, tier: Tier): boolean {
+  return TIER_CAPABILITIES[tier].has(cap);
+}
+
+/** Returns the minimum tier required to unlock a capability, or null if it is not offered. */
+export function requiredTierFor(cap: Capability): Tier | null {
+  if (TIER_CAPABILITIES.pro.has(cap)) return 'pro';
+  if (TIER_CAPABILITIES.business.has(cap)) return 'business';
+  return null;
+}
+
+/** Produces the structured error string sent to the renderer. */
+export function lockedError(cap: Capability): string {
+  const tier = requiredTierFor(cap) ?? 'pro';
+  return `FEATURE_LOCKED:${cap}:${tier}`;
+}
+
+/** Human-readable labels for capabilities. */
+export const CAPABILITY_LABELS: Record<Capability, string> = {
+  MULTI_PROVIDER:      'Multiple AI providers',
+  THINK_TANK:          'Think Tank (3-AI consensus)',
+  VOICE:               'Voice input & speech output',
+  EXECUTION_PLANS:     'Execution plan generation',
+  WORKFLOW_TEMPLATES:  'One-click workflow templates',
+  DECISION_LEDGER:     'Decision Ledger',
+  EXPORT_TOOLS:        'Export to Markdown & PDF',
+  APP_ANALYSIS:        'App Builder Services Guide',
+  FINANCE_DASHBOARD:   'Finance dashboard',
+  BROWSER_AUTOMATION:  'Browser automation',
+  EMAIL_CALENDAR:      'Email & Calendar access',
+  FINANCE_TRADING:     'Investment trading',
+  WORKFLOW_REPLAY:     'Workflow replay from Ledger',
+  GOVERNANCE_PROFILES: 'Governance profiles',
+  UNLIMITED_MESSAGES:  'Unlimited messages',
+};
+
+// ── Tier metadata (display / quota only — no boolean feature flags) ───────────
 
 export interface TierConfig {
   name: string;
   price: string;
   annualPrice: string;
   tagline: string;
-  // Usage limits
-  maxMessagesPerMonth: number;       // Infinity = unlimited
-  memoryLimit: number;               // max long-term memory entries
-  providers: number;                 // max concurrent AI providers
-  // Core AI features
-  voice: boolean;                    // Whisper STT + TTS
-  consensusMode: boolean;            // Think Tank (3-way debate + synthesis)
-  longTermMemory: boolean;
-  // Execution & automation
-  executionPlans: boolean;           // Generate Execution Plans from synthesis
-  workflowTemplates: boolean;        // One-click business workflow packs
-  workflowReplay: boolean;           // Replay past plans from Ledger (Business)
-  // Data & export
-  ledger: boolean;                   // Decision Ledger + search
-  exportTools: boolean;              // Export ledger as MD / PDF
-  appBuilderAnalysis: boolean;       // App Builder "Services Guide" analysis
-  // Advanced permissions
-  browserAutomation: boolean;
-  emailCalendar: boolean;
-  financeView: boolean;
-  financeTrading: boolean;
-  governanceProfiles: boolean;       // Advanced permission profiles (Business)
+  maxMessagesPerMonth: number;  // Infinity = unlimited
+  memoryLimit: number;          // max long-term memory entries
+  providers: number;            // max concurrent AI providers
   checkoutUrl: string;
 }
 
@@ -38,24 +109,10 @@ export const TIERS: Record<Tier, TierConfig> = {
     name: 'Free',
     price: '$0',
     annualPrice: '$0',
-    tagline: 'Explore what\'s possible',
+    tagline: "Explore what's possible",
     maxMessagesPerMonth: 30,
     memoryLimit: 10,
     providers: 1,
-    voice: false,
-    consensusMode: false,
-    longTermMemory: true,           // basic — up to memoryLimit entries
-    executionPlans: false,
-    workflowTemplates: false,
-    workflowReplay: false,
-    ledger: false,
-    exportTools: false,
-    appBuilderAnalysis: false,
-    browserAutomation: false,
-    emailCalendar: false,
-    financeView: false,
-    financeTrading: false,
-    governanceProfiles: false,
     checkoutUrl: LEMONSQUEEZY.PRO_CHECKOUT,
   },
   pro: {
@@ -66,20 +123,6 @@ export const TIERS: Record<Tier, TierConfig> = {
     maxMessagesPerMonth: 300,
     memoryLimit: 50,
     providers: 3,
-    voice: true,
-    consensusMode: true,
-    longTermMemory: true,
-    executionPlans: true,
-    workflowTemplates: true,
-    workflowReplay: false,
-    ledger: true,
-    exportTools: true,
-    appBuilderAnalysis: true,
-    browserAutomation: false,
-    emailCalendar: false,
-    financeView: true,
-    financeTrading: false,
-    governanceProfiles: false,
     checkoutUrl: LEMONSQUEEZY.PRO_CHECKOUT,
   },
   business: {
@@ -90,92 +133,11 @@ export const TIERS: Record<Tier, TierConfig> = {
     maxMessagesPerMonth: Infinity,
     memoryLimit: 200,
     providers: 3,
-    voice: true,
-    consensusMode: true,
-    longTermMemory: true,
-    executionPlans: true,
-    workflowTemplates: true,
-    workflowReplay: true,
-    ledger: true,
-    exportTools: true,
-    appBuilderAnalysis: true,
-    browserAutomation: true,
-    emailCalendar: true,
-    financeView: true,
-    financeTrading: true,
-    governanceProfiles: true,
     checkoutUrl: LEMONSQUEEZY.BIZ_CHECKOUT,
   },
 };
 
-// ── Feature keys ─────────────────────────────────────────────────────────────
-
-export type Feature =
-  | 'voice'
-  | 'consensus'
-  | 'memory'
-  | 'executionPlans'
-  | 'workflowTemplates'
-  | 'workflowReplay'
-  | 'ledger'
-  | 'exportTools'
-  | 'appBuilderAnalysis'
-  | 'browser'
-  | 'email'
-  | 'financeView'
-  | 'financeTrading'
-  | 'governanceProfiles'
-  | 'unlimitedMessages';
-
-/** Returns true if the given tier can use the given feature. */
-export function canUse(feature: Feature, tier: Tier): boolean {
-  const t = TIERS[tier];
-  switch (feature) {
-    case 'voice':               return t.voice;
-    case 'consensus':           return t.consensusMode;
-    case 'memory':              return t.longTermMemory;
-    case 'executionPlans':      return t.executionPlans;
-    case 'workflowTemplates':   return t.workflowTemplates;
-    case 'workflowReplay':      return t.workflowReplay;
-    case 'ledger':              return t.ledger;
-    case 'exportTools':         return t.exportTools;
-    case 'appBuilderAnalysis':  return t.appBuilderAnalysis;
-    case 'browser':             return t.browserAutomation;
-    case 'email':               return t.emailCalendar;
-    case 'financeView':         return t.financeView;
-    case 'financeTrading':      return t.financeTrading;
-    case 'governanceProfiles':  return t.governanceProfiles;
-    case 'unlimitedMessages':   return t.maxMessagesPerMonth === Infinity;
-    default:                    return false;
-  }
-}
-
-/** Returns the upgrade tier needed for a blocked feature, or null if already unlocked. */
-export function upgradeNeeded(feature: Feature, currentTier: Tier): Tier | null {
-  if (canUse(feature, currentTier)) return null;
-  if (canUse(feature, 'pro')) return 'pro';
-  if (canUse(feature, 'business')) return 'business';
-  return null;
-}
-
-/** Human-readable label for a feature. */
-export const FEATURE_LABELS: Record<Feature, string> = {
-  voice:              'Voice input & speech output',
-  consensus:          'Think Tank (3-AI consensus)',
-  memory:             'Long-term memory',
-  executionPlans:     'Execution plan generation',
-  workflowTemplates:  'One-click workflow templates',
-  workflowReplay:     'Workflow replay from Ledger',
-  ledger:             'Decision Ledger',
-  exportTools:        'Export to Markdown & PDF',
-  appBuilderAnalysis: 'App Builder Services Guide',
-  browser:            'Browser automation',
-  email:              'Email & Calendar access',
-  financeView:        'Finance dashboard',
-  financeTrading:     'Investment trading',
-  governanceProfiles: 'Governance profiles',
-  unlimitedMessages:  'Unlimited messages',
-};
+// ── Quota helpers ─────────────────────────────────────────────────────────────
 
 /** Returns the memory entry limit for a given tier. */
 export function getMemoryLimit(tier: Tier): number {

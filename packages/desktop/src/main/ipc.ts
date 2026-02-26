@@ -6,7 +6,7 @@ import { execSync } from 'child_process';
 import { Store, LedgerEntry, ForgeScore } from './store';
 import { transcribeAudio, textToSpeech } from './voice';
 import { validateLicense, loadLicense, deactivateLicense, LEMONSQUEEZY } from './license';
-import { isAtMessageLimit, canUse, getMemoryLimit, TIERS } from './subscription';
+import { isAtMessageLimit, hasCapability, lockedError, getMemoryLimit, TIERS } from './subscription';
 import { hashPin, verifyPin, isValidPin } from './auth';
 import { buildSystemPrompt } from './systemPrompt';
 import { scanForPhotos, listDirectory, organizeDirectory, getCommonDirs } from './filesystem';
@@ -195,6 +195,9 @@ export function setupIpc(store: Store): void {
 
     const license = await store.getLicense();
     const tierVal = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('THINK_TANK', tierVal)) {
+      return { error: lockedError('THINK_TANK') };
+    }
     const used = store.getMonthlyMessageCount();
     if (isAtMessageLimit(used, tierVal)) {
       return { error: 'MESSAGE_LIMIT_REACHED', tier: tierVal };
@@ -298,8 +301,8 @@ VERIFY: [1-3 specific things the user should double-check]
   ipcMain.handle('voice:transcribe', async (_e, audioBuffer: Buffer) => {
     const license = await store.getLicense();
     const tier = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
-    if (!canUse('voice', tier)) {
-      return { error: 'FEATURE_LOCKED:voice' };
+    if (!hasCapability('VOICE', tier)) {
+      return { error: lockedError('VOICE') };
     }
     try {
       const result = await transcribeAudio(audioBuffer, store);
@@ -341,24 +344,24 @@ VERIFY: [1-3 specific things the user should double-check]
   }
 
   ipcMain.handle('ledger:get', async (_e, search?: string, limit?: number) => {
-    if (!canUse('ledger', await getLedgerTier())) return { error: 'FEATURE_LOCKED:ledger' };
+    if (!hasCapability('DECISION_LEDGER', await getLedgerTier())) return { error: lockedError('DECISION_LEDGER') };
     return store.getLedger(limit ?? 100, search ?? '');
   });
 
   ipcMain.handle('ledger:star', async (_e, id: string, starred: boolean) => {
-    if (!canUse('ledger', await getLedgerTier())) return { error: 'FEATURE_LOCKED:ledger' };
+    if (!hasCapability('DECISION_LEDGER', await getLedgerTier())) return { error: lockedError('DECISION_LEDGER') };
     store.starLedger(id, starred);
     return store.getLedger();
   });
 
   ipcMain.handle('ledger:delete', async (_e, id: string) => {
-    if (!canUse('ledger', await getLedgerTier())) return { error: 'FEATURE_LOCKED:ledger' };
+    if (!hasCapability('DECISION_LEDGER', await getLedgerTier())) return { error: lockedError('DECISION_LEDGER') };
     store.deleteLedger(id);
     return store.getLedger();
   });
 
   ipcMain.handle('ledger:export', async (_e, id: string | null, format: 'md' | 'pdf') => {
-    if (!canUse('exportTools', await getLedgerTier())) return { ok: false, error: 'FEATURE_LOCKED:exportTools' };
+    if (!hasCapability('EXPORT_TOOLS', await getLedgerTier())) return { ok: false, error: lockedError('EXPORT_TOOLS') };
     const raw = id
       ? [store.getLedgerEntry(id)].filter((e): e is LedgerEntry => !!e)
       : store.getLedger();
@@ -498,7 +501,7 @@ VERIFY: [1-3 specific things the user should double-check]
     if (providers.length === 0) return { error: 'No API keys configured.' };
     const licPlan = await store.getLicense();
     const tierPlan = (licPlan.tier ?? 'free') as 'free' | 'pro' | 'business';
-    if (!canUse('executionPlans', tierPlan)) return { error: 'FEATURE_LOCKED:executionPlans' };
+    if (!hasCapability('EXECUTION_PLANS', tierPlan)) return { error: lockedError('EXECUTION_PLANS') };
 
     const prompt = `You are an execution planning engine. Convert the provided synthesis into a structured, step-by-step action plan for a non-technical user.
 
@@ -658,7 +661,7 @@ Reply with ONLY the complete HTML. Start immediately with <!DOCTYPE html> and en
   ) => {
     const licAb = await store.getLicense();
     const tierAb = (licAb.tier ?? 'free') as 'free' | 'pro' | 'business';
-    if (!canUse('appBuilderAnalysis', tierAb)) return { services: [], error: 'FEATURE_LOCKED:appBuilderAnalysis' };
+    if (!hasCapability('APP_ANALYSIS', tierAb)) return { services: [], error: lockedError('APP_ANALYSIS') };
     const { providerManager: pm } = await getEngine();
     const providers = await pm.getActiveProviders();
     if (providers.length === 0) return { services: [] };
