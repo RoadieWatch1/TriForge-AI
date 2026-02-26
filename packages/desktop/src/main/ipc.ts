@@ -1,8 +1,8 @@
-import { ipcMain, shell, dialog, app } from 'electron';
+import { ipcMain, shell, dialog, app, BrowserWindow } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { Store } from './store';
+import { Store, LedgerEntry, ForgeScore } from './store';
 import { transcribeAudio, textToSpeech } from './voice';
 import { validateLicense, loadLicense, deactivateLicense, LEMONSQUEEZY } from './license';
 import { isAtMessageLimit, canUse, TIERS } from './subscription';
@@ -18,6 +18,49 @@ import {
 
 let providerManager: ProviderManager | null = null;
 let intentEngine: IntentEngine | null = null;
+
+// ── Ledger export helpers ──────────────────────────────────────────────────
+function formatLedgerMarkdown(entries: LedgerEntry[]): string {
+  return entries.map(e => {
+    const date = new Date(e.timestamp).toLocaleString();
+    const meta = e.forgeScore ? ` · Risk: ${e.forgeScore.risk} · Confidence: ${e.forgeScore.confidence}%` : '';
+    const parts: string[] = [
+      `# ${e.workflow ? `[${e.workflow}] ` : ''}${e.request.slice(0, 80)}`,
+      `*${date}${meta}*`,
+      '', '## Synthesis', e.synthesis,
+    ];
+    if (e.forgeScore) {
+      const sc = e.forgeScore;
+      parts.push('', '## Forge Score',
+        `- **Confidence:** ${sc.confidence}%`, `- **Risk:** ${sc.risk}`,
+        `- **Agreement:** ${sc.agreement}`, `- **Disagreement:** ${sc.disagreement}`,
+        `- **Assumptions:** ${sc.assumptions}`, `- **Verify:** ${sc.verify}`);
+    }
+    if (e.responses?.length) {
+      parts.push('', '## Individual AI Responses',
+        ...e.responses.map(r => `### ${r.provider}\n${r.text}`));
+    }
+    return parts.join('\n');
+  }).join('\n\n---\n\n');
+}
+
+function ledgerMarkdownToHtml(md: string): string {
+  const body = md
+    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/^- (.+)$/gm, '<li>$1</li>')
+    .replace(/^---$/gm, '<hr>')
+    .replace(/\n/g, '<br>');
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+    body{font-family:Georgia,serif;max-width:800px;margin:40px auto;color:#111;font-size:15px;line-height:1.7}
+    h1{color:#f97316;font-size:20px;margin-top:40px}h2{border-bottom:1px solid #ddd;padding-bottom:4px;color:#333}
+    h3{color:#555}li{margin:4px 0}hr{border:none;border-top:1px solid #ddd;margin:32px 0}
+    em{color:#666;font-size:13px}strong{color:#111}
+  </style></head><body>${body}</body></html>`;
+}
 
 export function setupIpc(store: Store): void {
 
@@ -185,15 +228,58 @@ export function setupIpc(store: Store): void {
     if (responses.length > 1) {
       try {
         const synthMsgs = [
-          { role: 'system', content: 'You are a synthesis engine. Combine the perspectives below into one clear, definitive answer. Lead with the key insight. Note any meaningful disagreements between models.' },
-          { role: 'user', content: `User asked: "${message}"\n\n${responses.map(r => `${r.provider}:\n${r.text}`).join('\n\n---\n\n')}\n\nSynthesize into one final, comprehensive answer.` },
+          {
+            role: 'system',
+            content: `You are a synthesis engine. Combine the perspectives below into one clear, definitive answer. Lead with the key insight. Note any meaningful disagreements.
+
+After your synthesis, output a trust assessment in this EXACT format (no variations):
+---FORGE_SCORE---
+CONFIDENCE: [0-100 integer]%
+AGREEMENT: [one sentence: what the models agreed on]
+DISAGREEMENT: [one sentence: key differences, or "None — models aligned"]
+RISK: [Low|Medium|High]
+ASSUMPTIONS: [one or two key assumptions that could be wrong]
+VERIFY: [1-3 specific things the user should double-check]
+---END_FORGE_SCORE---`,
+          },
+          {
+            role: 'user',
+            content: `User asked: "${message}"\n\n${responses.map(r => `${r.provider}:\n${r.text}`).join('\n\n---\n\n')}\n\nSynthesize into one final, comprehensive answer, then add the FORGE_SCORE block.`,
+          },
         ];
         synthesis = await (providers[0].generateResponse as (m: typeof synthMsgs) => Promise<string>)(synthMsgs);
       } catch { /* use primary response as fallback */ }
     }
 
+    // Parse ForgeScore out of synthesis text
+    let forgeScore: ForgeScore | undefined;
+    const scoreMatch = synthesis.match(/---FORGE_SCORE---([\s\S]*?)---END_FORGE_SCORE---/);
+    if (scoreMatch) {
+      synthesis = synthesis.replace(/---FORGE_SCORE---[\s\S]*?---END_FORGE_SCORE---/, '').trim();
+      const s = scoreMatch[1];
+      forgeScore = {
+        confidence: parseInt(s.match(/CONFIDENCE:\s*(\d+)/)?.[1] ?? '0'),
+        risk: (s.match(/RISK:\s*(Low|Medium|High)/)?.[1] ?? 'Medium') as 'Low' | 'Medium' | 'High',
+        agreement:    s.match(/AGREEMENT:\s*(.+)/)?.[1]?.trim() ?? '',
+        disagreement: s.match(/DISAGREEMENT:\s*(.+)/)?.[1]?.trim() ?? '',
+        assumptions:  s.match(/ASSUMPTIONS:\s*(.+)/)?.[1]?.trim() ?? '',
+        verify:       s.match(/VERIFY:\s*([\s\S]*?)(?=\n[A-Z]|$)/)?.[1]?.trim() ?? '',
+      };
+    }
+
+    // Auto-save to Decision Ledger
+    store.addLedger({
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2),
+      timestamp: Date.now(),
+      request: message,
+      synthesis,
+      forgeScore,
+      responses,
+      starred: false,
+    });
+
     store.incrementMessageCount();
-    return { responses, synthesis };
+    return { responses, synthesis, forgeScore };
   });
 
   // ── Think Tank (full consensus for complex goals) ─────────────────────────────
@@ -241,6 +327,48 @@ export function setupIpc(store: Store): void {
   ipcMain.handle('memory:delete', (_e, id: number) => {
     store.deleteMemory(id);
     return store.getMemory();
+  });
+
+  // ── Decision Ledger ─────────────────────────────────────────────────────────
+  ipcMain.handle('ledger:get', (_e, search?: string, limit?: number) => {
+    return store.getLedger(limit ?? 100, search ?? '');
+  });
+
+  ipcMain.handle('ledger:star', (_e, id: string, starred: boolean) => {
+    store.starLedger(id, starred);
+    return store.getLedger();
+  });
+
+  ipcMain.handle('ledger:delete', (_e, id: string) => {
+    store.deleteLedger(id);
+    return store.getLedger();
+  });
+
+  ipcMain.handle('ledger:export', async (_e, id: string | null, format: 'md' | 'pdf') => {
+    const raw = id
+      ? [store.getLedgerEntry(id)].filter((e): e is LedgerEntry => !!e)
+      : store.getLedger();
+    const markdown = formatLedgerMarkdown(raw);
+    const ext = format;
+    const savePath = await dialog.showSaveDialog({
+      defaultPath: path.join(os.homedir(), 'Downloads', `triforge-ledger-${Date.now()}.${ext}`),
+      filters: [{ name: format === 'pdf' ? 'PDF' : 'Markdown', extensions: [ext] }],
+    });
+    if (!savePath.filePath) return { ok: false };
+    if (format === 'md') {
+      await fs.promises.writeFile(savePath.filePath, markdown, 'utf8');
+      shell.showItemInFolder(savePath.filePath);
+      return { ok: true, path: savePath.filePath };
+    }
+    // PDF via hidden BrowserWindow — native Electron, no npm packages
+    const html = ledgerMarkdownToHtml(markdown);
+    const win = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: false } });
+    await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    const pdfBuf = await win.webContents.printToPDF({ printBackground: false });
+    win.destroy();
+    await fs.promises.writeFile(savePath.filePath, pdfBuf);
+    shell.showItemInFolder(savePath.filePath);
+    return { ok: true, path: savePath.filePath };
   });
 
   // ── User profile ──────────────────────────────────────────────────────────────

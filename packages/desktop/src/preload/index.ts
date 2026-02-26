@@ -31,6 +31,7 @@ const api = {
       ipcRenderer.invoke('chat:consensus', message, history) as Promise<{
         responses?: Array<{ provider: string; text: string }>;
         synthesis?: string;
+        forgeScore?: { confidence: number; agreement: string; disagreement: string; risk: 'Low'|'Medium'|'High'; assumptions: string; verify: string };
         error?: string;
         tier?: string;
       }>,
@@ -75,6 +76,33 @@ const api = {
     get: () => ipcRenderer.invoke('memory:get') as Promise<Array<{ id: number; type: string; content: string; created_at: number }>>,
     add: (type: string, content: string) => ipcRenderer.invoke('memory:add', type, content),
     delete: (id: number) => ipcRenderer.invoke('memory:delete', id) as Promise<Array<{ id: number; type: string; content: string; created_at: number }>>,
+  },
+
+  // Decision Ledger
+  ledger: {
+    get:    (search?: string, limit?: number) =>
+      ipcRenderer.invoke('ledger:get', search, limit) as Promise<Array<{
+        id: string; timestamp: number; request: string; synthesis: string;
+        forgeScore?: { confidence: number; agreement: string; disagreement: string; risk: 'Low'|'Medium'|'High'; assumptions: string; verify: string };
+        responses?: Array<{ provider: string; text: string }>;
+        workflow?: string; starred: boolean;
+      }>>,
+    star:   (id: string, starred: boolean) =>
+      ipcRenderer.invoke('ledger:star', id, starred) as Promise<Array<{
+        id: string; timestamp: number; request: string; synthesis: string;
+        forgeScore?: { confidence: number; agreement: string; disagreement: string; risk: 'Low'|'Medium'|'High'; assumptions: string; verify: string };
+        responses?: Array<{ provider: string; text: string }>;
+        workflow?: string; starred: boolean;
+      }>>,
+    delete: (id: string) =>
+      ipcRenderer.invoke('ledger:delete', id) as Promise<Array<{
+        id: string; timestamp: number; request: string; synthesis: string;
+        forgeScore?: { confidence: number; agreement: string; disagreement: string; risk: 'Low'|'Medium'|'High'; assumptions: string; verify: string };
+        responses?: Array<{ provider: string; text: string }>;
+        workflow?: string; starred: boolean;
+      }>>,
+    export: (id: string | null, format: 'md' | 'pdf') =>
+      ipcRenderer.invoke('ledger:export', id, format) as Promise<{ ok: boolean; path?: string }>,
   },
 
   // User profile

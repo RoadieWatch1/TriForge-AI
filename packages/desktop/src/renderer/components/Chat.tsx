@@ -6,6 +6,15 @@ import { UpgradeGate } from './UpgradeGate';
 
 interface ConsensusResponse { provider: string; text: string; }
 
+interface ForgeScore {
+  confidence: number;
+  agreement: string;
+  disagreement: string;
+  risk: 'Low' | 'Medium' | 'High';
+  assumptions: string;
+  verify: string;
+}
+
 interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -15,6 +24,8 @@ interface Message {
   isError?: boolean;
   // Think-tank consensus fields
   consensusResponses?: ConsensusResponse[];
+  forgeScore?: ForgeScore;
+  workflow?: string;
 }
 
 interface Props {
@@ -61,6 +72,59 @@ const MODE_LABELS: Record<string, string> = {
 
 const HISTORY_KEY = 'triforge-chat-v2';
 
+const WORKFLOWS = [
+  { id: 'startup',    icon: '🏢', label: 'Start a Business',       desc: 'LLC steps, EIN, checklist, 30-day launch plan' },
+  { id: 'hiring',     icon: '👥', label: 'Hire Someone',            desc: 'Job post, interview questions, offer letter, onboarding' },
+  { id: 'marketing',  icon: '📣', label: 'Marketing Campaign',      desc: 'Strategy, copy, content calendar, budget split' },
+  { id: 'sop',        icon: '📋', label: 'Write a Policy / SOP',    desc: 'Operational procedure for any business process' },
+  { id: 'client',     icon: '📧', label: 'Client Follow-up System', desc: '5-email sequence, CRM notes, re-engagement message' },
+];
+
+const WORKFLOW_PROMPTS: Record<string, string> = {
+  startup: `Create a complete business launch guide with these sections:
+## Legal Setup Checklist (numbered: choose structure, register, get EIN, open bank account, licenses)
+## Essential Tools & Accounts (accounting, website, email — free options first for each)
+## First 30 Days Action Plan (week-by-week: week 1 legal, week 2 brand, week 3 marketing, week 4 first sale)
+## Key Documents to Create (brief description of each: operating agreement, invoice template, contract)
+## Common Mistakes to Avoid (top 5 with why each matters)
+Format with clear headers, numbered steps, and checkboxes where applicable. Be specific and actionable.`,
+
+  hiring: `Create a complete hiring package with these sections:
+## Job Description Template (role summary, responsibilities, requirements, compensation guidance)
+## 10 Interview Questions (with what to listen for in each answer)
+## Offer Letter Template (professional and legally safe language, fill-in-the-blank format)
+## Week 1 Onboarding Checklist (day-by-day: accounts, introductions, training, first assignment)
+## Red Flags to Watch For (behaviors in interviews and first weeks that signal poor fit)
+Format with clear headers, numbered lists, and ready-to-use templates.`,
+
+  marketing: `Create a complete marketing campaign plan with these sections:
+## Target Audience Profile (demographics, pain points, goals, where they spend time online)
+## Channel Strategy (3 channels with why each, content type, posting frequency)
+## 30-Day Content Calendar (4 weeks of content themes, post ideas, and formats)
+## Copy Templates (social media post, email subject + preview text, ad headline — 3 variations each)
+## Budget Split Guide (percentage allocation across channels with rationale)
+## KPIs to Track (5 metrics, how to measure, what numbers to aim for)
+Format with tables where useful, ready-to-use copy, and specific numbers.`,
+
+  sop: `Write a complete Standard Operating Procedure (SOP) document with these sections:
+## Purpose & Scope (what this procedure covers and who it applies to)
+## Roles & Responsibilities (who does what at each step)
+## Step-by-Step Process (numbered steps with decision points clearly marked)
+## Tools & Resources Required (software, templates, access needed)
+## Quality Checkpoints (how to verify each major step was done correctly)
+## What Can Go Wrong & How to Handle It (top 5 failure points with solutions)
+## Review Schedule (when and how to update this SOP)
+Format as a professional operational document with clear, unambiguous language.`,
+
+  client: `Build a complete client follow-up system with these sections:
+## 5-Email Follow-up Sequence (subject line + full email body for: initial contact, follow-up 1, follow-up 2, value-add, final close)
+## CRM Notes Template (what to log after every call/meeting: date, discussed, next step, sentiment)
+## Monthly Check-in Script (what to say, 5 key questions to ask, how to end the call)
+## Re-engagement Message (for clients who went quiet — subject line + email body)
+## Client Tier System (how to categorize clients A/B/C and what touchpoint frequency each gets)
+Format with actual email copy that can be used directly, not just descriptions.`,
+};
+
 // ── Chat Component ─────────────────────────────────────────────────────────────
 
 export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, onUpgradeClick, onBuildApp }: Props) {
@@ -85,6 +149,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   const [gate, setGate] = useState<{ feature: string; neededTier: 'pro' | 'business' } | null>(null);
   const [checkoutUrls, setCheckoutUrls] = useState<{ pro: string; business: string; portal: string }>({ pro: '', business: '', portal: '' });
   const [showQuickActions, setShowQuickActions] = useState(false);
+  const [showWorkflows, setShowWorkflows] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -182,6 +247,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           role: 'assistant',
           content: result.error ? result.error : (result.synthesis ?? ''),
           consensusResponses: result.responses,
+          forgeScore: result.forgeScore,
           isError: !!result.error,
           timestamp: new Date(),
         };
@@ -292,6 +358,12 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     if ('prompt' in a) { setInput(a.prompt); inputRef.current?.focus(); }
   };
 
+  const fireWorkflow = (workflowId: string) => {
+    setShowWorkflows(false);
+    const prompt = WORKFLOW_PROMPTS[workflowId];
+    if (prompt) sendMessage(prompt);
+  };
+
   const hasKeys = Object.values(keyStatus).some(Boolean);
   const activeCount = Object.values(keyStatus).filter(Boolean).length;
   const msgLimit = MSG_LIMITS[tier] ?? 30;
@@ -355,6 +427,24 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         <div ref={bottomRef} />
       </div>
 
+      {/* Workflow templates panel (collapsible) */}
+      {showWorkflows && (
+        <div style={cs.workflowPanel}>
+          <div style={cs.workflowPanelTitle}>⚡ Think Tank Workflows — click to fire instantly</div>
+          <div style={cs.workflowGrid}>
+            {WORKFLOWS.map(w => (
+              <button key={w.id} style={cs.workflowCard} onClick={() => fireWorkflow(w.id)}>
+                <span style={cs.workflowIcon}>{w.icon}</span>
+                <div>
+                  <div style={cs.workflowLabel}>{w.label}</div>
+                  <div style={cs.workflowDesc}>{w.desc}</div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Quick actions panel (collapsible) */}
       {showQuickActions && (
         <div style={cs.quickActionsPanel}>
@@ -371,6 +461,10 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         <button style={{ ...cs.actionBtn, ...(showQuickActions ? cs.actionBtnActive : {}) }}
           onClick={() => setShowQuickActions(s => !s)} title="Quick actions">
           ⚡ <span style={cs.actionLabel}>Quick</span>
+        </button>
+        <button style={{ ...cs.actionBtn, ...(showWorkflows ? cs.actionBtnActive : {}) }}
+          onClick={() => { setShowWorkflows(s => !s); setShowQuickActions(false); }} title="Workflow templates">
+          📋 <span style={cs.actionLabel}>Workflows</span>
         </button>
         <div style={cs.toolbarDivider} />
         <button style={cs.actionBtn} onClick={runFindPhotos} title="Find photos">
@@ -461,6 +555,9 @@ function ConsensusMessage({ msg, isSpeaking, canSpeak, onSpeak }: {
           <div style={cs.synthesisText}>{msg.content}</div>
         </div>
 
+        {/* Forge Score trust panel */}
+        {msg.forgeScore && <ForgeScorePanel score={msg.forgeScore} />}
+
         {/* Individual responses — tabs */}
         {responses.length > 1 && (
           <div style={cs.indivBlock}>
@@ -487,6 +584,45 @@ function ConsensusMessage({ msg, isSpeaking, canSpeak, onSpeak }: {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Forge Score Panel ─────────────────────────────────────────────────────────
+
+function ForgeScorePanel({ score }: { score: ForgeScore }) {
+  const RISK_COLORS: Record<string, string> = { Low: '#10a37f', Medium: '#f59e0b', High: '#ef4444' };
+  const c = RISK_COLORS[score.risk] ?? '#f59e0b';
+  const barColor = score.confidence >= 75 ? '#10a37f' : score.confidence >= 50 ? '#f59e0b' : '#ef4444';
+  return (
+    <div style={cs.forgePanel}>
+      <div style={cs.forgePanelHeader}>
+        <span style={cs.forgePanelTitle}>FORGE SCORE</span>
+        <span style={{ ...cs.riskBadge, background: c + '22', color: c, border: `1px solid ${c}55` }}>
+          {score.risk} Risk
+        </span>
+      </div>
+      <div style={cs.confRow}>
+        <span style={cs.confLabel}>Confidence</span>
+        <div style={cs.confTrack}>
+          <div style={{ ...cs.confBar, width: `${score.confidence}%`, background: barColor }} />
+        </div>
+        <span style={cs.confPct}>{score.confidence}%</span>
+      </div>
+      {score.agreement    && <ForgeRow icon="✅" label="Agreement"    text={score.agreement} />}
+      {score.disagreement && <ForgeRow icon="⚠️" label="Disagreement" text={score.disagreement} />}
+      {score.assumptions  && <ForgeRow icon="💭" label="Assumptions"  text={score.assumptions} />}
+      {score.verify       && <ForgeRow icon="🔍" label="Verify"       text={score.verify} />}
+    </div>
+  );
+}
+
+function ForgeRow({ icon, label, text }: { icon: string; label: string; text: string }) {
+  return (
+    <div style={cs.forgeRow}>
+      <span style={{ width: 18, flexShrink: 0 }}>{icon}</span>
+      <span style={cs.forgeRowLabel}>{label}: </span>
+      <span style={cs.forgeRowText}>{text}</span>
     </div>
   );
 }
@@ -653,4 +789,27 @@ const cs: Record<string, React.CSSProperties> = {
   textarea: { width: '100%', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)', fontSize: 14, padding: '10px 14px', resize: 'none' as const, outline: 'none', fontFamily: 'var(--font)', lineHeight: 1.5, maxHeight: 120, overflowY: 'auto' as const },
   sendBtn: { width: 40, height: 40, borderRadius: '50%', background: 'linear-gradient(135deg, var(--accent), var(--purple))', border: 'none', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'opacity 0.2s' },
   sendBtnDisabled: { opacity: 0.3, cursor: 'not-allowed' },
+
+  // Workflow panel
+  workflowPanel: { borderTop: '1px solid var(--border)', background: 'var(--bg-surface)', padding: '12px 16px', flexShrink: 0 },
+  workflowPanelTitle: { fontSize: 11, color: 'var(--accent)', fontWeight: 700 as const, marginBottom: 10, textTransform: 'uppercase' as const, letterSpacing: '0.06em' },
+  workflowGrid: { display: 'flex', flexDirection: 'column' as const, gap: 6 },
+  workflowCard: { display: 'flex', alignItems: 'center', gap: 12, background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '9px 14px', cursor: 'pointer', textAlign: 'left' as const, width: '100%' },
+  workflowIcon: { fontSize: 22, flexShrink: 0 },
+  workflowLabel: { fontSize: 13, fontWeight: 600 as const, color: 'var(--text-primary)', marginBottom: 2 },
+  workflowDesc: { fontSize: 11, color: 'var(--text-secondary)' },
+
+  // Forge Score panel
+  forgePanel: { borderTop: '1px solid var(--border)', padding: '10px 14px', display: 'flex', flexDirection: 'column' as const, gap: 6, background: '#0d0d0f55' },
+  forgePanelHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
+  forgePanelTitle: { fontSize: 9, fontWeight: 800 as const, color: 'var(--text-muted)', letterSpacing: '0.12em', textTransform: 'uppercase' as const },
+  riskBadge: { fontSize: 10, fontWeight: 700 as const, borderRadius: 20, padding: '2px 8px', textTransform: 'uppercase' as const, letterSpacing: '0.05em' },
+  confRow: { display: 'flex', alignItems: 'center', gap: 8 },
+  confLabel: { fontSize: 11, color: 'var(--text-muted)', minWidth: 72, flexShrink: 0 },
+  confTrack: { flex: 1, height: 6, background: 'var(--bg-input)', borderRadius: 3, overflow: 'hidden' },
+  confBar: { height: '100%', borderRadius: 3, transition: 'width 0.6s' },
+  confPct: { fontSize: 11, fontWeight: 600 as const, color: 'var(--text-primary)', minWidth: 32, textAlign: 'right' as const },
+  forgeRow: { display: 'flex', gap: 6, fontSize: 12, lineHeight: 1.5, alignItems: 'flex-start' },
+  forgeRowLabel: { color: 'var(--text-muted)', flexShrink: 0, fontWeight: 600 as const },
+  forgeRowText: { color: 'var(--text-secondary)', flex: 1 },
 };

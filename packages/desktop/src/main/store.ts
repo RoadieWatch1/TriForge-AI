@@ -55,6 +55,7 @@ interface StoreData {
   // message usage: key = "YYYY-MM" → count
   messageUsage: Record<string, number>;
   auth: StoredAuth;
+  ledger: LedgerEntry[];
 }
 
 function emptyData(): StoreData {
@@ -68,7 +69,28 @@ function emptyData(): StoreData {
     license: { key: null, tier: 'free', valid: false, email: null, expiresAt: null, activatedAt: null, lastChecked: null },
     messageUsage: {},
     auth: { username: null, pinHash: null, salt: null },
+    ledger: [],
   };
+}
+
+export interface ForgeScore {
+  confidence: number;
+  agreement: string;
+  disagreement: string;
+  risk: 'Low' | 'Medium' | 'High';
+  assumptions: string;
+  verify: string;
+}
+
+export interface LedgerEntry {
+  id: string;
+  timestamp: number;
+  request: string;
+  synthesis: string;
+  forgeScore?: ForgeScore;
+  responses?: Array<{ provider: string; text: string }>;
+  workflow?: string;
+  starred: boolean;
 }
 
 export class Store implements StorageAdapter {
@@ -247,6 +269,39 @@ export class Store implements StorageAdapter {
 
   deleteMemory(id: number): void {
     this.data.memory = this.data.memory.filter(m => m.id !== id);
+    this.save();
+  }
+
+  // Decision Ledger
+  addLedger(entry: LedgerEntry): void {
+    if (!this.data.ledger) this.data.ledger = [];
+    this.data.ledger.unshift(entry);
+    if (this.data.ledger.length > 500) this.data.ledger = this.data.ledger.slice(0, 500);
+    this.save();
+  }
+
+  getLedger(limit = 100, search = ''): LedgerEntry[] {
+    const all = this.data.ledger ?? [];
+    const filtered = search
+      ? all.filter(e =>
+          e.request.toLowerCase().includes(search.toLowerCase()) ||
+          e.synthesis.toLowerCase().includes(search.toLowerCase()) ||
+          (e.workflow ?? '').toLowerCase().includes(search.toLowerCase()))
+      : all;
+    return filtered.slice(0, limit);
+  }
+
+  getLedgerEntry(id: string): LedgerEntry | undefined {
+    return (this.data.ledger ?? []).find(e => e.id === id);
+  }
+
+  starLedger(id: string, starred: boolean): void {
+    const e = (this.data.ledger ?? []).find(e => e.id === id);
+    if (e) { e.starred = starred; this.save(); }
+  }
+
+  deleteLedger(id: string): void {
+    this.data.ledger = (this.data.ledger ?? []).filter(e => e.id !== id);
     this.save();
   }
 

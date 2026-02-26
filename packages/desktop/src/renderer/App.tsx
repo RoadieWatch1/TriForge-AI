@@ -5,6 +5,7 @@ import { Chat } from './components/Chat';
 import { LicensePanel } from './components/LicensePanel';
 import { LockScreen } from './components/LockScreen';
 import { AppBuilder } from './components/AppBuilder';
+import { Ledger } from './components/Ledger';
 
 // ── Error Boundary ───────────────────────────────────────────────────────────
 export class ErrorBoundary extends React.Component<
@@ -31,7 +32,7 @@ export class ErrorBoundary extends React.Component<
   }
 }
 
-type Screen = 'chat' | 'settings' | 'memory' | 'plan' | 'builder';
+type Screen = 'chat' | 'settings' | 'memory' | 'ledger' | 'plan' | 'builder';
 
 const LOCK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -182,6 +183,7 @@ export function App() {
           <NavBtn icon="💬" label="Chat"     active={screen === 'chat'}     onClick={() => setScreen('chat')} />
           <NavBtn icon="🛠️" label="Builder"  active={screen === 'builder'}  onClick={() => setScreen('builder')} />
           <NavBtn icon="🧠" label="Memory"   active={screen === 'memory'}   onClick={() => setScreen('memory')} />
+          <NavBtn icon="📋" label="Ledger"   active={screen === 'ledger'}   onClick={() => setScreen('ledger')} />
           <NavBtn icon="⚙️" label="Settings" active={screen === 'settings'} onClick={() => setScreen('settings')} />
           <div style={{ flex: 1 }} />
           <NavBtn icon="💎" label="Plan"     active={screen === 'plan'}     onClick={() => setScreen('plan')} />
@@ -201,6 +203,7 @@ export function App() {
             />
           )}
           {screen === 'builder' && <AppBuilder onBack={() => setScreen('chat')} />}
+          {screen === 'ledger' && <Ledger />}
           {screen === 'settings' && (
             <SettingsScreen
               keyStatus={keyStatus}
