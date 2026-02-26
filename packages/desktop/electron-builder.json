@@ -36,6 +36,7 @@
   "afterSign": "build/notarize.js",
 
   "dmg": {
+    "artifactName": "TriForge-AI-arm64.dmg",
     "title": "TriForge AI",
     "backgroundColor": "#0d0d0f",
     "contents": [
@@ -47,6 +48,7 @@
   "win": {
     "target": [{ "target": "nsis", "arch": ["x64"] }],
     "icon": "assets/icon.png",
+    "artifactName": "TriForge-AI-x64-Setup.exe",
     "signingHashAlgorithms": ["sha256"],
     "signDlls": false
   },
