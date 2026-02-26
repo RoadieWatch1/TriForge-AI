@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { VoiceButton } from './VoiceButton';
 import { UpgradeGate } from './UpgradeGate';
+import { ExecutionPlanView, type ExecutionPlan } from './ExecutionPlanView';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -537,7 +538,27 @@ function ConsensusMessage({ msg, isSpeaking, canSpeak, onSpeak }: {
   msg: Message; isSpeaking: boolean; canSpeak: boolean; onSpeak: () => void;
 }) {
   const [activeTab, setActiveTab] = useState(0);
+  const [plan, setPlan] = useState<ExecutionPlan | null>(null);
+  const [planLoading, setPlanLoading] = useState(false);
+  const [planError, setPlanError] = useState<string | null>(null);
   const responses = msg.consensusResponses ?? [];
+
+  const generatePlan = async () => {
+    setPlanLoading(true);
+    setPlanError(null);
+    try {
+      const result = await window.triforge.plan.generate(msg.content);
+      if (result.error) {
+        setPlanError(result.error);
+      } else if (result.plan) {
+        setPlan(result.plan as ExecutionPlan);
+      }
+    } catch (e) {
+      setPlanError(e instanceof Error ? e.message : 'Failed to generate plan.');
+    } finally {
+      setPlanLoading(false);
+    }
+  };
 
   return (
     <div style={cs.bubbleRow}>
@@ -557,6 +578,19 @@ function ConsensusMessage({ msg, isSpeaking, canSpeak, onSpeak }: {
 
         {/* Forge Score trust panel */}
         {msg.forgeScore && <ForgeScorePanel score={msg.forgeScore} />}
+
+        {/* Generate Execution Plan button */}
+        {!plan && (
+          <div style={cs.planBtnRow}>
+            <button style={cs.planBtn} onClick={generatePlan} disabled={planLoading}>
+              {planLoading ? '⏳ Generating plan…' : '🗺️ Generate Execution Plan'}
+            </button>
+            {planError && <span style={cs.planError}>{planError}</span>}
+          </div>
+        )}
+
+        {/* Execution Plan (shown after generation) */}
+        {plan && <ExecutionPlanView plan={plan} />}
 
         {/* Individual responses — tabs */}
         {responses.length > 1 && (
@@ -812,4 +846,9 @@ const cs: Record<string, React.CSSProperties> = {
   forgeRow: { display: 'flex', gap: 6, fontSize: 12, lineHeight: 1.5, alignItems: 'flex-start' },
   forgeRowLabel: { color: 'var(--text-muted)', flexShrink: 0, fontWeight: 600 as const },
   forgeRowText: { color: 'var(--text-secondary)', flex: 1 },
+
+  // Execution plan generation
+  planBtnRow: { padding: '10px 14px', borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10 },
+  planBtn: { fontSize: 12, fontWeight: 600 as const, background: '#8b5cf622', border: '1px solid #8b5cf655', color: '#8b5cf6', borderRadius: 7, padding: '7px 14px', cursor: 'pointer' },
+  planError: { fontSize: 12, color: '#ef4444' },
 };

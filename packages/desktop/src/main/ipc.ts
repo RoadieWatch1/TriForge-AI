@@ -2,6 +2,7 @@ import { ipcMain, shell, dialog, app, BrowserWindow } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { execSync } from 'child_process';
 import { Store, LedgerEntry, ForgeScore } from './store';
 import { transcribeAudio, textToSpeech } from './voice';
 import { validateLicense, loadLicense, deactivateLicense, LEMONSQUEEZY } from './license';
@@ -475,6 +476,89 @@ VERIFY: [1-3 specific things the user should double-check]
   // ── System ───────────────────────────────────────────────────────────────────
   ipcMain.handle('system:openExternal', (_e, url: string) => {
     shell.openExternal(url);
+  });
+
+  // ── Execution Plans ───────────────────────────────────────────────────────────
+  ipcMain.handle('plan:generate', async (_e, synthesis: string) => {
+    const { providerManager: pm } = await getEngine();
+    const providers = await pm.getActiveProviders();
+    if (providers.length === 0) return { error: 'No API keys configured.' };
+
+    const prompt = `You are an execution planning engine. Convert the provided synthesis into a structured, step-by-step action plan for a non-technical user.
+
+Output ONLY valid JSON matching this EXACT schema (no markdown fences, no explanation text):
+{
+  "planTitle": "Short title, max 6 words",
+  "riskLevel": "Low|Medium|High",
+  "summary": "One sentence describing what this plan accomplishes",
+  "steps": [
+    {
+      "id": "step-1",
+      "title": "Short action title, max 8 words",
+      "type": "review|browser|file|research|decision|command|print",
+      "description": "Clear, actionable instruction the user should follow",
+      "details": "URL, file path, specific resource, or command — omit if not applicable",
+      "requiresApproval": true,
+      "risk": "Low|Medium|High"
+    }
+  ]
+}
+
+Step type guide:
+- review: User reads/reviews provided information (no system action needed)
+- browser: Open a specific URL in the browser — MUST include a real URL in details
+- file: Open or interact with a file on the computer
+- research: TriForge AI researches a sub-topic for more detail
+- decision: User must make a choice before proceeding
+- command: Run a terminal command (read-only safe commands only: ls, dir, type, echo, whoami)
+- print: Print a document or content
+
+Rules:
+- 3 to 7 steps maximum
+- Every step must have requiresApproval: true
+- Steps that modify files or run commands get risk: "High"
+- "browser" steps MUST have a real URL in "details"
+- "command" steps must only use safe read-only commands
+- Make steps practical for a non-technical user
+
+Synthesis to convert:
+${synthesis.slice(0, 3000)}`;
+
+    try {
+      const msgs = [
+        { role: 'system', content: 'You are a JSON execution plan generator. Output ONLY valid JSON — no markdown fences, no explanation. Start immediately with { and end with }.' },
+        { role: 'user', content: prompt },
+      ];
+      const response = await (providers[0].generateResponse as (m: typeof msgs) => Promise<string>)(msgs);
+      const cleaned = response.trim()
+        .replace(/^```(?:json)?\r?\n?/, '')
+        .replace(/\r?\n?```$/, '');
+      const plan = JSON.parse(cleaned);
+      return { plan };
+    } catch (err: unknown) {
+      return { error: err instanceof Error ? err.message : 'Failed to generate plan.' };
+    }
+  });
+
+  // Only safe read-only commands are permitted
+  const SAFE_COMMAND_BASES = new Set(['ls', 'dir', 'pwd', 'echo', 'type', 'cat', 'whoami', 'hostname', 'date', 'ver']);
+
+  ipcMain.handle('plan:runCommand', async (_e, cmd: string) => {
+    const perms = store.getPermissions();
+    const terminalGranted = perms.find(p => p.key === 'terminal')?.granted;
+    if (!terminalGranted) return { error: 'PERMISSION_DENIED:terminal — enable Terminal permission in Settings first.' };
+
+    const base = cmd.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
+    if (!SAFE_COMMAND_BASES.has(base)) {
+      return { error: `"${base}" is not on the safe-command allowlist. Run it manually in your terminal.` };
+    }
+
+    try {
+      const output = execSync(cmd, { timeout: 10000, encoding: 'utf8', maxBuffer: 100 * 1024 });
+      return { output };
+    } catch (err: unknown) {
+      return { error: err instanceof Error ? err.message : 'Command failed.' };
+    }
   });
 
   // ── App Builder ───────────────────────────────────────────────────────────────

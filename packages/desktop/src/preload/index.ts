@@ -105,6 +105,25 @@ const api = {
       ipcRenderer.invoke('ledger:export', id, format) as Promise<{ ok: boolean; path?: string }>,
   },
 
+  // Execution Plans
+  plan: {
+    generate: (synthesis: string) =>
+      ipcRenderer.invoke('plan:generate', synthesis) as Promise<{
+        plan?: {
+          planTitle: string; riskLevel: 'Low'|'Medium'|'High'; summary: string;
+          steps: Array<{
+            id: string; title: string;
+            type: 'review'|'browser'|'file'|'research'|'decision'|'command'|'print';
+            description: string; details?: string; requiresApproval: boolean;
+            risk: 'Low'|'Medium'|'High';
+          }>;
+        };
+        error?: string;
+      }>,
+    runCommand: (cmd: string) =>
+      ipcRenderer.invoke('plan:runCommand', cmd) as Promise<{ output?: string; error?: string }>,
+  },
+
   // User profile
   profile: {
     get: () => ipcRenderer.invoke('profile:get') as Promise<Record<string, string>>,
