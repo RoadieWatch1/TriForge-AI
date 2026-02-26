@@ -13,12 +13,14 @@
     "package": "npm run build:prod && electron-builder --config electron-builder.json"
   },
   "devDependencies": {
+    "@electron/notarize": "^2.5.0",
     "@triforge/engine": "*",
+    "@types/node": "22.x",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
-    "@types/node": "22.x",
     "electron": "^34.0.0",
     "electron-builder": "^25.1.8",
+    "electron-updater": "^6.3.9",
     "esbuild": "^0.27.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

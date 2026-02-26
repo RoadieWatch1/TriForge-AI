@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write   # needed to create GitHub Releases and upload assets
+
+jobs:
+  # ── macOS build (arm64 DMG) ─────────────────────────────────────────────────
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build app
+        run: npm run build:prod
+
+      - name: Package (electron-builder)
+        working-directory: packages/desktop
+        run: npx electron-builder --mac --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          # Mac code-signing (base64-encoded .p12 certificate)
+          CSC_LINK:         ${{ secrets.MAC_CERTS }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTS_PASSWORD }}
+          # Apple notarization
+          APPLE_ID:                    ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID:               ${{ secrets.APPLE_TEAM_ID }}
+
+  # ── Windows build (x64 NSIS installer) ─────────────────────────────────────
+  build-win:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build app
+        run: npm run build:prod
+
+      - name: Package (electron-builder)
+        working-directory: packages/desktop
+        run: npx electron-builder --win --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          # Windows code-signing (base64-encoded .p12 certificate)
+          CSC_LINK:         ${{ secrets.WIN_CERTS }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CERTS_PASSWORD }}

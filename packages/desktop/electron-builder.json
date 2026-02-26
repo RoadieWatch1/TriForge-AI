@@ -12,15 +12,29 @@
     "assets/**"
   ],
   "npmRebuild": false,
+
+  "publish": [
+    {
+      "provider": "github",
+      "owner": "RoadieWatch1",
+      "repo": "TriForge-AI",
+      "releaseType": "release"
+    }
+  ],
+
   "mac": {
     "category": "public.app-category.productivity",
     "target": [
       { "target": "dmg", "arch": ["arm64"] }
     ],
     "icon": "assets/icon.png",
-    "hardenedRuntime": false,
-    "gatekeeperAssess": false
+    "hardenedRuntime": true,
+    "gatekeeperAssess": false,
+    "entitlements": "assets/entitlements.mac.plist",
+    "entitlementsInherit": "assets/entitlements.mac.plist"
   },
+  "afterSign": "build/notarize.js",
+
   "dmg": {
     "title": "TriForge AI",
     "backgroundColor": "#0d0d0f",
@@ -29,14 +43,19 @@
       { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
     ]
   },
+
   "win": {
     "target": [{ "target": "nsis", "arch": ["x64"] }],
-    "icon": "assets/icon.png"
+    "icon": "assets/icon.png",
+    "signingHashAlgorithms": ["sha256"],
+    "signDlls": false
   },
+
   "linux": {
     "target": [{ "target": "AppImage", "arch": ["x64"] }],
     "icon": "assets/icon.png"
   },
+
   "nsis": {
     "oneClick": false,
     "allowToChangeInstallationDirectory": true
