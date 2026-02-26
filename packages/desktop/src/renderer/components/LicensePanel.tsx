@@ -15,14 +15,22 @@ interface TierConfig {
   annualPrice: string;
   tagline: string;
   maxMessagesPerMonth: number;
+  memoryLimit: number;
   providers: number;
   voice: boolean;
   consensusMode: boolean;
   longTermMemory: boolean;
+  executionPlans: boolean;
+  workflowTemplates: boolean;
+  workflowReplay: boolean;
+  ledger: boolean;
+  exportTools: boolean;
+  appBuilderAnalysis: boolean;
   browserAutomation: boolean;
   emailCalendar: boolean;
   financeView: boolean;
   financeTrading: boolean;
+  governanceProfiles: boolean;
   checkoutUrl: string;
 }
 
@@ -196,7 +204,16 @@ export function LicensePanel({ onTierChange }: Props) {
                 period="/mo"
                 annual="$15/mo billed annually"
                 tagline="Your personal think tank"
-                features={['Unlimited messages', '3-model consensus', 'Voice I/O (Whisper + TTS)', 'Long-term memory', 'Finance dashboard']}
+                features={[
+                  '300 messages / month',
+                  'Think Tank — 3 AI consensus',
+                  'Voice I/O (Whisper + TTS)',
+                  'Execution plan generation',
+                  'One-click workflow templates',
+                  'Decision Ledger + export',
+                  'Long-term memory (50 entries)',
+                  'App Builder Services Guide',
+                ]}
                 ctaLabel="Upgrade to Pro"
                 accentColor="var(--accent)"
                 onCta={() => openUrl(urls.pro)}
@@ -207,8 +224,17 @@ export function LicensePanel({ onTierChange }: Props) {
               price="$49"
               period="/mo"
               annual="$39/mo billed annually"
-              tagline="Full autonomous agent"
-              features={['Everything in Pro', 'Browser automation', 'Email & Calendar', 'Investment trading', 'CRM & lead management', 'Printer access']}
+              tagline="Governance-first AI for serious work"
+              features={[
+                'Unlimited messages',
+                'Everything in Pro',
+                'Browser automation',
+                'Email & Calendar access',
+                'Investment trading',
+                'Workflow replay from Ledger',
+                'Governance profiles',
+                'Memory up to 200 entries',
+              ]}
               ctaLabel="Upgrade to Business"
               accentColor="var(--purple)"
               onCta={() => openUrl(urls.business)}

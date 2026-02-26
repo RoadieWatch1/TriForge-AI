@@ -360,6 +360,11 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   };
 
   const fireWorkflow = (workflowId: string) => {
+    if (tier === 'free') {
+      setShowWorkflows(false);
+      setGate({ feature: 'workflowTemplates', neededTier: 'pro' });
+      return;
+    }
     setShowWorkflows(false);
     const prompt = WORKFLOW_PROMPTS[workflowId];
     if (prompt) sendMessage(prompt);
@@ -412,7 +417,8 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         {messages.map(msg => (
           msg.consensusResponses
             ? <ConsensusMessage key={msg.id} msg={msg} isSpeaking={speaking === msg.id}
-                canSpeak={!!keyStatus.openai} onSpeak={() => speakMessage(msg.id, msg.content)} />
+                canSpeak={!!keyStatus.openai} onSpeak={() => speakMessage(msg.id, msg.content)}
+                tier={tier} onUpgradeClick={onUpgradeClick} />
             : <MessageBubble key={msg.id} msg={msg} isSpeaking={speaking === msg.id}
                 canSpeak={!!keyStatus.openai} onSpeak={() => speakMessage(msg.id, msg.content)}
                 onRetry={msg.isError && msg.role === 'assistant' ? () => {
@@ -534,16 +540,19 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
 
 // ── Consensus Message (Think Tank result) ─────────────────────────────────────
 
-function ConsensusMessage({ msg, isSpeaking, canSpeak, onSpeak }: {
+function ConsensusMessage({ msg, isSpeaking, canSpeak, onSpeak, tier, onUpgradeClick }: {
   msg: Message; isSpeaking: boolean; canSpeak: boolean; onSpeak: () => void;
+  tier: string; onUpgradeClick: () => void;
 }) {
   const [activeTab, setActiveTab] = useState(0);
   const [plan, setPlan] = useState<ExecutionPlan | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
   const responses = msg.consensusResponses ?? [];
+  const canUsePlans = tier === 'pro' || tier === 'business';
 
   const generatePlan = async () => {
+    if (!canUsePlans) { onUpgradeClick(); return; }
     setPlanLoading(true);
     setPlanError(null);
     try {
@@ -582,8 +591,8 @@ function ConsensusMessage({ msg, isSpeaking, canSpeak, onSpeak }: {
         {/* Generate Execution Plan button */}
         {!plan && (
           <div style={cs.planBtnRow}>
-            <button style={cs.planBtn} onClick={generatePlan} disabled={planLoading}>
-              {planLoading ? '⏳ Generating plan…' : '🗺️ Generate Execution Plan'}
+            <button style={{ ...cs.planBtn, ...(!canUsePlans ? cs.planBtnLocked : {}) }} onClick={generatePlan} disabled={planLoading}>
+              {planLoading ? '⏳ Generating plan…' : canUsePlans ? '🗺️ Generate Execution Plan' : '🔒 Execution Plans — Pro'}
             </button>
             {planError && <span style={cs.planError}>{planError}</span>}
           </div>
@@ -850,5 +859,6 @@ const cs: Record<string, React.CSSProperties> = {
   // Execution plan generation
   planBtnRow: { padding: '10px 14px', borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10 },
   planBtn: { fontSize: 12, fontWeight: 600 as const, background: '#8b5cf622', border: '1px solid #8b5cf655', color: '#8b5cf6', borderRadius: 7, padding: '7px 14px', cursor: 'pointer' },
+  planBtnLocked: { background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer' },
   planError: { fontSize: 12, color: '#ef4444' },
 };

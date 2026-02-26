@@ -32,19 +32,27 @@ function formatAge(ts: number): string {
   return new Date(ts).toLocaleDateString();
 }
 
-export function Ledger() {
+interface LedgerProps {
+  tier: string;
+  onUpgradeClick: () => void;
+}
+
+export function Ledger({ tier, onUpgradeClick }: LedgerProps) {
   const [entries, setEntries] = useState<LedgerEntry[]>([]);
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<Record<string, number>>({});
   const [exporting, setExporting] = useState<string | null>(null);
 
+  const isLocked = tier === 'free';
+
   useEffect(() => {
+    if (isLocked) return;
     const timer = setTimeout(() => {
       window.triforge.ledger.get(search || undefined).then(setEntries as (v: unknown) => void);
     }, search ? 300 : 0);
     return () => clearTimeout(timer);
-  }, [search]);
+  }, [search, isLocked]);
 
   const reload = async () => {
     const updated = await window.triforge.ledger.get(search || undefined) as unknown as LedgerEntry[];
@@ -72,6 +80,30 @@ export function Ledger() {
   const starred = entries.filter(e => e.starred);
   const rest = entries.filter(e => !e.starred);
   const sorted = [...starred, ...rest];
+
+  if (isLocked) {
+    return (
+      <div style={{ ...s.page, alignItems: 'center', justifyContent: 'center' }}>
+        <div style={s.upgradeGate}>
+          <div style={s.upgradeIcon}>📋</div>
+          <div style={s.upgradeTitle}>Decision Ledger</div>
+          <div style={s.upgradeDesc}>
+            Every Think Tank answer is automatically saved, searchable, and exportable — all in one place.
+            This feature is available on Pro and Business plans.
+          </div>
+          <div style={s.upgradeFeatures}>
+            <span style={s.upgradeFeature}>✓ Auto-save every Think Tank result</span>
+            <span style={s.upgradeFeature}>✓ Search and filter all decisions</span>
+            <span style={s.upgradeFeature}>✓ Star important entries</span>
+            <span style={s.upgradeFeature}>✓ Export to Markdown &amp; PDF</span>
+          </div>
+          <button style={s.upgradeBtn} onClick={onUpgradeClick}>
+            ⭐ Upgrade to Pro — $19/mo
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={s.page}>
@@ -318,4 +350,22 @@ const s: Record<string, React.CSSProperties> = {
   actionBtn: { background: 'var(--bg-base)', border: '1px solid var(--border)', color: 'var(--text-secondary)', borderRadius: 6, padding: '5px 12px', fontSize: 12, cursor: 'pointer' },
   actionBtnPrimary: { background: 'var(--accent)', color: '#fff', border: 'none', fontWeight: 600 },
   deleteBtn: { background: 'none', border: '1px solid var(--border)', color: '#ef4444', borderRadius: 6, padding: '5px 12px', fontSize: 12, cursor: 'pointer' },
+
+  // Upgrade gate
+  upgradeGate: {
+    display: 'flex', flexDirection: 'column' as const, alignItems: 'center', gap: 16,
+    maxWidth: 420, textAlign: 'center' as const, padding: 32,
+    background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 16,
+  },
+  upgradeIcon: { fontSize: 48 },
+  upgradeTitle: { fontSize: 20, fontWeight: 800, color: 'var(--text-primary)' },
+  upgradeDesc: { fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6 },
+  upgradeFeatures: { display: 'flex', flexDirection: 'column' as const, gap: 6, alignItems: 'flex-start', width: '100%' },
+  upgradeFeature: { fontSize: 13, color: '#10a37f', fontWeight: 500 },
+  upgradeBtn: {
+    background: 'linear-gradient(135deg, var(--accent), var(--purple))',
+    color: '#fff', border: 'none', borderRadius: 10,
+    padding: '12px 28px', fontSize: 14, fontWeight: 700, cursor: 'pointer',
+    width: '100%', marginTop: 4,
+  },
 };

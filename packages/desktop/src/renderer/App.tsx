@@ -203,7 +203,7 @@ export function App() {
             />
           )}
           {screen === 'builder' && <AppBuilder onBack={() => setScreen('chat')} />}
-          {screen === 'ledger' && <Ledger />}
+          {screen === 'ledger' && <Ledger tier={tier} onUpgradeClick={() => setScreen('plan')} />}
           {screen === 'settings' && (
             <SettingsScreen
               keyStatus={keyStatus}

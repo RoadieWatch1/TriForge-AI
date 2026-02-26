@@ -6,7 +6,7 @@ import { execSync } from 'child_process';
 import { Store, LedgerEntry, ForgeScore } from './store';
 import { transcribeAudio, textToSpeech } from './voice';
 import { validateLicense, loadLicense, deactivateLicense, LEMONSQUEEZY } from './license';
-import { isAtMessageLimit, canUse, TIERS } from './subscription';
+import { isAtMessageLimit, canUse, getMemoryLimit, TIERS } from './subscription';
 import { hashPin, verifyPin, isValidPin } from './auth';
 import { buildSystemPrompt } from './systemPrompt';
 import { scanForPhotos, listDirectory, organizeDirectory, getCommonDirs } from './filesystem';
@@ -321,7 +321,11 @@ VERIFY: [1-3 specific things the user should double-check]
   });
 
   // ── Memory ───────────────────────────────────────────────────────────────────
-  ipcMain.handle('memory:get', () => store.getMemory());
+  ipcMain.handle('memory:get', async () => {
+    const licMem = await store.getLicense();
+    const tierMem = (licMem.tier ?? 'free') as 'free' | 'pro' | 'business';
+    return store.getMemory(getMemoryLimit(tierMem));
+  });
   ipcMain.handle('memory:add', (_e, type: string, content: string) => {
     store.addMemory(type as 'fact' | 'goal' | 'preference' | 'business', content);
   });
@@ -331,21 +335,30 @@ VERIFY: [1-3 specific things the user should double-check]
   });
 
   // ── Decision Ledger ─────────────────────────────────────────────────────────
-  ipcMain.handle('ledger:get', (_e, search?: string, limit?: number) => {
+  async function getLedgerTier(): Promise<'free' | 'pro' | 'business'> {
+    const lic = await store.getLicense();
+    return (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+  }
+
+  ipcMain.handle('ledger:get', async (_e, search?: string, limit?: number) => {
+    if (!canUse('ledger', await getLedgerTier())) return { error: 'FEATURE_LOCKED:ledger' };
     return store.getLedger(limit ?? 100, search ?? '');
   });
 
-  ipcMain.handle('ledger:star', (_e, id: string, starred: boolean) => {
+  ipcMain.handle('ledger:star', async (_e, id: string, starred: boolean) => {
+    if (!canUse('ledger', await getLedgerTier())) return { error: 'FEATURE_LOCKED:ledger' };
     store.starLedger(id, starred);
     return store.getLedger();
   });
 
-  ipcMain.handle('ledger:delete', (_e, id: string) => {
+  ipcMain.handle('ledger:delete', async (_e, id: string) => {
+    if (!canUse('ledger', await getLedgerTier())) return { error: 'FEATURE_LOCKED:ledger' };
     store.deleteLedger(id);
     return store.getLedger();
   });
 
   ipcMain.handle('ledger:export', async (_e, id: string | null, format: 'md' | 'pdf') => {
+    if (!canUse('exportTools', await getLedgerTier())) return { ok: false, error: 'FEATURE_LOCKED:exportTools' };
     const raw = id
       ? [store.getLedgerEntry(id)].filter((e): e is LedgerEntry => !!e)
       : store.getLedger();
@@ -483,6 +496,9 @@ VERIFY: [1-3 specific things the user should double-check]
     const { providerManager: pm } = await getEngine();
     const providers = await pm.getActiveProviders();
     if (providers.length === 0) return { error: 'No API keys configured.' };
+    const licPlan = await store.getLicense();
+    const tierPlan = (licPlan.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!canUse('executionPlans', tierPlan)) return { error: 'FEATURE_LOCKED:executionPlans' };
 
     const prompt = `You are an execution planning engine. Convert the provided synthesis into a structured, step-by-step action plan for a non-technical user.
 
@@ -640,6 +656,9 @@ Reply with ONLY the complete HTML. Start immediately with <!DOCTYPE html> and en
     spec: { appType: string; audience: string; features: string; dataSave: string; style: string; extras: string },
     html: string,
   ) => {
+    const licAb = await store.getLicense();
+    const tierAb = (licAb.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!canUse('appBuilderAnalysis', tierAb)) return { services: [], error: 'FEATURE_LOCKED:appBuilderAnalysis' };
     const { providerManager: pm } = await getEngine();
     const providers = await pm.getActiveProviders();
     if (providers.length === 0) return { services: [] };
