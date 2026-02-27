@@ -292,10 +292,13 @@
         );
         if (preferred) msg.voice = preferred;
 
-        // Small pause so the splash animation has started before the voice kicks in
+        // Wait for the splash animation to fully settle before voice kicks in.
+        // 1800ms gives enough time for the window to render and the forge
+        // animation to run through one full cycle — especially important on
+        // Windows where the first paint can be 200-400ms after window creation.
         setTimeout(function () {
           speechSynthesis.speak(msg);
-        }, 350);
+        }, 1800);
       }
 
       // Voices may load asynchronously on first call
@@ -305,7 +308,7 @@
       } else {
         speechSynthesis.addEventListener('voiceschanged', greet, { once: true });
         // Safety fallback: if voiceschanged never fires, speak with default voice
-        setTimeout(greet, 800);
+        setTimeout(greet, 2200);
       }
     })();
   </script>

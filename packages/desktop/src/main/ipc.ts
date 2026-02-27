@@ -396,13 +396,17 @@ VERIFY: [1-3 specific things the user should double-check]
     }
     // PDF via hidden BrowserWindow — native Electron, no npm packages
     const html = ledgerMarkdownToHtml(markdown);
-    const win = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: false } });
-    await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
-    const pdfBuf = await win.webContents.printToPDF({ printBackground: false });
-    win.destroy();
-    await fs.promises.writeFile(savePath.filePath, pdfBuf);
-    shell.showItemInFolder(savePath.filePath);
-    return { ok: true, path: savePath.filePath };
+    let win: BrowserWindow | null = null;
+    try {
+      win = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: false } });
+      await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+      const pdfBuf = await win.webContents.printToPDF({ printBackground: false });
+      await fs.promises.writeFile(savePath.filePath, pdfBuf);
+      shell.showItemInFolder(savePath.filePath);
+      return { ok: true, path: savePath.filePath };
+    } finally {
+      win?.destroy();
+    }
   });
 
   // ── User profile ──────────────────────────────────────────────────────────────
