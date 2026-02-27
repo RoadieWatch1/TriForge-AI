@@ -5,9 +5,9 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "node_modules/.bin/tsc -p packages/engine/tsconfig.json && node packages/vscode-ext/esbuild.js && node packages/desktop/esbuild.js",
-    "build:prod": "node_modules/.bin/tsc -p packages/engine/tsconfig.json && node packages/vscode-ext/esbuild.js --production && node packages/desktop/esbuild.js --production",
-    "build:desktop": "node_modules/.bin/tsc -p packages/engine/tsconfig.json && node packages/desktop/esbuild.js",
+    "build": "npx tsc -p packages/engine/tsconfig.json && node packages/vscode-ext/esbuild.js && node packages/desktop/esbuild.js",
+    "build:prod": "npx tsc -p packages/engine/tsconfig.json && node packages/vscode-ext/esbuild.js --production && node packages/desktop/esbuild.js --production",
+    "build:desktop": "npx tsc -p packages/engine/tsconfig.json && node packages/desktop/esbuild.js",
     "dev:desktop": "node packages/desktop/esbuild.js --dev",
     "start:desktop": "npx electron packages/desktop",
     "icon": "node packages/desktop/scripts/make-icon.js",
@@ -15,7 +15,7 @@
     "package:mac": "npm run build:desktop && npm run icon:mac && cd packages/desktop && npx electron-builder --mac",
     "package:win": "npm run build:desktop && npm run icon && cd packages/desktop && npx electron-builder --win",
     "watch": "node packages/vscode-ext/esbuild.js --watch",
-    "typecheck": "node_modules/.bin/tsc --build packages/engine && node_modules/.bin/tsc -p packages/vscode-ext/tsconfig.json --noEmit && node_modules/.bin/tsc -p packages/desktop/tsconfig.json --noEmit"
+    "typecheck": "npx tsc --build packages/engine && npx tsc -p packages/vscode-ext/tsconfig.json --noEmit && npx tsc -p packages/desktop/tsconfig.json --noEmit"
   },
   "devDependencies": {
     "typescript": "^5.9.3"
