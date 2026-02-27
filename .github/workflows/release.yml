@@ -31,14 +31,9 @@ jobs:
         run: npx electron-builder --mac --publish always
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          # Code-signing: skipped automatically when MAC_CERTS is not set
-          CSC_LINK:                    ${{ secrets.MAC_CERTS }}
-          CSC_KEY_PASSWORD:            ${{ secrets.MAC_CERTS_PASSWORD }}
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.MAC_CERTS != '' }}
-          # Notarization: notarize.js skips gracefully when APPLE_ID is not set
-          APPLE_ID:                    ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID:               ${{ secrets.APPLE_TEAM_ID }}
+          # Disable signing — add MAC_CERTS secret and remove these two lines when cert is ready
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          ELECTRON_BUILDER_COMPRESSION_LEVEL: '0'
 
   # ── Windows build (x64 NSIS installer) ─────────────────────────────────────
   build-win:
@@ -62,7 +57,5 @@ jobs:
         run: npx electron-builder --win --publish always
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          # Code-signing: skipped automatically when WIN_CERTS is not set
-          CSC_LINK:                    ${{ secrets.WIN_CERTS }}
-          CSC_KEY_PASSWORD:            ${{ secrets.WIN_CERTS_PASSWORD }}
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.WIN_CERTS != '' }}
+          # Disable signing — add WIN_CERTS secret and remove these two lines when cert is ready
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
