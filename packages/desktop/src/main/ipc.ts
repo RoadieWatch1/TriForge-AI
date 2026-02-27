@@ -178,6 +178,7 @@ export function setupIpc(store: Store): void {
         ...history,
         { role: 'user', content: message },
       ]);
+      // Only count toward quota on success — failed calls don't cost the user
       store.incrementMessageCount();
       return { text: response, provider: primary.name };
     } catch (err: unknown) {
@@ -325,6 +326,11 @@ VERIFY: [1-3 specific things the user should double-check]
 
   // ── Voice: Text-to-Speech ─────────────────────────────────────────────────────
   ipcMain.handle('voice:speak', async (_e, text: string) => {
+    const licSpeak = await store.getLicense();
+    const tierSpeak = (licSpeak.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('VOICE', tierSpeak)) {
+      return { error: lockedError('VOICE') };
+    }
     try {
       const audioBuffer = await textToSpeech(text, store);
       // Return as base64 for the renderer to play
@@ -502,6 +508,13 @@ VERIFY: [1-3 specific things the user should double-check]
 
   // ── System ───────────────────────────────────────────────────────────────────
   ipcMain.handle('system:openExternal', (_e, url: string) => {
+    // Only allow http/https URLs — block javascript:, file:, and other schemes
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return;
+    } catch {
+      return; // invalid URL
+    }
     shell.openExternal(url);
   });
 

@@ -81,27 +81,37 @@ export function App() {
   // ── Init ─────────────────────────────────────────────────────────────────────
   useEffect(() => {
     async function init() {
-      const [isFirst, perms, keys, lic, usage, authStatus] = await Promise.all([
-        window.triforge.permissions.isFirstRun(),
-        window.triforge.permissions.get(),
-        window.triforge.keys.status(),
-        window.triforge.license.load(),
-        window.triforge.usage.get(),
-        window.triforge.auth.status(),
-      ]);
-      setFirstRun(isFirst);
-      setPermissions(perms);
-      setKeyStatus(keys);
-      setTier(lic.tier ?? 'free');
-      setMessagesThisMonth(usage.messagesThisMonth);
-      setHasPin(authStatus.hasPin);
-      setLockUsername(authStatus.username);
-      if (authStatus.hasPin) setLocked(true); // require PIN on every launch
-      if (!isFirst) {
-        try {
-          const m = await window.triforge.engine.mode();
-          setMode(m);
-        } catch { /* no keys yet */ }
+      try {
+        // 8-second timeout so a slow/offline license check never hangs the app
+        const timeout = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('startup_timeout')), 8000)
+        );
+        const load = Promise.all([
+          window.triforge.permissions.isFirstRun(),
+          window.triforge.permissions.get(),
+          window.triforge.keys.status(),
+          window.triforge.license.load(),
+          window.triforge.usage.get(),
+          window.triforge.auth.status(),
+        ]);
+        const [isFirst, perms, keys, lic, usage, authStatus] = await Promise.race([load, timeout]);
+        setFirstRun(isFirst);
+        setPermissions(perms);
+        setKeyStatus(keys);
+        setTier(lic.tier ?? 'free');
+        setMessagesThisMonth(usage.messagesThisMonth);
+        setHasPin(authStatus.hasPin);
+        setLockUsername(authStatus.username);
+        if (authStatus.hasPin) setLocked(true); // require PIN on every launch
+        if (!isFirst) {
+          try {
+            const m = await window.triforge.engine.mode();
+            setMode(m);
+          } catch { /* no keys yet */ }
+        }
+      } catch {
+        // Startup failed or timed out — open on free tier so the app is usable
+        setTier('free');
       }
       setReady(true);
     }

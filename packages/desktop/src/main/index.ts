@@ -1,4 +1,4 @@
-import { app, BrowserWindow, nativeTheme, globalShortcut } from 'electron';
+import { app, BrowserWindow, nativeTheme, globalShortcut, Menu } from 'electron';
 import path from 'path';
 import { Store } from './store';
 import { setupIpc } from './ipc';
@@ -82,6 +82,27 @@ function createWindow(): void {
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 app.whenReady().then(async () => {
   nativeTheme.themeSource = 'dark';
+
+  // Register Edit menu so Ctrl+C/V/X/A/Z work in all input fields on Windows.
+  // On macOS the OS handles these natively; on Windows Electron requires an
+  // explicit menu with role-based items to bind the keyboard shortcuts.
+  const menu = Menu.buildFromTemplate([
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'pasteAndMatchStyle' },
+        { role: 'delete' },
+        { role: 'selectAll' },
+      ],
+    },
+  ]);
+  Menu.setApplicationMenu(menu);
 
   // 1. Show splash immediately — record when it appeared
   splashWindow = createSplash();
