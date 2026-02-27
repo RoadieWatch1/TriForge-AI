@@ -21,16 +21,19 @@ exports.default = async function notarizing(context) {
     return;
   }
 
-  // Skip if no code-signing certificate is configured — notarizing an unsigned
-  // app will always fail. CSC_LINK is the env var electron-builder reads for
-  // the P12 certificate; without it the build is adhoc-signed only.
-  if (!process.env.CSC_LINK) {
-    console.log('[notarize] CSC_LINK not set — app is unsigned, skipping notarization');
-    return;
-  }
-
   const appName = context.packager.appInfo.productFilename;
   const appPath = `${context.appOutDir}/${appName}.app`;
+
+  // Verify the app is actually code-signed before attempting notarization.
+  // Electron-builder can skip signing silently (e.g. cert decode failure) even
+  // when CSC_LINK is set — notarizing an unsigned binary always fails.
+  const { execSync } = require('child_process');
+  try {
+    execSync(`codesign --verify --strict "${appPath}"`, { stdio: 'pipe' });
+  } catch {
+    console.log('[notarize] App is not code-signed — skipping notarization');
+    return;
+  }
 
   console.log(`[notarize] Submitting ${appName}.app to Apple notary…`);
 
