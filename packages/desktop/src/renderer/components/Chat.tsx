@@ -38,6 +38,12 @@ interface Props {
   onMessageSent: () => void;
   onUpgradeClick: () => void;
   onBuildApp: () => void;
+  activeProfileId?: string | null;
+  onProfileSwitch?: () => void;
+  onProfileDeactivate?: () => void;
+  /** When set, pre-fills the chat input field once then clears. */
+  prefill?: string | null;
+  onClearPrefill?: () => void;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -129,7 +135,7 @@ Format with actual email copy that can be used directly, not just descriptions.`
 
 // ── Chat Component ─────────────────────────────────────────────────────────────
 
-export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, onUpgradeClick, onBuildApp }: Props) {
+export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, onUpgradeClick, onBuildApp, activeProfileId, onProfileSwitch, onProfileDeactivate, prefill, onClearPrefill }: Props) {
   const [messages, setMessages] = useState<Message[]>(() => {
     // Load persisted history on first render
     try {
@@ -175,6 +181,15 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     }, 600);
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
   }, [messages]);
+
+  // Pre-fill input when a template prompt is passed in from ForgeProfiles
+  useEffect(() => {
+    if (prefill) {
+      setInput(prefill);
+      onClearPrefill?.();
+      inputRef.current?.focus();
+    }
+  }, [prefill]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── TTS ───────────────────────────────────────────────────────────────────────
 
@@ -387,6 +402,15 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           onClose={() => setGate(null)}
           onUpgrade={(url) => { window.triforge.system.openExternal(url); setGate(null); }}
           proCheckout={checkoutUrls.pro} bizCheckout={checkoutUrls.business}
+        />
+      )}
+
+      {/* Active profile strip */}
+      {activeProfileId && (
+        <ProfileStatusStrip
+          profileId={activeProfileId}
+          onSwitch={onProfileSwitch ?? (() => {})}
+          onDeactivate={onProfileDeactivate ?? (() => {})}
         />
       )}
 
@@ -745,6 +769,46 @@ function getWelcomeMessage(mode: string, keys: Record<string, boolean>): string 
   }
   return `👋 Welcome! Running with ${active[0]}. Add more API keys in Settings to unlock Think Tank consensus mode.`;
 }
+
+// ── Profile Status Strip ──────────────────────────────────────────────────────
+
+const PROFILE_DISPLAY: Record<string, { name: string; icon: string }> = {
+  restaurant: { name: 'Restaurant & Food Service', icon: '🍽️' },
+  trucking:   { name: 'Trucking & Freight',         icon: '🚛' },
+  consultant: { name: 'Consultant & Agency',        icon: '💼' },
+};
+
+function ProfileStatusStrip({ profileId, onSwitch, onDeactivate }: {
+  profileId: string;
+  onSwitch: () => void;
+  onDeactivate: () => void;
+}) {
+  const info = PROFILE_DISPLAY[profileId] ?? { name: profileId, icon: '🛡️' };
+  return (
+    <div style={stripStyle.bar}>
+      <span style={stripStyle.label}>{info.icon} <strong>{info.name}</strong> profile active</span>
+      <div style={stripStyle.actions}>
+        <button style={stripStyle.btn} onClick={onSwitch}>Switch Profile</button>
+        <button style={stripStyle.btn} onClick={onDeactivate}>Deactivate</button>
+      </div>
+    </div>
+  );
+}
+
+const stripStyle: Record<string, React.CSSProperties> = {
+  bar: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    padding: '6px 16px', background: 'var(--accent-dim)',
+    borderBottom: '1px solid var(--accent)33', flexShrink: 0,
+  },
+  label: { fontSize: 12, color: 'var(--text-secondary)' },
+  actions: { display: 'flex', gap: 8 },
+  btn: {
+    background: 'none', border: '1px solid var(--accent)55',
+    color: 'var(--accent)', borderRadius: 5, padding: '3px 10px',
+    fontSize: 11, fontWeight: 600, cursor: 'pointer',
+  },
+};
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 

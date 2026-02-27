@@ -18,6 +18,7 @@ export type Capability =
   | 'FINANCE_TRADING'      // live investment order placement
   | 'WORKFLOW_REPLAY'      // replay past plans from Ledger
   | 'GOVERNANCE_PROFILES'  // custom permission profiles
+  | 'FORGE_PROFILES'       // industry operational profiles (Restaurant, Trucking, Consultant)
   | 'UNLIMITED_MESSAGES';  // no monthly cap
 
 // ── Per-tier capability sets ──────────────────────────────────────────────────
@@ -34,6 +35,7 @@ const PRO_CAPS: ReadonlySet<Capability> = new Set<Capability>([
   'EXPORT_TOOLS',
   'APP_ANALYSIS',
   'FINANCE_DASHBOARD',
+  'FORGE_PROFILES',
 ]);
 
 const BUSINESS_CAPS: ReadonlySet<Capability> = new Set<Capability>([
@@ -88,6 +90,7 @@ export const CAPABILITY_LABELS: Record<Capability, string> = {
   FINANCE_TRADING:     'Investment trading',
   WORKFLOW_REPLAY:     'Workflow replay from Ledger',
   GOVERNANCE_PROFILES: 'Governance profiles',
+  FORGE_PROFILES:      'Forge Profiles (operational intelligence)',
   UNLIMITED_MESSAGES:  'Unlimited messages',
 };
 

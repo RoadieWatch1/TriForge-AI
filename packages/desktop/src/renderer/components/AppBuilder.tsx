@@ -68,9 +68,12 @@ const BUILD_STEPS = [
 
 interface Props {
   onBack: () => void;
+  activeProfileId?: string | null;
+  onProfileSwitch?: () => void;
+  onProfileDeactivate?: () => void;
 }
 
-export function AppBuilder({ onBack }: Props) {
+export function AppBuilder({ onBack, activeProfileId, onProfileSwitch, onProfileDeactivate }: Props) {
   const [phase, setPhase] = useState<Phase>('questions');
   const [questionIndex, setQuestionIndex] = useState(0);
   const [answers, setAnswers] = useState<Spec>({ appType: '', audience: '', features: '', dataSave: '', style: '', extras: '' });
@@ -217,6 +220,14 @@ export function AppBuilder({ onBack }: Props) {
         </div>
 
         {error && <div style={s.errorBanner}>{error}</div>}
+
+        {activeProfileId && (
+          <ProfileStatusStrip
+            profileId={activeProfileId}
+            onSwitch={onProfileSwitch ?? (() => {})}
+            onDeactivate={onProfileDeactivate ?? (() => {})}
+          />
+        )}
 
         <div style={s.card}>
           <div style={s.progressTrack}><div style={{ ...s.progressBar, width: `${progress}%` }} /></div>
@@ -582,6 +593,46 @@ function TipRow({ icon, children }: { icon: string; children: React.ReactNode })
     </div>
   );
 }
+
+// ── Profile Status Strip ──────────────────────────────────────────────────────
+
+const AB_PROFILE_DISPLAY: Record<string, { name: string; icon: string }> = {
+  restaurant: { name: 'Restaurant & Food Service', icon: '🍽️' },
+  trucking:   { name: 'Trucking & Freight',         icon: '🚛' },
+  consultant: { name: 'Consultant & Agency',        icon: '💼' },
+};
+
+function ProfileStatusStrip({ profileId, onSwitch, onDeactivate }: {
+  profileId: string;
+  onSwitch: () => void;
+  onDeactivate: () => void;
+}) {
+  const info = AB_PROFILE_DISPLAY[profileId] ?? { name: profileId, icon: '🛡️' };
+  return (
+    <div style={abStrip.bar}>
+      <span style={abStrip.label}>{info.icon} <strong>{info.name}</strong> profile active — scaffold context will be injected</span>
+      <div style={abStrip.actions}>
+        <button style={abStrip.btn} onClick={onSwitch}>Switch Profile</button>
+        <button style={abStrip.btn} onClick={onDeactivate}>Deactivate</button>
+      </div>
+    </div>
+  );
+}
+
+const abStrip: Record<string, React.CSSProperties> = {
+  bar: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    padding: '7px 20px', background: 'var(--accent-dim)',
+    borderBottom: '1px solid var(--accent)33', flexShrink: 0,
+  },
+  label: { fontSize: 12, color: 'var(--text-secondary)' },
+  actions: { display: 'flex', gap: 8 },
+  btn: {
+    background: 'none', border: '1px solid var(--accent)55',
+    color: 'var(--accent)', borderRadius: 5, padding: '3px 10px',
+    fontSize: 11, fontWeight: 600, cursor: 'pointer',
+  },
+};
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 

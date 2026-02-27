@@ -6,6 +6,7 @@ import { LicensePanel } from './components/LicensePanel';
 import { LockScreen } from './components/LockScreen';
 import { AppBuilder } from './components/AppBuilder';
 import { Ledger } from './components/Ledger';
+import { ForgeProfiles } from './components/ForgeProfiles';
 
 // ── Error Boundary ───────────────────────────────────────────────────────────
 export class ErrorBoundary extends React.Component<
@@ -32,7 +33,7 @@ export class ErrorBoundary extends React.Component<
   }
 }
 
-type Screen = 'chat' | 'settings' | 'memory' | 'ledger' | 'plan' | 'builder';
+type Screen = 'chat' | 'settings' | 'memory' | 'ledger' | 'plan' | 'builder' | 'profiles';
 
 const LOCK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -48,6 +49,9 @@ export function App() {
   const [tier, setTier] = useState<string>('free');
   const [messagesThisMonth, setMessagesThisMonth] = useState(0);
   const [updateStatus, setUpdateStatus] = useState<{ state: string; version?: string; percent?: number } | null>(null);
+  const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
+  // Chat prefill — set by ForgeProfiles "Open in Chat", consumed once by Chat
+  const [chatPrefill, setChatPrefill] = useState<string | null>(null);
 
   // Session lock state
   const [hasPin, setHasPin] = useState(false);
@@ -93,8 +97,9 @@ export function App() {
           window.triforge.license.load(),
           window.triforge.usage.get(),
           window.triforge.auth.status(),
+          window.triforge.forgeProfiles.getActive(),
         ]);
-        const [isFirst, perms, keys, lic, usage, authStatus] = await Promise.race([load, timeout]);
+        const [isFirst, perms, keys, lic, usage, authStatus, forgeActive] = await Promise.race([load, timeout]);
         setFirstRun(isFirst);
         setPermissions(perms);
         setKeyStatus(keys);
@@ -103,6 +108,7 @@ export function App() {
         setHasPin(authStatus.hasPin);
         setLockUsername(authStatus.username);
         if (authStatus.hasPin) setLocked(true); // require PIN on every launch
+        setActiveProfileId(forgeActive.id ?? null);
         if (!isFirst) {
           try {
             const m = await window.triforge.engine.mode();
@@ -226,6 +232,7 @@ export function App() {
           <NavBtn icon="🛠️" label="Builder"  active={screen === 'builder'}  onClick={() => setScreen('builder')} />
           <NavBtn icon="🧠" label="Memory"   active={screen === 'memory'}   onClick={() => setScreen('memory')} />
           <NavBtn icon="📋" label="Ledger"   active={screen === 'ledger'}   onClick={() => setScreen('ledger')} />
+          <NavBtn icon="🛡️" label="Profiles" active={screen === 'profiles'} onClick={() => setScreen('profiles')} />
           <NavBtn icon="⚙️" label="Settings" active={screen === 'settings'} onClick={() => setScreen('settings')} />
           <div style={{ flex: 1 }} />
           <NavBtn icon="💎" label="Plan"     active={screen === 'plan'}     onClick={() => setScreen('plan')} />
@@ -242,9 +249,36 @@ export function App() {
               onMessageSent={() => setMessagesThisMonth(n => n + 1)}
               onUpgradeClick={() => setScreen('plan')}
               onBuildApp={() => setScreen('builder')}
+              activeProfileId={activeProfileId}
+              onProfileSwitch={() => setScreen('profiles')}
+              onProfileDeactivate={async () => {
+                await window.triforge.forgeProfiles.deactivate();
+                setActiveProfileId(null);
+              }}
+              prefill={chatPrefill}
+              onClearPrefill={() => setChatPrefill(null)}
             />
           )}
-          {screen === 'builder' && <AppBuilder onBack={() => setScreen('chat')} />}
+          {screen === 'builder' && (
+            <AppBuilder
+              onBack={() => setScreen('chat')}
+              activeProfileId={activeProfileId}
+              onProfileSwitch={() => setScreen('profiles')}
+              onProfileDeactivate={async () => {
+                await window.triforge.forgeProfiles.deactivate();
+                setActiveProfileId(null);
+              }}
+            />
+          )}
+          {screen === 'profiles' && (
+            <ForgeProfiles
+              tier={tier}
+              activeProfileId={activeProfileId}
+              onProfileChange={(id) => setActiveProfileId(id)}
+              onSendToChat={(prompt) => { setChatPrefill(prompt); setScreen('chat'); }}
+              onUpgradeClick={() => setScreen('plan')}
+            />
+          )}
           {screen === 'ledger' && <Ledger tier={tier} onUpgradeClick={() => setScreen('plan')} />}
           {screen === 'settings' && (
             <SettingsScreen

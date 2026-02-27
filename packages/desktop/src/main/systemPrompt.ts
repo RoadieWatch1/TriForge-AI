@@ -1,6 +1,7 @@
 import type { Store } from './store';
 import { TIERS, hasCapability } from './subscription';
 import type { Tier } from './license';
+import { getProfile } from './profiles';
 
 /**
  * Builds the TriForge system prompt injected at the top of every conversation.
@@ -50,6 +51,13 @@ export async function buildSystemPrompt(store: Store): Promise<string> {
     systemTools.push('• EMAIL — can read and send emails on the user\'s behalf');
   }
 
+  // ── Active Forge Profile context (bounded injection, ≤ 1200 chars) ──────────
+  const activeProfileId = store.getActiveProfileId();
+  const activeForgeProfile = activeProfileId ? getProfile(activeProfileId) : undefined;
+  const profileBlock = activeForgeProfile
+    ? `## Active Forge Profile: ${activeForgeProfile.name}\n${activeForgeProfile.systemContext}`
+    : '';
+
   // ── User memories ─────────────────────────────────────────────────────────
   const memoryBlock = memories.length > 0
     ? memories.map(m => `• [${m.type.toUpperCase()}] ${m.content}`).join('\n')
@@ -92,7 +100,7 @@ ${systemTools.length > 0 ? systemTools.join('\n') : '• Limited system access �
 
 ### Permissions granted by ${userName}:
 ${permBlock}
-
+${profileBlock}
 ## How to Handle System Tasks
 When the user asks you to find photos, organize files, or print something:
 1. Confirm what you're about to do in one sentence

@@ -47,8 +47,9 @@ interface StoreData {
   kv: Record<string, string>;
   secrets: Record<string, string>;
   permissions: Record<string, { granted: boolean; budgetLimit?: number; requireConfirm: boolean }>;
-  memory: Array<{ id: number; type: string; content: string; created_at: number }>;
+  memory: Array<{ id: number; type: string; content: string; created_at: number; source?: string }>;
   firstRunDone: boolean;
+  activeProfileId: string | null;
   userProfile: Record<string, string>;
   nextMemoryId: number;
   license: StoredLicense;
@@ -70,6 +71,7 @@ function emptyData(): StoreData {
     messageUsage: {},
     auth: { username: null, pinHash: null, salt: null },
     ledger: [],
+    activeProfileId: null,
   };
 }
 
@@ -257,19 +259,47 @@ export class Store implements StorageAdapter {
     return this.data.messageUsage[k];
   }
 
-  addMemory(type: 'fact' | 'goal' | 'preference' | 'business', content: string): void {
-    this.data.memory.unshift({ id: this.data.nextMemoryId++, type, content, created_at: Date.now() });
+  addMemory(type: 'fact' | 'goal' | 'preference' | 'business', content: string, source?: string): void {
+    this.data.memory.unshift({ id: this.data.nextMemoryId++, type, content, created_at: Date.now(), source });
     if (this.data.memory.length > 200) this.data.memory = this.data.memory.slice(0, 200);
     this.save();
   }
 
-  getMemory(limit = 50): Array<{ id: number; type: string; content: string; created_at: number }> {
+  getMemory(limit = 50): Array<{ id: number; type: string; content: string; created_at: number; source?: string }> {
     return this.data.memory.slice(0, limit);
   }
 
   deleteMemory(id: number): void {
     this.data.memory = this.data.memory.filter(m => m.id !== id);
     this.save();
+  }
+
+  // ── Forge Profile persistence ─────────────────────────────────────────────
+
+  getActiveProfileId(): string | null {
+    return this.data.activeProfileId ?? null;
+  }
+
+  setActiveProfileId(id: string | null): void {
+    this.data.activeProfileId = id;
+    this.save();
+  }
+
+  /**
+   * Remove all memory entries injected by a specific profile.
+   * Guardrail: only removes entries where source === `profile:${profileId}`.
+   * Entries without a source tag (user-authored memories) are never touched.
+   */
+  removeProfileMemories(profileId: string): void {
+    const tag = `profile:${profileId}`;
+    this.data.memory = this.data.memory.filter(m => m.source !== tag);
+    this.save();
+  }
+
+  /** Returns true if memory entries for this profile are already present (idempotency check). */
+  hasProfileMemories(profileId: string): boolean {
+    const tag = `profile:${profileId}`;
+    return this.data.memory.some(m => m.source === tag);
   }
 
   // Decision Ledger

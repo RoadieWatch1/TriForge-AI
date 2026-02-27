@@ -130,6 +130,57 @@ const api = {
     set: (profile: Record<string, string>) => ipcRenderer.invoke('profile:set', profile),
   },
 
+  // Forge Profiles (industry operational profiles)
+  forgeProfiles: {
+    list: () => ipcRenderer.invoke('forgeProfiles:list') as Promise<{
+      profiles?: Array<{
+        id: string; name: string; icon: string; description: string;
+        systemContext: string;
+        memoryPreset: Array<{ type: string; content: string }>;
+        executionTemplates: Array<{ id: string; title: string; description: string; steps: string[] }>;
+        appScaffold: { description: string; modules: string[] };
+        kpiModel: string[];
+        blueprintSections: string[];
+        blueprintPrompt: string;
+      }>;
+      error?: string;
+    }>,
+    getActive: () => ipcRenderer.invoke('forgeProfiles:getActive') as Promise<{
+      id: string | null;
+      profile: {
+        id: string; name: string; icon: string; description: string;
+        systemContext: string;
+        memoryPreset: Array<{ type: string; content: string }>;
+        executionTemplates: Array<{ id: string; title: string; description: string; steps: string[] }>;
+        appScaffold: { description: string; modules: string[] };
+        kpiModel: string[];
+        blueprintSections: string[];
+        blueprintPrompt: string;
+      } | null;
+    }>,
+    activate: (id: string) => ipcRenderer.invoke('forgeProfiles:activate', id) as Promise<{
+      ok?: boolean;
+      profile?: {
+        id: string; name: string; icon: string; description: string;
+        systemContext: string;
+        memoryPreset: Array<{ type: string; content: string }>;
+        executionTemplates: Array<{ id: string; title: string; description: string; steps: string[] }>;
+        appScaffold: { description: string; modules: string[] };
+        kpiModel: string[];
+        blueprintSections: string[];
+        blueprintPrompt: string;
+      };
+      error?: string;
+    }>,
+    deactivate: () => ipcRenderer.invoke('forgeProfiles:deactivate') as Promise<{ ok?: boolean; error?: string }>,
+    generateBlueprint: (id: string) => ipcRenderer.invoke('forgeProfiles:generateBlueprint', id) as Promise<{
+      markdown?: string;
+      providers?: Record<string, string>;
+      ledgerEntryId?: string;
+      error?: string;
+    }>,
+  },
+
   // System
   system: {
     openExternal: (url: string) => ipcRenderer.invoke('system:openExternal', url),

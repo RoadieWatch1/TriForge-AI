@@ -9,6 +9,7 @@ import { validateLicense, loadLicense, deactivateLicense, LEMONSQUEEZY } from '.
 import { isAtMessageLimit, hasCapability, lockedError, getMemoryLimit, TIERS } from './subscription';
 import { hashPin, verifyPin, isValidPin } from './auth';
 import { buildSystemPrompt } from './systemPrompt';
+import { getProfile, listProfiles } from './profiles';
 import { scanForPhotos, listDirectory, organizeDirectory, getCommonDirs } from './filesystem';
 import { listPrinters, printFile, printText } from './printer';
 import {
@@ -354,6 +355,183 @@ VERIFY: [1-3 specific things the user should double-check]
     return store.getMemory();
   });
 
+  // ── Forge Profiles ───────────────────────────────────────────────────────────
+
+  /** List all profiles. Requires FORGE_PROFILES capability (Pro+). */
+  ipcMain.handle('forgeProfiles:list', async () => {
+    const lic = await store.getLicense();
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('FORGE_PROFILES', tier)) {
+      return { error: lockedError('FORGE_PROFILES') };
+    }
+    return { profiles: listProfiles() };
+  });
+
+  /** Return the currently active profile id and full profile object (no capability check — safe read). */
+  ipcMain.handle('forgeProfiles:getActive', () => {
+    const id = store.getActiveProfileId();
+    const profile = id ? getProfile(id) ?? null : null;
+    return { id, profile };
+  });
+
+  /**
+   * Activate a profile: injects memory preset (idempotent), persists activeProfileId,
+   * logs PROFILE_EVENT:ACTIVATE to Decision Ledger.
+   */
+  ipcMain.handle('forgeProfiles:activate', async (_e, id: string) => {
+    const lic = await store.getLicense();
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('FORGE_PROFILES', tier)) {
+      return { error: lockedError('FORGE_PROFILES') };
+    }
+    const profile = getProfile(id);
+    if (!profile) return { error: `Unknown profile id: ${id}` };
+
+    // Remove previous profile's memories before switching (guardrail: only profile-tagged entries)
+    const previousId = store.getActiveProfileId();
+    if (previousId && previousId !== id) {
+      store.removeProfileMemories(previousId);
+    }
+
+    // Inject memory preset only if not already present (idempotent)
+    if (!store.hasProfileMemories(id)) {
+      // Reverse so the first entry ends up at the top of the memory list
+      for (const entry of [...profile.memoryPreset].reverse()) {
+        store.addMemory(entry.type, entry.content, `profile:${id}`);
+      }
+    }
+
+    store.setActiveProfileId(id);
+
+    // Log activation to Decision Ledger
+    store.addLedger({
+      id: `profile-${Date.now().toString(36)}`,
+      timestamp: Date.now(),
+      request: `Profile Activation: ${profile.name}`,
+      synthesis: `Forge Profile "${profile.name}" activated. ${profile.memoryPreset.length} domain memory entries injected.`,
+      responses: [],
+      workflow: 'PROFILE_EVENT:ACTIVATE',
+      starred: false,
+    });
+
+    return { ok: true, profile };
+  });
+
+  /**
+   * Deactivate the active profile: removes profile-tagged memories, clears activeProfileId,
+   * logs PROFILE_EVENT:DEACTIVATE. No capability check — deactivating is always allowed.
+   */
+  ipcMain.handle('forgeProfiles:deactivate', async () => {
+    const id = store.getActiveProfileId();
+    if (!id) return { ok: true };
+    const profile = getProfile(id);
+    store.removeProfileMemories(id);
+    store.setActiveProfileId(null);
+    store.addLedger({
+      id: `profile-${Date.now().toString(36)}`,
+      timestamp: Date.now(),
+      request: `Profile Deactivation: ${profile?.name ?? id}`,
+      synthesis: `Forge Profile "${profile?.name ?? id}" deactivated. Profile memory entries removed.`,
+      responses: [],
+      workflow: 'PROFILE_EVENT:DEACTIVATE',
+      starred: false,
+    });
+    return { ok: true };
+  });
+
+  /**
+   * Generate an Operational Blueprint for the given profile using the full tri-model council
+   * (same Promise.allSettled pattern as chat:consensus). Saves result to Decision Ledger.
+   */
+  ipcMain.handle('forgeProfiles:generateBlueprint', async (event, id: string) => {
+    const lic = await store.getLicense();
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('FORGE_PROFILES', tier)) {
+      return { error: lockedError('FORGE_PROFILES') };
+    }
+    const profile = getProfile(id);
+    if (!profile) return { error: `Unknown profile id: ${id}` };
+
+    const { providerManager: pm } = await getEngine();
+    const providers = await pm.getActiveProviders();
+    if (providers.length === 0) return { error: 'No API keys configured. Add at least one in Settings.' };
+
+    // Include a bounded slice of user memories (max 20) for personalization
+    const memories = store.getMemory(20);
+    const memoryContext = memories.length > 0
+      ? memories.map(m => `- [${m.type}] ${m.content}`).join('\n')
+      : '(no custom memories stored)';
+
+    const fullPrompt = `${profile.blueprintPrompt}\n\nUser context from memory:\n${memoryContext}`;
+
+    const msgs = [
+      { role: 'system', content: 'You are an operational business intelligence engine. Generate structured, actionable business blueprints in clean markdown format. No preamble — begin immediately with the first section heading.' },
+      { role: 'user', content: fullPrompt },
+    ];
+
+    // Tri-model: all available providers in parallel (same pattern as chat:consensus)
+    event.sender.send('forge:update', { phase: 'querying', total: providers.length });
+
+    let completedCount = 0;
+    const settled = await Promise.allSettled(
+      providers.map(async p => {
+        event.sender.send('forge:update', { phase: 'provider:responding', provider: p.name });
+        const text = await (p.generateResponse as (m: typeof msgs) => Promise<string>)(msgs);
+        completedCount++;
+        event.sender.send('forge:update', { phase: 'provider:complete', provider: p.name, completedCount, total: providers.length });
+        return { provider: p.name as string, text };
+      })
+    );
+
+    const responses = settled
+      .filter((r): r is PromiseFulfilledResult<{ provider: string; text: string }> => r.status === 'fulfilled')
+      .map(r => r.value)
+      .filter(r => r.text);
+
+    if (responses.length === 0) {
+      return { error: 'All providers failed. Check your API keys in Settings.' };
+    }
+
+    event.sender.send('forge:update', { phase: 'synthesis:start' });
+
+    // Synthesize when multiple providers responded
+    let markdown = responses[0].text;
+    if (responses.length > 1) {
+      try {
+        const synthMsgs = [
+          {
+            role: 'system',
+            content: 'You are a synthesis engine for business blueprints. Combine the following drafts into one definitive, well-structured operational blueprint in clean markdown. Preserve concrete numbers and specific recommendations. Begin immediately with the first section heading.',
+          },
+          {
+            role: 'user',
+            content: `Profile: ${profile.name}\n\nDraft blueprints:\n\n${responses.map(r => `### ${r.provider}\n${r.text}`).join('\n\n---\n\n')}\n\nSynthesize into one final, comprehensive blueprint.`,
+          },
+        ];
+        markdown = await (providers[0].generateResponse as (m: typeof synthMsgs) => Promise<string>)(synthMsgs);
+      } catch { /* use primary response as fallback */ }
+    }
+
+    // Save to Decision Ledger
+    const ledgerEntryId = `blueprint-${Date.now().toString(36)}`;
+    store.addLedger({
+      id: ledgerEntryId,
+      timestamp: Date.now(),
+      request: `Blueprint: ${profile.name}`,
+      synthesis: markdown.slice(0, 500) + (markdown.length > 500 ? '…' : ''),
+      responses: responses.map(r => ({ provider: r.provider, text: r.text.slice(0, 400) })),
+      workflow: 'PROFILE_EVENT:BLUEPRINT',
+      starred: false,
+    });
+
+    event.sender.send('forge:update', { phase: 'complete' });
+
+    const providerOutputs: Record<string, string> = {};
+    for (const r of responses) providerOutputs[r.provider] = r.text;
+
+    return { markdown, providers: providerOutputs, ledgerEntryId };
+  });
+
   // ── Decision Ledger ─────────────────────────────────────────────────────────
   async function getLedgerTier(): Promise<'free' | 'pro' | 'business'> {
     const lic = await store.getLicense();
@@ -629,13 +807,19 @@ ${synthesis.slice(0, 3000)}`;
       dataNotes = `- No data persistence needed — app resets on refresh`;
     }
 
+    // Inject active Forge Profile scaffold hint if one is set
+    const activeForgeProfile = getProfile(store.getActiveProfileId() ?? '');
+    const scaffoldNote = activeForgeProfile
+      ? `\nForge Profile — ${activeForgeProfile.name}: ${activeForgeProfile.appScaffold.description} Prioritize these modules: ${activeForgeProfile.appScaffold.modules.join(', ')}.`
+      : '';
+
     const prompt = `Build a complete, self-contained web application:
 
 App Type: ${spec.appType}
 Target Users: ${spec.audience}
 Core Features: ${spec.features}
 Data / Persistence: ${spec.dataSave}
-Visual Style: ${spec.style}${spec.extras ? `\nExtra Requirements: ${spec.extras}` : ''}
+Visual Style: ${spec.style}${spec.extras ? `\nExtra Requirements: ${spec.extras}` : ''}${scaffoldNote}
 
 Technical requirements:
 - Single HTML file with ALL CSS and JavaScript inline (no external dependencies, no CDN)
@@ -652,6 +836,18 @@ Reply with ONLY the complete HTML. Start immediately with <!DOCTYPE html> and en
         { role: 'system', content: 'You are an expert full-stack web developer. When asked to build an app, output ONLY the complete single-file HTML — no explanations, no markdown fences, just raw HTML starting with <!DOCTYPE html>.' },
         { role: 'user', content: prompt },
       ]);
+      // Log Profile scaffold event to Decision Ledger when a profile influenced the build
+      if (activeForgeProfile) {
+        store.addLedger({
+          id: `scaffold-${Date.now().toString(36)}`,
+          timestamp: Date.now(),
+          request: `App Scaffold: ${spec.appType}`,
+          synthesis: `App Builder generated with Forge Profile "${activeForgeProfile.name}" scaffold context. Modules: ${activeForgeProfile.appScaffold.modules.join(', ')}.`,
+          responses: [],
+          workflow: 'PROFILE_EVENT:APP_SCAFFOLD',
+          starred: false,
+        });
+      }
       return { html: response };
     } catch (err: unknown) {
       return { error: err instanceof Error ? err.message : String(err) };
