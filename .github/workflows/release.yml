@@ -6,7 +6,7 @@ on:
       - 'v*.*.*'
 
 permissions:
-  contents: write   # needed to create GitHub Releases and upload assets
+  contents: write
 
 jobs:
   # ── macOS build (arm64 DMG) ─────────────────────────────────────────────────
@@ -28,12 +28,16 @@ jobs:
 
       - name: Package (electron-builder)
         working-directory: packages/desktop
-        run: npx electron-builder --mac --publish always
+        run: npx electron-builder --mac --publish never
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Disable signing — add MAC_CERTS secret and remove these two lines when cert is ready
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           ELECTRON_BUILDER_COMPRESSION_LEVEL: '0'
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-dmg
+          path: packages/desktop/dist/*.dmg
 
   # ── Windows build (x64 NSIS installer) ─────────────────────────────────────
   build-win:
@@ -54,8 +58,38 @@ jobs:
 
       - name: Package (electron-builder)
         working-directory: packages/desktop
-        run: npx electron-builder --win --publish always
+        run: npx electron-builder --win --publish never
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Disable signing — add WIN_CERTS secret and remove these two lines when cert is ready
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Upload EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-setup
+          path: packages/desktop/dist/*.exe
+
+  # ── Create GitHub Release (runs after both builds succeed) ──────────────────
+  release:
+    needs: [build-mac, build-win]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Mac artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mac-dmg
+          path: dist
+
+      - name: Download Win artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: win-setup
+          path: dist
+
+      - name: List files to release
+        run: ls -lh dist/
+
+      - name: Create GitHub Release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          token: ${{ secrets.GITHUB_TOKEN }}
