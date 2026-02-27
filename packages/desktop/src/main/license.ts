@@ -4,15 +4,15 @@ export const LEMONSQUEEZY = {
   STORE_ID: 'triforgeai',
 
   // Pro — monthly and annual variant IDs both map to the pro tier
-  PRO_VARIANT_IDS:  ['1340837', '1340778'],   // [monthly, annual]
-  PRO_VARIANT_ID:   '1340837',                // primary (monthly) — used for single-ID checks
+  PRO_VARIANT_IDS:  ['1351666', '1351679'],   // [monthly, annual]
+  PRO_VARIANT_ID:   '1351666',                // primary (monthly) — used for single-ID checks
 
   // Business — monthly and annual variant IDs both map to the business tier
-  BIZ_VARIANT_IDS:  ['1341153', '1340852'],   // [monthly, annual]
-  BIZ_VARIANT_ID:   '1341153',                // primary (monthly)
+  BIZ_VARIANT_IDS:  ['1351723', '1351726'],   // [monthly, annual]
+  BIZ_VARIANT_ID:   '1351723',                // primary (monthly)
 
-  PRO_CHECKOUT:    'https://triforgeai.lemonsqueezy.com/checkout/buy/1a814c5e-80b4-4fb1-a479-cd3a7e240739',
-  BIZ_CHECKOUT:    'https://triforgeai.lemonsqueezy.com/checkout/buy/a23b1020-1585-4f3c-b2d6-cfdf1431d05f',
+  PRO_CHECKOUT:    'https://triforgeai.lemonsqueezy.com/checkout/buy/2f513f94-7aa4-48ca-96e7-afad2f36cbad',
+  BIZ_CHECKOUT:    'https://triforgeai.lemonsqueezy.com/checkout/buy/46dbcdfd-50fc-435d-bd09-9ecef6edb783',
   CUSTOMER_PORTAL: 'https://app.lemonsqueezy.com/my-orders',
 };
 
