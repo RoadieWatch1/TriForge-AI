@@ -30,7 +30,7 @@ jobs:
         working-directory: packages/desktop
         run: npx electron-builder --mac --publish always
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Disable signing — add MAC_CERTS secret and remove these two lines when cert is ready
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           ELECTRON_BUILDER_COMPRESSION_LEVEL: '0'
@@ -56,6 +56,6 @@ jobs:
         working-directory: packages/desktop
         run: npx electron-builder --win --publish always
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Disable signing — add WIN_CERTS secret and remove these two lines when cert is ready
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
