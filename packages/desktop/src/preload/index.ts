@@ -170,6 +170,15 @@ const api = {
     pickDir:      () => ipcRenderer.invoke('files:pickDir') as Promise<string | null>,
   },
 
+  // Forge Chamber — real-time consensus telemetry
+  forge: {
+    onUpdate: (cb: (data: { phase: string; provider?: string; completedCount?: number; total?: number }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, data: { phase: string; provider?: string; completedCount?: number; total?: number }) => cb(data);
+      ipcRenderer.on('forge:update', handler);
+      return () => ipcRenderer.removeListener('forge:update', handler);
+    },
+  },
+
   // Auto-updater
   updater: {
     check:   () => ipcRenderer.invoke('updater:check') as Promise<void>,

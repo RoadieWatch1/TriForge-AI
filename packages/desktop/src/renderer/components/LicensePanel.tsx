@@ -209,7 +209,7 @@ export function LicensePanel({ onTierChange }: Props) {
               name="Business"
               price="$49"
               period="/mo"
-              annual="$39/mo billed annually"
+              annual="$40/mo billed annually"
               tagline="Governance-first AI for serious work"
               features={[
                 'Unlimited messages',

@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { VoiceButton } from './VoiceButton';
 import { UpgradeGate } from './UpgradeGate';
 import { ExecutionPlanView, type ExecutionPlan } from './ExecutionPlanView';
+import { ForgeChamber } from './ForgeChamber';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -373,7 +374,6 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   };
 
   const hasKeys = Object.values(keyStatus).some(Boolean);
-  const activeCount = Object.values(keyStatus).filter(Boolean).length;
   const msgLimit = MSG_LIMITS[tier] ?? 30;
   const unlimited = msgLimit === Infinity;
   const remaining = unlimited ? Infinity : Math.max(0, msgLimit - messagesThisMonth);
@@ -430,7 +430,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         ))}
         {(sending || consensusThinking) && (
           consensusThinking
-            ? <ConsensusThinkingIndicator count={activeCount} />
+            ? <ForgeChamber visible={consensusThinking} />
             : <TypingIndicator />
         )}
         <div ref={bottomRef} />
@@ -729,19 +729,6 @@ function TypingIndicator() {
   );
 }
 
-function ConsensusThinkingIndicator({ count }: { count: number }) {
-  return (
-    <div style={cs.bubbleRow}>
-      <div style={cs.avatar}>⚡</div>
-      <div style={{ ...cs.bubble, ...cs.bubbleAi, padding: '12px 16px' }}>
-        <div style={cs.consensusThinking}>
-          <div style={cs.typingDots}><span /><span /><span /></div>
-          <span style={cs.consensusThinkingLabel}>Think Tank — {count} AIs reasoning…</span>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -793,9 +780,6 @@ const cs: Record<string, React.CSSProperties> = {
   retryBtn: { fontSize: 11, background: 'none', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--accent)', padding: '2px 8px', cursor: 'pointer' },
 
   typingDots: { display: 'flex', gap: 4, alignItems: 'center' },
-  consensusThinking: { display: 'flex', alignItems: 'center', gap: 10 },
-  consensusThinkingLabel: { fontSize: 12, color: 'var(--accent)', fontWeight: 600, animation: 'pulse 1.5s ease infinite' },
-
   // Consensus card
   consensusCard: {
     background: 'var(--bg-elevated)', border: '1px solid var(--accent)', borderRadius: 12,

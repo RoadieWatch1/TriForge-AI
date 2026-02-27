@@ -186,7 +186,7 @@ export function setupIpc(store: Store): void {
   });
 
   // ── Consensus Chat (all active providers in parallel + synthesis) ─────────────
-  ipcMain.handle('chat:consensus', async (_e, message: string, history: Array<{ role: string; content: string }>) => {
+  ipcMain.handle('chat:consensus', async (event, message: string, history: Array<{ role: string; content: string }>) => {
     const { providerManager: pm } = await getEngine();
     const providers = await pm.getActiveProviders();
     if (providers.length === 0) {
@@ -210,12 +210,19 @@ export function setupIpc(store: Store): void {
       { role: 'user', content: message },
     ];
 
-    // Run all providers in parallel
+    // Notify renderer: forge starting
+    event.sender.send('forge:update', { phase: 'querying', total: providers.length });
+
+    // Run all providers in parallel — emit per-provider events as each completes
+    let completedCount = 0;
     const settled = await Promise.allSettled(
-      providers.map(p =>
-        (p.generateResponse as (m: typeof msgs) => Promise<string>)(msgs)
-          .then(text => ({ provider: p.name as string, text }))
-      )
+      providers.map(async p => {
+        event.sender.send('forge:update', { phase: 'provider:responding', provider: p.name });
+        const text = await (p.generateResponse as (m: typeof msgs) => Promise<string>)(msgs);
+        completedCount++;
+        event.sender.send('forge:update', { phase: 'provider:complete', provider: p.name, completedCount, total: providers.length });
+        return { provider: p.name as string, text };
+      })
     );
 
     const responses = settled
@@ -226,6 +233,9 @@ export function setupIpc(store: Store): void {
     if (responses.length === 0) {
       return { error: 'All providers failed. Check your API keys in Settings.' };
     }
+
+    // Notify renderer: synthesis phase beginning
+    event.sender.send('forge:update', { phase: 'synthesis:start' });
 
     // Synthesize when multiple providers responded
     let synthesis = responses[0].text;
@@ -283,6 +293,7 @@ VERIFY: [1-3 specific things the user should double-check]
     });
 
     store.incrementMessageCount();
+    event.sender.send('forge:update', { phase: 'complete' });
     return { responses, synthesis, forgeScore };
   });
 
