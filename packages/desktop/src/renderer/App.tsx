@@ -341,12 +341,12 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
     setUpdateStatus('Checking for updates…');
     setUpdateReady(false);
     const unsub = window.triforge.updater.onStatus((s: any) => {
-      if (s.status === 'checking')     setUpdateStatus('Checking for updates…');
-      else if (s.status === 'up-to-date') { setUpdateStatus('You are on the latest version.'); unsub(); }
-      else if (s.status === 'available')  setUpdateStatus('Update found — downloading…');
-      else if (s.status === 'downloading') setUpdateStatus(`Downloading… ${s.percent != null ? Math.round(s.percent) + '%' : ''}`);
-      else if (s.status === 'downloaded') { setUpdateStatus('Update ready to install.'); setUpdateReady(true); unsub(); }
-      else if (s.status === 'error')  { setUpdateStatus(`Update error: ${s.message ?? 'unknown'}`); unsub(); }
+      if (s.state === 'checking')      setUpdateStatus('Checking for updates…');
+      else if (s.state === 'up-to-date')  { setUpdateStatus('You are on the latest version.'); unsub(); }
+      else if (s.state === 'available')   setUpdateStatus('Update found — downloading…');
+      else if (s.state === 'downloading') setUpdateStatus(`Downloading… ${s.percent != null ? Math.round(s.percent) + '%' : ''}`);
+      else if (s.state === 'downloaded')  { setUpdateStatus('Update ready to install.'); setUpdateReady(true); unsub(); }
+      else if (s.state === 'error')       { setUpdateStatus(`Update error: ${s.message ?? 'unknown'}`); unsub(); }
     });
     await window.triforge.updater.check();
   };
