@@ -334,6 +334,23 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
     onUpdatePermissions(updated);
   };
 
+  const [updateStatus, setUpdateStatus] = useState<string | null>(null);
+  const [updateReady, setUpdateReady] = useState(false);
+
+  const checkForUpdates = async () => {
+    setUpdateStatus('Checking for updates…');
+    setUpdateReady(false);
+    const unsub = window.triforge.updater.onStatus((s: any) => {
+      if (s.status === 'checking')     setUpdateStatus('Checking for updates…');
+      else if (s.status === 'up-to-date') { setUpdateStatus('You are on the latest version.'); unsub(); }
+      else if (s.status === 'available')  setUpdateStatus('Update found — downloading…');
+      else if (s.status === 'downloading') setUpdateStatus(`Downloading… ${s.percent != null ? Math.round(s.percent) + '%' : ''}`);
+      else if (s.status === 'downloaded') { setUpdateStatus('Update ready to install.'); setUpdateReady(true); unsub(); }
+      else if (s.status === 'error')  { setUpdateStatus(`Update error: ${s.message ?? 'unknown'}`); unsub(); }
+    });
+    await window.triforge.updater.check();
+  };
+
   return (
     <div style={styles.settingsPage}>
       <h2 style={styles.sectionTitle}>API Keys</h2>
@@ -395,6 +412,23 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
           </div>
         </div>
       ))}
+
+      <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>Updates</h2>
+      <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
+        TriForge checks for updates automatically. Use this to check right now.
+      </p>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' as const }}>
+        <button style={styles.saveBtn} onClick={checkForUpdates}>Check for Updates</button>
+        {updateReady && (
+          <button style={{ ...styles.saveBtn, background: 'var(--accent)' }}
+            onClick={() => window.triforge.updater.install()}>
+            Install & Restart
+          </button>
+        )}
+      </div>
+      {updateStatus && (
+        <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginTop: 10 }}>{updateStatus}</p>
+      )}
     </div>
   );
 }
