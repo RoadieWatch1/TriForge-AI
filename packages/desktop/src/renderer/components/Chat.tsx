@@ -528,7 +528,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         <VoiceButton
           onTranscript={(text) => sendMessage(text)}
           onError={(err) => addSystemMsg(`🎙️ ${err}`)}
-          disabled={!hasKeys || sending}
+          disabled={!keyStatus.openai || sending}
         />
         <div style={cs.inputWrapper}>
           <textarea

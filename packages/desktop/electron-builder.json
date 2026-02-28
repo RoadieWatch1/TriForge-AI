@@ -25,7 +25,8 @@
   "mac": {
     "category": "public.app-category.productivity",
     "target": [
-      { "target": "dmg", "arch": ["universal"] }
+      { "target": "dmg", "arch": ["universal"] },
+      { "target": "zip", "arch": ["universal"] }
     ],
     "icon": "assets/icon.png",
     "hardenedRuntime": true,

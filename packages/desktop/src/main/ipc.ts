@@ -117,7 +117,7 @@ export function setupIpc(store: Store): void {
   // ── Provider mode ─────────────────────────────────────────────────────────────
   ipcMain.handle('engine:mode', async () => {
     const { providerManager: pm } = await getEngine();
-    const result = pm.detectMode();
+    const result = await pm.detectMode();
     return result?.mode ?? 'none';
   });
 
@@ -174,7 +174,7 @@ export function setupIpc(store: Store): void {
 
     try {
       const primary = providers[0];
-      const response = await primary.generateResponse([
+      const response = await primary.chat([
         { role: 'system', content: systemPrompt },
         ...history,
         { role: 'user', content: message },
@@ -220,7 +220,7 @@ export function setupIpc(store: Store): void {
     const settled = await Promise.allSettled(
       providers.map(async p => {
         event.sender.send('forge:update', { phase: 'provider:responding', provider: p.name });
-        const text = await (p.generateResponse as (m: typeof msgs) => Promise<string>)(msgs);
+        const text = await p.chat(msgs);
         completedCount++;
         event.sender.send('forge:update', { phase: 'provider:complete', provider: p.name, completedCount, total: providers.length });
         return { provider: p.name as string, text };
@@ -263,7 +263,7 @@ VERIFY: [1-3 specific things the user should double-check]
             content: `User asked: "${message}"\n\n${responses.map(r => `${r.provider}:\n${r.text}`).join('\n\n---\n\n')}\n\nSynthesize into one final, comprehensive answer, then add the FORGE_SCORE block.`,
           },
         ];
-        synthesis = await (providers[0].generateResponse as (m: typeof synthMsgs) => Promise<string>)(synthMsgs);
+        synthesis = await providers[0].chat(synthMsgs);
       } catch { /* use primary response as fallback */ }
     }
 
@@ -476,7 +476,7 @@ VERIFY: [1-3 specific things the user should double-check]
     const settled = await Promise.allSettled(
       providers.map(async p => {
         event.sender.send('forge:update', { phase: 'provider:responding', provider: p.name });
-        const text = await (p.generateResponse as (m: typeof msgs) => Promise<string>)(msgs);
+        const text = await p.chat(msgs);
         completedCount++;
         event.sender.send('forge:update', { phase: 'provider:complete', provider: p.name, completedCount, total: providers.length });
         return { provider: p.name as string, text };
@@ -508,7 +508,7 @@ VERIFY: [1-3 specific things the user should double-check]
             content: `Profile: ${profile.name}\n\nDraft blueprints:\n\n${responses.map(r => `### ${r.provider}\n${r.text}`).join('\n\n---\n\n')}\n\nSynthesize into one final, comprehensive blueprint.`,
           },
         ];
-        markdown = await (providers[0].generateResponse as (m: typeof synthMsgs) => Promise<string>)(synthMsgs);
+        markdown = await providers[0].chat(synthMsgs);
       } catch { /* use primary response as fallback */ }
     }
 
@@ -754,7 +754,7 @@ ${synthesis.slice(0, 3000)}`;
         { role: 'system', content: 'You are a JSON execution plan generator. Output ONLY valid JSON — no markdown fences, no explanation. Start immediately with { and end with }.' },
         { role: 'user', content: prompt },
       ];
-      const response = await (providers[0].generateResponse as (m: typeof msgs) => Promise<string>)(msgs);
+      const response = await providers[0].chat(msgs);
       const cleaned = response.trim()
         .replace(/^```(?:json)?\r?\n?/, '')
         .replace(/\r?\n?```$/, '');
@@ -832,7 +832,7 @@ Reply with ONLY the complete HTML. Start immediately with <!DOCTYPE html> and en
 
     try {
       const primary = providers[0];
-      const response = await primary.generateResponse([
+      const response = await primary.chat([
         { role: 'system', content: 'You are an expert full-stack web developer. When asked to build an app, output ONLY the complete single-file HTML — no explanations, no markdown fences, just raw HTML starting with <!DOCTYPE html>.' },
         { role: 'user', content: prompt },
       ]);
@@ -938,7 +938,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
     try {
       const primary = providers[0];
-      const response = await primary.generateResponse([
+      const response = await primary.chat([
         {
           role: 'system',
           content: 'You are a helpful technical advisor. You output ONLY valid JSON arrays — no markdown fences, no explanation text, just the raw JSON array starting with [ and ending with ].',

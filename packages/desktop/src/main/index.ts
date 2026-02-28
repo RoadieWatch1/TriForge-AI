@@ -56,6 +56,18 @@ function createWindow(): void {
 
   mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
 
+  // Right-click context menu with Cut / Copy / Paste / Select All
+  mainWindow.webContents.on('context-menu', (_e, params) => {
+    const menu = Menu.buildFromTemplate([
+      { role: 'cut',       enabled: params.editFlags.canCut },
+      { role: 'copy',      enabled: params.editFlags.canCopy },
+      { role: 'paste',     enabled: params.editFlags.canPaste },
+      { type: 'separator' },
+      { role: 'selectAll', enabled: params.editFlags.canSelectAll },
+    ]);
+    menu.popup({ window: mainWindow! });
+  });
+
   if (process.env.NODE_ENV === 'development') {
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   }

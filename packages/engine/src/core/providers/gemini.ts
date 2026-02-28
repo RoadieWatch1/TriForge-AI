@@ -80,6 +80,10 @@ export class GeminiProvider implements AIProvider {
     return this.call(messages, signal);
   }
 
+  async chat(messages: { role: string; content: string }[], signal?: AbortSignal): Promise<string> {
+    return this.call(messages, signal);
+  }
+
   private async callStream(
     messages: { role: string; content: string }[],
     onChunk: (chunk: string) => void,

@@ -17,6 +17,9 @@ export interface AIProvider {
   /** Simple text completion for single-model chat. */
   generateResponse(prompt: string, context?: string, signal?: AbortSignal): Promise<string>;
 
+  /** Full-history chat with a pre-built messages array (system + user + assistant turns). */
+  chat(messages: { role: string; content: string }[], signal?: AbortSignal): Promise<string>;
+
   /**
    * Streaming chat with full conversation history.
    * Calls onChunk for each token as it arrives; returns the full accumulated text.
