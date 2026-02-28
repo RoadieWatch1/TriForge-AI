@@ -83,6 +83,10 @@ export class OpenAIProvider implements AIProvider {
     return this.call(messages, signal);
   }
 
+  async chatStream(messages: { role: string; content: string }[], onChunk: (chunk: string) => void, signal?: AbortSignal): Promise<string> {
+    return this.callStream(messages, onChunk, signal);
+  }
+
   private async callStream(
     messages: { role: string; content: string }[],
     onChunk: (chunk: string) => void,

@@ -27,6 +27,11 @@ const api = {
   chat: {
     send: (message: string, history: Array<{ role: string; content: string }>) =>
       ipcRenderer.invoke('chat:send', message, history) as Promise<{ text?: string; provider?: string; error?: string; tier?: string }>,
+    onChunk: (cb: (chunk: string) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, chunk: string) => cb(chunk);
+      ipcRenderer.on('chat:chunk', handler);
+      return () => ipcRenderer.removeListener('chat:chunk', handler);
+    },
     consensus: (message: string, history: Array<{ role: string; content: string }>) =>
       ipcRenderer.invoke('chat:consensus', message, history) as Promise<{
         responses?: Array<{ provider: string; text: string }>;

@@ -90,6 +90,12 @@ export class ClaudeProvider implements AIProvider {
     return this.call(systemMsg?.content ?? null, turns, signal);
   }
 
+  async chatStream(messages: { role: string; content: string }[], onChunk: (chunk: string) => void, signal?: AbortSignal): Promise<string> {
+    const systemMsg = messages.find(m => m.role === 'system');
+    const turns = messages.filter(m => m.role !== 'system');
+    return this.callStream(systemMsg?.content ?? null, turns, onChunk, signal);
+  }
+
   private async callStream(
     systemPrompt: string | null,
     messages: { role: string; content: string }[],

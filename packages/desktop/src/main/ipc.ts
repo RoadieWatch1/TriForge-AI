@@ -154,7 +154,7 @@ export function setupIpc(store: Store): void {
   }));
 
   // ── Chat (single message, non-streaming) ─────────────────────────────────────
-  ipcMain.handle('chat:send', async (_e, message: string, history: Array<{ role: string; content: string }>) => {
+  ipcMain.handle('chat:send', async (event, message: string, history: Array<{ role: string; content: string }>) => {
     const { providerManager: pm } = await getEngine();
     const providers = await pm.getActiveProviders();
     if (providers.length === 0) {
@@ -174,14 +174,17 @@ export function setupIpc(store: Store): void {
 
     try {
       const primary = providers[0];
-      const response = await primary.chat([
+      const allMsgs = [
         { role: 'system', content: systemPrompt },
         ...history,
         { role: 'user', content: message },
-      ]);
-      // Only count toward quota on success — failed calls don't cost the user
+      ];
+      // Stream tokens to renderer as they arrive
+      const text = await primary.chatStream(allMsgs, (chunk: string) => {
+        event.sender.send('chat:chunk', chunk);
+      });
       store.incrementMessageCount();
-      return { text: response, provider: primary.name };
+      return { text, provider: primary.name };
     } catch (err: unknown) {
       return { error: err instanceof Error ? err.message : String(err) };
     }

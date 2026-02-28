@@ -21,6 +21,16 @@ export interface AIProvider {
   chat(messages: { role: string; content: string }[], signal?: AbortSignal): Promise<string>;
 
   /**
+   * Streaming version of chat(). Same messages array (including system role).
+   * Calls onChunk for each token as it arrives; resolves with the full text when done.
+   */
+  chatStream(
+    messages: { role: string; content: string }[],
+    onChunk: (chunk: string) => void,
+    signal?: AbortSignal
+  ): Promise<string>;
+
+  /**
    * Streaming chat with full conversation history.
    * Calls onChunk for each token as it arrives; returns the full accumulated text.
    */

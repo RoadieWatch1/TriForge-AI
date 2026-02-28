@@ -34,6 +34,8 @@ interface Message {
   // Photo result payloads
   photos?: PhotoFile[];
   photoLabel?: string;
+  // Streaming state — true while tokens are still arriving
+  streaming?: boolean;
 }
 
 interface Props {
@@ -159,6 +161,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [consensusThinking, setConsensusThinking] = useState(false);
+  const [singleModelStreaming, setSingleModelStreaming] = useState(false);
   const [speaking, setSpeaking] = useState<string | null>(null);
   const [voiceMode, setVoiceMode] = useState(() => localStorage.getItem('triforge-voice-mode') === 'on');
   const [gate, setGate] = useState<{ feature: string; neededTier: 'pro' | 'business' } | null>(null);
@@ -306,23 +309,37 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           speakMessage(aiMsg.id, result.synthesis);
         }
       } else {
-        const result = await window.triforge.chat.send(text.trim(), history);
+        // Add a live streaming placeholder — tokens will fill it in real time
+        const streamId = crypto.randomUUID();
+        setMessages(m => [...m, { id: streamId, role: 'assistant', content: '', streaming: true, timestamp: new Date() }]);
 
-        if (result.error && handleGateError(result.error)) { setSending(false); return; }
+        const unsub = window.triforge.chat.onChunk((chunk: string) => {
+          setSingleModelStreaming(true);
+          setMessages(m => m.map(msg => msg.id === streamId ? { ...msg, content: msg.content + chunk } : msg));
+        });
+
+        const result = await window.triforge.chat.send(text.trim(), history);
+        unsub();
+        setSingleModelStreaming(false);
+
+        if (result.error && handleGateError(result.error)) {
+          setMessages(m => m.filter(msg => msg.id !== streamId));
+          setSending(false);
+          return;
+        }
 
         onMessageSent();
-        const aiMsg: Message = {
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          content: result.error ? `${result.error}` : (result.text ?? ''),
+        // Finalise the streaming message with confirmed text + metadata
+        setMessages(m => m.map(msg => msg.id === streamId ? {
+          ...msg,
+          content: result.text ?? msg.content, // keep streamed content if result.text is empty
           provider: result.provider,
-          isError: !!result.error,
-          timestamp: new Date(),
-        };
-        appendMsg(aiMsg);
+          isError: false,
+          streaming: false,
+        } : msg));
 
-        if (!result.error && result.text && voiceMode) {
-          speakMessage(aiMsg.id, result.text);
+        if (result.text && voiceMode) {
+          speakMessage(streamId, result.text);
         }
       }
     } catch (e) {
@@ -582,11 +599,8 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
                   else if (action === 'print')                 runPickAndPrint();
                 }} />
         ))}
-        {(sending || consensusThinking) && (
-          consensusThinking
-            ? <ForgeChamber visible={consensusThinking} />
-            : <TypingIndicator />
-        )}
+        {consensusThinking && <ForgeChamber visible={true} />}
+        {sending && !consensusThinking && !singleModelStreaming && <TypingIndicator />}
         <div ref={bottomRef} />
       </div>
 
@@ -1010,7 +1024,9 @@ function MessageBubble({ msg, isSpeaking, canSpeak, onSpeak, onRetry, onRunActio
       <div style={{ ...cs.bubble, ...(isUser ? cs.bubbleUser : cs.bubbleAi), ...(msg.isError ? cs.bubbleError : {}) }}>
         {isUser
           ? <div style={cs.bubbleContent}>{displayContent}</div>
-          : <MarkdownText text={displayContent} />
+          : msg.streaming && !displayContent
+            ? <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>▌</span>
+            : <><MarkdownText text={displayContent} />{msg.streaming && <span style={cs.streamCursor}>▌</span>}</>
         }
         {runAction && onRunAction && (
           <button
@@ -1228,6 +1244,7 @@ const cs: Record<string, React.CSSProperties> = {
   speakBtn: { fontSize: 12, background: 'none', border: 'none', cursor: 'pointer', opacity: 0.5, padding: '0 2px' },
   speakBtnActive: { opacity: 1 },
   retryBtn: { fontSize: 11, background: 'none', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--accent)', padding: '2px 8px', cursor: 'pointer' },
+  streamCursor: { display: 'inline-block', color: 'var(--accent)', fontWeight: 400, animation: 'blink 1s step-end infinite', marginLeft: 1 },
   runActionBtn: { display: 'inline-block', marginTop: 10, padding: '7px 16px', fontSize: 13, fontWeight: 600, background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer' },
 
   typingDots: { display: 'flex', gap: 4, alignItems: 'center' },
