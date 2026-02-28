@@ -15,11 +15,15 @@ export interface SpeakOptions {
  * Accepts a WebM/Opus buffer from the renderer's MediaRecorder.
  */
 export async function transcribeAudio(
-  audioBuffer: Buffer,
+  audioBuffer: Buffer | Uint8Array,
   store: Store
 ): Promise<TranscribeResult> {
   const apiKey = await store.getSecret('openai');
   if (!apiKey) throw new Error('OpenAI API key not configured. Add it in Settings → API Keys.');
+
+  // Electron IPC structured-clone can turn a Buffer into a plain Uint8Array.
+  // Normalise here so Buffer.concat() always receives real Buffers.
+  const buf: Buffer = Buffer.isBuffer(audioBuffer) ? audioBuffer : Buffer.from(audioBuffer);
 
   const start = Date.now();
 
@@ -42,7 +46,7 @@ export async function transcribeAudio(
 
   const body = Buffer.concat([
     Buffer.from(header + CRLF),
-    audioBuffer,
+    buf,
     Buffer.from(footer),
   ]);
 

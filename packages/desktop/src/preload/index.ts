@@ -71,8 +71,8 @@ const api = {
 
   // Voice
   voice: {
-    transcribe: (audioBuffer: Buffer) =>
-      ipcRenderer.invoke('voice:transcribe', audioBuffer) as Promise<{ text?: string; error?: string }>,
+    transcribe: (audioBuffer: Uint8Array | Buffer) =>
+      ipcRenderer.invoke('voice:transcribe', Buffer.from(audioBuffer)) as Promise<{ text?: string; error?: string }>,
     speak: (text: string) =>
       ipcRenderer.invoke('voice:speak', text) as Promise<{ audio?: string; error?: string }>,
   },

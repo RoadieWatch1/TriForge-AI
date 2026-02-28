@@ -172,6 +172,9 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Streaming batch buffer — accumulates chunks between 50ms render ticks
+  const streamBuf   = useRef('');
+  const streamTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     window.triforge.license.checkoutUrls().then(setCheckoutUrls).catch(() => {});
@@ -313,13 +316,24 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         const streamId = crypto.randomUUID();
         setMessages(m => [...m, { id: streamId, role: 'assistant', content: '', streaming: true, timestamp: new Date() }]);
 
+        // Batch chunk updates at 50ms cadence (~20fps) to avoid per-token re-renders
+        streamBuf.current = '';
+        streamTimer.current = setInterval(() => {
+          if (!streamBuf.current) return;
+          const pending = streamBuf.current;
+          streamBuf.current = '';
+          setMessages(m => m.map(msg => msg.id === streamId ? { ...msg, content: msg.content + pending } : msg));
+        }, 50);
+
         const unsub = window.triforge.chat.onChunk((chunk: string) => {
           setSingleModelStreaming(true);
-          setMessages(m => m.map(msg => msg.id === streamId ? { ...msg, content: msg.content + chunk } : msg));
+          streamBuf.current += chunk;
         });
 
         const result = await window.triforge.chat.send(text.trim(), history);
         unsub();
+        clearInterval(streamTimer.current!);
+        streamTimer.current = null;
         setSingleModelStreaming(false);
 
         if (result.error && handleGateError(result.error)) {

@@ -57,16 +57,37 @@ function createWindow(): void {
 
   mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
 
-  // Right-click context menu with Cut / Copy / Paste / Select All
+  // Right-click context menu — spell suggestions + standard edit actions
   mainWindow.webContents.on('context-menu', (_e, params) => {
-    const menu = Menu.buildFromTemplate([
+    const items: Electron.MenuItemConstructorOptions[] = [];
+
+    // Spell-correction block — only shown when the cursor is on a misspelled word
+    if (params.misspelledWord) {
+      const suggestions = params.dictionarySuggestions.slice(0, 5);
+      if (suggestions.length > 0) {
+        suggestions.forEach(s => items.push({
+          label: s,
+          click: () => mainWindow!.webContents.replaceMisspelling(s),
+        }));
+      } else {
+        items.push({ label: 'No suggestions', enabled: false });
+      }
+      items.push(
+        { type: 'separator' },
+        { label: 'Add to Dictionary', click: () => mainWindow!.webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord) },
+        { type: 'separator' },
+      );
+    }
+
+    items.push(
       { role: 'cut',       enabled: params.editFlags.canCut },
       { role: 'copy',      enabled: params.editFlags.canCopy },
       { role: 'paste',     enabled: params.editFlags.canPaste },
       { type: 'separator' },
       { role: 'selectAll', enabled: params.editFlags.canSelectAll },
-    ]);
-    menu.popup({ window: mainWindow! });
+    );
+
+    Menu.buildFromTemplate(items).popup({ window: mainWindow! });
   });
 
   if (process.env.NODE_ENV === 'development') {
