@@ -1,13 +1,33 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { ProviderManager, ProviderName } from '@triforge/engine';
 import { ChangePatch } from '../core/patch';
 
 // ── Data Contracts ─────────────────────────────────────────────────────────
 
-type RiskLevel    = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
-type SessionPhase = 'IDLE' | 'DRAFTING' | 'RISK_CHECK' | 'CRITIQUE' | 'DEBATE' | 'COMPLETE' | 'BYPASSED';
-type ConsensusState = 'UNANIMOUS' | 'MAJORITY' | 'SPLIT' | 'BLOCKED';
+type RiskLevel         = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+type SessionPhase      = 'IDLE' | 'DRAFTING' | 'RISK_CHECK' | 'CRITIQUE' | 'DEBATE' | 'COMPLETE' | 'BYPASSED';
+type ConsensusState    = 'UNANIMOUS' | 'MAJORITY' | 'SPLIT' | 'BLOCKED';
+type DeadlockResolution = 'ESCALATE' | 'USER_DECIDES' | 'SYNTHESIS' | 'EXTENDED_DEBATE';
+type CouncilMode       = 'FULL' | 'PARTIAL' | 'SOLO';
+type IntensityLevel    = 'COOPERATIVE' | 'ANALYTICAL' | 'CRITICAL' | 'RUTHLESS';
+
+interface IntensityState  { mode: 'ADAPTIVE' | 'LOCKED'; level: IntensityLevel; }
+interface VersionCandidate { provider: string; code: string; reasoning: string; }
+interface CouncilRecord {
+  timestamp:         number;
+  prompt:            string;
+  draftAuthor:       string;
+  councilMode:       CouncilMode;
+  riskLevel:         RiskLevel;
+  confidenceInitial: number;
+  confidenceFinal:   number;
+  consensus:         ConsensusState;
+  intensity:         string;
+  deadlockResolution?: DeadlockResolution;
+  userOverride?:     boolean;
+}
 
 interface DraftResult {
   code:            string;
@@ -78,6 +98,13 @@ export class TriForgeCouncilPanel {
 
   private _abortController: AbortController | null = null;
   private _session: CouncilSession | null = null;
+
+  private _deadlockResolve: ((r: { action: DeadlockResolution; selectedVersion?: string }) => void) | null = null;
+  private _councilMode: CouncilMode = 'FULL';
+  private _unavailableProviders: Set<string> = new Set();
+  private _intensityState: IntensityState = { mode: 'ADAPTIVE', level: 'ANALYTICAL' };
+  private _ledgerEnabled: boolean | null = null;
+  private _ledgerConsentShown = false;
 
   private static readonly _validProviders: ProviderName[] = ['openai', 'grok', 'claude'];
   private static _isValidProvider(v: unknown): v is ProviderName {
@@ -231,7 +258,7 @@ export class TriForgeCouncilPanel {
             await this._runCouncilPipeline(
               message.prompt as string,
               (message.context as string) ?? '',
-              (message.intensity as string) ?? 'analytical'
+              (message.intensity as string) ?? 'adaptive'
             );
             break;
           case 'council:apply':
@@ -253,9 +280,50 @@ export class TriForgeCouncilPanel {
             await this._adoptAlternative();
             break;
           case 'council:abort':
+            if (this._deadlockResolve) {
+              this._deadlockResolve({ action: 'ESCALATE' }); // unblock pipeline
+              this._deadlockResolve = null;
+            }
             this._abortController?.abort();
             this._abortController = null;
             this._send({ type: 'phase', phase: 'IDLE', message: 'Aborted.' });
+            break;
+          case 'council:deadlock:escalate':
+            if (this._deadlockResolve) {
+              this._deadlockResolve({ action: 'ESCALATE' });
+              this._deadlockResolve = null;
+            }
+            break;
+          case 'council:deadlock:synthesis':
+            if (this._deadlockResolve) {
+              this._deadlockResolve({ action: 'SYNTHESIS' });
+              this._deadlockResolve = null;
+            }
+            break;
+          case 'council:deadlock:extended':
+            if (this._deadlockResolve) {
+              this._deadlockResolve({ action: 'EXTENDED_DEBATE' });
+              this._deadlockResolve = null;
+            }
+            break;
+          case 'council:deadlock:user':
+            if (this._deadlockResolve) {
+              this._deadlockResolve({ action: 'USER_DECIDES' });
+              this._deadlockResolve = null;
+            }
+            break;
+          case 'council:selectVersion':
+            if (this._deadlockResolve) {
+              this._deadlockResolve({ action: 'USER_DECIDES', selectedVersion: message.provider as string });
+              this._deadlockResolve = null;
+            }
+            break;
+          case 'council:setIntensity':
+            if (message.lock) {
+              this._intensityState = { mode: 'LOCKED', level: (message.level as IntensityLevel) ?? 'ANALYTICAL' };
+            } else {
+              this._intensityState = { mode: 'ADAPTIVE', level: this._intensityState.level };
+            }
             break;
           case 'setApiKey': {
             const name = message.provider;
@@ -299,11 +367,24 @@ export class TriForgeCouncilPanel {
     this._abortController = new AbortController();
     const signal = this._abortController.signal;
 
+    // Apply intensity from UI if not already locked
+    if (this._intensityState.mode === 'ADAPTIVE') {
+      // keep current adaptive level; will be resolved after risk
+    }
+
     this._session = {
       id: Date.now().toString(36), prompt,
       originalCode: originalCode ?? '',
-      phase: 'DRAFTING', intensity, viewMode: 'SUMMARY',
+      phase: 'DRAFTING', intensity: this._intensityState.level.toLowerCase(), viewMode: 'SUMMARY',
     };
+
+    // Quorum detection
+    this._unavailableProviders.clear();
+    const allProviders = await this._providerManager.getActiveProviders();
+    this._councilMode =
+      allProviders.length >= 3 ? 'FULL' :
+      allProviders.length === 2 ? 'PARTIAL' : 'SOLO';
+    this._send({ type: 'council-mode', mode: this._councilMode });
 
     try {
       // Phase 1: Fast Draft
@@ -319,28 +400,118 @@ export class TriForgeCouncilPanel {
       this._session.risk = risk;
       this._send({ type: 'risk-result', risk });
 
-      if (risk.level === 'LOW' && intensity === 'analytical') {
+      // Adaptive intensity resolution (after risk, before critique)
+      if (this._intensityState.mode === 'ADAPTIVE') {
+        const fp = vscode.window.activeTextEditor?.document.fileName ?? '';
+        this._intensityState.level = this._determineIntensity(fp, risk);
+        this._send({
+          type: 'intensity-resolved',
+          level: this._intensityState.level,
+          reason: this._buildIntensityReason(fp, risk),
+        });
+        if (this._session) { this._session.intensity = this._intensityState.level.toLowerCase(); }
+      }
+      const effectiveIntensity = this._intensityState.level.toLowerCase();
+
+      // SOLO mode: skip critique (no cross-review possible)
+      if (this._councilMode === 'SOLO') {
         this._session.phase = 'COMPLETE';
         this._session.consensus = 'UNANIMOUS';
         this._session.finalCode = draft.code;
         this._send({ type: 'session-complete', consensus: 'UNANIMOUS', finalCode: draft.code, verdicts: [] });
+        this._checkLedgerConsent();
+        this._saveLedgerRecord({
+          timestamp: Date.now(), prompt, draftAuthor: draft.provider,
+          councilMode: 'SOLO', riskLevel: risk.level,
+          confidenceInitial: draft.confidence, confidenceFinal: draft.confidence,
+          consensus: 'UNANIMOUS', intensity: effectiveIntensity,
+        });
+        return;
+      }
+
+      // Low-risk fast path (cooperative intensity)
+      if (risk.level === 'LOW' && effectiveIntensity === 'cooperative') {
+        this._session.phase = 'COMPLETE';
+        this._session.consensus = 'UNANIMOUS';
+        this._session.finalCode = draft.code;
+        this._send({ type: 'session-complete', consensus: 'UNANIMOUS', finalCode: draft.code, verdicts: [] });
+        this._checkLedgerConsent();
         return;
       }
 
       // Phase 3: Cross-Critique
       this._send({ type: 'phase', phase: 'CRITIQUE', message: 'Risk detected. Council review initiated\u2026' });
-      const verdicts = await this._runCrossCritique(prompt, draft, originalCode, signal);
+      let verdicts = await this._runCrossCritique(prompt, draft, originalCode, signal);
       if (signal.aborted) { return; }
       this._session.verdicts = verdicts;
 
-      const interimConsensus = this._computeConsensus(verdicts);
+      let interimConsensus = this._computeConsensus(verdicts);
 
-      // Phase 4: Debate (conditional)
+      // Deadlock resolution (SPLIT or BLOCKED — SOLO already returned above)
+      let deadlockResolution: DeadlockResolution | undefined;
+      let userOverride = false;
+      if (interimConsensus === 'SPLIT' || interimConsensus === 'BLOCKED') {
+        // Collect alternative versions from disagreeing critics
+        const versions: VersionCandidate[] = [{ provider: draft.provider, code: draft.code, reasoning: draft.reasoning }];
+        for (const v of verdicts.filter(v2 => !v2.agrees)) {
+          const alt = await this._generateAlternativeQuiet(v.provider, prompt, draft.code, originalCode, signal);
+          if (alt) { versions.push(alt); }
+        }
+        if (signal.aborted) { return; }
+        this._send({ type: 'deadlock', versions });
+
+        const resolution = await this._waitForDeadlockResolution(signal);
+        if (signal.aborted) { return; }
+        deadlockResolution = resolution.action;
+
+        let finalCode = draft.code;
+        if (resolution.action === 'ESCALATE') {
+          // Bump intensity one step and re-run critique
+          const lvls: IntensityLevel[] = ['COOPERATIVE', 'ANALYTICAL', 'CRITICAL', 'RUTHLESS'];
+          const ci = lvls.indexOf(this._intensityState.level);
+          if (ci < lvls.length - 1) { this._intensityState.level = lvls[ci + 1]; }
+          this._send({ type: 'phase', phase: 'CRITIQUE', message: 'Escalated intensity. Re-reviewing\u2026' });
+          verdicts = await this._runCrossCritique(prompt, draft, originalCode, signal);
+          if (signal.aborted) { return; }
+          this._session.verdicts = verdicts;
+          interimConsensus = this._computeConsensus(verdicts);
+          finalCode = draft.code;
+        } else if (resolution.action === 'USER_DECIDES') {
+          const chosen = versions.find(v => v.provider === resolution.selectedVersion);
+          finalCode = chosen?.code ?? draft.code;
+          userOverride = true;
+          interimConsensus = 'MAJORITY';
+        } else if (resolution.action === 'SYNTHESIS') {
+          finalCode = await this._runForceSynthesis(prompt, versions, signal);
+          if (signal.aborted) { return; }
+          interimConsensus = 'MAJORITY';
+        } else if (resolution.action === 'EXTENDED_DEBATE') {
+          finalCode = await this._runExtendedDebate(prompt, versions, signal);
+          if (signal.aborted) { return; }
+          interimConsensus = 'MAJORITY';
+        }
+
+        this._session.phase = 'COMPLETE';
+        this._session.finalCode = finalCode;
+        this._session.consensus = interimConsensus;
+        this._send({ type: 'session-complete', consensus: interimConsensus, finalCode, verdicts });
+        this._checkLedgerConsent();
+        this._saveLedgerRecord({
+          timestamp: Date.now(), prompt, draftAuthor: draft.provider,
+          councilMode: this._councilMode, riskLevel: risk.level,
+          confidenceInitial: draft.confidence, confidenceFinal: draft.confidence,
+          consensus: interimConsensus, intensity: effectiveIntensity,
+          deadlockResolution, userOverride,
+        });
+        return;
+      }
+
+      // Phase 4: Debate (conditional on high intensity or majority dissent)
       let finalCode = draft.code;
       if (
         verdicts.length >= 2 &&
-        (interimConsensus === 'SPLIT' || interimConsensus === 'BLOCKED' ||
-         intensity === 'combative' || intensity === 'ruthless')
+        (interimConsensus === 'MAJORITY' ||
+         effectiveIntensity === 'critical' || effectiveIntensity === 'ruthless')
       ) {
         this._send({ type: 'phase', phase: 'DEBATE', message: 'Strategist revising implementation\u2026' });
         const debate = await this._runDebatePipeline(prompt, draft, verdicts, originalCode, signal);
@@ -359,6 +530,15 @@ export class TriForgeCouncilPanel {
       const finalConsensus = this._computeConsensus(verdicts);
       this._session.consensus = finalConsensus;
       this._send({ type: 'session-complete', consensus: finalConsensus, finalCode, verdicts });
+      this._checkLedgerConsent();
+      this._saveLedgerRecord({
+        timestamp: Date.now(), prompt, draftAuthor: draft.provider,
+        councilMode: this._councilMode, riskLevel: risk.level,
+        confidenceInitial: draft.confidence,
+        confidenceFinal: this._session.debate?.confidenceFinal ?? draft.confidence,
+        consensus: finalConsensus, intensity: effectiveIntensity,
+        deadlockResolution, userOverride,
+      });
 
     } catch (err: any) {
       if (err?.name === 'AbortError' || signal.aborted) { return; }
@@ -386,10 +566,29 @@ export class TriForgeCouncilPanel {
       '{"code":"...","reasoning":"2-3 sentences","confidence":0-100,' +
       '"preliminaryRisk":"LOW"|"MEDIUM"|"HIGH"|"CRITICAL"}';
 
-    const raw = await primary.chat([
+    const messages = [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: `Task: ${prompt}\n\nOriginal context:\n${originalCode || '(empty \u2014 new implementation)'}` },
-    ], signal);
+    ];
+
+    // Try providers in order, skipping timed-out ones
+    const ordered = [
+      providers.find(p => p.name === 'grok'),
+      providers.find(p => p.name === 'openai'),
+      providers.find(p => p.name === 'claude'),
+      ...providers,
+    ].filter(Boolean).filter((p, i, a) => a.indexOf(p) === i) as typeof providers;
+
+    let raw: string | null = null;
+    let chosenProvider = primary;
+    for (const p of ordered) {
+      if (this._unavailableProviders.has(p.name)) { continue; }
+      raw = await this._withTimeout(() => p.chat(messages as any, signal), p.name, signal);
+      if (raw !== null) { chosenProvider = p; break; }
+    }
+    if (raw === null) {
+      throw new Error('All providers timed out. Check your connection and API keys.');
+    }
 
     const parsed = this._parseJson<{
       code: string; reasoning: string; confidence: number; preliminaryRisk: string;
@@ -397,7 +596,7 @@ export class TriForgeCouncilPanel {
     return {
       code:            parsed.code ?? '',
       reasoning:       parsed.reasoning ?? '',
-      provider:        primary.name,
+      provider:        chosenProvider.name,
       confidence:      typeof parsed.confidence === 'number' ? parsed.confidence : 75,
       preliminaryRisk: (parsed.preliminaryRisk as RiskLevel) ?? 'MEDIUM',
     };
@@ -443,12 +642,14 @@ export class TriForgeCouncilPanel {
       `Original task: ${prompt}\n\nProposed implementation:\n\`\`\`\n${draft.code}\n\`\`\`\n\n` +
       `Original code:\n${originalCode || '(new implementation)'}`;
 
-    return Promise.all(critics.map(async (critic): Promise<SeatVerdict> => {
+    const results = await Promise.all(critics.map(async (critic): Promise<SeatVerdict | null> => {
+      if (this._unavailableProviders.has(critic.name)) { return null; }
       try {
-        const raw = await critic.chat([
+        const raw = await this._withTimeout(() => critic.chat([
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userMessage },
-        ], signal);
+        ] as any, signal), critic.name, signal);
+        if (raw === null) { return null; } // timed out
         const parsed = this._parseJson<{
           agrees: boolean; riskLevel: string; confidence: number;
           objections: string[]; suggestedChanges: string[];
@@ -473,6 +674,7 @@ export class TriForgeCouncilPanel {
         return fallback;
       }
     }));
+    return results.filter((v): v is SeatVerdict => v !== null);
   }
 
   private async _runDebatePipeline(
@@ -556,6 +758,18 @@ export class TriForgeCouncilPanel {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
       vscode.window.showWarningMessage('TriForge AI: Open a file in the editor to apply code.');
+      return;
+    }
+    // Always-on explicit apply gate
+    const risk      = this._session?.risk?.level ?? '\u2014';
+    const consensus = this._session?.consensus ?? '\u2014';
+    const conf      = this._session?.draft?.confidence ?? '\u2014';
+    const choice = await vscode.window.showInformationMessage(
+      `Apply TriForge patch?\n\nRisk: ${risk}  |  Consensus: ${consensus}  |  Confidence: ${conf}%  |  Council: ${this._councilMode}`,
+      { modal: true }, 'Apply', 'Cancel'
+    );
+    if (choice !== 'Apply') {
+      this._send({ type: 'apply-cancelled' });
       return;
     }
     await editor.edit(b => {
@@ -671,6 +885,201 @@ export class TriForgeCouncilPanel {
     const end   = text.lastIndexOf('}');
     if (start !== -1 && end !== -1) { text = text.slice(start, end + 1); }
     try { return JSON.parse(text) as T; } catch { return {} as Partial<T>; }
+  }
+
+  // ── Provider timeout wrapper ───────────────────────────────────────────────
+
+  private async _withTimeout<T>(fn: () => Promise<T>, provider: string, signal: AbortSignal, ms = 8000): Promise<T | null> {
+    if (this._unavailableProviders.has(provider)) { return null; }
+    return new Promise<T | null>((resolve) => {
+      const timer = setTimeout(() => {
+        this._unavailableProviders.add(provider);
+        this._send({ type: 'provider-offline', provider });
+        resolve(null);
+      }, ms);
+      fn().then(v => { clearTimeout(timer); resolve(v); })
+         .catch(err => {
+           clearTimeout(timer);
+           if (err?.name === 'AbortError' || signal.aborted) { resolve(null); }
+           else { resolve(null); } // treat errors as unavailable for this call
+         });
+    });
+  }
+
+  // ── Adaptive intensity ────────────────────────────────────────────────────
+
+  private _determineIntensity(filePath: string, risk: RiskAnalysis): IntensityLevel {
+    if (risk.level === 'CRITICAL') { return 'RUTHLESS'; }
+    if (/auth|token|jwt|payment|secret|vault/i.test(filePath)) { return 'CRITICAL'; }
+    if (risk.level === 'HIGH') { return 'CRITICAL'; }
+    if (/\.test\.|\.spec\.|__tests__|\.stories\.|\.md$|\.txt$/i.test(filePath)) { return 'COOPERATIVE'; }
+    return 'ANALYTICAL';
+  }
+
+  private _buildIntensityReason(filePath: string, risk: RiskAnalysis): string {
+    if (risk.level === 'CRITICAL') { return 'Risk level is CRITICAL \u2014 maximum scrutiny required.'; }
+    if (/auth|token|jwt|payment|secret|vault/i.test(filePath)) { return 'Security-sensitive file detected in path.'; }
+    if (risk.level === 'HIGH') { return 'Risk level is HIGH \u2014 elevated scrutiny applied.'; }
+    if (/\.test\.|\.spec\.|__tests__|\.stories\./i.test(filePath)) { return 'Test/story file \u2014 cooperative review.'; }
+    if (/\.md$|\.txt$/i.test(filePath)) { return 'Documentation file \u2014 cooperative review.'; }
+    return 'Standard analytical review.';
+  }
+
+  // ── Deadlock resolution ───────────────────────────────────────────────────
+
+  private _waitForDeadlockResolution(signal: AbortSignal): Promise<{ action: DeadlockResolution; selectedVersion?: string }> {
+    return new Promise((resolve) => {
+      this._deadlockResolve = resolve;
+      signal.addEventListener('abort', () => {
+        this._deadlockResolve = null;
+        resolve({ action: 'ESCALATE' });
+      }, { once: true });
+    });
+  }
+
+  /** Silent alternative generator for deadlock version collection. */
+  private async _generateAlternativeQuiet(
+    provider: string, prompt: string, draftCode: string, originalCode: string, signal: AbortSignal
+  ): Promise<VersionCandidate | null> {
+    if (!TriForgeCouncilPanel._isValidProvider(provider)) { return null; }
+    const p = await this._providerManager.getProvider(provider as ProviderName);
+    if (!p || this._unavailableProviders.has(provider)) { return null; }
+    try {
+      const raw = await this._withTimeout(() => p.chat([
+        { role: 'system', content:
+          'You objected to the proposed implementation. Now provide your alternative.\n' +
+          'Return ONLY valid JSON \u2014 no markdown fences:\n' +
+          '{"reasoning":"why better (1-2 sentences)","code":"...complete implementation..."}' },
+        { role: 'user', content:
+          `Task: ${prompt}\n\nRejected:\n\`\`\`\n${draftCode}\n\`\`\`\n\nOriginal:\n${originalCode || '(new)'}\n\nYour alternative:` },
+      ] as any, signal), provider, signal);
+      if (!raw) { return null; }
+      const parsed = this._parseJson<{ reasoning: string; code: string }>(raw);
+      return { provider, code: parsed.code ?? draftCode, reasoning: parsed.reasoning ?? '' };
+    } catch { return null; }
+  }
+
+  // ── Force Synthesis ───────────────────────────────────────────────────────
+
+  private async _runForceSynthesis(
+    prompt: string, versions: VersionCandidate[], signal: AbortSignal
+  ): Promise<string> {
+    const providers = await this._providerManager.getActiveProviders();
+    const synthesizer = providers.find(p => !this._unavailableProviders.has(p.name));
+    if (!synthesizer) { return versions[0]?.code ?? ''; }
+
+    const versionList = versions.map((v, i) =>
+      `Version ${String.fromCharCode(65 + i)} (${v.provider}):\n\`\`\`\n${v.code}\n\`\`\`\nReasoning: ${v.reasoning}`
+    ).join('\n\n');
+
+    const raw = await this._withTimeout(() => synthesizer.chat([
+      { role: 'system', content:
+        'You are synthesizing competing implementations. Identify the strengths of each version.\n' +
+        'Merge the best structural elements into a unified implementation.\n' +
+        'Return ONLY valid JSON \u2014 no markdown fences:\n' +
+        '{"finalCode":"...complete merged implementation...","rationale":"what was merged and why"}' },
+      { role: 'user', content: `Task: ${prompt}\n\n${versionList}\n\nProduce a unified best-of-all implementation.` },
+    ] as any, signal), synthesizer.name, signal, 12000);
+
+    if (!raw) { return versions[0]?.code ?? ''; }
+    const parsed = this._parseJson<{ finalCode: string; rationale: string }>(raw);
+    if (parsed.rationale) { this._send({ type: 'synthesis-ready', rationale: parsed.rationale }); }
+    return parsed.finalCode ?? versions[0]?.code ?? '';
+  }
+
+  // ── Extended Debate Round ─────────────────────────────────────────────────
+
+  private async _runExtendedDebate(
+    prompt: string, versions: VersionCandidate[], signal: AbortSignal
+  ): Promise<string> {
+    const providers = await this._providerManager.getActiveProviders();
+    const available = providers.filter(p => !this._unavailableProviders.has(p.name));
+    if (available.length === 0) { return versions[0]?.code ?? ''; }
+
+    const versionList = versions.map((v, i) =>
+      `Version ${String.fromCharCode(65 + i)} (${v.provider}):\n\`\`\`\n${v.code}\n\`\`\`\nReasoning: ${v.reasoning}`
+    ).join('\n\n');
+
+    // Each AI directly addresses and refutes other proposals
+    const updatedVerdicts = await Promise.all(available.map(async (p): Promise<SeatVerdict | null> => {
+      const raw = await this._withTimeout(() => p.chat([
+        { role: 'system', content:
+          'You are reviewing competing implementations in an extended debate. ' +
+          'You must directly address and refute the weaknesses of other proposals. Justify why yours is superior.\n' +
+          'Return ONLY valid JSON \u2014 no markdown fences:\n' +
+          '{"agrees":true|false,"riskLevel":"LOW"|"MEDIUM"|"HIGH"|"CRITICAL","confidence":0-100,' +
+          '"objections":["..."],"suggestedChanges":["..."]}' },
+        { role: 'user', content: `Task: ${prompt}\n\n${versionList}\n\nAnalyse all versions. Identify the best approach and justify it.` },
+      ] as any, signal), p.name, signal, 12000);
+      if (!raw) { return null; }
+      const parsed = this._parseJson<{
+        agrees: boolean; riskLevel: string; confidence: number;
+        objections: string[]; suggestedChanges: string[];
+      }>(raw);
+      const verdict: SeatVerdict = {
+        provider:         p.name,
+        agrees:           typeof parsed.agrees === 'boolean' ? parsed.agrees : true,
+        riskLevel:        (parsed.riskLevel as RiskLevel) ?? 'MEDIUM',
+        confidence:       typeof parsed.confidence === 'number' ? parsed.confidence : 70,
+        objections:       Array.isArray(parsed.objections) ? parsed.objections : [],
+        suggestedChanges: Array.isArray(parsed.suggestedChanges) ? parsed.suggestedChanges : [],
+      };
+      this._send({ type: 'verdict', verdict });
+      return verdict;
+    }));
+    const filteredVerdicts = updatedVerdicts.filter((v): v is SeatVerdict => v !== null);
+    if (this._session) { this._session.verdicts = filteredVerdicts; }
+
+    // Then force-synthesize from the full version set
+    return this._runForceSynthesis(prompt, versions, signal);
+  }
+
+  // ── Council Ledger ────────────────────────────────────────────────────────
+
+  private _checkLedgerConsent(): void {
+    if (this._ledgerConsentShown) { return; }
+    this._ledgerConsentShown = true;
+    const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!wsFolder) { return; }
+    const dir = path.join(wsFolder, '.triforge');
+    const consentPath = path.join(dir, 'consent.json');
+    try {
+      if (fs.existsSync(consentPath)) {
+        const data = JSON.parse(fs.readFileSync(consentPath, 'utf8'));
+        this._ledgerEnabled = data.enabled === true;
+        return;
+      }
+    } catch { /* ignore */ }
+    // Show one-time consent prompt (fire-and-forget)
+    vscode.window.showInformationMessage(
+      'TriForge AI: Enable a local Council Decision Ledger for this workspace?',
+      'Enable for this workspace', 'Disable'
+    ).then(choice => {
+      const enabled = choice === 'Enable for this workspace';
+      this._ledgerEnabled = enabled;
+      try {
+        if (!fs.existsSync(dir)) { fs.mkdirSync(dir, { recursive: true }); }
+        fs.writeFileSync(consentPath, JSON.stringify({ enabled, ts: Date.now() }));
+      } catch { /* ignore */ }
+    });
+  }
+
+  private _saveLedgerRecord(record: CouncilRecord): void {
+    if (!this._ledgerEnabled) { return; }
+    const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!wsFolder) { return; }
+    try {
+      const dir = path.join(wsFolder, '.triforge');
+      const ledgerPath = path.join(dir, 'ledger.json');
+      if (!fs.existsSync(dir)) { fs.mkdirSync(dir, { recursive: true }); }
+      let entries: CouncilRecord[] = [];
+      if (fs.existsSync(ledgerPath)) {
+        try { entries = JSON.parse(fs.readFileSync(ledgerPath, 'utf8')); } catch { entries = []; }
+      }
+      entries.push(record);
+      if (entries.length > 100) { entries = entries.slice(-100); }
+      fs.writeFileSync(ledgerPath, JSON.stringify(entries, null, 2));
+    } catch { /* silent */ }
   }
 
   // ── Webview HTML ──────────────────────────────────────────────────────────
@@ -910,6 +1319,43 @@ export class TriForgeCouncilPanel {
   .toast-ok { background: rgba(16,185,129,0.1) !important; border-color: rgba(16,185,129,0.35) !important; color: #10b981 !important; }
   @keyframes fi { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
   #bypass-b { background: rgba(245,158,11,0.09); border: 1px solid rgba(245,158,11,0.3); color: #f59e0b; padding: 7px 12px; font-size: 12px; border-radius: 5px; display: none; }
+
+  /* Offline node state */
+  .vnode.offline .vn-core { stroke-dasharray: 4 3; fill: rgba(255,255,255,0.01); stroke: rgba(255,255,255,0.15); opacity: 0.3; }
+  .vnode.offline .vn-lbl  { fill: rgba(255,255,255,0.2); opacity: 0.3; }
+
+  /* Council mode badge */
+  .badge.cm-full    { background: rgba(16,185,129,0.12); color: #10b981; border-color: rgba(16,185,129,0.35); }
+  .badge.cm-partial { background: rgba(245,158,11,0.12); color: #f59e0b; border-color: rgba(245,158,11,0.35); }
+  .badge.cm-solo    { background: rgba(239,68,68,0.12);  color: #ef4444; border-color: rgba(239,68,68,0.35); }
+
+  /* Intensity auto label */
+  .i-auto-lbl { font-size: 10px; color: rgba(255,255,255,0.38); font-style: italic; }
+
+  /* Deadlock section */
+  .deadlock-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+  .dopt-btn {
+    display: flex; align-items: center; gap: 10px;
+    background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 6px; padding: 10px 12px; cursor: pointer; text-align: left;
+    transition: background 0.15s, border-color 0.15s; color: var(--vscode-editor-foreground, #ccc);
+    font-family: inherit;
+  }
+  .dopt-btn:hover { background: rgba(99,102,241,0.1); border-color: rgba(99,102,241,0.4); }
+  .dopt-icon { font-size: 18px; flex-shrink: 0; }
+  .dopt-title { font-size: 12px; font-weight: 700; color: rgba(255,255,255,0.85); }
+  .dopt-desc  { font-size: 10px; color: rgba(255,255,255,0.4); margin-top: 2px; }
+
+  /* Forge deadlock state (amber tension) */
+  .forge-deadlock .vfi { stroke: #f59e0b; fill: rgba(245,158,11,0.08); animation: fp 0.7s ease-in-out infinite; }
+
+  /* Version cards */
+  .vc-card {
+    border: 1px solid rgba(255,255,255,0.1); border-radius: 5px;
+    background: rgba(255,255,255,0.02); padding: 8px 10px;
+  }
+  .vc-header { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
+  .vc-code { font-family: 'Menlo','Monaco','Courier New',monospace; font-size: 10px; color: rgba(255,255,255,0.55); white-space: pre-wrap; max-height: 80px; overflow: hidden; background: rgba(0,0,0,0.2); border-radius: 3px; padding: 5px 7px; margin-bottom: 5px; }
 </style>
 </head>
 <body>
@@ -921,6 +1367,7 @@ export class TriForgeCouncilPanel {
       <span class="pdot" id="d-openai" data-p="openai">GPT</span>
       <span class="pdot" id="d-claude" data-p="claude">Claude</span>
       <span class="pdot" id="d-grok"   data-p="grok">Grok</span>
+      <span id="cm-badge" class="badge hidden">FULL</span>
     </div>
     <button class="icon-btn" id="btn-cfg" title="Settings">&#x2699;</button>
   </header>
@@ -943,9 +1390,12 @@ export class TriForgeCouncilPanel {
         </div>
         <div class="irow">
           <span>Intensity:</span>
-          <button class="ibtn on" data-i="analytical">Analytical</button>
-          <button class="ibtn"    data-i="combative">Combative</button>
+          <button class="ibtn on" data-i="adaptive">Adaptive</button>
+          <button class="ibtn"    data-i="cooperative">Cooperative</button>
+          <button class="ibtn"    data-i="analytical">Analytical</button>
+          <button class="ibtn"    data-i="critical">Critical</button>
           <button class="ibtn"    data-i="ruthless">Ruthless</button>
+          <span id="i-auto-lbl" class="i-auto-lbl hidden"></span>
           <button class="btn-p" id="btn-run">Run Council &#x25B6;</button>
         </div>
       </div>
@@ -1085,6 +1535,39 @@ export class TriForgeCouncilPanel {
       </div>
     </div>
 
+    <!-- Deadlock -->
+    <div class="sec hidden" id="s-deadlock">
+      <div class="sh">&#x2696; Council Deadlock Detected<div class="meta"><span class="badge r-high">DEADLOCK</span></div></div>
+      <div class="sc">
+        <p style="font-size:12px;color:rgba(255,255,255,0.55);margin-bottom:8px;">The council is divided. Choose how to resolve the impasse:</p>
+        <div class="deadlock-opts">
+          <button class="dopt-btn" id="btn-dl-escalate">
+            <span class="dopt-icon">&#x26A1;</span>
+            <div class="dopt-text"><div class="dopt-title">Escalate Intensity</div><div class="dopt-desc">Increase critique depth and re-vote</div></div>
+          </button>
+          <button class="dopt-btn" id="btn-dl-user">
+            <span class="dopt-icon">&#x1F9D1;</span>
+            <div class="dopt-text"><div class="dopt-title">User Breaks Tie</div><div class="dopt-desc">Choose from the competing versions</div></div>
+          </button>
+          <button class="dopt-btn" id="btn-dl-synthesis">
+            <span class="dopt-icon">&#x1F9EC;</span>
+            <div class="dopt-text"><div class="dopt-title">Force Synthesis</div><div class="dopt-desc">AI merges the best elements of all versions</div></div>
+          </button>
+          <button class="dopt-btn" id="btn-dl-extended">
+            <span class="dopt-icon">&#x1F525;</span>
+            <div class="dopt-text"><div class="dopt-title">Extended Debate Round</div><div class="dopt-desc">Each AI directly challenges competing proposals</div></div>
+          </button>
+        </div>
+        <div id="version-cards" class="hidden" style="margin-top:10px;display:flex;flex-direction:column;gap:6px;"></div>
+      </div>
+    </div>
+
+    <!-- Synthesis note -->
+    <div class="sec hidden" id="s-synth-note">
+      <div class="sh">Synthesis Rationale</div>
+      <p id="synth-rationale" class="rea"></p>
+    </div>
+
     <!-- Settings -->
     <div class="sec hidden" id="s-cfg">
       <div class="sh">API Keys</div>
@@ -1104,7 +1587,7 @@ const vs = acquireVsCodeApi();
 function send(cmd, d){ vs.postMessage(Object.assign({command:cmd}, d||{})); }
 
 // State
-const S = { phase:'IDLE', intensity:'analytical', providers:{}, debOpen:false, running:false };
+const S = { phase:'IDLE', intensity:'adaptive', providers:{}, debOpen:false, running:false, councilMode:'FULL', dlVersions:[] };
 const PH_ORD = ['DRAFTING','RISK_CHECK','CRITIQUE','DEBATE','COMPLETE'];
 
 // DOM
@@ -1146,19 +1629,19 @@ function setNode(prov, state){
   const nid='vn-'+(prov==='openai'?'gpt':prov);
   const bid='bm-'+(prov==='openai'?'gpt':prov);
   const n=$(nid), b=$(bid);
-  if(n){ n.classList.remove('drafting','reviewing','agreed','disagreed'); if(state){ n.classList.add(state); } }
+  if(n){ n.classList.remove('drafting','reviewing','agreed','disagreed','offline'); if(state){ n.classList.add(state); } }
   if(b){ b.classList.remove('fl'); if(state==='drafting'||state==='reviewing'){ b.classList.add('fl'); } }
 }
 function setForge(st){
   const f=$('vn-forge');
   if(!f){ return; }
-  f.classList.remove('forge-pulse','forge-unani','forge-split');
+  f.classList.remove('forge-pulse','forge-unani','forge-split','forge-deadlock');
   if(st){ f.classList.add(st); }
 }
 function resetNodes(){
   ['claude','gpt','grok'].forEach(function(p){
     const n=$('vn-'+p), b=$('bm-'+p);
-    if(n){ n.classList.remove('drafting','reviewing','agreed','disagreed'); }
+    if(n){ n.classList.remove('drafting','reviewing','agreed','disagreed','offline'); }
     if(b){ b.classList.remove('fl'); }
   });
   setForge(null);
@@ -1288,6 +1771,70 @@ function onAlt(a){
   show('s-alt');
 }
 
+// Council mode handler
+function onCouncilMode(d){
+  S.councilMode=d.mode;
+  const b=$('cm-badge');
+  if(!b){ return; }
+  b.textContent=d.mode;
+  b.className='badge cm-'+d.mode.toLowerCase();
+  b.classList.remove('hidden');
+}
+
+// Provider offline handler
+function onProviderOffline(d){
+  setNode(d.provider, 'offline');
+}
+
+// Intensity resolved (adaptive auto-detection)
+function onIntensityResolved(d){
+  const lvl=d.level.toLowerCase();
+  document.querySelectorAll('.ibtn').forEach(function(b){ b.classList.remove('on'); });
+  const ab=document.querySelector('.ibtn[data-i="'+lvl+'"]');
+  if(ab){ ab.classList.add('on'); }
+  const al=$('i-auto-lbl');
+  if(al){ al.textContent='(Auto: '+d.level+')'; al.classList.remove('hidden'); }
+  S.intensity=lvl;
+}
+
+// Deadlock handler
+function onDeadlock(d){
+  S.dlVersions=d.versions||[];
+  hide('s-phase');
+  show('s-deadlock');
+  setForge('forge-deadlock');
+  // Pre-populate version cards (hidden until user picks "User Breaks Tie")
+  const vc=$('version-cards');
+  if(vc){
+    vc.innerHTML='';
+    S.dlVersions.forEach(function(v,i){
+      const lbl=String.fromCharCode(65+i);
+      const card=document.createElement('div');
+      card.className='vc-card';
+      card.innerHTML=
+        '<div class="vc-header">'+
+          '<span class="badge '+pCls(v.provider)+'">'+esc(pLbl(v.provider))+'</span>'+
+          '<span style="font-size:11px;color:rgba(255,255,255,0.4);">Version '+esc(lbl)+'</span>'+
+          '<span style="font-size:11px;color:rgba(255,255,255,0.45);flex:1;">'+esc(v.reasoning)+'</span>'+
+          '<button class="btn-s" style="font-size:11px;padding:3px 9px;" onclick="selectVersion(\''+esc(v.provider)+'\')">Select</button>'+
+        '</div>'+
+        '<div class="vc-code">'+esc((v.code||'').slice(0,200))+'</div>';
+      vc.appendChild(card);
+    });
+  }
+}
+
+// Synthesis rationale
+function onSynthesisReady(d){
+  txt('synth-rationale', d.rationale||'');
+  show('s-synth-note');
+}
+
+// Apply cancelled
+function onApplyCancelled(){
+  toast('Patch not applied.', false);
+}
+
 // Toast
 function toast(msg, ok){
   const t=$('etst'); if(!t){ return; }
@@ -1299,13 +1846,18 @@ function toast(msg, ok){
 
 // Reset
 function reset(){
-  S.phase='IDLE'; S.running=false; S.debOpen=false;
-  ['s-viz','s-phase','s-draft','s-risk','s-agree','s-result','s-debate','s-alt'].forEach(hide);
+  S.phase='IDLE'; S.running=false; S.debOpen=false; S.dlVersions=[];
+  ['s-viz','s-phase','s-draft','s-risk','s-agree','s-result','s-debate','s-alt','s-deadlock','s-synth-note'].forEach(hide);
   show('s-input');
   resetNodes();
   const vc=$('vcards'); if(vc){ vc.innerHTML=''; }
+  const dlvc=$('version-cards'); if(dlvc){ dlvc.innerHTML=''; dlvc.classList.add('hidden'); }
   document.querySelectorAll('.ps').forEach(function(el){ el.classList.remove('active','done'); });
   const bb=$('bypass-b'); if(bb){ bb.style.display='none'; }
+  const al=$('i-auto-lbl'); if(al){ al.textContent=''; al.classList.add('hidden'); }
+  const cmb=$('cm-badge'); if(cmb){ cmb.classList.add('hidden'); }
+  // Reset deadlock buttons
+  const dlub=$('btn-dl-user'); if(dlub){ dlub.textContent='\u{1F9D1} User Breaks Tie\u2026'; dlub.disabled=false; }
 }
 
 // Message listener
@@ -1320,8 +1872,14 @@ window.addEventListener('message', function(e){
     case 'debate-complete': onDebate(d.debate); break;
     case 'session-complete': onComplete(d); break;
     case 'alternative-ready': onAlt(d.alternative); break;
-    case 'apply-done':   toast('\\u2713 Applied to '+d.filePath, true); break;
-    case 'error':        toast(d.message||'An error occurred.', false); if(S.running){ S.running=false; show('s-input'); } break;
+    case 'apply-done':        toast('\\u2713 Applied to '+d.filePath, true); break;
+    case 'apply-cancelled':   onApplyCancelled(); break;
+    case 'error':             toast(d.message||'An error occurred.', false); if(S.running){ S.running=false; show('s-input'); } break;
+    case 'council-mode':      onCouncilMode(d); break;
+    case 'provider-offline':  onProviderOffline(d); break;
+    case 'intensity-resolved': onIntensityResolved(d); break;
+    case 'deadlock':          onDeadlock(d); break;
+    case 'synthesis-ready':   onSynthesisReady(d); break;
     case 'escalated':
       S.intensity=d.intensity;
       document.querySelectorAll('.ibtn').forEach(function(b){ b.classList.toggle('on', b.dataset.i===d.intensity); });
@@ -1347,6 +1905,7 @@ window.addEventListener('message', function(e){
 $('btn-run')&&$('btn-run').addEventListener('click',function(){
   const p=($('task-input')||{}).value||'', c=($('ctx-input')||{}).value||'';
   if(!p.trim()){ toast('Please describe your task before running the council.'); return; }
+  const al=$('i-auto-lbl'); if(al){ al.textContent=''; al.classList.add('hidden'); }
   send('council:run',{prompt:p.trim(),context:c.trim(),intensity:S.intensity});
 });
 $('btn-abort')&&$('btn-abort').addEventListener('click',function(){ send('council:abort'); });
@@ -1386,13 +1945,37 @@ document.querySelectorAll('.ibtn').forEach(function(btn){
     document.querySelectorAll('.ibtn').forEach(function(b){ b.classList.remove('on'); });
     btn.classList.add('on');
     S.intensity=btn.dataset.i;
+    const al=$('i-auto-lbl'); if(al){ al.textContent=''; al.classList.add('hidden'); }
+    if(btn.dataset.i==='adaptive'){
+      send('council:setIntensity',{lock:false});
+    } else {
+      send('council:setIntensity',{lock:true,level:(btn.dataset.i||'analytical').toUpperCase()});
+    }
   });
+});
+
+// Deadlock button bindings
+$('btn-dl-escalate')&&$('btn-dl-escalate').addEventListener('click',function(){
+  hide('s-deadlock'); show('s-phase'); send('council:deadlock:escalate');
+});
+$('btn-dl-user')&&$('btn-dl-user').addEventListener('click',function(){
+  const vc=$('version-cards');
+  if(vc){ vc.classList.remove('hidden'); vc.style.display='flex'; }
+  this.textContent='Select a version below\u2026'; this.disabled=true;
+  send('council:deadlock:user');
+});
+$('btn-dl-synthesis')&&$('btn-dl-synthesis').addEventListener('click',function(){
+  hide('s-deadlock'); show('s-phase'); send('council:deadlock:synthesis');
+});
+$('btn-dl-extended')&&$('btn-dl-extended').addEventListener('click',function(){
+  hide('s-deadlock'); show('s-phase'); send('council:deadlock:extended');
 });
 
 // Global functions
 window.saveKey=function(p){ const inp=$('k-'+p); if(!inp||!inp.value.trim()){ return; } send('setApiKey',{provider:p,key:inp.value.trim()}); inp.value=''; toast('\\u2713 '+pLbl(p)+' key saved.', true); };
 window.rmKey=function(p){ send('removeApiKey',{provider:p}); };
 window.reqAlt=function(p){ send('council:requestAlt',{provider:p}); };
+window.selectVersion=function(p){ hide('s-deadlock'); show('s-phase'); send('council:selectVersion',{provider:p}); };
 
 // Init
 send('getProviders');
