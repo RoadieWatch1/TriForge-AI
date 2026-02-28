@@ -722,6 +722,49 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   );
 }
 
+// ── Provider error → human-readable message ───────────────────────────────────
+
+function friendlyProviderError(provider: string, raw: string): React.ReactNode {
+  const lower = raw.toLowerCase();
+
+  // Billing / credits
+  if (lower.includes('credit balance') || lower.includes('insufficient_quota') || lower.includes('billing')) {
+    const links: Record<string, string> = {
+      claude: 'https://console.anthropic.com/settings/billing',
+      openai: 'https://platform.openai.com/settings/organization/billing',
+      gemini: 'https://aistudio.google.com/apikey',
+    };
+    const link = links[provider.toLowerCase()];
+    return (
+      <span>
+        No credits — add billing at{' '}
+        <a href={link} onClick={e => { e.preventDefault(); window.triforge.system.openExternal(link); }}
+          style={{ color: '#f59e0b', textDecoration: 'underline', cursor: 'pointer' }}>
+          {link?.replace('https://', '')}
+        </a>
+      </span>
+    );
+  }
+
+  // Rate limit / quota
+  if (lower.includes('429') || lower.includes('quota') || lower.includes('rate limit') || lower.includes('too many')) {
+    return 'Rate limit hit — wait a minute and try again, or upgrade your API plan.';
+  }
+
+  // Invalid key
+  if (lower.includes('401') || lower.includes('invalid') && lower.includes('key') || lower.includes('authentication')) {
+    return 'Invalid API key — re-enter it in Settings → API Keys.';
+  }
+
+  // Timeout
+  if (lower.includes('timeout') || lower.includes('timed out')) {
+    return 'Request timed out — the model took too long. Try again.';
+  }
+
+  // Generic — trim the raw JSON noise, show first 120 chars
+  return raw.replace(/\{.*\}/s, '').trim() || raw.substring(0, 120);
+}
+
 // ── Consensus Message (Think Tank result) ─────────────────────────────────────
 
 function ConsensusMessage({ msg, isSpeaking, canSpeak, onSpeak, tier, onUpgradeClick }: {
@@ -773,8 +816,8 @@ function ConsensusMessage({ msg, isSpeaking, canSpeak, onSpeak, tier, onUpgradeC
         {msg.failedProviders && msg.failedProviders.length > 0 && (
           <div style={{ fontSize: 11, color: '#f59e0b', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 6, padding: '6px 10px', marginBottom: 8 }}>
             {msg.failedProviders.map(f => (
-              <div key={f.provider} style={{ marginBottom: 2 }}>
-                <strong>{f.provider}</strong> did not respond — {f.error}
+              <div key={f.provider} style={{ marginBottom: 4 }}>
+                <strong>{f.provider}</strong> did not respond — {friendlyProviderError(f.provider, f.error)}
               </div>
             ))}
           </div>

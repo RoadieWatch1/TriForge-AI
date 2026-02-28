@@ -320,9 +320,9 @@ interface SettingsProps {
 }
 
 const PROVIDERS = [
-  { id: 'openai', label: 'OpenAI', placeholder: 'sk-…', color: '#10a37f' },
-  { id: 'claude', label: 'Anthropic Claude', placeholder: 'sk-ant-…', color: '#d97706' },
-  { id: 'gemini', label: 'Google Gemini', placeholder: 'AIza…', color: '#4285f4' },
+  { id: 'openai', label: 'OpenAI', placeholder: 'sk-…', color: '#10a37f', billingUrl: 'https://platform.openai.com/settings/organization/billing', keysUrl: 'https://platform.openai.com/api-keys' },
+  { id: 'claude', label: 'Anthropic Claude', placeholder: 'sk-ant-…', color: '#d97706', billingUrl: 'https://console.anthropic.com/settings/billing', keysUrl: 'https://console.anthropic.com/settings/keys' },
+  { id: 'gemini', label: 'Google Gemini', placeholder: 'AIza…', color: '#4285f4', billingUrl: 'https://aistudio.google.com/apikey', keysUrl: 'https://aistudio.google.com/apikey' },
 ];
 
 function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, hasPin, lockUsername, onSaveKey, onRemoveKey, onUpdatePermissions, onPinChanged }: SettingsProps) {
@@ -354,8 +354,11 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
   return (
     <div style={styles.settingsPage}>
       <h2 style={styles.sectionTitle}>API Keys</h2>
-      <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
+      <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 8 }}>
         Keys are stored locally and never transmitted. At least one is required to activate the council.
+      </p>
+      <p style={{ color: '#f59e0b', fontSize: 12, marginBottom: 16, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 6, padding: '7px 10px' }}>
+        <strong>Note:</strong> All three APIs require paid billing. Anthropic (Claude) has no free tier — add credits before use. Google Gemini free tier has very low rate limits. OpenAI requires a minimum deposit.
       </p>
       {PROVIDERS.map(p => (
         <div key={p.id} style={styles.keyRow}>
@@ -363,26 +366,43 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
           <span style={styles.providerLabel}>{p.label}</span>
           {keyStatus[p.id] ? (
             <div style={styles.keyConfigured}>
-              <span style={styles.keyActive}>● Configured</span>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3 }}>
+                <span style={styles.keyActive}>● Configured</span>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                  Billing issues?{' '}
+                  <a href={p.billingUrl} onClick={e => { e.preventDefault(); window.triforge.system.openExternal(p.billingUrl); }}
+                    style={{ color: 'var(--accent)', textDecoration: 'underline', cursor: 'pointer' }}>
+                    Add credits
+                  </a>
+                </span>
+              </div>
               <button style={styles.removeBtn} onClick={() => onRemoveKey(p.id)}>Remove</button>
             </div>
           ) : (
-            <div style={styles.keyInput}>
-              <input
-                type="password"
-                style={styles.keyField}
-                placeholder={p.placeholder}
-                value={apiKeys[p.id]}
-                onChange={e => setApiKeys(k => ({ ...k, [p.id]: e.target.value }))}
-                onKeyDown={e => e.key === 'Enter' && onSaveKey(p.id)}
-              />
-              <button
-                style={{ ...styles.saveBtn, ...((!apiKeys[p.id].trim() || saving === p.id) ? styles.saveBtnDisabled : {}) }}
-                onClick={() => onSaveKey(p.id)}
-                disabled={!apiKeys[p.id].trim() || saving === p.id}
-              >
-                {saving === p.id ? '…' : 'Save'}
-              </button>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
+              <div style={styles.keyInput}>
+                <input
+                  type="password"
+                  style={styles.keyField}
+                  placeholder={p.placeholder}
+                  value={apiKeys[p.id]}
+                  onChange={e => setApiKeys(k => ({ ...k, [p.id]: e.target.value }))}
+                  onKeyDown={e => e.key === 'Enter' && onSaveKey(p.id)}
+                />
+                <button
+                  style={{ ...styles.saveBtn, ...((!apiKeys[p.id].trim() || saving === p.id) ? styles.saveBtnDisabled : {}) }}
+                  onClick={() => onSaveKey(p.id)}
+                  disabled={!apiKeys[p.id].trim() || saving === p.id}
+                >
+                  {saving === p.id ? '…' : 'Save'}
+                </button>
+              </div>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', textAlign: 'right' as const }}>
+                <a href={p.keysUrl} onClick={e => { e.preventDefault(); window.triforge.system.openExternal(p.keysUrl); }}
+                  style={{ color: 'var(--accent)', textDecoration: 'underline', cursor: 'pointer' }}>
+                  Get API key →
+                </a>
+              </span>
             </div>
           )}
         </div>
