@@ -21,6 +21,24 @@ import {
 let providerManager: ProviderManager | null = null;
 let intentEngine: IntentEngine | null = null;
 
+// ── Input validation ──────────────────────────────────────────────────────────
+
+const MAX_MESSAGE_CHARS  = 32_000;   // ~8k tokens — generous but bounded
+const MAX_HISTORY_TURNS  = 200;      // max conversation turns passed from renderer
+const MAX_HISTORY_CHARS  = 200_000;  // total chars across all history messages
+const MAX_MEMORY_CHARS   = 2_000;    // per memory entry
+
+function validateChat(message: unknown, history: unknown): string | null {
+  if (typeof message !== 'string')        return 'Invalid message type.';
+  if (message.trim().length === 0)        return 'Message is empty.';
+  if (message.length > MAX_MESSAGE_CHARS) return `Message too long (max ${MAX_MESSAGE_CHARS} chars).`;
+  if (!Array.isArray(history))            return 'Invalid history.';
+  if (history.length > MAX_HISTORY_TURNS) return `History too long (max ${MAX_HISTORY_TURNS} turns).`;
+  const totalChars = history.reduce((n, m) => n + (typeof m?.content === 'string' ? m.content.length : 0), 0);
+  if (totalChars > MAX_HISTORY_CHARS)     return `History too large (max ${MAX_HISTORY_CHARS} chars total).`;
+  return null;
+}
+
 // ── Ledger export helpers ──────────────────────────────────────────────────
 function formatLedgerMarkdown(entries: LedgerEntry[]): string {
   return entries.map(e => {
@@ -155,6 +173,9 @@ export function setupIpc(store: Store): void {
 
   // ── Chat (single message, non-streaming) ─────────────────────────────────────
   ipcMain.handle('chat:send', async (event, message: string, history: Array<{ role: string; content: string }>) => {
+    const validErr = validateChat(message, history);
+    if (validErr) return { error: validErr };
+
     const { providerManager: pm } = await getEngine();
     const providers = await pm.getActiveProviders();
     if (providers.length === 0) {
@@ -192,6 +213,9 @@ export function setupIpc(store: Store): void {
 
   // ── Consensus Chat (all active providers in parallel + synthesis) ─────────────
   ipcMain.handle('chat:consensus', async (event, message: string, history: Array<{ role: string; content: string }>) => {
+    const validErr = validateChat(message, history);
+    if (validErr) return { error: validErr };
+
     const { providerManager: pm } = await getEngine();
     const providers = await pm.getActiveProviders();
     if (providers.length === 0) {
@@ -362,7 +386,9 @@ VERIFY: [1-3 specific things the user should double-check]
     return store.getMemory(getMemoryLimit(tierMem));
   });
   ipcMain.handle('memory:add', (_e, type: string, content: string) => {
-    store.addMemory(type as 'fact' | 'goal' | 'preference' | 'business', content);
+    if (typeof content !== 'string' || content.trim().length === 0) return;
+    if (content.length > MAX_MEMORY_CHARS) return;
+    store.addMemory(type as 'fact' | 'goal' | 'preference' | 'business', content.trim());
   });
   ipcMain.handle('memory:delete', (_e, id: number) => {
     store.deleteMemory(id);

@@ -95,9 +95,26 @@ export interface LedgerEntry {
   starred: boolean;
 }
 
+// ── Basic schema validation ───────────────────────────────────────────────────
+// Guards against corrupted JSON loading invalid types into critical fields.
+function isValidStoreData(d: unknown): d is Partial<StoreData> {
+  if (!d || typeof d !== 'object') return false;
+  const o = d as Record<string, unknown>;
+  if (o.kv !== undefined && typeof o.kv !== 'object') return false;
+  if (o.secrets !== undefined && typeof o.secrets !== 'object') return false;
+  if (o.memory !== undefined && !Array.isArray(o.memory)) return false;
+  if (o.ledger !== undefined && !Array.isArray(o.ledger)) return false;
+  if (o.license !== undefined && typeof o.license !== 'object') return false;
+  if (o.auth !== undefined && typeof o.auth !== 'object') return false;
+  if (o.firstRunDone !== undefined && typeof o.firstRunDone !== 'boolean') return false;
+  return true;
+}
+
 export class Store implements StorageAdapter {
   private filePath: string;
   private data: StoreData;
+  // Serialise all writes through a promise chain to prevent concurrent clobber
+  private writeQueue: Promise<void> = Promise.resolve();
 
   constructor() {
     this.filePath = path.join(app.getPath('userData'), 'triforge-store.json');
@@ -108,7 +125,11 @@ export class Store implements StorageAdapter {
     try {
       if (fs.existsSync(this.filePath)) {
         const raw = fs.readFileSync(this.filePath, 'utf8');
-        const loaded = JSON.parse(raw) as Partial<StoreData>;
+        const parsed = JSON.parse(raw);
+        if (!isValidStoreData(parsed)) {
+          throw new Error('Store schema validation failed');
+        }
+        const loaded = parsed as Partial<StoreData>;
         this.data = { ...emptyData(), ...loaded };
         // Merge any new default permissions added in updates
         for (const p of DEFAULT_PERMISSIONS) {
@@ -128,11 +149,13 @@ export class Store implements StorageAdapter {
           if (migrated) this.save();
         }
       }
-    } catch {
-      // Back up the corrupted file so users don't permanently lose data
+    } catch (e) {
+      console.error('[Store] init failed, resetting to defaults:', e);
+      // Back up the corrupted file before resetting
       try {
         if (fs.existsSync(this.filePath)) {
-          fs.copyFileSync(this.filePath, this.filePath + '.bak');
+          const stamp = Date.now();
+          fs.copyFileSync(this.filePath, this.filePath + `.bak.${stamp}`);
         }
       } catch { /* best effort */ }
       this.data = emptyData();
@@ -140,16 +163,19 @@ export class Store implements StorageAdapter {
   }
 
   private save(): void {
-    try {
-      const dir = path.dirname(this.filePath);
-      fs.mkdirSync(dir, { recursive: true });
-      // Atomic write: write to .tmp then rename so a crash mid-save never corrupts the store
-      const tmp = this.filePath + '.tmp';
-      fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), 'utf8');
-      fs.renameSync(tmp, this.filePath);
-    } catch (e) {
-      console.error('Store save error:', e);
-    }
+    // Enqueue the write so concurrent callers never interleave
+    this.writeQueue = this.writeQueue.then(() => {
+      try {
+        const dir = path.dirname(this.filePath);
+        fs.mkdirSync(dir, { recursive: true });
+        // Atomic write: write to .tmp then rename so a crash mid-save never corrupts the store
+        const tmp = this.filePath + '.tmp';
+        fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), 'utf8');
+        fs.renameSync(tmp, this.filePath);
+      } catch (e) {
+        console.error('[Store] save error:', e);
+      }
+    });
   }
 
   // Encrypt a value with the OS keychain (safeStorage). Falls back to plaintext

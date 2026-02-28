@@ -3,9 +3,27 @@ import { TIERS, hasCapability } from './subscription';
 import type { Tier } from './license';
 import { getProfile } from './profiles';
 
+// ── Prompt cache ──────────────────────────────────────────────────────────────
+// Rebuilding the prompt on every message is wasteful. Cache it and only rebuild
+// when something that affects the prompt actually changes (tier, permissions,
+// memory count, active profile, username, or calendar date).
+let promptCache: { key: string; prompt: string } | null = null;
+
+function buildCacheKey(
+  tier: string,
+  grantedPermKeys: string[],
+  memoryCount: number,
+  activeProfileId: string | null,
+  userName: string,
+  todayLabel: string,
+): string {
+  return [tier, grantedPermKeys.slice().sort().join(','), memoryCount, activeProfileId ?? '', userName, todayLabel].join('|');
+}
+
 /**
  * Builds the TriForge system prompt injected at the top of every conversation.
  * Gives the AI its identity, user context, all system capabilities, and behavioral rules.
+ * Result is cached and only rebuilt when inputs change.
  */
 export async function buildSystemPrompt(store: Store): Promise<string> {
   const auth        = store.getAuth();
@@ -17,9 +35,15 @@ export async function buildSystemPrompt(store: Store): Promise<string> {
   const tierCfg     = TIERS[tier];
 
   const userName = auth.username ?? profile['name'] ?? 'User';
+  const todayLabel  = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  const activeProfileId = store.getActiveProfileId();
 
   // ── Granted permissions ───────────────────────────────────────────────────
   const grantedPerms = permissions.filter(p => p.granted);
+
+  // ── Cache check — skip rebuild if nothing affecting the prompt has changed ─
+  const cacheKey = buildCacheKey(tier, grantedPerms.map(p => p.key), memories.length, activeProfileId, userName, todayLabel);
+  if (promptCache && promptCache.key === cacheKey) return promptCache.prompt;
   const permBlock = grantedPerms.length > 0
     ? grantedPerms.map(p => `• ${p.label}: ${p.description}`).join('\n')
     : '• No special permissions granted yet. User can enable them in Settings → Permissions.';
@@ -60,7 +84,6 @@ export async function buildSystemPrompt(store: Store): Promise<string> {
   }
 
   // ── Active Forge Profile context (bounded injection, ≤ 1200 chars) ──────────
-  const activeProfileId = store.getActiveProfileId();
   const activeForgeProfile = activeProfileId ? getProfile(activeProfileId) : undefined;
   const profileBlock = activeForgeProfile
     ? `## Active Forge Profile: ${activeForgeProfile.name}\n${activeForgeProfile.systemContext}`
@@ -87,7 +110,7 @@ export async function buildSystemPrompt(store: Store): Promise<string> {
   if (hasCapability('FINANCE_DASHBOARD', tier)) aiCaps.push('Finance dashboard and portfolio analysis');
   if (hasCapability('FINANCE_TRADING', tier))  aiCaps.push('Investment trade proposals with council-reviewed reasoning (execution is always performed manually by the user)');
 
-  return `You are TriForge AI — the unified body of three AI minds (GPT-4, Claude, Gemini), acting as a single decisive, loyal personal assistant for ${userName}.
+  const prompt = `You are TriForge AI — the unified body of three AI minds (GPT-4, Claude, Gemini), acting as a single decisive, loyal personal assistant for ${userName}.
 
 ## Architecture: You Are the Body, They Are the Brains
 Three world-class AI models power your intelligence. You are the execution layer — the body that acts in the physical and digital world on ${userName}'s behalf. When the user cannot do something with their own hands or eyes, you are their hands and eyes. You research, plan, write, organize files, find photos, print documents, control browsers, manage email, and execute tasks end-to-end.
@@ -147,5 +170,8 @@ When the user asks you to do something you cannot do yet (browser, email, tradin
 6. **Proactive**: If you notice something the user hasn't asked about but should know (a risk, an opportunity, a better approach), say it briefly at the end.
 7. **Governed**: Never claim capability you don't have. Never imply execution authority outside your wired tools. Consistency between what you say you can do and what you actually do is the foundation of trust.
 
-Today: ${new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}.`;
+Today: ${todayLabel}.`;
+
+  promptCache = { key: cacheKey, prompt };
+  return prompt;
 }
