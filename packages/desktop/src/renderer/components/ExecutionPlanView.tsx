@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 
 // ── Shared Types (exported so Chat.tsx can import them) ─────────────────────
 
@@ -62,15 +62,22 @@ const TYPE_ICONS: Record<ExecutionStep['type'], string> = {
 
 interface Props {
   plan: ExecutionPlan;
+  /** When true, auto-executes Low/Medium risk steps sequentially on mount. */
+  autoRun?: boolean;
+  /** Called when all steps have reached a terminal state (completed/skipped/failed). */
+  onComplete?: () => void;
 }
 
-export function ExecutionPlanView({ plan }: Props) {
+export function ExecutionPlanView({ plan, autoRun, onComplete }: Props) {
   const [stepStates, setStepStates] = useState<Record<string, StepState>>(() =>
     Object.fromEntries(plan.steps.map(s => [s.id, { status: 'pending' as StepStatus }]))
   );
   const [confirmStep, setConfirmStep] = useState<ExecutionStep | null>(null);
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
   const [showAudit, setShowAudit] = useState(false);
+  const autoRunStarted = useRef(false);
+  // Used by autoRun to bridge the High-risk confirmation modal with a promise.
+  const autoRunHighRiskResolve = useRef<((confirmed: boolean) => void) | null>(null);
 
   const completedCount = Object.values(stepStates).filter(
     s => s.status === 'completed' || s.status === 'skipped'
@@ -193,8 +200,43 @@ export function ExecutionPlanView({ plan }: Props) {
     if (confirmStep) {
       executeStep(confirmStep);
       setConfirmStep(null);
+      autoRunHighRiskResolve.current?.(true);
+      autoRunHighRiskResolve.current = null;
     }
   };
+
+  const handleConfirmCancel = () => {
+    setConfirmStep(null);
+    autoRunHighRiskResolve.current?.(false);
+    autoRunHighRiskResolve.current = null;
+  };
+
+  // Auto-run loop — runs once on mount when autoRun=true.
+  // Executes Low/Medium-risk steps automatically in sequence.
+  // Pauses at High-risk steps to show the existing confirmation modal;
+  // resumes or stops depending on the user's choice (Confirm vs Cancel).
+  useEffect(() => {
+    if (!autoRun || autoRunStarted.current) return;
+    autoRunStarted.current = true;
+
+    (async () => {
+      for (const step of plan.steps) {
+        if (step.risk === 'High') {
+          // Show the modal and wait for user decision.
+          const confirmed = await new Promise<boolean>(resolve => {
+            autoRunHighRiskResolve.current = resolve;
+            setConfirmStep(step);
+          });
+          if (!confirmed) continue; // user cancelled — skip this step, keep going
+          // executeStep was already called by handleConfirmRun; wait briefly for state
+          await new Promise(r => setTimeout(r, 100));
+        } else {
+          await executeStep(step);
+        }
+      }
+      onComplete?.();
+    })();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div style={cs.container}>
@@ -323,7 +365,7 @@ export function ExecutionPlanView({ plan }: Props) {
               No action will be taken without your explicit confirmation.
             </div>
             <div style={cs.modalActions}>
-              <button style={cs.modalCancel} onClick={() => setConfirmStep(null)}>Cancel</button>
+              <button style={cs.modalCancel} onClick={handleConfirmCancel}>Cancel</button>
               <button style={cs.modalConfirm} onClick={handleConfirmRun}>Confirm &amp; Run</button>
             </div>
           </div>

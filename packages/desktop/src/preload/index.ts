@@ -130,6 +130,28 @@ const api = {
       ipcRenderer.invoke('plan:runCommand', cmd) as Promise<{ output?: string; error?: string }>,
   },
 
+  // Task Runtime — IntentEngine decompose + auto-execution loop
+  task: {
+    run: (goal: string) =>
+      ipcRenderer.invoke('task:run', goal) as Promise<{
+        plan?: {
+          planTitle: string; riskLevel: 'Low'|'Medium'|'High'; summary: string;
+          steps: Array<{
+            id: string; title: string;
+            type: 'review'|'browser'|'file'|'research'|'decision'|'command'|'print';
+            description: string; details?: string; requiresApproval: boolean;
+            risk: 'Low'|'Medium'|'High';
+          }>;
+        };
+        summary?: string; taskId?: string; error?: string;
+      }>,
+    onUpdate: (cb: (data: { phase: string }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, data: { phase: string }) => cb(data);
+      ipcRenderer.on('task:update', handler);
+      return () => ipcRenderer.removeListener('task:update', handler);
+    },
+  },
+
   // User profile
   profile: {
     get: () => ipcRenderer.invoke('profile:get') as Promise<Record<string, string>>,

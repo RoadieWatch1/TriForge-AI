@@ -36,6 +36,9 @@ interface Message {
   photoLabel?: string;
   // Streaming state — true while tokens are still arriving
   streaming?: boolean;
+  // Task mode fields
+  executionPlan?: ExecutionPlan;
+  taskPhase?: 'decomposing' | 'planning' | 'ready' | 'error';
 }
 
 interface Props {
@@ -162,6 +165,10 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   const [sending, setSending] = useState(false);
   const [consensusThinking, setConsensusThinking] = useState(false);
   const [singleModelStreaming, setSingleModelStreaming] = useState(false);
+  const [localMode, setLocalMode] = useState<'chat' | 'thinktank' | 'task'>(() =>
+    mode === 'consensus' ? 'thinktank' : 'chat'
+  );
+  const [taskRunning, setTaskRunning] = useState(false);
   const [speaking, setSpeaking] = useState<string | null>(null);
   const [voiceMode, setVoiceMode] = useState(() => localStorage.getItem('triforge-voice-mode') === 'on');
   const [gate, setGate] = useState<{ feature: string; neededTier: 'pro' | 'business' } | null>(null);
@@ -376,6 +383,67 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     try { localStorage.removeItem(HISTORY_KEY); } catch { /* ok */ }
   };
 
+  // ── Task Runtime ────────────────────────────────────────────────────────────────
+  // Decomposes goal with IntentEngine, generates an execution plan, then auto-runs it.
+
+  const runAsTask = useCallback(async (goal: string) => {
+    const text = goal.trim();
+    if (!text || sending) return;
+    setInput('');
+    setSending(true);
+    setTaskRunning(true);
+
+    // User message
+    appendMsg({ id: crypto.randomUUID(), role: 'user', content: text, timestamp: new Date() });
+
+    // Planning placeholder
+    const statusId = crypto.randomUUID();
+    setMessages(m => [...m, {
+      id: statusId, role: 'assistant',
+      content: 'Decomposing goal…',
+      taskPhase: 'decomposing' as const,
+      timestamp: new Date(),
+    }]);
+
+    const unsub = window.triforge.task.onUpdate(({ phase }) => {
+      setMessages(m => m.map(msg => msg.id === statusId ? {
+        ...msg,
+        content: phase === 'decomposing' ? 'Decomposing goal…' : 'Building execution plan…',
+        taskPhase: phase as 'decomposing' | 'planning' | 'ready',
+      } : msg));
+    });
+
+    try {
+      const result = await window.triforge.task.run(text);
+      unsub();
+      setTaskRunning(false);
+      if (result.error) {
+        setMessages(m => m.map(msg => msg.id === statusId ? {
+          ...msg, content: result.error!, isError: true, taskPhase: 'error' as const,
+        } : msg));
+      } else {
+        onMessageSent();
+        setMessages(m => m.map(msg => msg.id === statusId ? {
+          ...msg,
+          content: result.summary ?? 'Task plan ready.',
+          taskPhase: 'ready' as const,
+          executionPlan: result.plan,
+        } : msg));
+      }
+    } catch (e) {
+      unsub();
+      setTaskRunning(false);
+      setMessages(m => m.map(msg => msg.id === statusId ? {
+        ...msg,
+        content: e instanceof Error ? e.message : 'Task failed.',
+        isError: true, taskPhase: 'error' as const,
+      } : msg));
+    } finally {
+      setSending(false);
+      inputRef.current?.focus();
+    }
+  }, [sending, onMessageSent, appendMsg]);
+
   // ── System actions ────────────────────────────────────────────────────────────
 
   const runFindPhotos = async () => {
@@ -572,9 +640,31 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           })}
         </div>
         <div style={cs.toolbarDivider} />
-        <span style={{ ...cs.modeLabel, ...(mode === 'consensus' ? cs.modeLabelConsensus : {}) }}>
-          {MODE_LABELS[mode] ?? mode}
-        </span>
+        {/* Mode selector — Chat / Think Tank / Run as Task */}
+        <div style={cs.modeSelector}>
+          {(['chat', 'thinktank', 'task'] as const).map(m => {
+            const labels: Record<typeof m, string> = { chat: 'Chat', thinktank: 'Think Tank', task: 'Run as Task' };
+            const isActive = localMode === m;
+            const disabled = !hasKeys || (m === 'thinktank' && mode !== 'consensus');
+            return (
+              <button
+                key={m}
+                style={{
+                  ...cs.modePill,
+                  ...(isActive ? cs.modePillActive : {}),
+                  ...(disabled ? cs.modePillDisabled : {}),
+                }}
+                onClick={() => !disabled && setLocalMode(m)}
+                title={m === 'thinktank' && mode !== 'consensus'
+                  ? 'Add 2+ API keys to enable Think Tank'
+                  : labels[m]}
+                disabled={disabled}
+              >
+                {labels[m]}
+              </button>
+            );
+          })}
+        </div>
         <div style={{ flex: 1 }} />
         {messages.length > 1 && (
           <button style={cs.clearBtn} onClick={clearChat} title="Clear chat">✕ Clear</button>
@@ -614,7 +704,8 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
                 }} />
         ))}
         {consensusThinking && <ForgeChamber visible={true} />}
-        {sending && !consensusThinking && !singleModelStreaming && <TypingIndicator />}
+        {taskRunning && !consensusThinking && <ForgeChamber visible={true} />}
+        {sending && !consensusThinking && !singleModelStreaming && !taskRunning && <TypingIndicator />}
         <div ref={bottomRef} />
       </div>
 
@@ -722,11 +813,18 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
             spellCheck={true}
             value={input}
             onChange={e => setInput(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(input); } }}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                localMode === 'task' ? runAsTask(input) : sendMessage(input);
+              }
+            }}
             placeholder={hasKeys
-              ? mode === 'consensus'
-                ? 'Ask the Council — all 3 models will respond independently (Enter to send)'
-                : 'Message TriForge AI (Enter to send, Shift+Enter for newline)'
+              ? localMode === 'task'
+                ? 'Describe your goal — TriForge will plan and execute it (Enter to run)'
+                : localMode === 'thinktank'
+                  ? 'Ask the Council — all 3 models will respond independently (Enter to send)'
+                  : 'Message TriForge AI (Enter to send, Shift+Enter for newline)'
               : 'Configure API keys in Settings to activate TriForge'
             }
             rows={1}
@@ -735,9 +833,9 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         </div>
         <button
           style={{ ...cs.sendBtn, ...(!input.trim() || sending || !hasKeys ? cs.sendBtnDisabled : {}) }}
-          onClick={() => sendMessage(input)}
+          onClick={() => localMode === 'task' ? runAsTask(input) : sendMessage(input)}
           disabled={!input.trim() || sending || !hasKeys}
-          title="Send"
+          title={localMode === 'task' ? 'Run as Task' : 'Send'}
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
             <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
@@ -1042,6 +1140,9 @@ function MessageBubble({ msg, isSpeaking, canSpeak, onSpeak, onRetry, onRunActio
             ? <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>▌</span>
             : <><MarkdownText text={displayContent} />{msg.streaming && <span style={cs.streamCursor}>▌</span>}</>
         }
+        {msg.executionPlan && (
+          <ExecutionPlanView plan={msg.executionPlan} autoRun={true} />
+        )}
         {runAction && onRunAction && (
           <button
             style={cs.runActionBtn}
@@ -1236,6 +1337,16 @@ const cs: Record<string, React.CSSProperties> = {
   dot: { width: 9, height: 9, borderRadius: '50%', transition: 'background 0.3s' },
   modeLabel: { fontSize: 11, color: 'var(--text-muted)', marginLeft: 4, fontWeight: 500 },
   modeLabelConsensus: { color: 'var(--accent)', fontWeight: 700 },
+  modeSelector: { display: 'flex', gap: 4 },
+  modePill: {
+    fontSize: 10, fontWeight: 600, padding: '3px 9px', borderRadius: 20,
+    border: '1px solid var(--border)', background: 'none',
+    color: 'var(--text-muted)', cursor: 'pointer', transition: 'all 0.15s',
+  },
+  modePillActive: {
+    background: 'var(--accent)', color: '#fff', border: '1px solid var(--accent)',
+  },
+  modePillDisabled: { opacity: 0.35, cursor: 'not-allowed' },
   quotaLabel: { fontSize: 11, color: 'var(--text-muted)', fontWeight: 500 },
   quotaAtLimit: { color: '#ef4444', fontWeight: 700 },
   clearBtn: { fontSize: 11, background: 'none', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text-muted)', padding: '2px 8px', cursor: 'pointer', marginRight: 4 },

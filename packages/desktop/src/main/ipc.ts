@@ -769,14 +769,11 @@ VERIFY: [1-3 specific things the user should double-check]
   });
 
   // ── Execution Plans ───────────────────────────────────────────────────────────
-  ipcMain.handle('plan:generate', async (_e, synthesis: string) => {
-    const { providerManager: pm } = await getEngine();
-    const providers = await pm.getActiveProviders();
-    if (providers.length === 0) return { error: 'No API keys configured.' };
-    const licPlan = await store.getLicense();
-    const tierPlan = (licPlan.tier ?? 'free') as 'free' | 'pro' | 'business';
-    if (!hasCapability('EXECUTION_PLANS', tierPlan)) return { error: lockedError('EXECUTION_PLANS') };
 
+  // Shared helper — builds an ExecutionPlan from a free-text synthesis/goal using
+  // the first active provider. Extracted so both plan:generate and task:run reuse
+  // the same prompt without duplication.
+  async function generateExecutionPlan(synthesis: string, provider: { chat: (msgs: { role: string; content: string }[]) => Promise<string> }) {
     const prompt = `You are an execution planning engine. Convert the provided synthesis into a structured, step-by-step action plan for a non-technical user.
 
 Output ONLY valid JSON matching this EXACT schema (no markdown fences, no explanation text):
@@ -817,19 +814,74 @@ Rules:
 Synthesis to convert:
 ${synthesis.slice(0, 3000)}`;
 
+    const msgs = [
+      { role: 'system', content: 'You are a JSON execution plan generator. Output ONLY valid JSON — no markdown fences, no explanation. Start immediately with { and end with }.' },
+      { role: 'user', content: prompt },
+    ];
+    const response = await provider.chat(msgs);
+    const cleaned = response.trim()
+      .replace(/^```(?:json)?\r?\n?/, '')
+      .replace(/\r?\n?```$/, '');
+    return JSON.parse(cleaned);
+  }
+
+  ipcMain.handle('plan:generate', async (_e, synthesis: string) => {
+    const { providerManager: pm } = await getEngine();
+    const providers = await pm.getActiveProviders();
+    if (providers.length === 0) return { error: 'No API keys configured.' };
+    const licPlan = await store.getLicense();
+    const tierPlan = (licPlan.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('EXECUTION_PLANS', tierPlan)) return { error: lockedError('EXECUTION_PLANS') };
     try {
-      const msgs = [
-        { role: 'system', content: 'You are a JSON execution plan generator. Output ONLY valid JSON — no markdown fences, no explanation. Start immediately with { and end with }.' },
-        { role: 'user', content: prompt },
-      ];
-      const response = await providers[0].chat(msgs);
-      const cleaned = response.trim()
-        .replace(/^```(?:json)?\r?\n?/, '')
-        .replace(/\r?\n?```$/, '');
-      const plan = JSON.parse(cleaned);
+      const plan = await generateExecutionPlan(synthesis, providers[0]);
       return { plan };
     } catch (err: unknown) {
       return { error: err instanceof Error ? err.message : 'Failed to generate plan.' };
+    }
+  });
+
+  // Task runtime — decomposes goal with IntentEngine, generates an ExecutionPlan,
+  // emits task:update events for live progress, and logs the plan to the Ledger.
+  ipcMain.handle('task:run', async (event, goal: string) => {
+    if (typeof goal !== 'string' || goal.trim().length === 0) return { error: 'Goal is required.' };
+    if (goal.length > MAX_MESSAGE_CHARS) return { error: `Goal too long (max ${MAX_MESSAGE_CHARS} chars).` };
+
+    const licTask = await store.getLicense();
+    const tierTask = (licTask.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('EXECUTION_PLANS', tierTask)) return { error: lockedError('EXECUTION_PLANS') };
+
+    const { providerManager: pm, intentEngine: ie } = await getEngine();
+    const providers = await pm.getActiveProviders();
+    if (providers.length === 0) return { error: 'No API keys configured.' };
+
+    // Phase 1 — Decompose with IntentEngine for a richer goal statement
+    event.sender.send('task:update', { phase: 'decomposing' });
+    let enrichedGoal = goal.trim();
+    try {
+      const intent = await ie.decompose(goal);
+      if (intent?.goalStatement) enrichedGoal = intent.goalStatement;
+    } catch { /* fall through with raw goal */ }
+
+    // Phase 2 — Generate the structured execution plan
+    event.sender.send('task:update', { phase: 'planning' });
+    try {
+      const plan = await generateExecutionPlan(enrichedGoal, providers[0]);
+
+      // Log to Ledger with task workflow tag
+      const taskId = crypto.randomUUID();
+      store.addLedger({
+        id: taskId,
+        timestamp: Date.now(),
+        request: goal,
+        synthesis: plan.summary ?? enrichedGoal,
+        workflow: 'TASK_EVENT:PLAN',
+        starred: false,
+      });
+
+      event.sender.send('task:update', { phase: 'ready' });
+      return { plan, summary: enrichedGoal, taskId };
+    } catch (err: unknown) {
+      return { error: err instanceof Error ? err.message : 'Failed to generate task plan.' };
     }
   });
 
