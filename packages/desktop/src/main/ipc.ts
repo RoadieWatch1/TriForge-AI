@@ -11,6 +11,7 @@ import { hashPin, verifyPin, isValidPin } from './auth';
 import { buildSystemPrompt } from './systemPrompt';
 import { getProfile, listProfiles } from './profiles';
 import { scanForPhotos, listDirectory, organizeDirectory, organizeDirectoryDeep, searchPhotos, findSimilarPhotos, moveFiles, getCommonDirs } from './filesystem';
+import { scanForDocuments, ocrFile, detectDocTypes, searchIndex, type DocEntry } from './docIndex';
 import { listPrinters, printFile, printText } from './printer';
 import {
   ProviderManager,
@@ -809,6 +810,79 @@ VERIFY: [1-3 specific things the user should double-check]
   ipcMain.handle('files:pickDir', async () => {
     const result = await dialog.showOpenDialog({ properties: ['openDirectory'] });
     return result.canceled ? null : result.filePaths[0];
+  });
+
+  // ── Document Indexer ──────────────────────────────────────────────────────────
+
+  ipcMain.handle('docs:getIndex', (_e) => {
+    const perms = store.getPermissions();
+    const filesGranted = perms.find(p => p.key === 'files')?.granted;
+    if (!filesGranted) return { docs: [], error: 'PERMISSION_DENIED:files' };
+    return { docs: store.get<DocEntry[]>('docIndex', []) };
+  });
+
+  ipcMain.handle('docs:index', async (event, startPath?: string) => {
+    const perms = store.getPermissions();
+    const filesGranted = perms.find(p => p.key === 'files')?.granted;
+    if (!filesGranted) return { docs: [], error: 'PERMISSION_DENIED:files' };
+
+    const files = scanForDocuments(startPath);
+    const existing = store.get<DocEntry[]>('docIndex', []);
+
+    // Only OCR files that are new or have changed since last index
+    const toProcess = files.filter(f =>
+      !existing.some(e => e.path === f.path && e.modified === f.modified)
+    );
+
+    event.sender.send('docs:progress', { phase: 'start', total: toProcess.length, existing: existing.length });
+
+    // Keep already-valid entries for files still present on disk
+    const retained = existing.filter(e => files.some(f => f.path === e.path));
+    const results: DocEntry[] = [...retained];
+
+    const langPath = path.join(app.getPath('userData'), 'tesseract-lang');
+    if (!fs.existsSync(langPath)) { try { fs.mkdirSync(langPath, { recursive: true }); } catch { /* ignore */ } }
+
+    // Process in batches of 3 concurrent workers
+    for (let i = 0; i < toProcess.length; i += 3) {
+      const batch = toProcess.slice(i, i + 3);
+      const settled = await Promise.allSettled(
+        batch.map(f =>
+          ocrFile(f.path, langPath).then(text => ({
+            path: f.path,
+            name: f.name,
+            size: f.size,
+            modified: f.modified,
+            extension: f.extension,
+            ocrText: text,
+            docTypes: detectDocTypes(text),
+            indexedAt: new Date().toISOString(),
+          } as DocEntry))
+        )
+      );
+      settled.forEach((r, j) => {
+        if (r.status === 'fulfilled') results.push(r.value);
+        event.sender.send('docs:progress', {
+          phase: 'indexed',
+          current: i + j + 1,
+          total: toProcess.length,
+          name: batch[j].name,
+        });
+      });
+    }
+
+    store.update('docIndex', results);
+    event.sender.send('docs:progress', { phase: 'complete', total: results.length });
+    return { docs: results };
+  });
+
+  ipcMain.handle('docs:search', (_e, query: string) => {
+    const perms = store.getPermissions();
+    const filesGranted = perms.find(p => p.key === 'files')?.granted;
+    if (!filesGranted) return { results: [], error: 'PERMISSION_DENIED:files' };
+    const index = store.get<DocEntry[]>('docIndex', []);
+    if (index.length === 0) return { results: [], needsIndex: true };
+    return { results: searchIndex(index, query) };
   });
 
   // ── Printer ───────────────────────────────────────────────────────────────────

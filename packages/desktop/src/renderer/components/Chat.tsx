@@ -44,7 +44,22 @@ interface Message {
   taskPhase?: 'decomposing' | 'planning' | 'ready' | 'error';
   // Debate intensity that produced this consensus response
   debateIntensity?: string;
+  // Document finder results
+  docResults?: DocResult[];
+  docQuery?: string;
 }
+
+interface DocEntry {
+  path: string;
+  name: string;
+  size: number;
+  modified: string;
+  extension: string;
+  ocrText: string;
+  docTypes: Array<{ type: string; confidence: number }>;
+  indexedAt: string;
+}
+interface DocResult extends DocEntry { matchScore: number; }
 
 interface Props {
   mode: string;
@@ -307,6 +322,9 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   const addPhotoMsg = (label: string, photos: PhotoFile[]) =>
     appendMsg({ id: crypto.randomUUID(), role: 'system', content: label, photos, timestamp: new Date() });
 
+  const addDocResultsMsg = (query: string, results: DocResult[]) =>
+    appendMsg({ id: crypto.randomUUID(), role: 'system', content: `Document search: "${query}"`, docResults: results, docQuery: query, timestamp: new Date() });
+
   const handleGateError = (error: string) => {
     if (error === 'MESSAGE_LIMIT_REACHED') { setGate({ feature: 'MESSAGE_LIMIT_REACHED', neededTier: 'pro' }); return true; }
     if (error.startsWith('FEATURE_LOCKED:')) {
@@ -506,6 +524,59 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       const preview = result.photos.slice(0, 5).map(p => `• ${p.name} — ${new Date(p.modified).toLocaleDateString()}`).join('\n');
       addSystemMsg(`Found ${count} photo${count > 1 ? 's' : ''}. Most recent:\n${preview}${count > 5 ? `\n…and ${count - 5} more.` : ''}`);
     } catch { addSystemMsg('Could not scan for photos.'); }
+  };
+
+  const runIndexDocs = async () => {
+    const msgId = crypto.randomUUID();
+    appendMsg({ id: msgId, role: 'system', content: 'Indexing documents — first run may take 1–3 minutes…\nAll processing is local. No files leave your device.', timestamp: new Date() });
+    try {
+      const unsub = window.triforge.docs.onProgress((d) => {
+        if (d.phase === 'start') {
+          const toScan = d.total ?? 0;
+          const cached = d.existing ?? 0;
+          setMessages(m => m.map(msg => msg.id === msgId
+            ? { ...msg, content: `Indexing documents — ${toScan} new file${toScan !== 1 ? 's' : ''} to process${cached > 0 ? `, ${cached} already indexed` : ''}…\nAll processing is local. No files leave your device.` }
+            : msg
+          ));
+        } else if (d.phase === 'indexed' && d.current && d.total) {
+          setMessages(m => m.map(msg => msg.id === msgId
+            ? { ...msg, content: `Indexing… ${d.current}/${d.total}: ${d.name ?? ''}\nAll processing is local. No files leave your device.` }
+            : msg
+          ));
+        } else if (d.phase === 'complete') {
+          setMessages(m => m.map(msg => msg.id === msgId
+            ? { ...msg, content: `Index complete — ${d.total} document${(d.total ?? 0) !== 1 ? 's' : ''} indexed. You can now search them.\nAll processing is local. No files leave your device.` }
+            : msg
+          ));
+        }
+      });
+      const result = await window.triforge.docs.index();
+      unsub();
+      if (result.error === 'PERMISSION_DENIED:files') {
+        setMessages(m => m.map(msg => msg.id === msgId ? { ...msg, content: 'Files permission is off. Enable Files & Folders in Settings → Permissions.' } : msg));
+      }
+    } catch {
+      setMessages(m => m.map(msg => msg.id === msgId ? { ...msg, content: 'Could not index documents.' } : msg));
+    }
+  };
+
+  const runSearchDocs = async (query: string) => {
+    addSystemMsg(`Searching for "${query}"…`);
+    try {
+      const result = await window.triforge.docs.search(query);
+      if (result.error === 'PERMISSION_DENIED:files') {
+        addSystemMsg('Files permission is off. Enable Files & Folders in Settings → Permissions.');
+        return;
+      }
+      if (result.needsIndex) {
+        addSystemMsg(`No document index found. Indexing your documents first, then searching for "${query}"…`);
+        await runIndexDocs();
+        const retry = await window.triforge.docs.search(query);
+        addDocResultsMsg(query, retry.results ?? []);
+        return;
+      }
+      addDocResultsMsg(query, result.results ?? []);
+    } catch { addSystemMsg('Could not search documents.'); }
   };
 
   const runOrganizeDownloads = async () => {
@@ -773,15 +844,17 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
                   if (prev?.role === 'user') sendMessage(prev.content, msg.id);
                 } : undefined}
                 onRunAction={(action) => {
-                  if (action === 'find_photos')           runFindPhotos();
-                  else if (action === 'organize')              runOrganizeDownloads();
-                  else if (action === 'organize_deep')         runOrganizeDeep();
-                  else if (action === 'organize_desktop')      runOrganizeKnownDir('Desktop');
-                  else if (action === 'organize_downloads')    runOrganizeKnownDir('Downloads');
-                  else if (action === 'organize_documents')    runOrganizeKnownDir('Documents');
-                  else if (action === 'search_photos')         runSearchPhotos();
-                  else if (action === 'find_similar')          runFindSimilar();
-                  else if (action === 'print')                 runPickAndPrint();
+                  if (action === 'index_docs')                          runIndexDocs();
+                  else if (action?.startsWith('search_docs:'))          runSearchDocs(action.slice('search_docs:'.length));
+                  else if (action === 'find_photos')                    runFindPhotos();
+                  else if (action === 'organize')                       runOrganizeDownloads();
+                  else if (action === 'organize_deep')                  runOrganizeDeep();
+                  else if (action === 'organize_desktop')               runOrganizeKnownDir('Desktop');
+                  else if (action === 'organize_downloads')             runOrganizeKnownDir('Downloads');
+                  else if (action === 'organize_documents')             runOrganizeKnownDir('Documents');
+                  else if (action === 'search_photos')                  runSearchPhotos();
+                  else if (action === 'find_similar')                   runFindSimilar();
+                  else if (action === 'print')                          runPickAndPrint();
                 }} />
         ))}
         {consensusThinking && <ForgeChamber visible={true} />}
@@ -1139,9 +1212,10 @@ function ForgeRow({ icon, label, text }: { icon: string; label: string; text: st
 
 // ── RUN tag parser ────────────────────────────────────────────────────────────
 
-const RUN_TAG_RE = /\[RUN:(find_photos|organize|organize_deep|organize_desktop|organize_downloads|organize_documents|search_photos|find_similar|print)\]/i;
+const RUN_TAG_RE = /\[RUN:((?:search_docs:[^\]]+)|index_docs|find_photos|organize|organize_deep|organize_desktop|organize_downloads|organize_documents|search_photos|find_similar|print)\]/i;
 
 const RUN_LABELS: Record<string, string> = {
+  index_docs:           'Index Documents',
   find_photos:          'Scan for Photos',
   organize:             'Organize Folder…',
   organize_deep:        'Deep Organize (All Sub-folders)…',
@@ -1209,6 +1283,73 @@ const pgStyles = {
   btn:  { fontSize: 11, padding: '3px 9px', background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 4, color: 'var(--text-secondary)', cursor: 'pointer', flexShrink: 0 } as React.CSSProperties,
 };
 
+// ── Document Results ──────────────────────────────────────────────────────────
+
+function DocResultsMessage({ query, results }: { query: string; results: DocResult[] }) {
+  const open   = (p: string) => window.triforge.files.openFile(p);
+  const reveal = (p: string) => window.triforge.files.showInFolder(p);
+
+  const confidenceColor = (score: number) =>
+    score >= 80 ? '#10b981' : score >= 50 ? '#f59e0b' : '#ef4444';
+
+  return (
+    <div style={drStyles.wrap}>
+      <div style={drStyles.header}>
+        <span style={drStyles.title}>Document Search — "{query}"</span>
+        <span style={drStyles.privacy}>🔐 All indexing is local — no files leave your device</span>
+      </div>
+      {results.length === 0 ? (
+        <div style={drStyles.empty}>
+          No documents matched "{query}". Try different keywords, or re-index with Index Documents.
+        </div>
+      ) : (
+        results.map((doc, i) => (
+          <div key={doc.path} style={{ ...drStyles.row, borderTop: i > 0 ? '1px solid rgba(255,255,255,0.06)' : 'none' }}>
+            <div style={drStyles.scoreBar}>
+              <div style={{ ...drStyles.scoreBarFill, width: `${doc.matchScore}%`, background: confidenceColor(doc.matchScore) }} />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+              <div>
+                <div style={{ ...drStyles.docType, color: confidenceColor(doc.matchScore) }}>
+                  {doc.matchScore}% · {doc.docTypes[0]?.type ?? 'Document'}
+                </div>
+                <div style={drStyles.docName}>{doc.name}</div>
+                <div style={drStyles.docMeta}>
+                  {new Date(doc.modified).toLocaleDateString()} · {doc.size > 1024 * 1024
+                    ? `${(doc.size / 1024 / 1024).toFixed(1)} MB`
+                    : `${(doc.size / 1024).toFixed(0)} KB`}
+                </div>
+              </div>
+              <div style={drStyles.actions}>
+                <button style={drStyles.btn} onClick={() => open(doc.path)}>Open</button>
+                <button style={drStyles.btn} onClick={() => reveal(doc.path)}>Show in Folder</button>
+              </div>
+            </div>
+          </div>
+        ))
+      )}
+      <div style={drStyles.footer}>{results.length} result{results.length !== 1 ? 's' : ''} found</div>
+    </div>
+  );
+}
+
+const drStyles = {
+  wrap:         { background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.18)', borderRadius: 10, overflow: 'hidden', fontSize: 13 } as React.CSSProperties,
+  header:       { padding: '10px 14px 8px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', flexDirection: 'column' as const, gap: 3 },
+  title:        { fontWeight: 600, color: 'var(--text-primary)', fontSize: 13 } as React.CSSProperties,
+  privacy:      { fontSize: 11, color: 'rgba(255,255,255,0.35)', letterSpacing: '0.02em' } as React.CSSProperties,
+  row:          { padding: '10px 14px' } as React.CSSProperties,
+  scoreBar:     { height: 3, background: 'rgba(255,255,255,0.08)', borderRadius: 2, marginBottom: 8, overflow: 'hidden' } as React.CSSProperties,
+  scoreBarFill: { height: '100%', borderRadius: 2, transition: 'width 600ms ease' } as React.CSSProperties,
+  docType:      { fontSize: 11, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase' as const, marginBottom: 2 },
+  docName:      { fontWeight: 500, color: 'var(--text-primary)', marginBottom: 2 } as React.CSSProperties,
+  docMeta:      { fontSize: 11, color: 'var(--text-muted)' } as React.CSSProperties,
+  actions:      { display: 'flex', gap: 6, flexShrink: 0 } as React.CSSProperties,
+  btn:          { fontSize: 11, padding: '4px 10px', background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 5, color: 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' as const },
+  empty:        { padding: '12px 14px', color: 'var(--text-muted)', fontSize: 12 } as React.CSSProperties,
+  footer:       { padding: '6px 14px', borderTop: '1px solid rgba(255,255,255,0.06)', fontSize: 11, color: 'rgba(255,255,255,0.3)' } as React.CSSProperties,
+};
+
 // ── Regular MessageBubble ─────────────────────────────────────────────────────
 
 function MessageBubble({ msg, isSpeaking, canSpeak, onSpeak, onRetry, onRunAction }: {
@@ -1222,8 +1363,10 @@ function MessageBubble({ msg, isSpeaking, canSpeak, onSpeak, onRetry, onRunActio
   if (isSystem) {
     return (
       <div style={cs.systemMsg}>
-        <span style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</span>
-        {msg.photos && msg.photos.length > 0 && <PhotoGrid photos={msg.photos} />}
+        {msg.docResults !== undefined
+          ? <DocResultsMessage query={msg.docQuery ?? ''} results={msg.docResults} />
+          : <><span style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</span>{msg.photos && msg.photos.length > 0 && <PhotoGrid photos={msg.photos} />}</>
+        }
       </div>
     );
   }
@@ -1251,7 +1394,7 @@ function MessageBubble({ msg, isSpeaking, canSpeak, onSpeak, onRetry, onRunActio
             style={cs.runActionBtn}
             onClick={() => onRunAction(runAction)}
           >
-            ▶ {RUN_LABELS[runAction] ?? 'Run'}
+            ▶ {runAction.startsWith('search_docs:') ? `Search: "${runAction.slice('search_docs:'.length)}"` : (RUN_LABELS[runAction] ?? 'Run')}
           </button>
         )}
         <div style={cs.bubbleMeta}>

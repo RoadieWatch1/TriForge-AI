@@ -57,9 +57,17 @@ export async function buildSystemPrompt(store: Store): Promise<string> {
   const systemTools: string[] = [];
   if (hasFiles) {
     systemTools.push(
-      '• PHOTO FINDER — scans the user\'s computer (Pictures, Desktop, Downloads, OneDrive) and returns all photos sorted by date → append [RUN:find_photos]',
-      '• PHOTO SEARCH — searches every known photo location for photos matching a keyword or name → append [RUN:search_photos]',
-      '• SIMILAR PHOTO FINDER — user picks a reference photo; finds all photos from the same session or with similar names/dates → append [RUN:find_similar]',
+      '• DOCUMENT FINDER — indexes all images and PDFs on the user\'s computer (Desktop, Documents, Downloads, Pictures) by their actual content using local OCR → append [RUN:index_docs]',
+      '• DOCUMENT SEARCH — finds documents matching what the user describes in natural language → append [RUN:search_docs:<query>]',
+      '  When to use DOCUMENT SEARCH and what query to embed:',
+      '    "find my driver\'s license" → [RUN:search_docs:driver license]',
+      '    "where is my EIN?" → [RUN:search_docs:EIN tax ID]',
+      '    "find my passport copy" → [RUN:search_docs:passport]',
+      '    "show me my business registration" → [RUN:search_docs:business registration]',
+      '    "find my insurance card" → [RUN:search_docs:insurance policy]',
+      '    "where is my bank statement?" → [RUN:search_docs:bank statement]',
+      '  If no index exists yet, use [RUN:index_docs] first, then [RUN:search_docs:<query>].',
+      '  ALWAYS tell the user: all indexing is 100% local — no files leave their device.',
       '• FILE ORGANIZER (known folder, no prompt) — instantly organizes a standard system folder without asking the user to pick:',
       '    - Desktop → append [RUN:organize_desktop]',
       '    - Downloads → append [RUN:organize_downloads]',
@@ -146,10 +154,11 @@ ${systemTools.length > 0 ? systemTools.join('\n') : '• Limited system access �
 ${permBlock}
 ${profileBlock}
 ## How to Handle System Tasks
-When the user asks you to find photos, organize files, or print something:
+When the user asks you to find documents, organize files, or print something:
 1. Confirm what you're about to do in one sentence
 2. End your message with the exact tag for the action — the UI will render a button the user clicks to execute:
-   - Find/scan photos → append [RUN:find_photos]
+   - Find a document by what it is → append [RUN:search_docs:<query>] (e.g. [RUN:search_docs:driver license])
+   - Index/scan all documents first → append [RUN:index_docs]
    - Organize Desktop → append [RUN:organize_desktop]
    - Organize Downloads → append [RUN:organize_downloads]
    - Organize Documents → append [RUN:organize_documents]

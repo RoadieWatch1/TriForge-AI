@@ -257,6 +257,28 @@ const api = {
     pickDir:       () => ipcRenderer.invoke('files:pickDir') as Promise<string | null>,
   },
 
+  // Document Indexer — local OCR-powered document finder
+  docs: {
+    getIndex: () => ipcRenderer.invoke('docs:getIndex') as Promise<{
+      docs: Array<{ path: string; name: string; size: number; modified: string; extension: string; ocrText: string; docTypes: Array<{ type: string; confidence: number }>; indexedAt: string }>;
+      error?: string;
+    }>,
+    index: (startPath?: string) => ipcRenderer.invoke('docs:index', startPath) as Promise<{
+      docs: Array<{ path: string; name: string; size: number; modified: string; extension: string; ocrText: string; docTypes: Array<{ type: string; confidence: number }>; indexedAt: string }>;
+      error?: string;
+    }>,
+    search: (query: string) => ipcRenderer.invoke('docs:search', query) as Promise<{
+      results: Array<{ path: string; name: string; size: number; modified: string; extension: string; ocrText: string; docTypes: Array<{ type: string; confidence: number }>; indexedAt: string; matchScore: number }>;
+      needsIndex?: boolean;
+      error?: string;
+    }>,
+    onProgress: (cb: (data: { phase: string; current?: number; total?: number; name?: string; existing?: number }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, data: { phase: string; current?: number; total?: number; name?: string; existing?: number }) => cb(data);
+      ipcRenderer.on('docs:progress', handler);
+      return () => ipcRenderer.removeListener('docs:progress', handler);
+    },
+  },
+
   // Forge Chamber — real-time consensus telemetry
   forge: {
     onUpdate: (cb: (data: { phase: string; provider?: string; completedCount?: number; total?: number; from?: string; to?: string; reason?: string }) => void): (() => void) => {
