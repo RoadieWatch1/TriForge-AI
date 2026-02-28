@@ -211,8 +211,48 @@ export function setupIpc(store: Store): void {
     }
   });
 
+  // ── Debate Intensity — Council role prompts & synthesis directives ────────────
+  const ROLES = ['strategist', 'critic', 'executor'] as const;
+  type Role = typeof ROLES[number];
+  type Intensity = 'cooperative' | 'analytical' | 'critical' | 'combative' | 'ruthless';
+  const VALID_INTENSITIES: Intensity[] = ['cooperative', 'analytical', 'critical', 'combative', 'ruthless'];
+
+  const ROLE_PROMPTS: Record<Role, Record<Intensity, string>> = {
+    strategist: {
+      cooperative: 'You are the Strategist. Find what works. Be constructive and propose a clear direction.',
+      analytical:  'You are the Strategist. Evaluate architectural tradeoffs and long-term impact. Propose the strongest design.',
+      critical:    'You are the Strategist. Architect for scale and maintainability. Do not accept shortcuts.',
+      combative:   'You are the Strategist. Challenge the premise if a better approach exists. Propose superior alternatives without mercy.',
+      ruthless:    'You are the Strategist. Reject weak architecture entirely. Demand the best possible design. If the premise is flawed, say so directly.',
+    },
+    critic: {
+      cooperative: 'You are the Critic. Note concerns gently. Look for synergies and flag edge cases.',
+      analytical:  'You are the Critic. Identify assumptions, gaps, and edge cases. Ask what could break.',
+      critical:    'You are the Critic. Aggressively probe failure modes, risks, and security issues. Assume the plan has flaws — find them.',
+      combative:   'You are the Critic. Assume the proposal is flawed until proven otherwise. Find the breaking point. What would make this fail in production?',
+      ruthless:    'You are the Critic. Maximum adversarial analysis. Security paranoia. Find every vulnerability, performance regression, and architectural debt. Be uncompromising.',
+    },
+    executor: {
+      cooperative: 'You are the Executor. Provide a practical implementation path with clear steps.',
+      analytical:  'You are the Executor. Propose concrete steps with dependencies. Flag what is hard to implement.',
+      critical:    'You are the Executor. Detail every implementation risk and how to mitigate it. Be specific about what will be hard.',
+      combative:   'You are the Executor. Identify every point where implementation could fail. Assume nothing works out of the box.',
+      ruthless:    'You are the Executor. Refuse vague plans. Require specific, testable implementation steps. Block anything that cannot be verified.',
+    },
+  };
+
+  const SYNTHESIS_DIRECTIVES: Record<Intensity, string> = {
+    cooperative: 'Combine the Strategist, Critic, and Executor perspectives into a clear, unified recommendation. Smooth disagreements into a practical synthesis.',
+    analytical:  'Weight each perspective by its reasoning strength. Highlight key decision points where the models diverged. Summarize what they agreed on and where trade-offs exist.',
+    critical:    "Prioritize the Critic's risk flags. Do not smooth over disagreements — call out the strongest objection and explain how the Strategist responded to it. The final answer must acknowledge risk directly.",
+    combative:   "Do not merge perspectives artificially. State each model's position explicitly. Where they conflict, explain WHY each side is correct in its own frame. Give a final recommendation that takes the strongest critique seriously.",
+    ruthless:    "Show the full conflict. If the Critic's attack was valid, the synthesis must reflect that. If models disagree significantly, say so clearly and explain both sides without diplomatic smoothing. Confidence should drop if real disagreement exists.",
+  };
+
+  const ESCALATION_RE = /security.risk|vulnerabilit|breaking.change|data.loss|memory.leak|race.condition|injection/i;
+
   // ── Consensus Chat (all active providers in parallel + synthesis) ─────────────
-  ipcMain.handle('chat:consensus', async (event, message: string, history: Array<{ role: string; content: string }>) => {
+  ipcMain.handle('chat:consensus', async (event, message: string, history: Array<{ role: string; content: string }>, intensity: string = 'analytical') => {
     const validErr = validateChat(message, history);
     if (validErr) return { error: validErr };
 
@@ -232,32 +272,56 @@ export function setupIpc(store: Store): void {
       return { error: 'MESSAGE_LIMIT_REACHED', tier: tierVal };
     }
 
+    // Validate + normalise intensity
+    const activeIntensity: Intensity = VALID_INTENSITIES.includes(intensity as Intensity)
+      ? (intensity as Intensity)
+      : 'analytical';
+
     const systemPrompt = await buildSystemPrompt(store);
-    const msgs = [
-      { role: 'system', content: systemPrompt },
-      ...history,
-      { role: 'user', content: message },
-    ];
 
     // Notify renderer: forge starting
     event.sender.send('forge:update', { phase: 'querying', total: providers.length });
 
-    // Run all providers in parallel — emit per-provider events as each completes
+    // Run all providers in parallel with distinct council roles
     let completedCount = 0;
     const settled = await Promise.allSettled(
-      providers.map(async p => {
+      providers.map(async (p, i) => {
+        const role: Role = ROLES[Math.min(i, ROLES.length - 1)];
+        const roleInstruction = ROLE_PROMPTS[role][activeIntensity];
+        const roleMsgs = [
+          {
+            role: 'system',
+            content: `${systemPrompt}\n\n--- COUNCIL ROLE ---\n${roleInstruction}\nAt the end of your response, append exactly: [[CONFIDENCE: X%]] where X is your self-assessed confidence (0-100 integer).`,
+          },
+          ...history,
+          { role: 'user', content: message },
+        ];
         event.sender.send('forge:update', { phase: 'provider:responding', provider: p.name });
-        const text = await p.chat(msgs);
+        const text = await p.chat(roleMsgs);
         completedCount++;
         event.sender.send('forge:update', { phase: 'provider:complete', provider: p.name, completedCount, total: providers.length });
-        return { provider: p.name as string, text };
+        return { provider: p.name as string, text, role };
       })
     );
 
+    // Separate successes from failures; strip [[CONFIDENCE:]] tags and collect values
+    const confidenceValues: number[] = [];
     const responses = settled
-      .filter((r): r is PromiseFulfilledResult<{ provider: string; text: string }> => r.status === 'fulfilled')
-      .map(r => r.value)
+      .filter((r): r is PromiseFulfilledResult<{ provider: string; text: string; role: Role }> => r.status === 'fulfilled')
+      .map(r => {
+        const entry = { ...r.value };
+        const m = entry.text.match(/\[\[CONFIDENCE:\s*(\d+)%?\]\]/i);
+        if (m) {
+          confidenceValues.push(parseInt(m[1]));
+          entry.text = entry.text.replace(m[0], '').trim();
+        }
+        return entry;
+      })
       .filter(r => r.text);
+
+    const initialConfidence = confidenceValues.length > 0
+      ? Math.round(confidenceValues.reduce((a, b) => a + b, 0) / confidenceValues.length)
+      : undefined;
 
     const failedProviders = settled
       .map((r, i) => ({ result: r, name: providers[i].name }))
@@ -274,6 +338,16 @@ export function setupIpc(store: Store): void {
       return { error: `All providers failed. ${details}` };
     }
 
+    // Auto-escalation: if risk signals detected in responses and intensity is low, raise to critical
+    let effectiveIntensity = activeIntensity;
+    let escalatedFrom: string | undefined;
+    const allResponseText = responses.map(r => r.text).join(' ');
+    if (ESCALATION_RE.test(allResponseText) && (activeIntensity === 'cooperative' || activeIntensity === 'analytical')) {
+      escalatedFrom = activeIntensity;
+      effectiveIntensity = 'critical';
+      event.sender.send('forge:update', { phase: 'escalating', from: activeIntensity, to: 'critical', reason: 'Risk signals detected in responses' });
+    }
+
     // Notify renderer: synthesis phase beginning
     event.sender.send('forge:update', { phase: 'synthesis:start' });
 
@@ -281,10 +355,11 @@ export function setupIpc(store: Store): void {
     let synthesis = responses[0].text;
     if (responses.length > 1) {
       try {
+        const synthDirective = SYNTHESIS_DIRECTIVES[effectiveIntensity];
         const synthMsgs = [
           {
             role: 'system',
-            content: `You are a synthesis engine. Combine the perspectives below into one clear, definitive answer. Lead with the key insight. Note any meaningful disagreements.
+            content: `You are a synthesis engine. ${synthDirective}
 
 After your synthesis, output a trust assessment in this EXACT format (no variations):
 ---FORGE_SCORE---
@@ -298,7 +373,7 @@ VERIFY: [1-3 specific things the user should double-check]
           },
           {
             role: 'user',
-            content: `User asked: "${message}"\n\n${responses.map(r => `${r.provider}:\n${r.text}`).join('\n\n---\n\n')}\n\nSynthesize into one final, comprehensive answer, then add the FORGE_SCORE block.`,
+            content: `User asked: "${message}"\n\n${responses.map(r => `${r.role.toUpperCase()} (${r.provider}):\n${r.text}`).join('\n\n---\n\n')}\n\nSynthesize into one final, comprehensive answer, then add the FORGE_SCORE block.`,
           },
         ];
         synthesis = await providers[0].chat(synthMsgs);
@@ -318,6 +393,9 @@ VERIFY: [1-3 specific things the user should double-check]
         disagreement: s.match(/DISAGREEMENT:\s*(.+)/)?.[1]?.trim() ?? '',
         assumptions:  s.match(/ASSUMPTIONS:\s*(.+)/)?.[1]?.trim() ?? '',
         verify:       s.match(/VERIFY:\s*([\s\S]*?)(?=\n[A-Z]|$)/)?.[1]?.trim() ?? '',
+        initialConfidence,
+        intensity: effectiveIntensity,
+        escalatedFrom,
       };
     }
 

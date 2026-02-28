@@ -82,6 +82,10 @@ export interface ForgeScore {
   risk: 'Low' | 'Medium' | 'High';
   assumptions: string;
   verify: string;
+  // Council debate metadata
+  initialConfidence?: number;  // average self-assessed confidence before synthesis
+  intensity?: string;          // debate intensity level that produced this score
+  escalatedFrom?: string;      // set if auto-escalation overrode user's chosen intensity
 }
 
 export interface LedgerEntry {

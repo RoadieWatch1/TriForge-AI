@@ -3,20 +3,25 @@ import React, { useEffect, useRef, useState } from 'react';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface ForgeUpdateEvent {
-  phase: 'querying' | 'provider:responding' | 'provider:complete' | 'synthesis:start' | 'complete';
+  phase: 'querying' | 'provider:responding' | 'provider:complete' | 'synthesis:start' | 'complete' | 'escalating';
   provider?: string;
   completedCount?: number;
   total?: number;
+  from?: string;
+  to?: string;
+  reason?: string;
 }
 
 type ProviderStatus = 'waiting' | 'responding' | 'complete';
-type ForgePhase = 'querying' | 'synthesizing' | 'complete';
+type ForgePhase = 'querying' | 'synthesizing' | 'complete' | 'escalating';
 
 interface ForgeState {
   phase: ForgePhase;
   providers: Record<string, ProviderStatus>;
   completedCount: number;
   total: number;
+  escalating: boolean;
+  escalationReason: string;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -56,6 +61,8 @@ function defaultForgeState(): ForgeState {
     providers: { openai: 'waiting', claude: 'waiting', gemini: 'waiting' },
     completedCount: 0,
     total: 3,
+    escalating: false,
+    escalationReason: '',
   };
 }
 
@@ -104,6 +111,14 @@ export function ForgeChamber({ visible }: Props) {
           if (key in next.providers) next.providers[key] = 'complete';
           next.completedCount = data.completedCount ?? next.completedCount + 1;
 
+        } else if (data.phase === 'escalating') {
+          next.escalating = true;
+          next.escalationReason = data.reason ?? 'Risk signals detected';
+          // Auto-clear escalation flash after 2.5s
+          setTimeout(() => {
+            if (mountedRef.current) setState(s => ({ ...s, escalating: false }));
+          }, 2500);
+
         } else if (data.phase === 'synthesis:start') {
           next.phase = 'synthesizing';
           // Ensure all cores show complete when synthesis begins
@@ -126,6 +141,7 @@ export function ForgeChamber({ visible }: Props) {
   const centerIntensity = state.phase === 'synthesizing' ? 1 : consensusPct / 100;
 
   const statusText =
+    state.escalating               ? `Auto-escalating — ${state.escalationReason}` :
     state.phase === 'synthesizing' ? 'Synthesizing intelligence…' :
     state.phase === 'complete'     ? 'Consensus reached' :
     state.completedCount === state.total && state.total > 0
@@ -137,12 +153,14 @@ export function ForgeChamber({ visible }: Props) {
       opacity,
       transition: 'opacity 200ms ease',
       background: 'linear-gradient(160deg, #111118 0%, #16161e 100%)',
-      border: '1px solid rgba(249,115,22,0.18)',
+      border: `1px solid ${state.escalating ? 'rgba(239,68,68,0.55)' : 'rgba(249,115,22,0.18)'}`,
       borderRadius: 12,
       padding: '18px 20px 16px',
       marginBottom: 12,
       position: 'relative',
       overflow: 'hidden',
+      boxShadow: state.escalating ? '0 0 20px rgba(239,68,68,0.18)' : 'none',
+      transition: 'border 300ms ease, box-shadow 300ms ease, opacity 200ms ease',
     }}>
       {/* Ambient radial glow behind center */}
       <div style={{
@@ -354,9 +372,12 @@ export function ForgeChamber({ visible }: Props) {
         {/* Status text */}
         <div style={{
           fontSize: 10,
-          color: 'rgba(255,255,255,0.38)',
+          color: state.escalating ? '#ef4444' : 'rgba(255,255,255,0.38)',
           textAlign: 'center',
           letterSpacing: '0.06em',
+          fontWeight: state.escalating ? 700 : 400,
+          transition: 'color 300ms ease',
+          animation: state.escalating ? 'forge-escalate-flash 0.6s ease-in-out infinite' : 'none',
         }}>
           {statusText}
         </div>
@@ -374,6 +395,10 @@ export function ForgeChamber({ visible }: Props) {
         @keyframes forge-core-pulse {
           0%, 100% { opacity: 1; }
           50%       { opacity: 0.55; }
+        }
+        @keyframes forge-escalate-flash {
+          0%, 100% { opacity: 1; }
+          50%       { opacity: 0.4; }
         }
       `}</style>
     </div>

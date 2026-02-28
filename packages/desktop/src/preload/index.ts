@@ -32,11 +32,15 @@ const api = {
       ipcRenderer.on('chat:chunk', handler);
       return () => ipcRenderer.removeListener('chat:chunk', handler);
     },
-    consensus: (message: string, history: Array<{ role: string; content: string }>) =>
-      ipcRenderer.invoke('chat:consensus', message, history) as Promise<{
-        responses?: Array<{ provider: string; text: string }>;
+    consensus: (message: string, history: Array<{ role: string; content: string }>, intensity?: string) =>
+      ipcRenderer.invoke('chat:consensus', message, history, intensity) as Promise<{
+        responses?: Array<{ provider: string; text: string; role?: string }>;
         synthesis?: string;
-        forgeScore?: { confidence: number; agreement: string; disagreement: string; risk: 'Low'|'Medium'|'High'; assumptions: string; verify: string };
+        forgeScore?: {
+          confidence: number; agreement: string; disagreement: string;
+          risk: 'Low'|'Medium'|'High'; assumptions: string; verify: string;
+          initialConfidence?: number; intensity?: string; escalatedFrom?: string;
+        };
         failedProviders?: Array<{ provider: string; error: string }>;
         error?: string;
         tier?: string;
@@ -255,8 +259,8 @@ const api = {
 
   // Forge Chamber — real-time consensus telemetry
   forge: {
-    onUpdate: (cb: (data: { phase: string; provider?: string; completedCount?: number; total?: number }) => void): (() => void) => {
-      const handler = (_: Electron.IpcRendererEvent, data: { phase: string; provider?: string; completedCount?: number; total?: number }) => cb(data);
+    onUpdate: (cb: (data: { phase: string; provider?: string; completedCount?: number; total?: number; from?: string; to?: string; reason?: string }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, data: { phase: string; provider?: string; completedCount?: number; total?: number; from?: string; to?: string; reason?: string }) => cb(data);
       ipcRenderer.on('forge:update', handler);
       return () => ipcRenderer.removeListener('forge:update', handler);
     },

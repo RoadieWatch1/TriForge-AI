@@ -15,6 +15,9 @@ interface ForgeScore {
   risk: 'Low' | 'Medium' | 'High';
   assumptions: string;
   verify: string;
+  initialConfidence?: number;
+  intensity?: string;
+  escalatedFrom?: string;
 }
 
 type PhotoFile = { name: string; path: string; size: number; modified: string; extension: string };
@@ -39,6 +42,8 @@ interface Message {
   // Task mode fields
   executionPlan?: ExecutionPlan;
   taskPhase?: 'decomposing' | 'planning' | 'ready' | 'error';
+  // Debate intensity that produced this consensus response
+  debateIntensity?: string;
 }
 
 interface Props {
@@ -70,6 +75,33 @@ const PROVIDER_LABELS: Record<string, string> = {
   claude: 'Claude',
   gemini: 'Gemini',
 };
+
+const INTENSITY_COLORS: Record<string, string> = {
+  cooperative: '#10a37f',
+  analytical:  '#f59e0b',
+  critical:    '#f97316',
+  combative:   '#ef4444',
+  ruthless:    '#7c3aed',
+};
+
+const INTENSITY_LABELS: Record<string, string> = {
+  cooperative: 'Cooperative',
+  analytical:  'Analytical',
+  critical:    'Critical',
+  combative:   'Combative',
+  ruthless:    'Ruthless',
+};
+
+const COUNCIL_ROLE_LABELS = ['Strategist', 'Critic', 'Executor'];
+
+function detectIntensity(message: string): string {
+  const m = message.toLowerCase();
+  if (/security|auth|exploit|vulnerabilit|injection|breach|crypto|zero.?day/.test(m)) return 'critical';
+  if (/production|deploy|infrastructure|migration|breaking.change|delete all|rm -|drop table/.test(m)) return 'combative';
+  if (/refactor|architect|restructure|optim|performance|scale/.test(m)) return 'analytical';
+  if (/brainstorm|idea|explore|what if|imagine|could we|suggestion/.test(m)) return 'cooperative';
+  return 'analytical';
+}
 
 const QUICK_ACTIONS = [
   { label: 'Scan for Photos',      action: 'photos' as const },
@@ -169,6 +201,10 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     mode === 'consensus' ? 'thinktank' : 'chat'
   );
   const [taskRunning, setTaskRunning] = useState(false);
+  const [intensity, setIntensity] = useState<string>(() =>
+    localStorage.getItem('triforge-intensity') ?? 'analytical'
+  );
+  const [intensitySuggestion, setIntensitySuggestion] = useState<string | null>(null);
   const [speaking, setSpeaking] = useState<string | null>(null);
   const [voiceMode, setVoiceMode] = useState(() => localStorage.getItem('triforge-voice-mode') === 'on');
   const [gate, setGate] = useState<{ feature: string; neededTier: 'pro' | 'business' } | null>(null);
@@ -210,6 +246,16 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       inputRef.current?.focus();
     }
   }, [prefill]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-detect intensity from message content (debounced 400ms) — only in thinktank mode
+  useEffect(() => {
+    if (localMode !== 'thinktank') { setIntensitySuggestion(null); return; }
+    const t = setTimeout(() => {
+      const detected = detectIntensity(input);
+      setIntensitySuggestion(detected !== intensity ? detected : null);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [input, intensity, localMode]);
 
   // ── TTS ───────────────────────────────────────────────────────────────────────
 
@@ -297,7 +343,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     try {
       if (useConsensus) {
         setConsensusThinking(true);
-        const result = await window.triforge.chat.consensus(text.trim(), history);
+        const result = await window.triforge.chat.consensus(text.trim(), history, intensity);
         setConsensusThinking(false);
 
         if (result.error && handleGateError(result.error)) { setSending(false); return; }
@@ -311,6 +357,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           forgeScore: result.forgeScore,
           failedProviders: result.failedProviders,
           isError: !!result.error,
+          debateIntensity: intensity,
           timestamp: new Date(),
         };
         appendMsg(aiMsg);
@@ -665,6 +712,40 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
             );
           })}
         </div>
+        {/* Intensity selector — shown in Think Tank mode */}
+        {localMode === 'thinktank' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 3, marginLeft: 4 }}>
+            {(Object.keys(INTENSITY_LABELS) as string[]).map(lvl => {
+              const active = intensity === lvl;
+              const color = INTENSITY_COLORS[lvl];
+              return (
+                <button
+                  key={lvl}
+                  title={INTENSITY_LABELS[lvl]}
+                  style={{
+                    padding: '2px 8px', borderRadius: 10, fontSize: 10, fontWeight: 600, cursor: 'pointer',
+                    background: active ? `${color}22` : 'transparent',
+                    color: active ? color : 'var(--text-muted)',
+                    border: `1px solid ${active ? `${color}66` : 'var(--border)'}`,
+                    transition: 'all 0.2s',
+                  }}
+                  onClick={() => { setIntensity(lvl); localStorage.setItem('triforge-intensity', lvl); setIntensitySuggestion(null); }}
+                >
+                  {INTENSITY_LABELS[lvl]}
+                </button>
+              );
+            })}
+            {intensitySuggestion && (
+              <button
+                title={`Apply suggested intensity: ${INTENSITY_LABELS[intensitySuggestion]}`}
+                style={{ marginLeft: 4, fontSize: 10, padding: '2px 8px', borderRadius: 10, background: `${INTENSITY_COLORS[intensitySuggestion]}18`, color: INTENSITY_COLORS[intensitySuggestion], border: `1px dashed ${INTENSITY_COLORS[intensitySuggestion]}66`, cursor: 'pointer', fontWeight: 600 }}
+                onClick={() => { setIntensity(intensitySuggestion); localStorage.setItem('triforge-intensity', intensitySuggestion); setIntensitySuggestion(null); }}
+              >
+                Suggested: {INTENSITY_LABELS[intensitySuggestion]} ↵
+              </button>
+            )}
+          </div>
+        )}
         <div style={{ flex: 1 }} />
         {messages.length > 1 && (
           <button style={cs.clearBtn} onClick={clearChat} title="Clear chat">✕ Clear</button>
@@ -929,6 +1010,15 @@ function ConsensusMessage({ msg, isSpeaking, canSpeak, onSpeak, tier, onUpgradeC
         {/* Header */}
         <div style={cs.consensusHeader}>
           <span style={cs.consensusBadge}>Think Tank</span>
+          {msg.debateIntensity && (
+            <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 10, fontWeight: 600,
+              background: `${INTENSITY_COLORS[msg.debateIntensity] ?? '#f59e0b'}18`,
+              color: INTENSITY_COLORS[msg.debateIntensity] ?? '#f59e0b',
+              border: `1px solid ${INTENSITY_COLORS[msg.debateIntensity] ?? '#f59e0b'}55`,
+              marginLeft: 4 }}>
+              {INTENSITY_LABELS[msg.debateIntensity] ?? msg.debateIntensity}
+            </span>
+          )}
           <span style={cs.consensusCount}>{responses.length} AI{responses.length > 1 ? 's' : ''} responded</span>
         </div>
 
@@ -970,13 +1060,17 @@ function ConsensusMessage({ msg, isSpeaking, canSpeak, onSpeak, tier, onUpgradeC
           <div style={cs.indivBlock}>
             <div style={cs.indivLabel}>INDIVIDUAL RESPONSES</div>
             <div style={cs.tabBar}>
-              {responses.map((r, i) => (
-                <button key={r.provider} style={{ ...cs.tab, ...(activeTab === i ? cs.tabActive : {}) }}
-                  onClick={() => setActiveTab(i)}>
-                  <span style={{ color: PROVIDER_COLORS[r.provider.toLowerCase()] ?? 'var(--accent)' }}>●</span>
-                  {' '}{PROVIDER_LABELS[r.provider.toLowerCase()] ?? r.provider}
-                </button>
-              ))}
+              {responses.map((r, i) => {
+                const roleLabel = COUNCIL_ROLE_LABELS[i];
+                const providerLabel = PROVIDER_LABELS[r.provider.toLowerCase()] ?? r.provider;
+                return (
+                  <button key={r.provider} style={{ ...cs.tab, ...(activeTab === i ? cs.tabActive : {}) }}
+                    onClick={() => setActiveTab(i)}>
+                    <span style={{ color: PROVIDER_COLORS[r.provider.toLowerCase()] ?? 'var(--accent)' }}>●</span>
+                    {' '}{roleLabel ? `${roleLabel} · ` : ''}{providerLabel}
+                  </button>
+                );
+              })}
             </div>
             <div style={cs.tabContent}><MarkdownText text={responses[activeTab]?.text ?? ''} /></div>
           </div>
@@ -1003,6 +1097,12 @@ function ForgeScorePanel({ score }: { score: ForgeScore }) {
   const barColor = score.confidence >= 75 ? '#10a37f' : score.confidence >= 50 ? '#f59e0b' : '#ef4444';
   return (
     <div style={cs.forgePanel}>
+      {/* Escalation banner */}
+      {score.escalatedFrom && (
+        <div style={{ fontSize: 10, color: '#f97316', background: 'rgba(249,115,22,0.08)', border: '1px solid rgba(249,115,22,0.25)', borderRadius: 6, padding: '5px 10px', marginBottom: 8 }}>
+          Council auto-escalated from {INTENSITY_LABELS[score.escalatedFrom] ?? score.escalatedFrom} → Critical — risk signals detected
+        </div>
+      )}
       <div style={cs.forgePanelHeader}>
         <span style={cs.forgePanelTitle}>FORGE SCORE</span>
         <span style={{ ...cs.riskBadge, background: c + '22', color: c, border: `1px solid ${c}55` }}>
@@ -1014,7 +1114,10 @@ function ForgeScorePanel({ score }: { score: ForgeScore }) {
         <div style={cs.confTrack}>
           <div style={{ ...cs.confBar, width: `${score.confidence}%`, background: barColor }} />
         </div>
-        <span style={cs.confPct}>{score.confidence}%</span>
+        {score.initialConfidence !== undefined
+          ? <span style={cs.confPct}>{score.initialConfidence}% → {score.confidence}%</span>
+          : <span style={cs.confPct}>{score.confidence}%</span>
+        }
       </div>
       {score.agreement    && <ForgeRow icon="✓" label="Agreement"    text={score.agreement} />}
       {score.disagreement && <ForgeRow icon="✗" label="Disagreement" text={score.disagreement} />}
