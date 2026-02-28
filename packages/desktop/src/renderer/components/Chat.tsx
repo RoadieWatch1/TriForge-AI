@@ -333,19 +333,21 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   };
 
   const runOrganizeDownloads = async () => {
-    const dirs = await window.triforge.files.commonDirs();
-    const downloads = dirs['Downloads'];
-    if (!downloads) { addSystemMsg('⚠️ Could not find Downloads folder.'); return; }
-    addSystemMsg(`🗂️ Organizing ${downloads}…`);
+    const dirPath = await window.triforge.files.pickDir();
+    if (!dirPath) return; // user cancelled
+    addSystemMsg(`🗂️ Organizing ${dirPath}…`);
     try {
-      const result = await window.triforge.files.organize(downloads);
+      const result = await window.triforge.files.organize(dirPath);
       if (result.errors.some(e => e.includes('PERMISSION_DENIED'))) {
         addSystemMsg('⚠️ Files permission is off. Go to Settings → Permissions → Files & Folders.'); return;
       }
-      if (result.moved === 0) { addSystemMsg('🗂️ Downloads is already tidy — nothing needed moving.'); return; }
+      if (result.moved === 0) {
+        addSystemMsg('🗂️ No loose files found to organize — files may already be sorted or unsupported types.');
+        return;
+      }
       const folders = result.folders.map(f => f.split(/[\\/]/).pop()).join(', ');
       addSystemMsg(`✅ Organized ${result.moved} file${result.moved > 1 ? 's' : ''} into: ${folders || 'sub-folders'}.${result.errors.length ? `\n⚠️ ${result.errors.length} file(s) skipped.` : ''}`);
-    } catch { addSystemMsg('⚠️ Could not organize Downloads.'); }
+    } catch { addSystemMsg('⚠️ Could not organize the selected folder.'); }
   };
 
   const runPickAndPrint = async () => {
