@@ -232,8 +232,19 @@ export function setupIpc(store: Store): void {
       .map(r => r.value)
       .filter(r => r.text);
 
+    const failedProviders = settled
+      .map((r, i) => ({ result: r, name: providers[i].name }))
+      .filter(({ result }) => result.status === 'rejected')
+      .map(({ result, name }) => ({
+        provider: name as string,
+        error: (result as PromiseRejectedResult).reason instanceof Error
+          ? (result as PromiseRejectedResult).reason.message
+          : String((result as PromiseRejectedResult).reason),
+      }));
+
     if (responses.length === 0) {
-      return { error: 'All providers failed. Check your API keys in Settings.' };
+      const details = failedProviders.map(f => `${f.provider}: ${f.error}`).join('; ');
+      return { error: `All providers failed. ${details}` };
     }
 
     // Notify renderer: synthesis phase beginning
@@ -296,7 +307,7 @@ VERIFY: [1-3 specific things the user should double-check]
 
     store.incrementMessageCount();
     event.sender.send('forge:update', { phase: 'complete' });
-    return { responses, synthesis, forgeScore };
+    return { responses, synthesis, forgeScore, failedProviders: failedProviders.length > 0 ? failedProviders : undefined };
   });
 
   // ── Think Tank (full consensus for complex goals) ─────────────────────────────

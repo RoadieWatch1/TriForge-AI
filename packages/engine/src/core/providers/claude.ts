@@ -5,7 +5,7 @@
 import { AIProvider, AIProviderConfig, ProviderError, retryWithBackoff } from './provider';
 import { ReviewResult } from '../types';
 
-const DEFAULT_MODEL = 'claude-sonnet-4-20250514';
+const DEFAULT_MODEL = 'claude-sonnet-4-5';
 const API_URL = 'https://api.anthropic.com/v1/messages';
 const TIMEOUT_MS = 120_000;
 const ANTHROPIC_VERSION = '2023-06-01';

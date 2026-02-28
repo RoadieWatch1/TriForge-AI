@@ -32,6 +32,7 @@ const api = {
         responses?: Array<{ provider: string; text: string }>;
         synthesis?: string;
         forgeScore?: { confidence: number; agreement: string; disagreement: string; risk: 'Low'|'Medium'|'High'; assumptions: string; verify: string };
+        failedProviders?: Array<{ provider: string; error: string }>;
         error?: string;
         tier?: string;
       }>,

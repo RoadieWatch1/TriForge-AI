@@ -29,6 +29,7 @@ interface Message {
   // Think-tank consensus fields
   consensusResponses?: ConsensusResponse[];
   forgeScore?: ForgeScore;
+  failedProviders?: { provider: string; error: string }[];
   workflow?: string;
   // Photo result payloads
   photos?: PhotoFile[];
@@ -295,6 +296,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           content: result.error ? result.error : (result.synthesis ?? ''),
           consensusResponses: result.responses,
           forgeScore: result.forgeScore,
+          failedProviders: result.failedProviders,
           isError: !!result.error,
           timestamp: new Date(),
         };
@@ -500,11 +502,26 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       {/* Status bar */}
       <div style={cs.statusBar}>
         <div style={cs.statusDots}>
-          {(['openai', 'claude', 'gemini'] as const).map(p => (
-            <div key={p} title={`${PROVIDER_LABELS[p]}: ${keyStatus[p] ? 'active' : 'not configured'}`}
-              style={{ ...cs.dot, background: keyStatus[p] ? PROVIDER_COLORS[p] : 'var(--bg-elevated)', border: `2px solid ${keyStatus[p] ? PROVIDER_COLORS[p] : 'var(--border)'}` }} />
-          ))}
+          {(['openai', 'claude', 'gemini'] as const).map(p => {
+            const active = keyStatus[p];
+            const color = PROVIDER_COLORS[p];
+            return (
+              <div key={p} title={`${PROVIDER_LABELS[p]}: ${active ? 'active' : 'not configured'}`} style={{
+                display: 'flex', alignItems: 'center', gap: 4,
+                padding: '2px 7px', borderRadius: 20,
+                background: active ? `${color}18` : 'transparent',
+                border: `1px solid ${active ? `${color}55` : 'var(--border)'}`,
+                transition: 'all 0.3s',
+              }}>
+                <div style={{ width: 6, height: 6, borderRadius: '50%', background: active ? color : 'var(--bg-elevated)', border: `1.5px solid ${active ? color : 'var(--border)'}`, flexShrink: 0 }} />
+                <span style={{ fontSize: 10, fontWeight: 600, color: active ? color : 'var(--text-muted)', letterSpacing: '0.03em' }}>
+                  {p === 'openai' ? 'GPT' : p === 'claude' ? 'Claude' : 'Gemini'}
+                </span>
+              </div>
+            );
+          })}
         </div>
+        <div style={cs.toolbarDivider} />
         <span style={{ ...cs.modeLabel, ...(mode === 'consensus' ? cs.modeLabelConsensus : {}) }}>
           {MODE_LABELS[mode] ?? mode}
         </span>
@@ -583,20 +600,25 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       <div style={cs.actionToolbar}>
         <button style={{ ...cs.actionBtn, ...(showQuickActions ? cs.actionBtnActive : {}) }}
           onClick={() => setShowQuickActions(s => !s)} title="Quick actions">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
           <span style={cs.actionLabel}>Quick</span>
         </button>
         <button style={{ ...cs.actionBtn, ...(showWorkflows ? cs.actionBtnActive : {}) }}
           onClick={() => { setShowWorkflows(s => !s); setShowQuickActions(false); }} title="Workflow templates">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
           <span style={cs.actionLabel}>Workflows</span>
         </button>
         <div style={cs.toolbarDivider} />
         <button style={cs.actionBtn} onClick={runFindPhotos} title="Scan for photos">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
           <span style={cs.actionLabel}>Photos</span>
         </button>
         <button style={cs.actionBtn} onClick={runOrganizeDownloads} title="Organize a folder">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><polyline points="9 14 12 17 15 14"/></svg>
           <span style={cs.actionLabel}>Organize</span>
         </button>
         <button style={cs.actionBtn} onClick={runPickAndPrint} title="Print a file">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
           <span style={cs.actionLabel}>Print</span>
         </button>
         <button style={cs.actionBtn} onClick={async () => {
@@ -609,6 +631,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
               (result.files.length > 8 ? `\n…and ${result.files.length - 8} more` : ''));
           }
         }} title="Browse a folder">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           <span style={cs.actionLabel}>Browse</span>
         </button>
         <div style={cs.toolbarDivider} />
@@ -626,6 +649,10 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           }}
           title={voiceMode ? 'Voice responses active — click to mute' : 'Voice responses off — click to enable'}
         >
+          {voiceMode
+            ? <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round"/></svg>
+            : <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M11 5L6 9H2v6h4l5 4V5z"/><line x1="23" y1="9" x2="17" y2="15" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><line x1="17" y1="9" x2="23" y2="15" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+          }
           <span style={cs.actionLabel}>{voiceMode ? 'Voice On' : 'Voice'}</span>
         </button>
       </div>
@@ -635,7 +662,8 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         <VoiceButton
           onTranscript={(text) => sendMessage(text)}
           onError={(err) => addSystemMsg(`Voice input: ${err}`)}
-          disabled={!keyStatus.openai || sending}
+          disabled={sending}
+          hasOpenAI={keyStatus.openai}
         />
         <div style={cs.inputWrapper}>
           <textarea
@@ -716,8 +744,19 @@ function ConsensusMessage({ msg, isSpeaking, canSpeak, onSpeak, tier, onUpgradeC
         {/* Synthesis — primary content */}
         <div style={cs.synthesisBlock}>
           <div style={cs.synthesisLabel}>SYNTHESIS</div>
-          <div style={cs.synthesisText}>{msg.content}</div>
+          <MarkdownText text={msg.content} />
         </div>
+
+        {/* Failed providers warning */}
+        {msg.failedProviders && msg.failedProviders.length > 0 && (
+          <div style={{ fontSize: 11, color: '#f59e0b', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 6, padding: '6px 10px', marginBottom: 8 }}>
+            {msg.failedProviders.map(f => (
+              <div key={f.provider} style={{ marginBottom: 2 }}>
+                <strong>{f.provider}</strong> did not respond — {f.error}
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Forge Score trust panel */}
         {msg.forgeScore && <ForgeScorePanel score={msg.forgeScore} />}
@@ -748,7 +787,7 @@ function ConsensusMessage({ msg, isSpeaking, canSpeak, onSpeak, tier, onUpgradeC
                 </button>
               ))}
             </div>
-            <div style={cs.tabContent}>{responses[activeTab]?.text}</div>
+            <div style={cs.tabContent}><MarkdownText text={responses[activeTab]?.text ?? ''} /></div>
           </div>
         )}
 
@@ -901,7 +940,10 @@ function MessageBubble({ msg, isSpeaking, canSpeak, onSpeak, onRetry, onRunActio
     <div style={{ ...cs.bubbleRow, ...(isUser ? cs.bubbleRowUser : {}) }}>
       {!isUser && <div style={cs.avatar}>TF</div>}
       <div style={{ ...cs.bubble, ...(isUser ? cs.bubbleUser : cs.bubbleAi), ...(msg.isError ? cs.bubbleError : {}) }}>
-        <div style={cs.bubbleContent}>{displayContent}</div>
+        {isUser
+          ? <div style={cs.bubbleContent}>{displayContent}</div>
+          : <MarkdownText text={displayContent} />
+        }
         {runAction && onRunAction && (
           <button
             style={cs.runActionBtn}
@@ -1000,6 +1042,90 @@ const stripStyle: Record<string, React.CSSProperties> = {
     color: 'var(--accent)', borderRadius: 5, padding: '3px 10px',
     fontSize: 11, fontWeight: 600, cursor: 'pointer',
   },
+};
+
+// ── Markdown Renderer ─────────────────────────────────────────────────────────
+
+function inlineFormat(text: string): React.ReactNode {
+  // Matches **bold**, *italic*, `inline code` in order of appearance
+  const INLINE_RE = /(\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|`([^`\n]+)`)/g;
+  const parts: React.ReactNode[] = [];
+  let last = 0;
+  let idx = 0;
+  let m: RegExpExecArray | null;
+  while ((m = INLINE_RE.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    if (m[2] !== undefined) parts.push(<strong key={idx++}>{m[2]}</strong>);
+    else if (m[3] !== undefined) parts.push(<em key={idx++} style={{ opacity: 0.85 }}>{m[3]}</em>);
+    else if (m[4] !== undefined) parts.push(<code key={idx++} style={mdSt.inlineCode}>{m[4]}</code>);
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts.length === 0 ? '' : parts.length === 1 ? parts[0] : <>{parts}</>;
+}
+
+function MarkdownText({ text }: { text: string }) {
+  const lines = text.split('\n');
+  const elements: React.ReactNode[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    // Fenced code block
+    if (line.startsWith('```')) {
+      const lang = line.slice(3).trim();
+      const codeLines: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i].startsWith('```')) { codeLines.push(lines[i]); i++; }
+      elements.push(
+        <pre key={elements.length} style={mdSt.codeBlock}>
+          {lang && <span style={mdSt.codeLang}>{lang}</span>}
+          <code style={mdSt.codeContent}>{codeLines.join('\n')}</code>
+        </pre>
+      );
+      i++; continue;
+    }
+    const h3 = line.match(/^###\s+(.+)/);
+    if (h3) { elements.push(<h3 key={elements.length} style={mdSt.h3}>{inlineFormat(h3[1])}</h3>); i++; continue; }
+    const h2 = line.match(/^##\s+(.+)/);
+    if (h2) { elements.push(<h2 key={elements.length} style={mdSt.h2}>{inlineFormat(h2[1])}</h2>); i++; continue; }
+    const h1 = line.match(/^#\s+(.+)/);
+    if (h1) { elements.push(<h1 key={elements.length} style={mdSt.h1}>{inlineFormat(h1[1])}</h1>); i++; continue; }
+    if (/^---+$/.test(line.trim())) { elements.push(<hr key={elements.length} style={mdSt.hr} />); i++; continue; }
+    if (/^[-*]\s+/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^[-*]\s+/.test(lines[i])) { items.push(lines[i].replace(/^[-*]\s+/, '')); i++; }
+      elements.push(<ul key={elements.length} style={mdSt.ul}>{items.map((it, j) => <li key={j} style={mdSt.li}>{inlineFormat(it)}</li>)}</ul>);
+      continue;
+    }
+    if (/^\d+\.\s+/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\d+\.\s+/.test(lines[i])) { items.push(lines[i].replace(/^\d+\.\s+/, '')); i++; }
+      elements.push(<ol key={elements.length} style={mdSt.ol}>{items.map((it, j) => <li key={j} style={mdSt.li}>{inlineFormat(it)}</li>)}</ol>);
+      continue;
+    }
+    if (line.startsWith('> ')) { elements.push(<blockquote key={elements.length} style={mdSt.blockquote}>{inlineFormat(line.slice(2))}</blockquote>); i++; continue; }
+    if (line.trim() === '') { elements.push(<div key={elements.length} style={{ height: 6 }} />); i++; continue; }
+    elements.push(<p key={elements.length} style={mdSt.p}>{inlineFormat(line)}</p>);
+    i++;
+  }
+  return <div style={mdSt.wrapper}>{elements}</div>;
+}
+
+const mdSt: Record<string, React.CSSProperties> = {
+  wrapper: { fontSize: 14, lineHeight: 1.65, color: 'var(--text-primary)' },
+  h1: { fontSize: 17, fontWeight: 700, color: 'var(--text-primary)', margin: '12px 0 5px', borderBottom: '1px solid var(--border)', paddingBottom: 5 },
+  h2: { fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', margin: '10px 0 4px' },
+  h3: { fontSize: 12, fontWeight: 700, color: 'var(--accent)', margin: '10px 0 3px', textTransform: 'uppercase' as const, letterSpacing: '0.06em' },
+  p:  { margin: '3px 0', lineHeight: 1.65 },
+  ul: { margin: '4px 0', paddingLeft: 22 },
+  ol: { margin: '4px 0', paddingLeft: 22 },
+  li: { margin: '2px 0', lineHeight: 1.6 },
+  hr: { border: 'none', borderTop: '1px solid var(--border)', margin: '10px 0' },
+  blockquote: { margin: '6px 0', paddingLeft: 12, borderLeft: '3px solid var(--accent)88', color: 'var(--text-secondary)', fontStyle: 'italic' as const },
+  codeBlock: { background: '#09090d', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8, padding: '12px 14px', margin: '8px 0', overflow: 'auto' as const },
+  codeLang: { fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase' as const, color: 'var(--accent)', display: 'block', marginBottom: 6 },
+  codeContent: { fontFamily: 'Consolas, "Cascadia Code", monospace', fontSize: 12.5, color: '#c9d1d9', display: 'block', whiteSpace: 'pre' as const, lineHeight: 1.55 },
+  inlineCode: { background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 4, padding: '1px 5px', fontFamily: 'Consolas, "Cascadia Code", monospace', fontSize: 12.5, color: '#c9d1d9' },
 };
 
 // ── Styles ────────────────────────────────────────────────────────────────────

@@ -4,16 +4,60 @@ interface Props {
   onTranscript: (text: string) => void;
   onError?: (err: string) => void;
   disabled?: boolean;
+  hasOpenAI?: boolean;
 }
 
 type State = 'idle' | 'recording' | 'processing';
 
-export function VoiceButton({ onTranscript, onError, disabled }: Props) {
+// Extend window for webkit prefix
+declare global {
+  interface Window {
+    SpeechRecognition?: new () => SpeechRecognition;
+    webkitSpeechRecognition?: new () => SpeechRecognition;
+  }
+}
+
+export function VoiceButton({ onTranscript, onError, disabled, hasOpenAI }: Props) {
   const [state, setState] = useState<State>('idle');
   const mediaRecorder = useRef<MediaRecorder | null>(null);
   const chunks = useRef<Blob[]>([]);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
 
-  const startRecording = useCallback(async () => {
+  // ── Web Speech Recognition (free, no OpenAI key) ──────────────────────────
+  const startWebSpeech = useCallback(() => {
+    const SR = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    if (!SR) {
+      onError?.('Voice input requires an OpenAI API key or a Chromium-based browser with speech recognition.');
+      return;
+    }
+    const recognition = new SR();
+    recognition.lang = 'en-US';
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    recognitionRef.current = recognition;
+
+    recognition.onresult = (e) => {
+      const text = e.results[0]?.[0]?.transcript ?? '';
+      if (text) onTranscript(text);
+      setState('idle');
+    };
+    recognition.onerror = (e) => {
+      onError?.(e.error === 'not-allowed' ? 'Microphone access denied. Enable it in system settings.' : e.error);
+      setState('idle');
+    };
+    recognition.onend = () => setState('idle');
+
+    recognition.start();
+    setState('recording');
+  }, [onTranscript, onError]);
+
+  const stopWebSpeech = useCallback(() => {
+    recognitionRef.current?.stop();
+    recognitionRef.current = null;
+  }, []);
+
+  // ── OpenAI Whisper (high accuracy, requires key) ───────────────────────────
+  const startWhisper = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       chunks.current = [];
@@ -43,23 +87,33 @@ export function VoiceButton({ onTranscript, onError, disabled }: Props) {
 
       mr.start();
       setState('recording');
-    } catch (e) {
+    } catch {
       onError?.('Microphone access denied. Enable it in system settings.');
       setState('idle');
     }
   }, [onTranscript, onError]);
 
-  const stopRecording = useCallback(() => {
+  const stopWhisper = useCallback(() => {
     mediaRecorder.current?.stop();
   }, []);
 
+  // ── Unified handlers ───────────────────────────────────────────────────────
   const handleClick = () => {
     if (disabled) return;
-    if (state === 'idle') startRecording();
-    else if (state === 'recording') stopRecording();
+    if (state === 'idle') {
+      if (hasOpenAI) startWhisper();
+      else startWebSpeech();
+    } else if (state === 'recording') {
+      if (hasOpenAI) stopWhisper();
+      else stopWebSpeech();
+    }
   };
 
-  const label = state === 'idle' ? 'Hold to speak' : state === 'recording' ? 'Release to send' : 'Transcribing…';
+  const label =
+    state === 'idle'       ? (hasOpenAI ? 'Hold to speak' : 'Click to speak') :
+    state === 'recording'  ? (hasOpenAI ? 'Release to send' : 'Listening…') :
+    'Transcribing…';
+
   const isActive = state === 'recording';
   const isLoading = state === 'processing';
 
