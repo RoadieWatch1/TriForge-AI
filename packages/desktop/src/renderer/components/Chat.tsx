@@ -783,8 +783,8 @@ function ConsensusMessage({ msg, isSpeaking, canSpeak, onSpeak, tier, onUpgradeC
         {/* Forge Score trust panel */}
         {msg.forgeScore && <ForgeScorePanel score={msg.forgeScore} />}
 
-        {/* Generate Execution Plan button */}
-        {!plan && (
+        {/* Generate Execution Plan button — hidden when synthesis already has a direct [RUN:*] action */}
+        {!plan && !/\[RUN:[^\]]+\]/i.test(msg.content) && (
           <div style={cs.planBtnRow}>
             <button style={{ ...cs.planBtn, ...(!canUsePlans ? cs.planBtnLocked : {}) }} onClick={generatePlan} disabled={planLoading}>
               {planLoading ? 'Generating plan…' : canUsePlans ? 'Generate Execution Plan' : 'Execution Plans — Pro'}
