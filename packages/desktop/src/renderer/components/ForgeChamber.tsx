@@ -151,7 +151,6 @@ export function ForgeChamber({ visible }: Props) {
   return (
     <div style={{
       opacity,
-      transition: 'opacity 200ms ease',
       background: 'linear-gradient(160deg, #111118 0%, #16161e 100%)',
       border: `1px solid ${state.escalating ? 'rgba(239,68,68,0.55)' : 'rgba(249,115,22,0.18)'}`,
       borderRadius: 12,
