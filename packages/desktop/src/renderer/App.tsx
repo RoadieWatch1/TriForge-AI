@@ -53,6 +53,14 @@ export function App() {
   // Chat prefill — set by ForgeProfiles "Open in Chat", consumed once by Chat
   const [chatPrefill, setChatPrefill] = useState<string | null>(null);
 
+  // Window state
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  const handleToggleFullscreen = useCallback(async () => {
+    const next = await window.triforge.appWindow.toggleFullscreen();
+    setIsFullscreen(next);
+  }, []);
+
   // Session lock state
   const [hasPin, setHasPin] = useState(false);
   const [locked, setLocked] = useState(false);
@@ -115,6 +123,9 @@ export function App() {
             setMode(m);
           } catch { /* no keys yet */ }
         }
+        // Sync fullscreen state
+        const fs = await window.triforge.appWindow.isFullscreen();
+        setIsFullscreen(fs);
       } catch {
         // Startup failed or timed out — open on free tier so the app is usable
         setTier('free');
@@ -200,6 +211,24 @@ export function App() {
               Lock
             </button>
           )}
+          <button style={styles.winBtn} onClick={() => window.triforge.appWindow.minimize()} title="Minimize">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+              <line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+          </button>
+          <button style={styles.winBtn} onClick={handleToggleFullscreen} title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
+            {isFullscreen ? (
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/>
+                <line x1="10" y1="14" x2="3" y2="21"/><line x1="21" y1="3" x2="14" y2="10"/>
+              </svg>
+            ) : (
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/>
+                <line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>
+              </svg>
+            )}
+          </button>
         </div>
       </div>
 
@@ -661,12 +690,19 @@ const styles: Record<string, React.CSSProperties & { WebkitAppRegion?: string }>
   },
   trafficLights: { width: 60 },
   appName: { fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', textAlign: 'center', flex: 1 },
-  titlebarRight: { width: 60, display: 'flex', justifyContent: 'flex-end', alignItems: 'center' },
+  titlebarRight: { display: 'flex', alignItems: 'center', gap: 4, paddingRight: 2 },
   lockBtn: {
     background: 'none', border: '1px solid var(--border)', cursor: 'pointer',
     fontSize: 10, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase' as const,
-    color: 'var(--text-muted)', padding: '2px 8px', borderRadius: 4,
+    color: 'var(--text-muted)', padding: '2px 8px', borderRadius: 4, marginRight: 4,
     WebkitAppRegion: 'no-drag' as never,
+  },
+  winBtn: {
+    background: 'none', border: 'none', cursor: 'pointer',
+    color: 'var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    width: 24, height: 24, borderRadius: 4, padding: 0, flexShrink: 0,
+    WebkitAppRegion: 'no-drag' as never,
+    transition: 'color 0.15s, background 0.15s',
   },
 
   updateBanner: {

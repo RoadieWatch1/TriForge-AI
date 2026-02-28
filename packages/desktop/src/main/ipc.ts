@@ -12,6 +12,7 @@ import { buildSystemPrompt } from './systemPrompt';
 import { getProfile, listProfiles } from './profiles';
 import { scanForPhotos, listDirectory, organizeDirectory, organizeDirectoryDeep, searchPhotos, findSimilarPhotos, moveFiles, getCommonDirs } from './filesystem';
 import { scanForDocuments, ocrFile, detectDocTypes, searchIndex, type DocEntry } from './docIndex';
+import { GrokVoiceAgent } from './grokVoice';
 import { listPrinters, printFile, printText } from './printer';
 import {
   ProviderManager,
@@ -1227,5 +1228,50 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     } catch {
       return { services: [] };
     }
+  });
+
+  // ── Window controls ─────────────────────────────────────────────────────────
+
+  ipcMain.handle('window:minimize', (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.minimize();
+  });
+
+  ipcMain.handle('window:toggleFullscreen', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) return false;
+    win.setFullScreen(!win.isFullScreen());
+    return win.isFullScreen();
+  });
+
+  ipcMain.handle('window:isFullscreen', (event) => {
+    return BrowserWindow.fromWebContents(event.sender)?.isFullScreen() ?? false;
+  });
+
+  // ── Grok Voice Agent ─────────────────────────────────────────────────────────
+
+  let grokVoiceAgent: GrokVoiceAgent | null = null;
+
+  ipcMain.handle('voice:agent:connect', async (event, opts: { voice?: string }) => {
+    const apiKey = await store.getSecret('grok');
+    if (!apiKey) return { error: 'No Grok API key configured.' };
+    grokVoiceAgent?.disconnect();
+    grokVoiceAgent = new GrokVoiceAgent(apiKey, opts?.voice ?? 'Ara', (e) => {
+      if (!event.sender.isDestroyed()) event.sender.send('voice:agent:event', e);
+    });
+    grokVoiceAgent.connect();
+    return { ok: true };
+  });
+
+  ipcMain.handle('voice:agent:send', (_event, pcm16b64: string) => {
+    grokVoiceAgent?.sendAudio(Buffer.from(pcm16b64, 'base64'));
+  });
+
+  ipcMain.handle('voice:agent:commit', () => {
+    grokVoiceAgent?.commitAudio();
+  });
+
+  ipcMain.handle('voice:agent:disconnect', () => {
+    grokVoiceAgent?.disconnect();
+    grokVoiceAgent = null;
   });
 }

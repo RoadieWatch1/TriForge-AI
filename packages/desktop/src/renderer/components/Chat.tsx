@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { VoiceButton } from './VoiceButton';
+import { VoiceConversation } from './VoiceConversation';
 import { UpgradeGate } from './UpgradeGate';
 import { ExecutionPlanView, type ExecutionPlan } from './ExecutionPlanView';
 import { ForgeChamber } from './ForgeChamber';
@@ -119,13 +120,32 @@ function detectIntensity(message: string): string {
 }
 
 const QUICK_ACTIONS = [
-  { label: 'Scan for Photos',      action: 'photos' as const },
+  { label: 'Find a Document',      action: 'docs' as const },
   { label: 'Organize Folder',      action: 'organize' as const },
   { label: 'Print Document',       action: 'print' as const },
   { label: 'Generate Application', action: 'builder' as const },
-  { label: 'Investment Analysis',  prompt: 'Suggest an investment strategy for ' },
-  { label: 'Research Topic',       prompt: 'Research and summarize everything about ' },
+  { label: 'Investment Analysis',  action: 'investment' as const },
+  { label: 'Raise Funding',        action: 'funding' as const },
 ];
+
+const INVESTMENT_PROMPT = `Create a comprehensive investment guide for a small business owner with excess cash. Include:
+## Cash vs. Reinvestment Decision Framework (when to save vs. invest in the business vs. the market)
+## Market Investment Options Ranked by Risk (index funds, ETFs, bonds, REITs — pros/cons for each)
+## Tax-Advantaged Business Accounts (SEP-IRA, Solo 401k, HSA — eligibility, contribution limits, tax benefits)
+## Real Estate as a Business Asset (buy vs. lease analysis, pros/cons for small business owners)
+## Recommended Allocation by Business Stage (startup / growing / established — specific percentage targets)
+## Red Flags and Common Mistakes (what most founders get wrong with excess cash)
+Format with clear headers, specific dollar figures and percentages where helpful, and actionable steps. Assume the owner is a U.S. sole proprietor or LLC with $10,000–$500,000 to deploy.`;
+
+const FUNDING_PROMPT = `Create a complete fundraising guide for a startup seeking outside investment. Include:
+## Funding Stage Assessment (pre-seed, seed, Series A — which stage applies and why)
+## Investor Types Compared (angels, VCs, accelerators, crowdfunding, grants — best fit for each stage)
+## What Investors Actually Look For (the 5 criteria every investor evaluates — with specific examples)
+## Pitch Deck Structure (10 slides, what goes on each, the most common mistakes per slide)
+## Key Terms Decoded (valuation, dilution, SAFE note, convertible note, pro-rata rights — plain English)
+## Finding and Approaching Investors (where to find them, how to get warm intros, follow-up cadence)
+## Alternatives to Equity Funding (revenue-based financing, SBA loans, SBIR grants, bootstrapping)
+Format as an actionable founder guide with concrete next steps and real-world benchmarks.`;
 
 const MSG_LIMITS: Record<string, number> = { free: 30, pro: 300, business: Infinity };
 
@@ -222,6 +242,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   const [intensitySuggestion, setIntensitySuggestion] = useState<string | null>(null);
   const [speaking, setSpeaking] = useState<string | null>(null);
   const [voiceMode, setVoiceMode] = useState(() => localStorage.getItem('triforge-voice-mode') === 'on');
+  const [voiceChatActive, setVoiceChatActive] = useState(false);
   const [gate, setGate] = useState<{ feature: string; neededTier: 'pro' | 'business' } | null>(null);
   const [checkoutUrls, setCheckoutUrls] = useState<{ pro: string; business: string; portal: string }>({ pro: '', business: '', portal: '' });
   const [showQuickActions, setShowQuickActions] = useState(false);
@@ -303,7 +324,18 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     // Fallback: Web Speech API — built into Electron/Chromium, works for all users
     if ('speechSynthesis' in window) {
       const utt = new SpeechSynthesisUtterance(truncated);
-      utt.rate = 1.05;
+      // Prefer neural / high-quality voices — same priority order as splash.html
+      const voices = window.speechSynthesis.getVoices();
+      const preferred =
+        voices.find(v => /Microsoft (Aria|Jenny|Guy|Davis|Tony) Online.*Natural/i.test(v.name)) ||
+        voices.find(v => /(Ava|Allison|Samantha).*Enhanced/i.test(v.name))                      ||
+        voices.find(v => v.name === 'Samantha')                                                  ||
+        voices.find(v => /^Microsoft Aria$/i.test(v.name))                                       ||
+        voices.find(v => /Google US English/i.test(v.name))                                      ||
+        voices.find(v => v.lang === 'en-US' && v.localService);
+      if (preferred) utt.voice = preferred;
+      utt.rate  = 0.92;
+      utt.pitch = 1.0;
       utt.onend = () => setSpeaking(null);
       utt.onerror = () => setSpeaking(null);
       window.speechSynthesis.speak(utt);
@@ -690,12 +722,13 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   const handleQuickAction = (a: typeof QUICK_ACTIONS[number]) => {
     setShowQuickActions(false);
     if ('action' in a) {
-      if (a.action === 'photos') { runFindPhotos(); return; }
-      if (a.action === 'organize') { runOrganizeDownloads(); return; }
-      if (a.action === 'print') { runPickAndPrint(); return; }
-      if (a.action === 'builder') { onBuildApp(); return; }
+      if (a.action === 'docs')       { setInput('Find my '); inputRef.current?.focus(); return; }
+      if (a.action === 'organize')   { runOrganizeDownloads(); return; }
+      if (a.action === 'print')      { runPickAndPrint(); return; }
+      if (a.action === 'builder')    { onBuildApp(); return; }
+      if (a.action === 'investment') { sendMessage(INVESTMENT_PROMPT); return; }
+      if (a.action === 'funding')    { sendMessage(FUNDING_PROMPT); return; }
     }
-    if ('prompt' in a) { setInput(a.prompt); inputRef.current?.focus(); }
   };
 
   const fireWorkflow = (workflowId: string) => {
@@ -904,9 +937,9 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           <span style={cs.actionLabel}>Workflows</span>
         </button>
         <div style={cs.toolbarDivider} />
-        <button style={cs.actionBtn} onClick={runFindPhotos} title="Scan for photos">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-          <span style={cs.actionLabel}>Photos</span>
+        <button style={cs.actionBtn} onClick={() => { setInput('Find my '); inputRef.current?.focus(); }} title="Find a document by content">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+          <span style={cs.actionLabel}>Find Doc</span>
         </button>
         <button style={cs.actionBtn} onClick={runOrganizeDownloads} title="Organize a folder">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><polyline points="9 14 12 17 15 14"/></svg>
@@ -950,7 +983,31 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           }
           <span style={cs.actionLabel}>{voiceMode ? 'Voice On' : 'Voice'}</span>
         </button>
+        <button
+          style={{ ...cs.actionBtn, ...(voiceChatActive ? cs.actionBtnActive : {}) }}
+          onClick={() => setVoiceChatActive(v => !v)}
+          title={voiceChatActive ? 'Stop voice conversation' : 'Voice conversation — talk to TriForge'}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round"/>
+            <line x1="12" y1="19" x2="12" y2="23" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+            <line x1="8" y1="23" x2="16" y2="23" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+          </svg>
+          <span style={cs.actionLabel}>{voiceChatActive ? 'Live Voice' : 'Voice Chat'}</span>
+        </button>
       </div>
+
+      {/* Voice conversation panel */}
+      {voiceChatActive && (
+        <VoiceConversation
+          hasGrok={keyStatus.grok}
+          hasOpenAI={keyStatus.openai}
+          sending={sending}
+          onTranscript={(text) => sendMessage(text)}
+          onAssistantTranscript={(text) => appendMsg({ id: crypto.randomUUID(), role: 'assistant', content: text, timestamp: new Date() })}
+        />
+      )}
 
       {/* Input area */}
       <div style={cs.inputArea}>

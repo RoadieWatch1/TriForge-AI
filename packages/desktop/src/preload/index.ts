@@ -79,6 +79,24 @@ const api = {
       ipcRenderer.invoke('voice:transcribe', Buffer.from(audioBuffer)) as Promise<{ text?: string; error?: string }>,
     speak: (text: string) =>
       ipcRenderer.invoke('voice:speak', text) as Promise<{ audio?: string; error?: string }>,
+    agent: {
+      connect:    (opts: { voice?: string }) => ipcRenderer.invoke('voice:agent:connect', opts) as Promise<{ ok?: boolean; error?: string }>,
+      send:       (pcm16b64: string)         => ipcRenderer.invoke('voice:agent:send', pcm16b64),
+      commit:     ()                         => ipcRenderer.invoke('voice:agent:commit'),
+      disconnect: ()                         => ipcRenderer.invoke('voice:agent:disconnect'),
+      onEvent:    (cb: (e: { type: string; role?: string; text?: string; data?: string; message?: string }) => void): (() => void) => {
+        const handler = (_: Electron.IpcRendererEvent, e: { type: string; role?: string; text?: string; data?: string; message?: string }) => cb(e);
+        ipcRenderer.on('voice:agent:event', handler);
+        return () => ipcRenderer.removeListener('voice:agent:event', handler);
+      },
+    },
+  },
+
+  // Window controls
+  appWindow: {
+    minimize:         () => ipcRenderer.invoke('window:minimize'),
+    toggleFullscreen: () => ipcRenderer.invoke('window:toggleFullscreen') as Promise<boolean>,
+    isFullscreen:     () => ipcRenderer.invoke('window:isFullscreen') as Promise<boolean>,
   },
 
   // Memory
