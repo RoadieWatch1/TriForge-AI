@@ -252,7 +252,7 @@
   </svg>
 
   <div class="app-name">TriForge AI</div>
-  <div class="tagline">Forging Three Minds Into One</div>
+  <div class="tagline">Three minds. One verified result.</div>
 
   <div class="loader">
     <div class="dot d1"></div>
@@ -275,12 +275,6 @@
         if (spoken) return;
         spoken = true;
 
-        var msg = new SpeechSynthesisUtterance();
-        msg.text   = 'Hey, welcome back. Claude, G P T, and Gemini are all online and ready for you. Let\'s get to work.';
-        msg.rate   = 0.82;   // relaxed, unhurried
-        msg.pitch  = 0.88;   // warm, natural
-        msg.volume = 1.0;
-
         // Voice priority: best natural voices per platform
         var voices = speechSynthesis.getVoices();
         var preferred = (
@@ -290,14 +284,23 @@
           voices.find(function(v){ return /Microsoft Aria/i.test(v.name); })   || // Windows 11
           voices.find(function(v){ return /Google US English/i.test(v.name);}  ) // Chrome
         );
-        if (preferred) msg.voice = preferred;
 
-        // Wait for the splash animation to fully settle before voice kicks in.
-        // 1800ms gives enough time for the window to render and the forge
-        // animation to run through one full cycle — especially important on
-        // Windows where the first paint can be 200-400ms after window creation.
+        function line(text, rate, pitch) {
+          var u = new SpeechSynthesisUtterance();
+          u.text   = text;
+          u.rate   = rate;
+          u.pitch  = pitch;
+          u.volume = 1.0;
+          if (preferred) u.voice = preferred;
+          return u;
+        }
+
+        // Three lines queued — browser speech synthesis plays them sequentially.
+        // Periods create a natural internal beat; the queue gap adds the pause between lines.
         setTimeout(function () {
-          speechSynthesis.speak(msg);
+          speechSynthesis.speak(line('Welcome to TriForge.',              0.78, 0.76));
+          speechSynthesis.speak(line('Three minds. One verified result.', 0.76, 0.76));
+          speechSynthesis.speak(line('Intelligence, forged.',             0.72, 0.74));
         }, 1800);
       }
 
