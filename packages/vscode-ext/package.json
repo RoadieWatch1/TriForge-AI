@@ -1,7 +1,7 @@
 {
   "name": "triforge-ai",
   "displayName": "triforge-ai",
-  "description": "A beginner-friendly VS Code chat extension with tri-model AI consensus",
+  "description": "Structured tri-model AI Council — fast draft, risk analysis, cross-critique, and consensus",
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.109.0"
@@ -16,8 +16,13 @@
   "contributes": {
     "commands": [
       {
+        "command": "triforge-ai.openPanel",
+        "title": "TriForge AI: Open Council",
+        "category": "TriForge AI"
+      },
+      {
         "command": "triforge-ai.openChat",
-        "title": "TriForge AI: Open Chat",
+        "title": "TriForge AI: Open Council (alias)",
         "category": "TriForge AI"
       },
       {
@@ -57,7 +62,7 @@
       },
       {
         "command": "triforge-ai.exportDebate",
-        "title": "TriForge AI: Export Debate as Markdown",
+        "title": "TriForge AI: Export Council Report as Markdown",
         "category": "TriForge AI"
       }
     ],
@@ -92,7 +97,7 @@
     },
     "keybindings": [
       {
-        "command": "triforge-ai.openChat",
+        "command": "triforge-ai.openPanel",
         "key": "ctrl+shift+t",
         "mac": "cmd+shift+t",
         "when": "!terminalFocus"
