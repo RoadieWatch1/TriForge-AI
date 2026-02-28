@@ -86,6 +86,28 @@ interface CouncilSession {
   viewMode:     'SUMMARY' | 'DEBATE';
 }
 
+// ── Intensity Policy ──────────────────────────────────────────────────────
+
+interface IntensityPolicy {
+  critiquePasses:             number;
+  requireVote:                boolean;
+  requireUnanimousForLowRisk: boolean;
+  forceAlternativeOnDissent:  boolean;
+  applyDoubleConfirm:         boolean;
+  confidenceThreshold:        number;
+}
+
+const INTENSITY_POLICY: Record<IntensityLevel, IntensityPolicy> = {
+  COOPERATIVE: { critiquePasses: 0, requireVote: false, requireUnanimousForLowRisk: false,
+                 forceAlternativeOnDissent: false, applyDoubleConfirm: false, confidenceThreshold: 0  },
+  ANALYTICAL:  { critiquePasses: 1, requireVote: true,  requireUnanimousForLowRisk: false,
+                 forceAlternativeOnDissent: false, applyDoubleConfirm: false, confidenceThreshold: 60 },
+  CRITICAL:    { critiquePasses: 2, requireVote: true,  requireUnanimousForLowRisk: false,
+                 forceAlternativeOnDissent: true,  applyDoubleConfirm: false, confidenceThreshold: 70 },
+  RUTHLESS:    { critiquePasses: 2, requireVote: true,  requireUnanimousForLowRisk: true,
+                 forceAlternativeOnDissent: true,  applyDoubleConfirm: true,  confidenceThreshold: 80 },
+};
+
 // ── TriForgeCouncilPanel ───────────────────────────────────────────────────
 
 export class TriForgeCouncilPanel {
@@ -318,6 +340,9 @@ export class TriForgeCouncilPanel {
               this._deadlockResolve = null;
             }
             break;
+          case 'council:override:apply':
+            if (this._session?.finalCode) { await this._applyCode(this._session.finalCode); }
+            break;
           case 'council:setIntensity':
             if (message.lock) {
               this._intensityState = { mode: 'LOCKED', level: (message.level as IntensityLevel) ?? 'ANALYTICAL' };
@@ -412,6 +437,7 @@ export class TriForgeCouncilPanel {
         if (this._session) { this._session.intensity = this._intensityState.level.toLowerCase(); }
       }
       const effectiveIntensity = this._intensityState.level.toLowerCase();
+      const policy = INTENSITY_POLICY[this._intensityState.level];
 
       // SOLO mode: skip critique (no cross-review possible)
       if (this._councilMode === 'SOLO') {
@@ -429,23 +455,42 @@ export class TriForgeCouncilPanel {
         return;
       }
 
-      // Low-risk fast path (cooperative intensity)
-      if (risk.level === 'LOW' && effectiveIntensity === 'cooperative') {
+      // Policy-driven fast path: no vote required + low risk
+      if (!policy.requireVote && risk.level === 'LOW') {
         this._session.phase = 'COMPLETE';
         this._session.consensus = 'UNANIMOUS';
         this._session.finalCode = draft.code;
         this._send({ type: 'session-complete', consensus: 'UNANIMOUS', finalCode: draft.code, verdicts: [] });
         this._checkLedgerConsent();
+        this._saveLedgerRecord({
+          timestamp: Date.now(), prompt, draftAuthor: draft.provider,
+          councilMode: this._councilMode, riskLevel: risk.level,
+          confidenceInitial: draft.confidence, confidenceFinal: draft.confidence,
+          consensus: 'UNANIMOUS', intensity: effectiveIntensity,
+        });
         return;
       }
 
       // Phase 3: Cross-Critique
-      this._send({ type: 'phase', phase: 'CRITIQUE', message: 'Risk detected. Council review initiated\u2026' });
+      this._send({ type: 'phase', phase: 'CRITIQUE', message: 'Council review initiated\u2026' });
       let verdicts = await this._runCrossCritique(prompt, draft, originalCode, signal);
       if (signal.aborted) { return; }
+
+      // Second critique pass (CRITICAL/RUTHLESS)
+      if (policy.critiquePasses >= 2 && verdicts.length > 0 && !signal.aborted) {
+        this._send({ type: 'phase', phase: 'CRITIQUE', message: 'Second critique pass\u2026' });
+        verdicts = await this._runSecondCritiquePass(prompt, draft, verdicts, originalCode, signal);
+        if (signal.aborted) { return; }
+      }
       this._session.verdicts = verdicts;
 
       let interimConsensus = this._computeConsensus(verdicts);
+
+      // RUTHLESS: critical objection takes priority over deadlock
+      if (this._intensityState.level === 'RUTHLESS' && this._hasCriticalObjection(verdicts)) {
+        await this._handleCriticalObjection(prompt, draft, verdicts, originalCode, signal);
+        return;
+      }
 
       // Deadlock resolution (SPLIT or BLOCKED — SOLO already returned above)
       let deadlockResolution: DeadlockResolution | undefined;
@@ -506,12 +551,15 @@ export class TriForgeCouncilPanel {
         return;
       }
 
-      // Phase 4: Debate (conditional on high intensity or majority dissent)
+      // Phase 4: Debate — trigger on majority dissent OR high intensity OR low confidence
+      const avgConf = verdicts.length
+        ? verdicts.reduce((s, v) => s + v.confidence, 0) / verdicts.length : 100;
       let finalCode = draft.code;
       if (
         verdicts.length >= 2 &&
         (interimConsensus === 'MAJORITY' ||
-         effectiveIntensity === 'critical' || effectiveIntensity === 'ruthless')
+         effectiveIntensity === 'critical' || effectiveIntensity === 'ruthless' ||
+         (policy.confidenceThreshold > 0 && avgConf < policy.confidenceThreshold))
       ) {
         this._send({ type: 'phase', phase: 'DEBATE', message: 'Strategist revising implementation\u2026' });
         const debate = await this._runDebatePipeline(prompt, draft, verdicts, originalCode, signal);
@@ -632,7 +680,7 @@ export class TriForgeCouncilPanel {
     let critics = providers.filter(p => p.name !== draft.provider);
     if (critics.length === 0) { critics = [...providers]; }
 
-    const systemPrompt =
+    const systemPromptBase =
       'You are reviewing code proposed by another AI. Return ONLY valid JSON \u2014 no markdown fences:\n' +
       '{"agrees":true|false,"riskLevel":"LOW"|"MEDIUM"|"HIGH"|"CRITICAL","confidence":0-100,' +
       '"objections":["..."],"suggestedChanges":["..."]}\n' +
@@ -644,6 +692,7 @@ export class TriForgeCouncilPanel {
 
     const results = await Promise.all(critics.map(async (critic): Promise<SeatVerdict | null> => {
       if (this._unavailableProviders.has(critic.name)) { return null; }
+      const systemPrompt = systemPromptBase + this._getProviderDirective(critic.name, this._intensityState.level);
       try {
         const raw = await this._withTimeout(() => critic.chat([
           { role: 'system', content: systemPrompt },
@@ -690,12 +739,15 @@ export class TriForgeCouncilPanel {
 
     const strategist = providers.find(p => p.name === draft.provider) ?? providers[0];
 
+    const strategistDirective = this._getProviderDirective(strategist.name, this._intensityState.level)
+      .replace('challenger', 'strategist').replace('architect', 'strategist');
     const systemPrompt =
       'You are the Strategist revising your implementation based on council feedback.\n' +
       'Return ONLY valid JSON \u2014 no markdown fences:\n' +
       '{"proposal":"...","critique":"...","revision":"...","final":"...",'+
       '"finalCode":"...full revised code...","confidenceInitial":0-100,' +
-      '"confidenceAfterCritique":0-100,"confidenceFinal":0-100}';
+      '"confidenceAfterCritique":0-100,"confidenceFinal":0-100}' +
+      strategistDirective;
 
     try {
       const raw = await strategist.chat([
@@ -771,6 +823,17 @@ export class TriForgeCouncilPanel {
     if (choice !== 'Apply') {
       this._send({ type: 'apply-cancelled' });
       return;
+    }
+    // RUTHLESS: second confirmation modal
+    if (this._intensityState.level === 'RUTHLESS') {
+      const second = await vscode.window.showWarningMessage(
+        `\u26a0 RUTHLESS mode \u2014 final confirmation.\n\nRisk: ${risk}  |  Council: ${this._councilMode}\nThis code passed adversarial scrutiny. Apply anyway?`,
+        { modal: true }, 'Confirm Apply', 'Cancel'
+      );
+      if (second !== 'Confirm Apply') {
+        this._send({ type: 'apply-cancelled' });
+        return;
+      }
     }
     await editor.edit(b => {
       const doc = editor.document;
@@ -923,6 +986,131 @@ export class TriForgeCouncilPanel {
     if (/\.test\.|\.spec\.|__tests__|\.stories\./i.test(filePath)) { return 'Test/story file \u2014 cooperative review.'; }
     if (/\.md$|\.txt$/i.test(filePath)) { return 'Documentation file \u2014 cooperative review.'; }
     return 'Standard analytical review.';
+  }
+
+  // ── Provider Directives ───────────────────────────────────────────────────
+
+  private _getProviderDirective(provider: string, intensity: IntensityLevel): string {
+    if (provider === 'grok') {
+      const m: Record<IntensityLevel, string> = {
+        COOPERATIVE: 'Light edge-case suggestions only. Do not reject.',
+        ANALYTICAL:  'Moderate skepticism. Identify structural weaknesses and flag performance issues.',
+        CRITICAL:    'Actively search for failure cases. Challenge assumptions. Identify scaling risks. Question architectural decisions.',
+        RUTHLESS:    'Assume adversarial conditions. Attempt to break this implementation. Simulate misuse scenarios. Reject if fundamental flaws exist. Provide concrete fixes for every objection.',
+      };
+      return `\nIntensity directive for your role as challenger: ${m[intensity]}`;
+    }
+    if (provider === 'claude') {
+      const m: Record<IntensityLevel, string> = {
+        COOPERATIVE: 'Minimal critique. Accept if generally sound.',
+        ANALYTICAL:  'Moderate architectural depth. Flag structural concerns and maintainability issues.',
+        CRITICAL:    'Deep multi-layer structural and scalability analysis. Long-term maintainability focus.',
+        RUTHLESS:    'Maximum reasoning depth. Model long-term scaling and systemic risk. Remain calm and precise.',
+      };
+      return `\nIntensity directive for your role as architect: ${m[intensity]}`;
+    }
+    return '\nProvide balanced, structured engineering review.';
+  }
+
+  // ── Second Critique Pass ──────────────────────────────────────────────────
+
+  private async _runSecondCritiquePass(
+    prompt: string, draft: DraftResult, firstVerdicts: SeatVerdict[], originalCode: string, signal: AbortSignal
+  ): Promise<SeatVerdict[]> {
+    const providers = await this._providerManager.getActiveProviders();
+    let critics = providers.filter(p => p.name !== draft.provider);
+    if (critics.length === 0) { critics = [...providers]; }
+
+    const firstVerdictSummary = firstVerdicts.map(v =>
+      `${v.provider}: ${v.agrees ? 'AGREE' : 'DISAGREE'} (${v.confidence}%)${v.objections.length ? ' — ' + v.objections.slice(0, 2).join('; ') : ''}`
+    ).join('\n');
+
+    const systemPrompt =
+      'You are reviewing code in a second critique pass. The council has already provided first-pass verdicts.\n' +
+      'Return ONLY valid JSON \u2014 no markdown fences:\n' +
+      '{"agrees":true|false,"riskLevel":"LOW"|"MEDIUM"|"HIGH"|"CRITICAL","confidence":0-100,' +
+      '"objections":["..."],"suggestedChanges":["..."]}\n' +
+      'Refine your analysis based on the collective first-pass findings.';
+
+    const userMessage =
+      `Original task: ${prompt}\n\nProposed implementation:\n\`\`\`\n${draft.code}\n\`\`\`\n\n` +
+      `Original code:\n${originalCode || '(new implementation)'}\n\n` +
+      `First-pass council verdicts:\n${firstVerdictSummary}\n\n` +
+      'Provide your final verdict accounting for the council\'s prior analysis.';
+
+    const results = await Promise.all(critics.map(async (critic): Promise<SeatVerdict | null> => {
+      if (this._unavailableProviders.has(critic.name)) { return null; }
+      const directive = this._getProviderDirective(critic.name, this._intensityState.level);
+      const sp = systemPrompt + directive;
+      try {
+        const raw = await this._withTimeout(() => critic.chat([
+          { role: 'system', content: sp },
+          { role: 'user', content: userMessage },
+        ] as any, signal), critic.name, signal);
+        if (raw === null) { return null; }
+        const parsed = this._parseJson<{
+          agrees: boolean; riskLevel: string; confidence: number;
+          objections: string[]; suggestedChanges: string[];
+        }>(raw);
+        const verdict: SeatVerdict = {
+          provider:         critic.name,
+          agrees:           typeof parsed.agrees === 'boolean' ? parsed.agrees : true,
+          riskLevel:        (parsed.riskLevel as RiskLevel) ?? 'MEDIUM',
+          confidence:       typeof parsed.confidence === 'number' ? parsed.confidence : 70,
+          objections:       Array.isArray(parsed.objections) ? parsed.objections : [],
+          suggestedChanges: Array.isArray(parsed.suggestedChanges) ? parsed.suggestedChanges : [],
+        };
+        this._send({ type: 'verdict', verdict });
+        return verdict;
+      } catch (err: any) {
+        if (signal.aborted) { throw err; }
+        return null;
+      }
+    }));
+    const filtered = results.filter((v): v is SeatVerdict => v !== null);
+    return filtered.length > 0 ? filtered : firstVerdicts;
+  }
+
+  // ── Critical Objection (RUTHLESS) ─────────────────────────────────────────
+
+  private _hasCriticalObjection(verdicts: SeatVerdict[]): boolean {
+    return verdicts.some(v => !v.agrees || v.riskLevel === 'CRITICAL');
+  }
+
+  private async _handleCriticalObjection(
+    prompt: string, draft: DraftResult, verdicts: SeatVerdict[], originalCode: string, signal: AbortSignal
+  ): Promise<void> {
+    const objector = verdicts.find(v => !v.agrees || v.riskLevel === 'CRITICAL');
+    const objectionSummary = objector?.objections?.slice(0, 3).join('; ') ?? 'Critical risk detected in implementation.';
+    const versions: VersionCandidate[] = [{ provider: draft.provider, code: draft.code, reasoning: draft.reasoning }];
+    for (const v of verdicts.filter(v2 => !v2.agrees)) {
+      const alt = await this._generateAlternativeQuiet(v.provider, prompt, draft.code, originalCode, signal);
+      if (alt) { versions.push(alt); }
+    }
+    if (signal.aborted) { return; }
+    this._send({ type: 'critical-objection', objector: objector?.provider ?? '', objectionSummary, versions });
+    const resolution = await this._waitForDeadlockResolution(signal);
+    if (signal.aborted) { return; }
+    let finalCode = draft.code;
+    const userOverride = resolution.action === 'USER_DECIDES';
+    if (resolution.action === 'USER_DECIDES') {
+      finalCode = versions.find(v => v.provider === resolution.selectedVersion)?.code ?? draft.code;
+    } else if (resolution.action === 'SYNTHESIS') {
+      finalCode = await this._runForceSynthesis(prompt, versions, signal);
+    } else if (resolution.action === 'EXTENDED_DEBATE') {
+      finalCode = await this._runExtendedDebate(prompt, versions, signal);
+    }
+    if (signal.aborted) { return; }
+    if (this._session) { this._session.finalCode = finalCode; this._session.consensus = 'MAJORITY'; }
+    this._send({ type: 'session-complete', consensus: 'MAJORITY', finalCode, verdicts });
+    this._checkLedgerConsent();
+    this._saveLedgerRecord({
+      timestamp: Date.now(), prompt, draftAuthor: draft.provider,
+      councilMode: this._councilMode, riskLevel: this._session?.risk?.level ?? 'HIGH',
+      confidenceInitial: draft.confidence, confidenceFinal: draft.confidence,
+      consensus: 'MAJORITY', intensity: this._intensityState.level.toLowerCase(),
+      deadlockResolution: resolution.action, userOverride,
+    });
   }
 
   // ── Deadlock resolution ───────────────────────────────────────────────────
@@ -1324,6 +1512,36 @@ export class TriForgeCouncilPanel {
   .vnode.offline .vn-core { stroke-dasharray: 4 3; fill: rgba(255,255,255,0.01); stroke: rgba(255,255,255,0.15); opacity: 0.3; }
   .vnode.offline .vn-lbl  { fill: rgba(255,255,255,0.2); opacity: 0.3; }
 
+  /* New node states */
+  .vnode.analyzing .vn-halo { fill-opacity:0.15; stroke-opacity:0.6; animation:hp 0.6s ease-in-out infinite; }
+  .vnode.analyzing .vn-core { fill:rgba(99,102,241,0.18); stroke:#818cf8; }
+  .vnode.analyzing .vn-lbl  { fill:#c4b5fd; }
+  .vnode.challenging .vn-halo { fill-opacity:0.2; stroke-opacity:0.7; animation:hp 0.4s ease-in-out infinite; }
+  .vnode.challenging .vn-core { fill:rgba(245,158,11,0.18); stroke:#f59e0b; }
+  .vnode.challenging .vn-lbl  { fill:#fbbf24; }
+  .vnode.voting .vn-halo { fill-opacity:0.12; stroke-opacity:0.5; animation:hp 1.2s ease-in-out infinite; }
+  .vnode.voting .vn-core { fill:rgba(59,130,246,0.14); stroke:#3b82f6; }
+  .vnode.voting .vn-lbl  { fill:#60a5fa; }
+  .vnode.synthesizing .vn-halo { fill-opacity:0.18; stroke-opacity:0.65; animation:hp 0.8s ease-in-out infinite; }
+  .vnode.synthesizing .vn-core { fill:rgba(234,179,8,0.14); stroke:#eab308; }
+  .vnode.synthesizing .vn-lbl  { fill:#facc15; }
+
+  /* Depth activation */
+  #s-viz { transition: box-shadow 220ms cubic-bezier(0.4,0,0.2,1); }
+  #s-viz.depth-active { box-shadow: 0 6px 28px rgba(0,0,0,0.4), 0 2px 8px rgba(99,102,241,0.12); }
+  .vnode { transition: transform 220ms cubic-bezier(0.4,0,0.2,1), filter 220ms cubic-bezier(0.4,0,0.2,1); }
+  .vnode.depth-on { transform: translateY(-4px) scale(1.02); filter: drop-shadow(0 4px 10px rgba(0,0,0,0.45)); }
+  body.ruthless-active .vnode.depth-on { transform: translateY(-6px) scale(1.03); }
+
+  /* Critical objection section */
+  .cobj-who { font-size:12px; font-weight:700; color:#ef4444; margin-bottom:5px; }
+  .cobj-summary {
+    font-size:12px; color:rgba(255,255,255,0.55); background:rgba(239,68,68,0.05);
+    border-left:2px solid rgba(239,68,68,0.4); padding:6px 10px; border-radius:0 4px 4px 0; margin-bottom:8px;
+  }
+  .dopt-danger:hover { background:rgba(239,68,68,0.1) !important; border-color:rgba(239,68,68,0.4) !important; }
+  #s-critical-obj .sh { color:#ef4444; }
+
   /* Council mode badge */
   .badge.cm-full    { background: rgba(16,185,129,0.12); color: #10b981; border-color: rgba(16,185,129,0.35); }
   .badge.cm-partial { background: rgba(245,158,11,0.12); color: #f59e0b; border-color: rgba(245,158,11,0.35); }
@@ -1562,6 +1780,33 @@ export class TriForgeCouncilPanel {
       </div>
     </div>
 
+    <!-- Critical Objection (RUTHLESS) -->
+    <div class="sec hidden" id="s-critical-obj">
+      <div class="sh">&#x1F6A8; Critical Objection Raised<div class="meta"><span class="badge r-crit">CRITICAL</span></div></div>
+      <div class="sc">
+        <div id="cobj-who" class="cobj-who"></div>
+        <div id="cobj-summary" class="cobj-summary"></div>
+        <div class="deadlock-opts">
+          <button class="dopt-btn" id="btn-co-alt">
+            <span class="dopt-icon">&#x1F504;</span>
+            <div class="dopt-text"><div class="dopt-title">Require Alternative</div><div class="dopt-desc">Request new implementation from dissenting AI</div></div>
+          </button>
+          <button class="dopt-btn dopt-danger" id="btn-co-override">
+            <span class="dopt-icon">&#x26A0;</span>
+            <div class="dopt-text"><div class="dopt-title">Override &amp; Apply</div><div class="dopt-desc">Double confirmation required. Logged as override.</div></div>
+          </button>
+          <button class="dopt-btn" id="btn-co-debate">
+            <span class="dopt-icon">&#x1F525;</span>
+            <div class="dopt-text"><div class="dopt-title">Extended Debate</div><div class="dopt-desc">All AIs must address dissent explicitly</div></div>
+          </button>
+          <button class="dopt-btn" id="btn-co-synth">
+            <span class="dopt-icon">&#x1F9EC;</span>
+            <div class="dopt-text"><div class="dopt-title">Force Synthesis</div><div class="dopt-desc">Merge best elements of competing implementations</div></div>
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- Synthesis note -->
     <div class="sec hidden" id="s-synth-note">
       <div class="sh">Synthesis Rationale</div>
@@ -1575,6 +1820,7 @@ export class TriForgeCouncilPanel {
         <div class="krow"><label>OpenAI</label><input type="password" id="k-openai" placeholder="sk-..."/><button class="btn-s" onclick="saveKey('openai')">Save</button><button class="btn-d" onclick="rmKey('openai')">Remove</button></div>
         <div class="krow"><label>Claude</label><input type="password" id="k-claude" placeholder="sk-ant-..."/><button class="btn-s" onclick="saveKey('claude')">Save</button><button class="btn-d" onclick="rmKey('claude')">Remove</button></div>
         <div class="krow"><label>Grok</label><input type="password" id="k-grok" placeholder="xai-..."/><button class="btn-s" onclick="saveKey('grok')">Save</button><button class="btn-d" onclick="rmKey('grok')">Remove</button></div>
+        <div class="krow"><label>Audio</label><button class="ibtn on" id="btn-audio" onclick="toggleAudio()">On</button></div>
       </div>
     </div>
   </main>
@@ -1587,7 +1833,7 @@ const vs = acquireVsCodeApi();
 function send(cmd, d){ vs.postMessage(Object.assign({command:cmd}, d||{})); }
 
 // State
-const S = { phase:'IDLE', intensity:'adaptive', providers:{}, debOpen:false, running:false, councilMode:'FULL', dlVersions:[] };
+const S = { phase:'IDLE', intensity:'adaptive', providers:{}, debOpen:false, running:false, councilMode:'FULL', dlVersions:[], audioEnabled:true };
 const PH_ORD = ['DRAFTING','RISK_CHECK','CRITIQUE','DEBATE','COMPLETE'];
 
 // DOM
@@ -1629,8 +1875,8 @@ function setNode(prov, state){
   const nid='vn-'+(prov==='openai'?'gpt':prov);
   const bid='bm-'+(prov==='openai'?'gpt':prov);
   const n=$(nid), b=$(bid);
-  if(n){ n.classList.remove('drafting','reviewing','agreed','disagreed','offline'); if(state){ n.classList.add(state); } }
-  if(b){ b.classList.remove('fl'); if(state==='drafting'||state==='reviewing'){ b.classList.add('fl'); } }
+  if(n){ n.classList.remove('drafting','reviewing','agreed','disagreed','offline','analyzing','challenging','voting','synthesizing'); if(state){ n.classList.add(state); } }
+  if(b){ b.classList.remove('fl'); if(state==='drafting'||state==='reviewing'||state==='analyzing'||state==='voting'){ b.classList.add('fl'); } }
 }
 function setForge(st){
   const f=$('vn-forge');
@@ -1641,7 +1887,7 @@ function setForge(st){
 function resetNodes(){
   ['claude','gpt','grok'].forEach(function(p){
     const n=$('vn-'+p), b=$('bm-'+p);
-    if(n){ n.classList.remove('drafting','reviewing','agreed','disagreed','offline'); }
+    if(n){ n.classList.remove('drafting','reviewing','agreed','disagreed','offline','analyzing','challenging','voting','synthesizing'); }
     if(b){ b.classList.remove('fl'); }
   });
   setForge(null);
@@ -1652,10 +1898,15 @@ function onPhase(d){
   S.phase=d.phase;
   if(d.message){ txt('pmsg', d.message); }
 
-  if(d.phase==='IDLE'||d.phase==='BYPASSED'){
+  if(d.phase==='IDLE'||d.phase==='BYPASSED'||d.phase==='COMPLETE'){
     S.running=false;
-    show('s-input'); hide('s-phase');
-    resetNodes();
+    const viz=$('s-viz'); if(viz){ viz.classList.remove('depth-active'); }
+    ['claude','gpt','grok'].forEach(function(p){ const n=$('vn-'+p); if(n){ n.classList.remove('depth-on'); } });
+    document.body.classList.remove('ruthless-active');
+    if(d.phase!=='COMPLETE'){
+      show('s-input'); hide('s-phase');
+      resetNodes();
+    }
     if(d.phase==='BYPASSED'){ const b=$('bypass-b'); if(b){ b.style.display='block'; } }
     return;
   }
@@ -1665,13 +1916,21 @@ function onPhase(d){
   show('s-viz'); show('s-phase');
   updSteps(d.phase);
 
+  // Depth activation during cognition
+  const viz=$('s-viz'); if(viz){ viz.classList.add('depth-active'); }
+  ['openai','claude','grok'].forEach(function(p){ if(S.providers[p]){ const nid='vn-'+(p==='openai'?'gpt':p); const n=$(nid); if(n){ n.classList.add('depth-on'); } } });
+  if(S.intensity==='ruthless'){ document.body.classList.add('ruthless-active'); }
+
   if(d.phase==='DRAFTING'){
     resetNodes();
     const prim=S.providers['grok']?'grok':S.providers['openai']?'openai':'claude';
     setNode(prim,'drafting');
+    // Re-apply depth after reset
+    ['openai','claude','grok'].forEach(function(p){ if(S.providers[p]){ const nid='vn-'+(p==='openai'?'gpt':p); const n=$(nid); if(n){ n.classList.add('depth-on'); } } });
   } else if(d.phase==='CRITIQUE'){
-    ['openai','claude','grok'].forEach(function(p){ if(S.providers[p]){ setNode(p,'reviewing'); } });
+    ['openai','claude','grok'].forEach(function(p){ if(S.providers[p]){ setNode(p,'analyzing'); } });
   } else if(d.phase==='DEBATE'){
+    ['openai','claude','grok'].forEach(function(p){ if(S.providers[p]){ setNode(p,'voting'); } });
     setForge('forge-pulse');
   }
 }
@@ -1708,7 +1967,12 @@ function onRisk(r){
 // Verdict handler
 function onVerdict(v){
   show('s-agree');
-  setNode(v.provider, v.agrees?'agreed':'disagreed');
+  if(!v.agrees){
+    setNode(v.provider,'challenging');
+    setTimeout(function(){ setNode(v.provider,'disagreed'); }, 400);
+  } else {
+    setNode(v.provider,'agreed');
+  }
   const vc=$('vcards'); if(!vc){ return; }
   const card=document.createElement('div');
   card.className='vcard '+(v.agrees?'ag':'dis');
@@ -1747,9 +2011,13 @@ function onDebate(db){
 function onComplete(d){
   S.running=false; S.phase='COMPLETE';
   updSteps('COMPLETE');
+  const viz=$('s-viz'); if(viz){ viz.classList.remove('depth-active'); }
+  ['claude','gpt','grok'].forEach(function(p){ const n=$('vn-'+p); if(n){ n.classList.remove('depth-on'); } });
+  document.body.classList.remove('ruthless-active');
   if(d.consensus==='UNANIMOUS'){
     setForge('forge-unani');
     ['openai','claude','grok'].forEach(function(p){ if(S.providers[p]){ setNode(p,'agreed'); } });
+    playConsensusTone();
   } else if(d.consensus==='SPLIT'||d.consensus==='BLOCKED'){
     setForge('forge-split');
   } else { setForge(null); }
@@ -1828,11 +2096,52 @@ function onDeadlock(d){
 function onSynthesisReady(d){
   txt('synth-rationale', d.rationale||'');
   show('s-synth-note');
+  ['openai','claude','grok'].forEach(function(p){ if(S.providers[p]){ setNode(p,'synthesizing'); } });
+  setTimeout(function(){ ['openai','claude','grok'].forEach(function(p){ if(S.providers[p]){ setNode(p,'reviewing'); } }); }, 1500);
+  playConsensusTone();
 }
 
 // Apply cancelled
 function onApplyCancelled(){
   toast('Patch not applied.', false);
+}
+
+// Critical objection handler
+function onCriticalObjection(d){
+  txt('cobj-who', pLbl(d.objector)+' has raised a critical objection.');
+  txt('cobj-summary', d.objectionSummary||'Implementation rejected due to critical risk.');
+  S.dlVersions=d.versions||[];
+  hide('s-phase'); show('s-critical-obj');
+  setForge('forge-split');
+}
+
+// Web Audio API — consensus tone (no external file)
+const AudioCtx = window.AudioContext || window.webkitAudioContext;
+let _audioCtx = null, _lastToneAt = 0;
+const TONE_PARAMS = {
+  adaptive:   {freq:740, detune:0,  gain:0.10, dur:0.28},
+  cooperative:{freq:880, detune:-5, gain:0.07, dur:0.22},
+  analytical: {freq:740, detune:-3, gain:0.10, dur:0.28},
+  critical:   {freq:622, detune:0,  gain:0.12, dur:0.30},
+  ruthless:   {freq:523, detune:5,  gain:0.13, dur:0.32},
+};
+function playConsensusTone(){
+  if(!S.audioEnabled){ return; }
+  const now=Date.now(); if(now-_lastToneAt<1500){ return; } _lastToneAt=now;
+  try{
+    if(!_audioCtx){ _audioCtx=new AudioCtx(); }
+    if(_audioCtx.state==='suspended'){ _audioCtx.resume(); }
+    const p=TONE_PARAMS[S.intensity]||TONE_PARAMS.analytical;
+    const osc=_audioCtx.createOscillator(), gain=_audioCtx.createGain();
+    osc.type='sine';
+    osc.frequency.setValueAtTime(p.freq,_audioCtx.currentTime);
+    osc.frequency.linearRampToValueAtTime(p.freq+p.detune,_audioCtx.currentTime+p.dur);
+    gain.gain.setValueAtTime(0,_audioCtx.currentTime);
+    gain.gain.linearRampToValueAtTime(p.gain,_audioCtx.currentTime+0.04);
+    gain.gain.exponentialRampToValueAtTime(0.001,_audioCtx.currentTime+p.dur);
+    osc.connect(gain); gain.connect(_audioCtx.destination);
+    osc.start(); osc.stop(_audioCtx.currentTime+p.dur+0.05);
+  }catch(e){}
 }
 
 // Toast
@@ -1847,7 +2156,7 @@ function toast(msg, ok){
 // Reset
 function reset(){
   S.phase='IDLE'; S.running=false; S.debOpen=false; S.dlVersions=[];
-  ['s-viz','s-phase','s-draft','s-risk','s-agree','s-result','s-debate','s-alt','s-deadlock','s-synth-note'].forEach(hide);
+  ['s-viz','s-phase','s-draft','s-risk','s-agree','s-result','s-debate','s-alt','s-deadlock','s-synth-note','s-critical-obj'].forEach(hide);
   show('s-input');
   resetNodes();
   const vc=$('vcards'); if(vc){ vc.innerHTML=''; }
@@ -1858,6 +2167,10 @@ function reset(){
   const cmb=$('cm-badge'); if(cmb){ cmb.classList.add('hidden'); }
   // Reset deadlock buttons
   const dlub=$('btn-dl-user'); if(dlub){ dlub.textContent='\u{1F9D1} User Breaks Tie\u2026'; dlub.disabled=false; }
+  // Reset depth classes
+  const rviz=$('s-viz'); if(rviz){ rviz.classList.remove('depth-active'); }
+  document.body.classList.remove('ruthless-active');
+  ['claude','gpt','grok'].forEach(function(p){ const n=$('vn-'+p); if(n){ n.classList.remove('depth-on'); } });
 }
 
 // Message listener
@@ -1880,6 +2193,7 @@ window.addEventListener('message', function(e){
     case 'intensity-resolved': onIntensityResolved(d); break;
     case 'deadlock':          onDeadlock(d); break;
     case 'synthesis-ready':   onSynthesisReady(d); break;
+    case 'critical-objection': onCriticalObjection(d); break;
     case 'escalated':
       S.intensity=d.intensity;
       document.querySelectorAll('.ibtn').forEach(function(b){ b.classList.toggle('on', b.dataset.i===d.intensity); });
@@ -1971,11 +2285,40 @@ $('btn-dl-extended')&&$('btn-dl-extended').addEventListener('click',function(){
   hide('s-deadlock'); show('s-phase'); send('council:deadlock:extended');
 });
 
+// Critical objection button bindings
+$('btn-co-alt')&&$('btn-co-alt').addEventListener('click',function(){
+  hide('s-critical-obj');
+  // Populate deadlock version cards from stored versions
+  const vc=$('version-cards');
+  if(vc && S.dlVersions.length){
+    vc.innerHTML='';
+    S.dlVersions.forEach(function(v,i){
+      const lbl=String.fromCharCode(65+i);
+      const card=document.createElement('div'); card.className='vc-card';
+      card.innerHTML='<div class="vc-header">'+
+        '<span class="badge '+pCls(v.provider)+'">'+esc(pLbl(v.provider))+'</span>'+
+        '<span style="font-size:11px;color:rgba(255,255,255,0.4);">Version '+esc(lbl)+'</span>'+
+        '<span style="font-size:11px;color:rgba(255,255,255,0.45);flex:1;">'+esc(v.reasoning)+'</span>'+
+        '<button class="btn-s" style="font-size:11px;padding:3px 9px;" onclick="selectVersion(\''+esc(v.provider)+'\')">Select</button>'+
+        '</div><div class="vc-code">'+esc((v.code||'').slice(0,200))+'</div>';
+      vc.appendChild(card);
+    });
+    vc.classList.remove('hidden'); vc.style.display='flex';
+  }
+  const dlub=$('btn-dl-user'); if(dlub){ dlub.textContent='Select a version below\u2026'; dlub.disabled=true; }
+  show('s-deadlock');
+  send('council:deadlock:user');
+});
+$('btn-co-override')&&$('btn-co-override').addEventListener('click',function(){ hide('s-critical-obj'); send('council:override:apply'); });
+$('btn-co-debate')&&$('btn-co-debate').addEventListener('click',function(){ hide('s-critical-obj'); show('s-phase'); send('council:deadlock:extended'); });
+$('btn-co-synth')&&$('btn-co-synth').addEventListener('click',function(){ hide('s-critical-obj'); show('s-phase'); send('council:deadlock:synthesis'); });
+
 // Global functions
 window.saveKey=function(p){ const inp=$('k-'+p); if(!inp||!inp.value.trim()){ return; } send('setApiKey',{provider:p,key:inp.value.trim()}); inp.value=''; toast('\\u2713 '+pLbl(p)+' key saved.', true); };
 window.rmKey=function(p){ send('removeApiKey',{provider:p}); };
 window.reqAlt=function(p){ send('council:requestAlt',{provider:p}); };
 window.selectVersion=function(p){ hide('s-deadlock'); show('s-phase'); send('council:selectVersion',{provider:p}); };
+window.toggleAudio=function(){ S.audioEnabled=!S.audioEnabled; const b=$('btn-audio'); if(b){ b.textContent=S.audioEnabled?'On':'Off'; b.classList.toggle('on',S.audioEnabled); } };
 
 // Init
 send('getProviders');
