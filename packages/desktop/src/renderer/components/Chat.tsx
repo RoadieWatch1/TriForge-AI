@@ -450,7 +450,12 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
                 onRetry={msg.isError && msg.role === 'assistant' ? () => {
                   const prev = messages[messages.indexOf(msg) - 1];
                   if (prev?.role === 'user') sendMessage(prev.content, msg.id);
-                } : undefined} />
+                } : undefined}
+                onRunAction={(action) => {
+                  if (action === 'find_photos') runFindPhotos();
+                  else if (action === 'organize') runOrganizeDownloads();
+                  else if (action === 'print') runPickAndPrint();
+                }} />
         ))}
         {(sending || consensusThinking) && (
           consensusThinking
@@ -696,11 +701,22 @@ function ForgeRow({ icon, label, text }: { icon: string; label: string; text: st
   );
 }
 
+// ── RUN tag parser ────────────────────────────────────────────────────────────
+
+const RUN_TAG_RE = /\[RUN:(find_photos|organize|print)\]/i;
+
+const RUN_LABELS: Record<string, string> = {
+  find_photos: 'Scan for Photos',
+  organize:    'Organize Files',
+  print:       'Choose File & Print',
+};
+
 // ── Regular MessageBubble ─────────────────────────────────────────────────────
 
-function MessageBubble({ msg, isSpeaking, canSpeak, onSpeak, onRetry }: {
+function MessageBubble({ msg, isSpeaking, canSpeak, onSpeak, onRetry, onRunAction }: {
   msg: Message; isSpeaking: boolean; canSpeak: boolean; onSpeak: () => void;
   onRetry?: () => void;
+  onRunAction?: (action: string) => void;
 }) {
   const isUser = msg.role === 'user';
   const isSystem = msg.role === 'system';
@@ -713,11 +729,24 @@ function MessageBubble({ msg, isSpeaking, canSpeak, onSpeak, onRetry }: {
     );
   }
 
+  // Strip [RUN:xxx] tag from displayed text and capture the action
+  const runMatch = !isUser ? RUN_TAG_RE.exec(msg.content) : null;
+  const displayContent = runMatch ? msg.content.replace(runMatch[0], '').trimEnd() : msg.content;
+  const runAction = runMatch ? runMatch[1].toLowerCase() : null;
+
   return (
     <div style={{ ...cs.bubbleRow, ...(isUser ? cs.bubbleRowUser : {}) }}>
       {!isUser && <div style={cs.avatar}>⚡</div>}
       <div style={{ ...cs.bubble, ...(isUser ? cs.bubbleUser : cs.bubbleAi), ...(msg.isError ? cs.bubbleError : {}) }}>
-        <div style={cs.bubbleContent}>{msg.content}</div>
+        <div style={cs.bubbleContent}>{displayContent}</div>
+        {runAction && onRunAction && (
+          <button
+            style={cs.runActionBtn}
+            onClick={() => onRunAction(runAction)}
+          >
+            ▶ {RUN_LABELS[runAction] ?? 'Run'}
+          </button>
+        )}
         <div style={cs.bubbleMeta}>
           {msg.provider && (
             <span style={{ ...cs.providerTag, color: PROVIDER_COLORS[msg.provider.toLowerCase()] ?? 'var(--text-muted)' }}>
@@ -842,6 +871,7 @@ const cs: Record<string, React.CSSProperties> = {
   speakBtn: { fontSize: 12, background: 'none', border: 'none', cursor: 'pointer', opacity: 0.5, padding: '0 2px' },
   speakBtnActive: { opacity: 1 },
   retryBtn: { fontSize: 11, background: 'none', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--accent)', padding: '2px 8px', cursor: 'pointer' },
+  runActionBtn: { display: 'inline-block', marginTop: 10, padding: '7px 16px', fontSize: 13, fontWeight: 600, background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer' },
 
   typingDots: { display: 'flex', gap: 4, alignItems: 'center' },
   // Consensus card

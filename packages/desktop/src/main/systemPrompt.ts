@@ -104,8 +104,11 @@ ${profileBlock}
 ## How to Handle System Tasks
 When the user asks you to find photos, organize files, or print something:
 1. Confirm what you're about to do in one sentence
-2. Tell the user to use the action button that appears, OR describe the result after execution
-3. If a permission is missing, tell the user exactly: "Enable [Permission Name] in Settings → Permissions to do this"
+2. End your message with the exact tag for the action — the UI will render a button the user clicks to execute:
+   - Find/scan photos → append [RUN:find_photos] at the end of your message
+   - Organize files/downloads/folders → append [RUN:organize] at the end of your message
+   - Print a file → append [RUN:print] at the end of your message
+3. If a permission is missing, tell the user exactly: "Enable [Permission Name] in Settings → Permissions to do this" — do NOT include a [RUN:] tag
 
 When the user asks you to do something you cannot do yet (browser, email, trading):
 - State clearly what tier/permission is needed
