@@ -398,6 +398,25 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     } catch { addSystemMsg('Could not complete deep organization.'); }
   };
 
+  // Auto-organize a known system folder (no folder picker — path resolved on main process side)
+  const runOrganizeKnownDir = async (dirKey: 'Desktop' | 'Downloads' | 'Documents') => {
+    try {
+      const dirs = await window.triforge.files.commonDirs();
+      const dirPath = dirs[dirKey];
+      if (!dirPath) { addSystemMsg(`Could not locate your ${dirKey} folder.`); return; }
+      addSystemMsg(`Organizing ${dirKey} (${dirPath})…`);
+      const result = await window.triforge.files.organize(dirPath);
+      if (result.errors.some(e => e.includes('PERMISSION_DENIED'))) {
+        addSystemMsg('Files permission is off. Enable Files & Folders in Settings → Permissions.'); return;
+      }
+      if (result.moved === 0) {
+        addSystemMsg(`${dirKey} is already sorted — no loose files matching known categories were found.`); return;
+      }
+      const folders = result.folders.map(f => f.split(/[\\/]/).pop()).join(', ');
+      addSystemMsg(`${dirKey} organized: moved ${result.moved} file${result.moved > 1 ? 's' : ''} into ${folders || 'category sub-folders'}.${result.errors.length ? ` ${result.errors.length} file(s) skipped.` : ''}`);
+    } catch { addSystemMsg(`Could not organize your ${dirKey} folder.`); }
+  };
+
   const runSearchPhotos = async (query?: string) => {
     const q = query ?? prompt('Search photos by name or keyword:');
     if (!q?.trim()) return;
@@ -552,12 +571,15 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
                   if (prev?.role === 'user') sendMessage(prev.content, msg.id);
                 } : undefined}
                 onRunAction={(action) => {
-                  if (action === 'find_photos')    runFindPhotos();
-                  else if (action === 'organize')       runOrganizeDownloads();
-                  else if (action === 'organize_deep')  runOrganizeDeep();
-                  else if (action === 'search_photos')  runSearchPhotos();
-                  else if (action === 'find_similar')   runFindSimilar();
-                  else if (action === 'print')          runPickAndPrint();
+                  if (action === 'find_photos')           runFindPhotos();
+                  else if (action === 'organize')              runOrganizeDownloads();
+                  else if (action === 'organize_deep')         runOrganizeDeep();
+                  else if (action === 'organize_desktop')      runOrganizeKnownDir('Desktop');
+                  else if (action === 'organize_downloads')    runOrganizeKnownDir('Downloads');
+                  else if (action === 'organize_documents')    runOrganizeKnownDir('Documents');
+                  else if (action === 'search_photos')         runSearchPhotos();
+                  else if (action === 'find_similar')          runFindSimilar();
+                  else if (action === 'print')                 runPickAndPrint();
                 }} />
         ))}
         {(sending || consensusThinking) && (
@@ -845,15 +867,18 @@ function ForgeRow({ icon, label, text }: { icon: string; label: string; text: st
 
 // ── RUN tag parser ────────────────────────────────────────────────────────────
 
-const RUN_TAG_RE = /\[RUN:(find_photos|organize|organize_deep|search_photos|find_similar|print)\]/i;
+const RUN_TAG_RE = /\[RUN:(find_photos|organize|organize_deep|organize_desktop|organize_downloads|organize_documents|search_photos|find_similar|print)\]/i;
 
 const RUN_LABELS: Record<string, string> = {
-  find_photos:    'Scan for Photos',
-  organize:       'Organize Folder',
-  organize_deep:  'Deep Organize (All Sub-folders)',
-  search_photos:  'Search Photos by Name',
-  find_similar:   'Find Similar Photos',
-  print:          'Choose File & Print',
+  find_photos:          'Scan for Photos',
+  organize:             'Organize Folder…',
+  organize_deep:        'Deep Organize (All Sub-folders)…',
+  organize_desktop:     'Organize Desktop Now',
+  organize_downloads:   'Organize Downloads Now',
+  organize_documents:   'Organize Documents Now',
+  search_photos:        'Search Photos by Name',
+  find_similar:         'Find Similar Photos',
+  print:                'Choose File & Print',
 };
 
 // ── Photo Results Grid ────────────────────────────────────────────────────────

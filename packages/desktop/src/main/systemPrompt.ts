@@ -36,10 +36,15 @@ export async function buildSystemPrompt(store: Store): Promise<string> {
       '• PHOTO FINDER — scans the user\'s computer (Pictures, Desktop, Downloads, OneDrive) and returns all photos sorted by date → append [RUN:find_photos]',
       '• PHOTO SEARCH — searches every known photo location for photos matching a keyword or name → append [RUN:search_photos]',
       '• SIMILAR PHOTO FINDER — user picks a reference photo; finds all photos from the same session or with similar names/dates → append [RUN:find_similar]',
-      '• FILE ORGANIZER — organizes a chosen folder (top level) into Photos / Videos / Music / Documents / Archives → append [RUN:organize]',
+      '• FILE ORGANIZER (known folder, no prompt) — instantly organizes a standard system folder without asking the user to pick:',
+      '    - Desktop → append [RUN:organize_desktop]',
+      '    - Downloads → append [RUN:organize_downloads]',
+      '    - Documents → append [RUN:organize_documents]',
+      '• FILE ORGANIZER (custom folder) — user picks the folder via dialog → append [RUN:organize]',
       '• DEEP FILE ORGANIZER — recursively organizes an entire directory tree, pulling all nested files into root-level category folders → append [RUN:organize_deep]',
       '• FILE BROWSER — lists any directory the user specifies',
       '• FILE OPENER — opens any file in its default application',
+      'IMPORTANT: When the user mentions Desktop, Downloads, or Documents specifically, always use the matching [RUN:organize_desktop], [RUN:organize_downloads], or [RUN:organize_documents] tag — never [RUN:organize] for these known folders.',
     );
   }
   if (hasPrinter) {
@@ -121,9 +126,12 @@ ${profileBlock}
 When the user asks you to find photos, organize files, or print something:
 1. Confirm what you're about to do in one sentence
 2. End your message with the exact tag for the action — the UI will render a button the user clicks to execute:
-   - Find/scan photos → append [RUN:find_photos] at the end of your message
-   - Organize files/downloads/folders → append [RUN:organize] at the end of your message
-   - Print a file → append [RUN:print] at the end of your message
+   - Find/scan photos → append [RUN:find_photos]
+   - Organize Desktop → append [RUN:organize_desktop]
+   - Organize Downloads → append [RUN:organize_downloads]
+   - Organize Documents → append [RUN:organize_documents]
+   - Organize a custom/other folder (user picks it) → append [RUN:organize]
+   - Print a file → append [RUN:print]
 3. If a permission is missing, tell the user exactly: "Enable [Permission Name] in Settings → Permissions to do this" — do NOT include a [RUN:] tag
 
 When the user asks you to do something you cannot do yet (browser, email, trading):
