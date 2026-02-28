@@ -209,23 +209,7 @@ export function ForgeProfiles({ tier, activeProfileId, onProfileChange, onSendTo
         <div style={ps.errorBanner}>{error}</div>
       )}
 
-      {/* Active profile panel */}
-      {activeProfile && (
-        <ActivePanel
-          profile={activeProfile}
-          blueprintLoading={blueprintLoading}
-          blueprintPhase={blueprintPhase}
-          blueprintMarkdown={blueprintMarkdown}
-          hasBlueprintLedgerEntry={!!blueprintLedgerId}
-          onDeactivate={handleDeactivate}
-          onGenerate={handleGenerateBlueprint}
-          onUseTemplate={handleUseTemplate}
-          onExportMd={() => handleExportBlueprint('md')}
-          onExportPdf={() => handleExportBlueprint('pdf')}
-        />
-      )}
-
-      {/* Profile selector cards */}
+      {/* Profile selector cards — shown first so they're always reachable */}
       <div style={ps.sectionLabel}>
         {activeProfile ? 'Switch Profile' : 'Select a Profile'}
       </div>
@@ -250,6 +234,22 @@ export function ForgeProfiles({ tier, activeProfileId, onProfileChange, onSendTo
           </div>
         )}
       </div>
+
+      {/* Active profile panel — below cards so it never blocks profile selection */}
+      {activeProfile && (
+        <ActivePanel
+          profile={activeProfile}
+          blueprintLoading={blueprintLoading}
+          blueprintPhase={blueprintPhase}
+          blueprintMarkdown={blueprintMarkdown}
+          hasBlueprintLedgerEntry={!!blueprintLedgerId}
+          onDeactivate={handleDeactivate}
+          onGenerate={handleGenerateBlueprint}
+          onUseTemplate={handleUseTemplate}
+          onExportMd={() => handleExportBlueprint('md')}
+          onExportPdf={() => handleExportBlueprint('pdf')}
+        />
+      )}
     </div>
   );
 }
@@ -579,7 +579,7 @@ const ps: Record<string, React.CSSProperties> = {
     padding: '10px 14px', cursor: 'pointer', marginBottom: -1,
   },
   tabBtnActive: { color: 'var(--accent)', borderBottomColor: 'var(--accent)' },
-  tabContent: { padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 12 },
+  tabContent: { padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 12, maxHeight: 400, overflowY: 'auto' },
   tabIntro: { fontSize: 12, color: 'var(--text-secondary)', margin: 0 },
 
   // Execution templates
