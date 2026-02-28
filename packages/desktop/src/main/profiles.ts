@@ -45,7 +45,7 @@ export interface ForgeProfile {
 const restaurant: ForgeProfile = {
   id: 'restaurant',
   name: 'Restaurant & Food Service',
-  icon: '🍽️',
+  icon: '◉',
   description: 'Food cost control, labor scheduling, menu engineering, and daily operations for restaurants and food service businesses.',
 
   systemContext: `Active Forge Profile: Restaurant & Food Service Operations.
@@ -187,7 +187,7 @@ Keep all recommendations specific and operational. Use tables for comparisons. A
 const trucking: ForgeProfile = {
   id: 'trucking',
   name: 'Trucking & Freight',
-  icon: '🚛',
+  icon: '◈',
   description: 'Cost-per-mile analysis, dispatch optimization, driver management, DOT compliance, and fleet maintenance for trucking and freight operations.',
 
   systemContext: `Active Forge Profile: Trucking & Freight Operations.
@@ -334,7 +334,7 @@ Keep all recommendations specific and operational. Use tables where useful. Avoi
 const consultant: ForgeProfile = {
   id: 'consultant',
   name: 'Consultant & Agency',
-  icon: '💼',
+  icon: '⊞',
   description: 'Billable utilization, proposal development, client retention, invoice management, and project margin optimization for consultants and professional services firms.',
 
   systemContext: `Active Forge Profile: Consulting & Professional Services.

@@ -179,7 +179,7 @@ export function App() {
 
   if (!ready) return (
     <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center' }}>
-      <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>Starting…</span>
+      <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>Initializing</span>
     </div>
   );
 
@@ -193,11 +193,11 @@ export function App() {
       {/* Custom title bar */}
       <div style={styles.titlebar}>
         <div style={styles.trafficLights} />
-        <span style={styles.appName}>⚡ TriForge AI</span>
+        <span style={styles.appName}>TriForge AI</span>
         <div style={styles.titlebarRight}>
           {hasPin && (
             <button style={styles.lockBtn} onClick={handleLock} title="Lock TriForge">
-              🔒
+              Lock
             </button>
           )}
         </div>
@@ -207,14 +207,14 @@ export function App() {
       {updateStatus && (
         <div style={styles.updateBanner}>
           {updateStatus.state === 'available' && (
-            <span>⬇ Update v{updateStatus.version} available — downloading…</span>
+            <span>Update v{updateStatus.version} available — downloading</span>
           )}
           {updateStatus.state === 'downloading' && (
-            <span>⬇ Downloading update… {updateStatus.percent}%</span>
+            <span>Downloading update — {updateStatus.percent}%</span>
           )}
           {updateStatus.state === 'downloaded' && (
             <>
-              <span>✅ Update v{updateStatus.version} ready to install</span>
+              <span>Update v{updateStatus.version} ready to install</span>
               <button style={styles.updateInstallBtn} onClick={() => window.triforge.updater.install()}>
                 Restart &amp; Install
               </button>
@@ -228,14 +228,14 @@ export function App() {
       <div style={styles.body}>
         {/* Sidebar */}
         <nav style={styles.sidebar}>
-          <NavBtn icon="💬" label="Chat"     active={screen === 'chat'}     onClick={() => setScreen('chat')} />
-          <NavBtn icon="🛠️" label="Builder"  active={screen === 'builder'}  onClick={() => setScreen('builder')} />
-          <NavBtn icon="🧠" label="Memory"   active={screen === 'memory'}   onClick={() => setScreen('memory')} />
-          <NavBtn icon="📋" label="Ledger"   active={screen === 'ledger'}   onClick={() => setScreen('ledger')} />
-          <NavBtn icon="🛡️" label="Profiles" active={screen === 'profiles'} onClick={() => setScreen('profiles')} />
-          <NavBtn icon="⚙️" label="Settings" active={screen === 'settings'} onClick={() => setScreen('settings')} />
+          <NavBtn icon="◈" label="Chat"     active={screen === 'chat'}     onClick={() => setScreen('chat')} />
+          <NavBtn icon="⊞" label="Builder"  active={screen === 'builder'}  onClick={() => setScreen('builder')} />
+          <NavBtn icon="◎" label="Memory"   active={screen === 'memory'}   onClick={() => setScreen('memory')} />
+          <NavBtn icon="≡" label="Ledger"   active={screen === 'ledger'}   onClick={() => setScreen('ledger')} />
+          <NavBtn icon="⊡" label="Profiles" active={screen === 'profiles'} onClick={() => setScreen('profiles')} />
+          <NavBtn icon="⊕" label="Settings" active={screen === 'settings'} onClick={() => setScreen('settings')} />
           <div style={{ flex: 1 }} />
-          <NavBtn icon="💎" label="Plan"     active={screen === 'plan'}     onClick={() => setScreen('plan')} />
+          <NavBtn icon="▷" label="Plan"     active={screen === 'plan'}     onClick={() => setScreen('plan')} />
         </nav>
 
         {/* Main content */}
@@ -355,7 +355,7 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
     <div style={styles.settingsPage}>
       <h2 style={styles.sectionTitle}>API Keys</h2>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
-        Keys are stored locally on your machine. TriForge needs at least one to work.
+        Keys are stored locally and never transmitted. At least one is required to activate the council.
       </p>
       {PROVIDERS.map(p => (
         <div key={p.id} style={styles.keyRow}>
@@ -485,7 +485,7 @@ function PinSection({ hasPin, lockUsername, onPinChanged }: { hasPin: boolean; l
     return (
       <div style={styles.pinCard}>
         <div style={styles.pinActiveRow}>
-          <span style={{ color: '#10a37f', fontWeight: 600, fontSize: 13 }}>🔒 Lock active</span>
+          <span style={{ color: '#10a37f', fontWeight: 600, fontSize: 13 }}>Session lock active</span>
           <span style={{ color: 'var(--text-secondary)', fontSize: 13 }}>User: <strong>{lockUsername}</strong></span>
         </div>
         <button style={styles.removeBtn} onClick={removePin} disabled={removing}>
@@ -643,8 +643,9 @@ const styles: Record<string, React.CSSProperties & { WebkitAppRegion?: string }>
   appName: { fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', textAlign: 'center', flex: 1 },
   titlebarRight: { width: 60, display: 'flex', justifyContent: 'flex-end', alignItems: 'center' },
   lockBtn: {
-    background: 'none', border: 'none', cursor: 'pointer',
-    fontSize: 16, padding: '2px 4px', borderRadius: 4,
+    background: 'none', border: '1px solid var(--border)', cursor: 'pointer',
+    fontSize: 10, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase' as const,
+    color: 'var(--text-muted)', padding: '2px 8px', borderRadius: 4,
     WebkitAppRegion: 'no-drag' as never,
   },
 

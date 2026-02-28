@@ -26,33 +26,33 @@ interface ServiceInfo {
 const QUESTIONS: Array<{ id: keyof Spec; prompt: string; placeholder: string; hint?: string }> = [
   {
     id: 'appType',
-    prompt: 'What type of app do you want to build?',
+    prompt: 'What type of application do you want to build?',
     placeholder: 'e.g., task manager, expense tracker, portfolio site, quiz game…',
   },
   {
     id: 'audience',
-    prompt: 'Who will use this app?',
-    placeholder: 'e.g., just me, my small team, my customers, kids in my class…',
+    prompt: 'Who is the intended user?',
+    placeholder: 'e.g., just me, my small team, my customers, students in my class…',
   },
   {
     id: 'features',
-    prompt: 'List your 2–3 must-have features.',
+    prompt: 'List 2–3 core features required.',
     placeholder: 'e.g., add tasks, mark complete, filter by category, track deadlines…',
   },
   {
     id: 'dataSave',
-    prompt: 'Should the app remember data between visits?',
+    prompt: 'Should the application retain data between sessions?',
     placeholder: 'e.g., yes save my entries / no fresh start each time / yes + user accounts',
-    hint: 'We use browser storage by default. Say "user accounts" if each person needs their own login.',
+    hint: 'Browser storage is used by default. Specify "user accounts" if each person needs their own login.',
   },
   {
     id: 'style',
-    prompt: 'What look and feel do you want?',
+    prompt: 'Describe the visual style and layout.',
     placeholder: 'e.g., dark and modern, clean white minimal, colorful and playful, corporate blue…',
   },
   {
     id: 'extras',
-    prompt: 'Anything else? (optional — press Enter to skip)',
+    prompt: 'Any additional requirements? (optional)',
     placeholder: 'e.g., include charts, export CSV, support Spanish, print button…',
   },
 ];
@@ -215,7 +215,7 @@ export function AppBuilder({ onBack, activeProfileId, onProfileSwitch, onProfile
       <div style={s.page}>
         <div style={s.header}>
           <button style={s.backBtn} onClick={onBack}>← Back</button>
-          <h1 style={s.title}>🛠️ App Builder</h1>
+          <h1 style={s.title}>App Builder</h1>
           <div style={{ width: 64 }} />
         </div>
 
@@ -258,7 +258,7 @@ export function AppBuilder({ onBack, activeProfileId, onProfileSwitch, onProfile
               onClick={nextQuestion}
               disabled={!canAdvance}
             >
-              {questionIndex < QUESTIONS.length - 1 ? 'Next →' : '🚀 Build My App'}
+              {questionIndex < QUESTIONS.length - 1 ? 'Next →' : 'Generate Application'}
             </button>
           </div>
         </div>
@@ -276,12 +276,12 @@ export function AppBuilder({ onBack, activeProfileId, onProfileSwitch, onProfile
       <div style={s.page}>
         <div style={s.header}>
           <div style={{ width: 64 }} />
-          <h1 style={s.title}>🛠️ App Builder</h1>
+          <h1 style={s.title}>App Builder</h1>
           <div style={{ width: 64 }} />
         </div>
         <div style={s.buildingCard}>
-          <div style={s.spinner}>⚡</div>
-          <div style={s.buildingTitle}>Building your app…</div>
+          <div style={s.spinner}>◈</div>
+          <div style={s.buildingTitle}>Generating application…</div>
           <div style={s.buildingStep}>{BUILD_STEPS[buildStep]}</div>
           <div style={s.buildingHint}>The AI is writing your complete HTML, CSS, and JavaScript.</div>
         </div>
@@ -295,13 +295,13 @@ export function AppBuilder({ onBack, activeProfileId, onProfileSwitch, onProfile
       <div style={s.page}>
         <div style={s.header}>
           <button style={s.backBtn} onClick={reset}>← Start over</button>
-          <h1 style={s.title}>🛠️ App Builder — Preview</h1>
+          <h1 style={s.title}>App Builder — Preview</h1>
           <button
             style={{ ...s.glowBtn, ...(openingPreview ? s.primaryBtnDisabled : {}) }}
             onClick={handleOpenPreview}
             disabled={openingPreview}
           >
-            {openingPreview ? 'Opening…' : '🌐 Open in Browser'}
+            {openingPreview ? 'Opening…' : 'Open in Browser'}
           </button>
         </div>
 
@@ -325,14 +325,14 @@ export function AppBuilder({ onBack, activeProfileId, onProfileSwitch, onProfile
           </div>
 
           <div style={s.actionRow}>
-            <button style={s.secondaryBtn} onClick={() => setRevising(r => !r)}>✏️ Request Changes</button>
-            <button style={s.secondaryBtn} onClick={reset}>🔄 Start Over</button>
+            <button style={s.secondaryBtn} onClick={() => setRevising(r => !r)}>Request Changes</button>
+            <button style={s.secondaryBtn} onClick={reset}>Start Over</button>
             <button
               style={{ ...s.primaryBtn, ...(saving || !appName.trim() ? s.primaryBtnDisabled : {}) }}
               onClick={handleSave}
               disabled={saving || !appName.trim()}
             >
-              {saving ? 'Saving…' : '✅ Save to Desktop'}
+              {saving ? 'Saving…' : 'Save to Desktop'}
             </button>
           </div>
 
@@ -354,7 +354,7 @@ export function AppBuilder({ onBack, activeProfileId, onProfileSwitch, onProfile
                   style={{ ...s.primaryBtn, ...(!revisionInput.trim() ? s.primaryBtnDisabled : {}) }}
                   onClick={handleRevise}
                   disabled={!revisionInput.trim()}
-                >🔨 Apply Changes</button>
+                >Apply Changes</button>
               </div>
             </div>
           )}
@@ -368,7 +368,7 @@ export function AppBuilder({ onBack, activeProfileId, onProfileSwitch, onProfile
     <div style={s.page}>
       <div style={s.header}>
         <div style={{ width: 64 }} />
-        <h1 style={s.title}>🛠️ App Builder</h1>
+        <h1 style={s.title}>App Builder</h1>
         <div style={{ width: 64 }} />
       </div>
 
@@ -376,8 +376,7 @@ export function AppBuilder({ onBack, activeProfileId, onProfileSwitch, onProfile
 
         {/* Hero */}
         <div style={s.launchHero}>
-          <div style={s.doneIcon}>🎉</div>
-          <div style={s.doneTitle}>Your app is saved!</div>
+          <div style={s.doneTitle}>Application saved.</div>
           <div style={s.donePath}>{savedPath}</div>
         </div>
 
@@ -385,13 +384,13 @@ export function AppBuilder({ onBack, activeProfileId, onProfileSwitch, onProfile
         <LaunchStep num={1} title="Test your app" desc="Open it in your browser to make sure everything works the way you expect.">
           <div style={s.stepBtnRow}>
             <button style={s.stepBtn} onClick={() => window.triforge.files.showInFolder(savedPath)}>
-              📁 Show App Folder
+              Show App Folder
             </button>
             <button
               style={{ ...s.stepBtn, ...s.stepBtnPrimary }}
               onClick={() => window.triforge.system.openExternal(`file://${savedPath}/index.html`)}
             >
-              🌐 Open in Browser
+              Open in Browser
             </button>
           </div>
         </LaunchStep>
@@ -399,8 +398,8 @@ export function AppBuilder({ onBack, activeProfileId, onProfileSwitch, onProfile
         {/* Step 2 — Go Live */}
         <LaunchStep
           num={2}
-          title="Put it online — free, no account needed"
-          desc="Netlify Drop lets anyone share a web app in under 2 minutes. It's like dropping a file onto the internet."
+          title="Deploy — free hosting, no account required"
+          desc="Netlify Drop is a free hosting service. Upload your app folder and receive a shareable URL in under 2 minutes."
         >
           <ol style={s.stepList}>
             <li>Click <strong style={{ color: 'var(--accent)' }}>Show App Folder</strong> — your app files will appear on screen.</li>
@@ -410,13 +409,13 @@ export function AppBuilder({ onBack, activeProfileId, onProfileSwitch, onProfile
           </ol>
           <div style={s.stepBtnRow}>
             <button style={s.stepBtn} onClick={() => window.triforge.files.showInFolder(savedPath)}>
-              📁 Show App Folder
+              Show App Folder
             </button>
             <button
               style={{ ...s.stepBtn, ...s.stepBtnPrimary }}
               onClick={() => window.triforge.system.openExternal('https://app.netlify.com/drop')}
             >
-              🚀 Open Netlify Drop
+              Open Netlify Drop
             </button>
           </div>
         </LaunchStep>
@@ -428,8 +427,8 @@ export function AppBuilder({ onBack, activeProfileId, onProfileSwitch, onProfile
           desc="Your Netlify link works on any phone, tablet, or computer — send it to anyone."
         >
           <div style={s.tipBox}>
-            <TipRow icon="🔁">To <strong>update your app</strong>: build a new version here, then drag the new folder to Netlify — it replaces the old version automatically.</TipRow>
-            <TipRow icon="🌐">Want a <strong>custom domain</strong> like myapp.com? In Netlify, go to Site Settings → Domain Management and follow the steps.</TipRow>
+            <TipRow>To <strong>update your app</strong>: build a new version here, then drag the new folder to Netlify — it replaces the old version automatically.</TipRow>
+            <TipRow>Want a <strong>custom domain</strong> like myapp.com? In Netlify, go to Site Settings → Domain Management and follow the steps.</TipRow>
           </div>
         </LaunchStep>
 
@@ -439,7 +438,7 @@ export function AppBuilder({ onBack, activeProfileId, onProfileSwitch, onProfile
         {/* Footer */}
         <div style={s.launchFooter}>
           <button style={s.secondaryBtn} onClick={onBack}>← Back to Chat</button>
-          <button style={s.primaryBtn} onClick={reset}>🛠️ Build Another App</button>
+          <button style={s.primaryBtn} onClick={reset}>Build Another App</button>
         </div>
 
       </div>
@@ -456,13 +455,12 @@ function TechStackGuide({ analyzing, services }: { analyzing: boolean; services:
     return (
       <div style={s.techCard}>
         <div style={s.techHeader}>
-          <span style={s.techIcon}>🔍</span>
           <div>
-            <div style={s.techTitle}>Analyzing your app's tech needs…</div>
-            <div style={s.techSubtitle}>We're checking if your app needs any outside services to be fully production-ready.</div>
+            <div style={s.techTitle}>Analyzing tech requirements…</div>
+            <div style={s.techSubtitle}>Checking if your app requires any third-party services to be production-ready.</div>
           </div>
         </div>
-        <div style={s.analyzeSpinner}>⚡ Thinking…</div>
+        <div style={s.analyzeSpinner}>Analyzing…</div>
       </div>
     );
   }
@@ -471,9 +469,8 @@ function TechStackGuide({ analyzing, services }: { analyzing: boolean; services:
     return (
       <div style={s.techCard}>
         <div style={s.techHeader}>
-          <span style={s.techIcon}>✅</span>
           <div>
-            <div style={s.techTitle}>No extra services needed</div>
+            <div style={s.techTitle}>No external services required</div>
             <div style={s.techSubtitle}>Your app is fully self-contained. Everything runs in the browser — nothing to sign up for.</div>
           </div>
         </div>
@@ -484,9 +481,8 @@ function TechStackGuide({ analyzing, services }: { analyzing: boolean; services:
   return (
     <div style={s.techCard}>
       <div style={s.techHeader}>
-        <span style={s.techIcon}>🔧</span>
         <div>
-          <div style={s.techTitle}>Your app's tech guide</div>
+          <div style={s.techTitle}>Tech integration guide</div>
           <div style={s.techSubtitle}>
             To make your app fully production-ready, you may eventually need these services.
             Click each one to learn exactly what it is, why you need it, and how to set it up — step by step.
@@ -513,7 +509,6 @@ function ServiceCard({ svc, open, onToggle }: { svc: ServiceInfo; open: boolean;
     <div style={{ ...s.serviceCard, ...(open ? s.serviceCardOpen : {}) }}>
       {/* Header row — always visible */}
       <button style={s.serviceCardBtn} onClick={onToggle}>
-        <span style={s.serviceEmoji}>{svc.emoji}</span>
         <div style={s.serviceCardLeft}>
           <div style={s.serviceName}>{svc.name}</div>
           <div style={s.serviceTagline}>{svc.tagline}</div>
@@ -529,11 +524,11 @@ function ServiceCard({ svc, open, onToggle }: { svc: ServiceInfo; open: boolean;
       {/* Expanded detail */}
       {open && (
         <div style={s.serviceDetail}>
-          <DetailBlock label="WHAT IS IT?" icon="📖" text={svc.what} />
-          <DetailBlock label="WHY YOUR APP NEEDS IT" icon="🎯" text={svc.why} />
+          <DetailBlock label="WHAT IS IT?" text={svc.what} />
+          <DetailBlock label="WHY YOUR APP NEEDS IT" text={svc.why} />
 
           <div style={s.detailBlock}>
-            <div style={s.detailLabel}>⚡ HOW TO GET STARTED</div>
+            <div style={s.detailLabel}>HOW TO GET STARTED</div>
             <ol style={s.howList}>
               {svc.how.map((step, i) => (
                 <li key={i} style={s.howStep}>{step}</li>
@@ -542,14 +537,14 @@ function ServiceCard({ svc, open, onToggle }: { svc: ServiceInfo; open: boolean;
           </div>
 
           {svc.freeNote && (
-            <div style={s.freeNote}>💰 {svc.freeNote}</div>
+            <div style={s.freeNote}>{svc.freeNote}</div>
           )}
 
           <button
             style={s.serviceLink}
             onClick={() => window.triforge.system.openExternal(svc.where)}
           >
-            🌐 Go to {svc.name} →
+            Go to {svc.name} →
           </button>
         </div>
       )}
@@ -557,10 +552,10 @@ function ServiceCard({ svc, open, onToggle }: { svc: ServiceInfo; open: boolean;
   );
 }
 
-function DetailBlock({ label, icon, text }: { label: string; icon: string; text: string }) {
+function DetailBlock({ label, text }: { label: string; text: string }) {
   return (
     <div style={s.detailBlock}>
-      <div style={s.detailLabel}>{icon} {label}</div>
+      <div style={s.detailLabel}>{label}</div>
       <div style={s.detailText}>{text}</div>
     </div>
   );
@@ -585,10 +580,9 @@ function LaunchStep({ num, title, desc, children }: {
   );
 }
 
-function TipRow({ icon, children }: { icon: string; children: React.ReactNode }) {
+function TipRow({ children }: { children: React.ReactNode }) {
   return (
     <div style={s.tipRow}>
-      <span>{icon}</span>
       <span style={s.tipText}>{children}</span>
     </div>
   );
@@ -596,10 +590,10 @@ function TipRow({ icon, children }: { icon: string; children: React.ReactNode })
 
 // ── Profile Status Strip ──────────────────────────────────────────────────────
 
-const AB_PROFILE_DISPLAY: Record<string, { name: string; icon: string }> = {
-  restaurant: { name: 'Restaurant & Food Service', icon: '🍽️' },
-  trucking:   { name: 'Trucking & Freight',         icon: '🚛' },
-  consultant: { name: 'Consultant & Agency',        icon: '💼' },
+const AB_PROFILE_DISPLAY: Record<string, { name: string }> = {
+  restaurant: { name: 'Restaurant & Food Service' },
+  trucking:   { name: 'Trucking & Freight' },
+  consultant: { name: 'Consultant & Agency' },
 };
 
 function ProfileStatusStrip({ profileId, onSwitch, onDeactivate }: {
@@ -607,10 +601,10 @@ function ProfileStatusStrip({ profileId, onSwitch, onDeactivate }: {
   onSwitch: () => void;
   onDeactivate: () => void;
 }) {
-  const info = AB_PROFILE_DISPLAY[profileId] ?? { name: profileId, icon: '🛡️' };
+  const info = AB_PROFILE_DISPLAY[profileId] ?? { name: profileId };
   return (
     <div style={abStrip.bar}>
-      <span style={abStrip.label}>{info.icon} <strong>{info.name}</strong> profile active — scaffold context will be injected</span>
+      <span style={abStrip.label}>Active Profile: <strong>{info.name}</strong> — scaffold context will be injected</span>
       <div style={abStrip.actions}>
         <button style={abStrip.btn} onClick={onSwitch}>Switch Profile</button>
         <button style={abStrip.btn} onClick={onDeactivate}>Deactivate</button>

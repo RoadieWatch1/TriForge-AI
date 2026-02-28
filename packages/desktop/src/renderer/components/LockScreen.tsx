@@ -95,7 +95,7 @@ export function LockScreen({ username: knownUser, onUnlock }: Props) {
     <div style={styles.overlay}>
       <div style={{ ...styles.card, ...(shake ? styles.shake : {}) }}>
         {/* Logo */}
-        <div style={styles.logo}>⚡</div>
+        <div style={styles.logo}>TF</div>
         <h1 style={styles.appName}>TriForge AI</h1>
         <p style={styles.prompt}>Identify yourself</p>
 

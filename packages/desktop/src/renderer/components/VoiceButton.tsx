@@ -27,8 +27,8 @@ export function VoiceButton({ onTranscript, onError, disabled }: Props) {
         try {
           const blob = new Blob(chunks.current, { type: 'audio/webm' });
           const arrayBuffer = await blob.arrayBuffer();
-          const buffer = Buffer.from(arrayBuffer);
-          const result = await window.triforge.voice.transcribe(buffer);
+          const buffer = new Uint8Array(arrayBuffer);
+          const result = await window.triforge.voice.transcribe(buffer as unknown as Buffer);
           if (result.error) {
             onError?.(result.error);
           } else if (result.text) {

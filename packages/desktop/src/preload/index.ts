@@ -211,14 +211,18 @@ const api = {
 
   // File system
   files: {
-    commonDirs:   () => ipcRenderer.invoke('files:commonDirs') as Promise<Record<string, string>>,
-    listDir:      (dirPath: string) => ipcRenderer.invoke('files:listDir', dirPath) as Promise<{ files: Array<{ name: string; path: string; size: number; modified: string; extension: string }>; subdirs: string[]; error?: string }>,
-    scanPhotos:   (startPath?: string) => ipcRenderer.invoke('files:scanPhotos', startPath) as Promise<{ photos: Array<{ name: string; path: string; size: number; modified: string; extension: string }>; error?: string }>,
-    organize:     (dirPath: string) => ipcRenderer.invoke('files:organize', dirPath) as Promise<{ moved: number; folders: string[]; errors: string[] }>,
-    openFile:     (filePath: string) => ipcRenderer.invoke('files:openFile', filePath),
-    showInFolder: (filePath: string) => ipcRenderer.invoke('files:showInFolder', filePath),
-    pickFile:     (filters?: Array<{ name: string; extensions: string[] }>) => ipcRenderer.invoke('files:pickFile', filters) as Promise<string | null>,
-    pickDir:      () => ipcRenderer.invoke('files:pickDir') as Promise<string | null>,
+    commonDirs:    () => ipcRenderer.invoke('files:commonDirs') as Promise<Record<string, string>>,
+    listDir:       (dirPath: string) => ipcRenderer.invoke('files:listDir', dirPath) as Promise<{ files: Array<{ name: string; path: string; size: number; modified: string; extension: string }>; subdirs: string[]; error?: string }>,
+    scanPhotos:    (startPath?: string) => ipcRenderer.invoke('files:scanPhotos', startPath) as Promise<{ photos: Array<{ name: string; path: string; size: number; modified: string; extension: string }>; error?: string }>,
+    searchPhotos:  (query: string, startPath?: string) => ipcRenderer.invoke('files:searchPhotos', query, startPath) as Promise<{ photos: Array<{ name: string; path: string; size: number; modified: string; extension: string }>; error?: string }>,
+    findSimilar:   (refPath: string, startPath?: string) => ipcRenderer.invoke('files:findSimilar', refPath, startPath) as Promise<{ photos: Array<{ name: string; path: string; size: number; modified: string; extension: string }>; error?: string }>,
+    organize:      (dirPath: string) => ipcRenderer.invoke('files:organize', dirPath) as Promise<{ moved: number; folders: string[]; errors: string[] }>,
+    organizeDeep:  (dirPath: string) => ipcRenderer.invoke('files:organizeDeep', dirPath) as Promise<{ moved: number; folders: string[]; errors: string[]; directoriesScanned: number }>,
+    moveFiles:     (srcPaths: string[], destDir: string) => ipcRenderer.invoke('files:moveFiles', srcPaths, destDir) as Promise<{ moved: number; errors: string[] }>,
+    openFile:      (filePath: string) => ipcRenderer.invoke('files:openFile', filePath),
+    showInFolder:  (filePath: string) => ipcRenderer.invoke('files:showInFolder', filePath),
+    pickFile:      (filters?: Array<{ name: string; extensions: string[] }>) => ipcRenderer.invoke('files:pickFile', filters) as Promise<string | null>,
+    pickDir:       () => ipcRenderer.invoke('files:pickDir') as Promise<string | null>,
   },
 
   // Forge Chamber — real-time consensus telemetry

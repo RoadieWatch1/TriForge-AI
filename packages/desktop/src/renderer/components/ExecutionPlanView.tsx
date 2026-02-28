@@ -49,13 +49,13 @@ const RISK_COLORS: Record<string, string> = {
 };
 
 const TYPE_ICONS: Record<ExecutionStep['type'], string> = {
-  review:   '📋',
-  browser:  '🌐',
-  file:     '📁',
-  research: '🔍',
-  decision: '🤔',
-  command:  '⌨️',
-  print:    '🖨️',
+  review:   '◻',
+  browser:  '◈',
+  file:     '⊞',
+  research: '◎',
+  decision: '◆',
+  command:  '⌘',
+  print:    '≡',
 };
 
 // ── Component ────────────────────────────────────────────────────────────────
@@ -99,7 +99,7 @@ export function ExecutionPlanView({ plan }: Props) {
 
       switch (step.type) {
         case 'review':
-          result = 'Reviewed and noted. ✅';
+          result = 'Reviewed and noted.';
           break;
 
         case 'browser':
@@ -201,7 +201,7 @@ export function ExecutionPlanView({ plan }: Props) {
       {/* Header */}
       <div style={cs.header}>
         <div style={cs.headerLeft}>
-          <span style={cs.govBadge}>🛡️ Governed Execution</span>
+          <span style={cs.govBadge}>Governed Execution</span>
           <span style={cs.planTitle}>{plan.planTitle}</span>
         </div>
         <span style={{ ...cs.riskPill, background: riskC + '22', color: riskC, border: `1px solid ${riskC}55` }}>
@@ -254,9 +254,9 @@ export function ExecutionPlanView({ plan }: Props) {
               </div>
 
               {/* Outcome */}
-              {state.result  && <div style={cs.stepResult}>✅ {state.result}</div>}
-              {state.error   && <div style={cs.stepError}>⚠️ {state.error}</div>}
-              {state.status === 'skipped' && <div style={cs.stepSkipped}>⏭ Skipped</div>}
+              {state.result  && <div style={cs.stepResult}>{state.result}</div>}
+              {state.error   && <div style={cs.stepError}>{state.error}</div>}
+              {state.status === 'skipped' && <div style={cs.stepSkipped}>Skipped</div>}
 
               {/* Action buttons — pending or failed */}
               {(!isDone || isFailed) && (
@@ -270,10 +270,10 @@ export function ExecutionPlanView({ plan }: Props) {
                     onClick={() => handleRun(step)}
                     disabled={isRunning}
                   >
-                    {isRunning ? '⏳ Running…' : isFailed ? '🔄 Retry' : '▶ Run'}
+                    {isRunning ? 'Running…' : isFailed ? 'Retry' : '▶ Run'}
                   </button>
                   <button style={cs.skipBtn} onClick={() => handleSkip(step)} disabled={isRunning}>
-                    ⏭ Skip
+                    Skip
                   </button>
                   <span style={cs.approvalNote}>requires approval</span>
                 </div>
@@ -287,7 +287,7 @@ export function ExecutionPlanView({ plan }: Props) {
       {auditLog.length > 0 && (
         <div style={cs.auditSection}>
           <button style={cs.auditToggle} onClick={() => setShowAudit(s => !s)}>
-            📜 Audit Log ({auditLog.length} {auditLog.length === 1 ? 'entry' : 'entries'}) {showAudit ? '▲' : '▼'}
+            Audit Log ({auditLog.length} {auditLog.length === 1 ? 'entry' : 'entries'}) {showAudit ? '▲' : '▼'}
           </button>
           {showAudit && (
             <div style={cs.auditList}>
@@ -312,7 +312,7 @@ export function ExecutionPlanView({ plan }: Props) {
       {confirmStep && (
         <div style={cs.modalOverlay}>
           <div style={cs.modal}>
-            <div style={cs.modalTitle}>⚠️ High-Risk Step</div>
+            <div style={cs.modalTitle}>High-Risk Step</div>
             <div style={cs.modalStepName}>{confirmStep.title}</div>
             <div style={cs.modalDesc}>{confirmStep.description}</div>
             {confirmStep.details && (

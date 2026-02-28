@@ -7,10 +7,10 @@ interface Props {
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
-  system: '🖥  System Access',
-  communication: '📬  Communication',
-  business: '💼  Business Tools',
-  finance: '📈  Finance & Investments',
+  system: 'System Access',
+  communication: 'Communication',
+  business: 'Business Tools',
+  finance: 'Finance & Investments',
 };
 
 const CATEGORY_ORDER = ['system', 'communication', 'business', 'finance'];
@@ -42,7 +42,7 @@ export function PermissionWizard({ permissions, onComplete }: Props) {
       <div style={styles.card}>
         {/* Header */}
         <div style={styles.header}>
-          <div style={styles.logo}>⚡</div>
+          <div style={styles.logo}>TF</div>
           <h1 style={styles.title}>Welcome to TriForge AI</h1>
           <p style={styles.subtitle}>
             Your personal think tank. Choose what TriForge can access —

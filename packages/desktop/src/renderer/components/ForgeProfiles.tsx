@@ -166,7 +166,7 @@ export function ForgeProfiles({ tier, activeProfileId, onProfileChange, onSendTo
           </p>
         </div>
         <div style={ps.lockCard}>
-          <div style={ps.lockIcon}>🔒</div>
+          <div style={ps.lockIcon}>⊡</div>
           <div style={ps.lockTitle}>Forge Profiles — Pro Feature</div>
           <div style={ps.lockDesc}>
             Activate a Forge Profile to inject domain-specific conventions, KPIs, and execution
@@ -242,7 +242,7 @@ export function ForgeProfiles({ tier, activeProfileId, onProfileChange, onSendTo
         {/* Business placeholder for future profiles */}
         {tier === 'business' && (
           <div style={{ ...ps.card, opacity: 0.45, cursor: 'default' }}>
-            <div style={ps.cardIcon}>🔮</div>
+            <div style={ps.cardIcon}>◈</div>
             <div style={ps.cardName}>More Profiles Coming</div>
             <div style={ps.cardDesc}>
               Additional industry profiles (legal, real estate, e-commerce, and more) are in development for Business subscribers.

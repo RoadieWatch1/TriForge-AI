@@ -16,6 +16,15 @@ export interface OrganizeResult {
   errors: string[];
 }
 
+export interface OrganizeDeepResult extends OrganizeResult {
+  directoriesScanned: number;
+}
+
+export interface MoveResult {
+  moved: number;
+  errors: string[];
+}
+
 // ── Extension sets ────────────────────────────────────────────────────────────
 
 const PHOTO_EXT  = new Set(['.jpg','.jpeg','.png','.gif','.bmp','.webp','.heic','.heif','.raw','.cr2','.nef','.arw','.tiff','.tif']);
@@ -157,6 +166,162 @@ export function organizeDirectory(dirPath: string): OrganizeResult {
     result.errors.push(`Cannot read directory: ${e}`);
   }
 
+  return result;
+}
+
+/** Recursively organize all files in a directory tree, consolidating into category sub-folders at the root. */
+export function organizeDirectoryDeep(dirPath: string): OrganizeDeepResult {
+  const resolved = dirPath.replace('~', os.homedir());
+  const result: OrganizeDeepResult = { moved: 0, folders: [], errors: [], directoriesScanned: 0 };
+  const CATEGORY_FOLDERS = new Set(Object.keys(CATEGORY_MAP));
+
+  // Collect every file recursively, but skip files already inside a root-level category folder
+  function collectFiles(dir: string, isRoot: boolean): string[] {
+    result.directoriesScanned++;
+    const files: string[] = [];
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.name.startsWith('.')) continue;
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (isRoot && CATEGORY_FOLDERS.has(entry.name)) continue; // already organized
+          files.push(...collectFiles(fullPath, false));
+        } else if (entry.isFile()) {
+          files.push(fullPath);
+        }
+      }
+    } catch { /* skip unreadable */ }
+    return files;
+  }
+
+  for (const srcPath of collectFiles(resolved, true)) {
+    const name = path.basename(srcPath);
+    const ext  = path.extname(name).toLowerCase();
+    let targetFolder: string | null = null;
+    for (const [folder, exts] of Object.entries(CATEGORY_MAP)) {
+      if (exts.has(ext)) { targetFolder = folder; break; }
+    }
+    if (!targetFolder) continue;
+
+    const destDir = path.join(resolved, targetFolder);
+    if (!fs.existsSync(destDir)) {
+      fs.mkdirSync(destDir, { recursive: true });
+      if (!result.folders.includes(destDir)) result.folders.push(destDir);
+    }
+
+    let destPath = path.join(destDir, name);
+    if (srcPath === destPath) continue; // already in the right place
+    if (fs.existsSync(destPath)) {
+      const base = path.basename(name, ext);
+      destPath = path.join(destDir, `${base}_${Date.now()}${ext}`);
+    }
+
+    try {
+      fs.renameSync(srcPath, destPath);
+      result.moved++;
+    } catch (e) {
+      result.errors.push(`Could not move ${name}: ${e}`);
+    }
+  }
+  return result;
+}
+
+/** Search for photos whose filename contains the given query (case-insensitive). */
+export function searchPhotos(query: string, startPath?: string, limit = 200): ScannedFile[] {
+  const q = query.toLowerCase().trim();
+  if (!q) return [];
+  const home = os.homedir();
+  const searchRoots = startPath ? [startPath] : [
+    path.join(home, 'Pictures'),
+    path.join(home, 'OneDrive', 'Pictures'),
+    path.join(home, 'Desktop'),
+    path.join(home, 'Downloads'),
+    path.join(home, 'Documents'),
+  ];
+  const results: ScannedFile[] = [];
+  for (const root of searchRoots) {
+    if (fs.existsSync(root)) scanDir(root, PHOTO_EXT, results, 6, 0);
+  }
+  const filtered = results.filter(f => f.name.toLowerCase().includes(q));
+  filtered.sort((a, b) => new Date(b.modified).getTime() - new Date(a.modified).getTime());
+  return filtered.slice(0, limit);
+}
+
+/** Find photos similar to a reference file: scored by date proximity, same folder, name prefix, and file size. */
+export function findSimilarPhotos(refPath: string, startPath?: string, limit = 100): ScannedFile[] {
+  if (!fs.existsSync(refPath)) return [];
+  let refStat: fs.Stats;
+  try { refStat = fs.statSync(refPath); } catch { return []; }
+
+  const refName   = path.basename(refPath, path.extname(refPath)).toLowerCase();
+  const refDir    = path.dirname(refPath);
+  const refDate   = refStat.mtime.getTime();
+  const refSize   = refStat.size;
+  const TWO_DAYS  = 2 * 24 * 60 * 60 * 1000;
+  const ONE_HOUR  = 60 * 60 * 1000;
+  const refPrefix = refName.substring(0, Math.min(6, refName.length));
+
+  const home = os.homedir();
+  const roots = startPath ? [startPath] : [
+    path.join(home, 'Pictures'),
+    path.join(home, 'OneDrive', 'Pictures'),
+    path.join(home, 'Desktop'),
+    path.join(home, 'Downloads'),
+    refDir,
+  ];
+
+  const all: ScannedFile[] = [];
+  const seen = new Set<string>();
+  for (const root of roots) {
+    if (fs.existsSync(root) && !seen.has(root)) {
+      seen.add(root);
+      scanDir(root, PHOTO_EXT, all, 4, 0);
+    }
+  }
+
+  return all
+    .filter(f => f.path !== refPath)
+    .map(f => {
+      let score = 0;
+      const dateDiff = Math.abs(new Date(f.modified).getTime() - refDate);
+      if (dateDiff < TWO_DAYS) score += 3;
+      if (dateDiff < ONE_HOUR) score += 2; // same session
+      if (path.dirname(f.path) === refDir) score += 2;
+      if (f.name.toLowerCase().startsWith(refPrefix)) score += 2;
+      if (Math.abs(f.size - refSize) / Math.max(refSize, 1) < 0.3) score += 1;
+      return { file: f, score };
+    })
+    .filter(s => s.score >= 2)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map(s => s.file);
+}
+
+/** Move a list of files to a destination directory. */
+export function moveFiles(srcPaths: string[], destDir: string): MoveResult {
+  const result: MoveResult = { moved: 0, errors: [] };
+  try {
+    fs.mkdirSync(destDir, { recursive: true });
+  } catch (e) {
+    result.errors.push(`Cannot create destination: ${e}`);
+    return result;
+  }
+  for (const src of srcPaths) {
+    const name = path.basename(src);
+    let dest = path.join(destDir, name);
+    if (fs.existsSync(dest)) {
+      const ext  = path.extname(name);
+      const base = path.basename(name, ext);
+      dest = path.join(destDir, `${base}_${Date.now()}${ext}`);
+    }
+    try {
+      fs.renameSync(src, dest);
+      result.moved++;
+    } catch (e) {
+      result.errors.push(`Could not move ${name}: ${e}`);
+    }
+  }
   return result;
 }
 

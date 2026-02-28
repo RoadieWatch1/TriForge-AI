@@ -17,6 +17,8 @@ interface ForgeScore {
   verify: string;
 }
 
+type PhotoFile = { name: string; path: string; size: number; modified: string; extension: string };
+
 interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -28,6 +30,9 @@ interface Message {
   consensusResponses?: ConsensusResponse[];
   forgeScore?: ForgeScore;
   workflow?: string;
+  // Photo result payloads
+  photos?: PhotoFile[];
+  photoLabel?: string;
 }
 
 interface Props {
@@ -61,12 +66,12 @@ const PROVIDER_LABELS: Record<string, string> = {
 };
 
 const QUICK_ACTIONS = [
-  { label: '📸 Find my photos',     action: 'photos' as const },
-  { label: '🗂️ Organize Downloads', action: 'organize' as const },
-  { label: '🖨️ Print a document',   action: 'print' as const },
-  { label: '💡 Build me an app',    action: 'builder' as const },
-  { label: '📈 Investment idea',    prompt: 'Suggest an investment strategy for ' },
-  { label: '🔍 Research topic',     prompt: 'Research and summarize everything about ' },
+  { label: 'Scan for Photos',      action: 'photos' as const },
+  { label: 'Organize Folder',      action: 'organize' as const },
+  { label: 'Print Document',       action: 'print' as const },
+  { label: 'Generate Application', action: 'builder' as const },
+  { label: 'Investment Analysis',  prompt: 'Suggest an investment strategy for ' },
+  { label: 'Research Topic',       prompt: 'Research and summarize everything about ' },
 ];
 
 const MSG_LIMITS: Record<string, number> = { free: 30, pro: 300, business: Infinity };
@@ -75,17 +80,17 @@ const MODE_LABELS: Record<string, string> = {
   none:      'No providers',
   single:    'Single AI',
   pair:      'Pair mode — 2 AIs',
-  consensus: '⚡ Think Tank — 3 AIs',
+  consensus: 'Think Tank — 3 AIs',
 };
 
 const HISTORY_KEY = 'triforge-chat-v2';
 
 const WORKFLOWS = [
-  { id: 'startup',    icon: '🏢', label: 'Start a Business',       desc: 'LLC steps, EIN, checklist, 30-day launch plan' },
-  { id: 'hiring',     icon: '👥', label: 'Hire Someone',            desc: 'Job post, interview questions, offer letter, onboarding' },
-  { id: 'marketing',  icon: '📣', label: 'Marketing Campaign',      desc: 'Strategy, copy, content calendar, budget split' },
-  { id: 'sop',        icon: '📋', label: 'Write a Policy / SOP',    desc: 'Operational procedure for any business process' },
-  { id: 'client',     icon: '📧', label: 'Client Follow-up System', desc: '5-email sequence, CRM notes, re-engagement message' },
+  { id: 'startup',    label: 'Start a Business',       desc: 'LLC steps, EIN, checklist, 30-day launch plan' },
+  { id: 'hiring',     label: 'Hire Someone',            desc: 'Job post, interview questions, offer letter, onboarding' },
+  { id: 'marketing',  label: 'Marketing Campaign',      desc: 'Strategy, copy, content calendar, budget split' },
+  { id: 'sop',        label: 'Write a Policy / SOP',    desc: 'Operational procedure for any business process' },
+  { id: 'client',     label: 'Client Follow-up System', desc: '5-email sequence, CRM notes, re-engagement message' },
 ];
 
 const WORKFLOW_PROMPTS: Record<string, string> = {
@@ -154,6 +159,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   const [sending, setSending] = useState(false);
   const [consensusThinking, setConsensusThinking] = useState(false);
   const [speaking, setSpeaking] = useState<string | null>(null);
+  const [voiceMode, setVoiceMode] = useState(() => localStorage.getItem('triforge-voice-mode') === 'on');
   const [gate, setGate] = useState<{ feature: string; neededTier: 'pro' | 'business' } | null>(null);
   const [checkoutUrls, setCheckoutUrls] = useState<{ pro: string; business: string; portal: string }>({ pro: '', business: '', portal: '' });
   const [showQuickActions, setShowQuickActions] = useState(false);
@@ -194,12 +200,18 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   // ── TTS ───────────────────────────────────────────────────────────────────────
 
   const speakMessage = useCallback(async (msgId: string, text: string) => {
-    if (!keyStatus.openai) return;
+    // Stop anything currently playing
+    if (audioRef.current) { audioRef.current.pause(); audioRef.current.src = ''; }
+    window.speechSynthesis?.cancel();
+
     setSpeaking(msgId);
-    try {
-      const result = await window.triforge.voice.speak(text);
-      if (result.audio) {
-        try {
+    const truncated = text.slice(0, 4096);
+
+    // Priority 1: OpenAI TTS — Pro/Business users with an OpenAI key (higher quality)
+    if (keyStatus.openai && (tier === 'pro' || tier === 'business')) {
+      try {
+        const result = await window.triforge.voice.speak(truncated);
+        if (result.audio) {
           const bytes = Uint8Array.from(atob(result.audio), c => c.charCodeAt(0));
           const blob = new Blob([bytes], { type: 'audio/mpeg' });
           const url = URL.createObjectURL(blob);
@@ -207,17 +219,33 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
             audioRef.current.src = url;
             await audioRef.current.play();
             audioRef.current.onended = () => { URL.revokeObjectURL(url); setSpeaking(null); };
+            return;
           }
-        } catch { setSpeaking(null); }
-      } else { setSpeaking(null); }
-    } catch { setSpeaking(null); }
-  }, [keyStatus]);
+        }
+      } catch { /* fall through to Web Speech */ }
+    }
+
+    // Fallback: Web Speech API — built into Electron/Chromium, works for all users
+    if ('speechSynthesis' in window) {
+      const utt = new SpeechSynthesisUtterance(truncated);
+      utt.rate = 1.05;
+      utt.onend = () => setSpeaking(null);
+      utt.onerror = () => setSpeaking(null);
+      window.speechSynthesis.speak(utt);
+      return;
+    }
+
+    setSpeaking(null);
+  }, [keyStatus, tier]);
 
   // ── Send helpers ──────────────────────────────────────────────────────────────
 
   const appendMsg = (msg: Message) => setMessages(m => [...m, msg]);
 
   const addSystemMsg = (content: string) => appendMsg({ id: crypto.randomUUID(), role: 'system', content, timestamp: new Date() });
+
+  const addPhotoMsg = (label: string, photos: PhotoFile[]) =>
+    appendMsg({ id: crypto.randomUUID(), role: 'system', content: label, photos, timestamp: new Date() });
 
   const handleGateError = (error: string) => {
     if (error === 'MESSAGE_LIMIT_REACHED') { setGate({ feature: 'MESSAGE_LIMIT_REACHED', neededTier: 'pro' }); return true; }
@@ -272,7 +300,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         };
         appendMsg(aiMsg);
 
-        if (!result.error && result.synthesis && keyStatus.openai && (tier === 'pro' || tier === 'business')) {
+        if (!result.error && result.synthesis && voiceMode) {
           speakMessage(aiMsg.id, result.synthesis);
         }
       } else {
@@ -284,14 +312,14 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         const aiMsg: Message = {
           id: crypto.randomUUID(),
           role: 'assistant',
-          content: result.error ? `⚠️ ${result.error}` : (result.text ?? ''),
+          content: result.error ? `${result.error}` : (result.text ?? ''),
           provider: result.provider,
           isError: !!result.error,
           timestamp: new Date(),
         };
         appendMsg(aiMsg);
 
-        if (!result.error && result.text && keyStatus.openai && (tier === 'pro' || tier === 'business')) {
+        if (!result.error && result.text && voiceMode) {
           speakMessage(aiMsg.id, result.text);
         }
       }
@@ -299,7 +327,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       setConsensusThinking(false);
       appendMsg({
         id: crypto.randomUUID(), role: 'assistant', isError: true,
-        content: `⚠️ ${e instanceof Error ? e.message : 'Something went wrong'}`,
+        content: `${e instanceof Error ? e.message : 'Something went wrong'}`,
         timestamp: new Date(),
       });
     } finally {
@@ -318,36 +346,89 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   // ── System actions ────────────────────────────────────────────────────────────
 
   const runFindPhotos = async () => {
-    addSystemMsg('📸 Scanning your computer for photos…');
+    addSystemMsg('Scanning for photos…');
     try {
       const result = await window.triforge.files.scanPhotos();
       if (result.error === 'PERMISSION_DENIED:files') {
-        addSystemMsg('⚠️ Files permission is off. Go to Settings → Permissions → Files & Folders.');
+        addSystemMsg('Files permission is off. Enable Files & Folders in Settings → Permissions.');
         return;
       }
       const count = result.photos.length;
       if (count === 0) { addSystemMsg('No photos found in Pictures, Desktop, or Downloads.'); return; }
       const preview = result.photos.slice(0, 5).map(p => `• ${p.name} — ${new Date(p.modified).toLocaleDateString()}`).join('\n');
-      addSystemMsg(`📸 Found ${count} photo${count > 1 ? 's' : ''}. Most recent:\n${preview}${count > 5 ? `\n…and ${count - 5} more.` : ''}`);
-    } catch { addSystemMsg('⚠️ Could not scan for photos.'); }
+      addSystemMsg(`Found ${count} photo${count > 1 ? 's' : ''}. Most recent:\n${preview}${count > 5 ? `\n…and ${count - 5} more.` : ''}`);
+    } catch { addSystemMsg('Could not scan for photos.'); }
   };
 
   const runOrganizeDownloads = async () => {
     const dirPath = await window.triforge.files.pickDir();
-    if (!dirPath) return; // user cancelled
-    addSystemMsg(`🗂️ Organizing ${dirPath}…`);
+    if (!dirPath) return;
+    addSystemMsg(`Organizing ${dirPath}…`);
     try {
       const result = await window.triforge.files.organize(dirPath);
       if (result.errors.some(e => e.includes('PERMISSION_DENIED'))) {
-        addSystemMsg('⚠️ Files permission is off. Go to Settings → Permissions → Files & Folders.'); return;
+        addSystemMsg('Files permission is off. Enable Files & Folders in Settings → Permissions.'); return;
       }
       if (result.moved === 0) {
-        addSystemMsg('🗂️ No loose files found to organize — files may already be sorted or unsupported types.');
+        addSystemMsg('No loose files found — folder may already be sorted or contains unsupported types.');
         return;
       }
       const folders = result.folders.map(f => f.split(/[\\/]/).pop()).join(', ');
-      addSystemMsg(`✅ Organized ${result.moved} file${result.moved > 1 ? 's' : ''} into: ${folders || 'sub-folders'}.${result.errors.length ? `\n⚠️ ${result.errors.length} file(s) skipped.` : ''}`);
-    } catch { addSystemMsg('⚠️ Could not organize the selected folder.'); }
+      addSystemMsg(`Organized ${result.moved} file${result.moved > 1 ? 's' : ''} → ${folders || 'category sub-folders'}.${result.errors.length ? `\n${result.errors.length} file(s) skipped.` : ''}`);
+    } catch { addSystemMsg('Could not organize the selected folder.'); }
+  };
+
+  const runOrganizeDeep = async () => {
+    const dirPath = await window.triforge.files.pickDir();
+    if (!dirPath) return;
+    addSystemMsg(`Deep scan of ${dirPath} — organizing all nested files…`);
+    try {
+      const result = await window.triforge.files.organizeDeep(dirPath);
+      if (result.errors.some(e => e.includes('PERMISSION_DENIED'))) {
+        addSystemMsg('Files permission is off. Enable Files & Folders in Settings → Permissions.'); return;
+      }
+      if (result.moved === 0) {
+        addSystemMsg(`Scanned ${result.directoriesScanned} folders — all files already organized or no supported types found.`);
+        return;
+      }
+      const folders = result.folders.map(f => f.split(/[\\/]/).pop()).join(', ');
+      addSystemMsg(`Organized ${result.moved} file${result.moved > 1 ? 's' : ''} across ${result.directoriesScanned} folders → ${folders || 'category sub-folders'}.${result.errors.length ? `\n${result.errors.length} file(s) skipped.` : ''}`);
+    } catch { addSystemMsg('Could not complete deep organization.'); }
+  };
+
+  const runSearchPhotos = async (query?: string) => {
+    const q = query ?? prompt('Search photos by name or keyword:');
+    if (!q?.trim()) return;
+    addSystemMsg(`Searching for photos matching "${q}"…`);
+    try {
+      const result = await window.triforge.files.searchPhotos(q.trim());
+      if (result.error === 'PERMISSION_DENIED:files') {
+        addSystemMsg('Files permission is off. Go to Settings → Permissions → Files & Folders.'); return;
+      }
+      if (result.photos.length === 0) {
+        addSystemMsg(`No photos found matching "${q}".`); return;
+      }
+      addPhotoMsg(`Found ${result.photos.length} photo${result.photos.length > 1 ? 's' : ''} matching "${q}"`, result.photos);
+    } catch { addSystemMsg('Photo search failed.'); }
+  };
+
+  const runFindSimilar = async () => {
+    const refPath = await window.triforge.files.pickFile([
+      { name: 'Images', extensions: ['jpg','jpeg','png','gif','bmp','webp','heic','heif','tiff','tif'] },
+    ]);
+    if (!refPath) return;
+    const refName = refPath.split(/[\\/]/).pop() ?? refPath;
+    addSystemMsg(`Scanning for photos similar to "${refName}"…`);
+    try {
+      const result = await window.triforge.files.findSimilar(refPath);
+      if (result.error === 'PERMISSION_DENIED:files') {
+        addSystemMsg('Files permission is off. Go to Settings → Permissions → Files & Folders.'); return;
+      }
+      if (result.photos.length === 0) {
+        addSystemMsg(`No photos found similar to "${refName}" — try a broader folder or different reference.`); return;
+      }
+      addPhotoMsg(`${result.photos.length} photo${result.photos.length > 1 ? 's' : ''} similar to "${refName}"`, result.photos);
+    } catch { addSystemMsg('Could not scan for similar photos.'); }
   };
 
   const runPickAndPrint = async () => {
@@ -356,16 +437,16 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       { name: 'All Files', extensions: ['*'] },
     ]);
     if (!filePath) return;
-    addSystemMsg('🖨️ Checking available printers…');
+    addSystemMsg('Checking available printers…');
     try {
       const { printers, error } = await window.triforge.print.list();
-      if (error === 'PERMISSION_DENIED:printer') { addSystemMsg('⚠️ Printer permission is off. Go to Settings → Permissions → Printer.'); return; }
-      if (printers.length === 0) { addSystemMsg('⚠️ No printers found. Make sure your printer is connected.'); return; }
+      if (error === 'PERMISSION_DENIED:printer') { addSystemMsg('Printer permission is off. Go to Settings → Permissions → Printer.'); return; }
+      if (printers.length === 0) { addSystemMsg('No printers found. Make sure your printer is connected.'); return; }
       const printer = printers.find(p => p.isDefault) ?? printers[0];
-      addSystemMsg(`🖨️ Sending "${filePath.split(/[\\/]/).pop()}" to ${printer.name}…`);
+      addSystemMsg(`Sending "${filePath.split(/[\\/]/).pop()}" to ${printer.name}…`);
       const result = await window.triforge.print.file(filePath, printer.name);
-      addSystemMsg(result.ok ? `✅ Print job sent to ${printer.name}.` : `⚠️ Print failed: ${result.error}`);
-    } catch { addSystemMsg('⚠️ Could not complete print job.'); }
+      addSystemMsg(result.ok ? `Print job sent to ${printer.name}.` : `Print failed: ${result.error}`);
+    } catch { addSystemMsg('Could not complete print job.'); }
   };
 
   const handleQuickAction = (a: typeof QUICK_ACTIONS[number]) => {
@@ -445,18 +526,21 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         {messages.map(msg => (
           msg.consensusResponses
             ? <ConsensusMessage key={msg.id} msg={msg} isSpeaking={speaking === msg.id}
-                canSpeak={!!keyStatus.openai} onSpeak={() => speakMessage(msg.id, msg.content)}
+                canSpeak={true} onSpeak={() => speakMessage(msg.id, msg.content)}
                 tier={tier} onUpgradeClick={onUpgradeClick} />
             : <MessageBubble key={msg.id} msg={msg} isSpeaking={speaking === msg.id}
-                canSpeak={!!keyStatus.openai} onSpeak={() => speakMessage(msg.id, msg.content)}
+                canSpeak={true} onSpeak={() => speakMessage(msg.id, msg.content)}
                 onRetry={msg.isError && msg.role === 'assistant' ? () => {
                   const prev = messages[messages.indexOf(msg) - 1];
                   if (prev?.role === 'user') sendMessage(prev.content, msg.id);
                 } : undefined}
                 onRunAction={(action) => {
-                  if (action === 'find_photos') runFindPhotos();
-                  else if (action === 'organize') runOrganizeDownloads();
-                  else if (action === 'print') runPickAndPrint();
+                  if (action === 'find_photos')    runFindPhotos();
+                  else if (action === 'organize')       runOrganizeDownloads();
+                  else if (action === 'organize_deep')  runOrganizeDeep();
+                  else if (action === 'search_photos')  runSearchPhotos();
+                  else if (action === 'find_similar')   runFindSimilar();
+                  else if (action === 'print')          runPickAndPrint();
                 }} />
         ))}
         {(sending || consensusThinking) && (
@@ -470,11 +554,10 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       {/* Workflow templates panel (collapsible) */}
       {showWorkflows && (
         <div style={cs.workflowPanel}>
-          <div style={cs.workflowPanelTitle}>⚡ Think Tank Workflows — click to fire instantly</div>
+          <div style={cs.workflowPanelTitle}>Think Tank Workflows</div>
           <div style={cs.workflowGrid}>
             {WORKFLOWS.map(w => (
               <button key={w.id} style={cs.workflowCard} onClick={() => fireWorkflow(w.id)}>
-                <span style={cs.workflowIcon}>{w.icon}</span>
                 <div>
                   <div style={cs.workflowLabel}>{w.label}</div>
                   <div style={cs.workflowDesc}>{w.desc}</div>
@@ -500,33 +583,50 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       <div style={cs.actionToolbar}>
         <button style={{ ...cs.actionBtn, ...(showQuickActions ? cs.actionBtnActive : {}) }}
           onClick={() => setShowQuickActions(s => !s)} title="Quick actions">
-          ⚡ <span style={cs.actionLabel}>Quick</span>
+          <span style={cs.actionLabel}>Quick</span>
         </button>
         <button style={{ ...cs.actionBtn, ...(showWorkflows ? cs.actionBtnActive : {}) }}
           onClick={() => { setShowWorkflows(s => !s); setShowQuickActions(false); }} title="Workflow templates">
-          📋 <span style={cs.actionLabel}>Workflows</span>
+          <span style={cs.actionLabel}>Workflows</span>
         </button>
         <div style={cs.toolbarDivider} />
-        <button style={cs.actionBtn} onClick={runFindPhotos} title="Find photos">
-          📸 <span style={cs.actionLabel}>Photos</span>
+        <button style={cs.actionBtn} onClick={runFindPhotos} title="Scan for photos">
+          <span style={cs.actionLabel}>Photos</span>
         </button>
-        <button style={cs.actionBtn} onClick={runOrganizeDownloads} title="Organize Downloads">
-          🗂️ <span style={cs.actionLabel}>Organize</span>
+        <button style={cs.actionBtn} onClick={runOrganizeDownloads} title="Organize a folder">
+          <span style={cs.actionLabel}>Organize</span>
         </button>
         <button style={cs.actionBtn} onClick={runPickAndPrint} title="Print a file">
-          🖨️ <span style={cs.actionLabel}>Print</span>
+          <span style={cs.actionLabel}>Print</span>
         </button>
         <button style={cs.actionBtn} onClick={async () => {
           const dir = await window.triforge.files.pickDir();
           if (dir) {
             const result = await window.triforge.files.listDir(dir);
-            if (result.error) { addSystemMsg(`⚠️ ${result.error}`); return; }
-            addSystemMsg(`📁 ${dir}\n${result.subdirs.length} folders, ${result.files.length} files\n` +
+            if (result.error) { addSystemMsg(`${result.error}`); return; }
+            addSystemMsg(`${dir}\n${result.subdirs.length} folders, ${result.files.length} files\n` +
               result.files.slice(0, 8).map(f => `• ${f.name}`).join('\n') +
               (result.files.length > 8 ? `\n…and ${result.files.length - 8} more` : ''));
           }
         }} title="Browse a folder">
-          📁 <span style={cs.actionLabel}>Browse</span>
+          <span style={cs.actionLabel}>Browse</span>
+        </button>
+        <div style={cs.toolbarDivider} />
+        <button
+          style={{ ...cs.actionBtn, ...(voiceMode ? cs.actionBtnActive : {}) }}
+          onClick={() => {
+            const next = !voiceMode;
+            setVoiceMode(next);
+            localStorage.setItem('triforge-voice-mode', next ? 'on' : 'off');
+            if (!next) {
+              if (audioRef.current) { audioRef.current.pause(); audioRef.current.src = ''; }
+              window.speechSynthesis?.cancel();
+              setSpeaking(null);
+            }
+          }}
+          title={voiceMode ? 'Voice responses active — click to mute' : 'Voice responses off — click to enable'}
+        >
+          <span style={cs.actionLabel}>{voiceMode ? 'Voice On' : 'Voice'}</span>
         </button>
       </div>
 
@@ -534,7 +634,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       <div style={cs.inputArea}>
         <VoiceButton
           onTranscript={(text) => sendMessage(text)}
-          onError={(err) => addSystemMsg(`🎙️ ${err}`)}
+          onError={(err) => addSystemMsg(`Voice input: ${err}`)}
           disabled={!keyStatus.openai || sending}
         />
         <div style={cs.inputWrapper}>
@@ -547,9 +647,9 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(input); } }}
             placeholder={hasKeys
               ? mode === 'consensus'
-                ? '⚡ Ask the Think Tank… all 3 AIs will respond (Enter to send)'
-                : 'Message TriForge AI… (Enter to send, Shift+Enter for newline)'
-              : 'Add an API key in Settings to get started →'
+                ? 'Ask the Council — all 3 models will respond independently (Enter to send)'
+                : 'Message TriForge AI (Enter to send, Shift+Enter for newline)'
+              : 'Configure API keys in Settings to activate TriForge'
             }
             rows={1}
             disabled={!hasKeys || sending}
@@ -605,11 +705,11 @@ function ConsensusMessage({ msg, isSpeaking, canSpeak, onSpeak, tier, onUpgradeC
 
   return (
     <div style={cs.bubbleRow}>
-      <div style={cs.avatar}>⚡</div>
+      <div style={cs.avatar}>TF</div>
       <div style={cs.consensusCard}>
         {/* Header */}
         <div style={cs.consensusHeader}>
-          <span style={cs.consensusBadge}>⚡ Think Tank</span>
+          <span style={cs.consensusBadge}>Think Tank</span>
           <span style={cs.consensusCount}>{responses.length} AI{responses.length > 1 ? 's' : ''} responded</span>
         </div>
 
@@ -626,7 +726,7 @@ function ConsensusMessage({ msg, isSpeaking, canSpeak, onSpeak, tier, onUpgradeC
         {!plan && (
           <div style={cs.planBtnRow}>
             <button style={{ ...cs.planBtn, ...(!canUsePlans ? cs.planBtnLocked : {}) }} onClick={generatePlan} disabled={planLoading}>
-              {planLoading ? '⏳ Generating plan…' : canUsePlans ? '🗺️ Generate Execution Plan' : '🔒 Execution Plans — Pro'}
+              {planLoading ? 'Generating plan…' : canUsePlans ? 'Generate Execution Plan' : 'Execution Plans — Pro'}
             </button>
             {planError && <span style={cs.planError}>{planError}</span>}
           </div>
@@ -655,9 +755,9 @@ function ConsensusMessage({ msg, isSpeaking, canSpeak, onSpeak, tier, onUpgradeC
         {/* Meta */}
         <div style={cs.bubbleMeta}>
           <span style={cs.timestamp}>{msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-          <button style={cs.speakBtn} onClick={() => navigator.clipboard.writeText(msg.content)} title="Copy synthesis">📋</button>
+          <button style={cs.speakBtn} onClick={() => navigator.clipboard.writeText(msg.content)} title="Copy synthesis">Copy</button>
           {canSpeak && (
-            <button style={{ ...cs.speakBtn, ...(isSpeaking ? cs.speakBtnActive : {}) }} onClick={onSpeak} title="Read synthesis aloud">🔊</button>
+            <button style={{ ...cs.speakBtn, ...(isSpeaking ? cs.speakBtnActive : {}) }} onClick={onSpeak} title="Read synthesis aloud">Read</button>
           )}
         </div>
       </div>
@@ -686,10 +786,10 @@ function ForgeScorePanel({ score }: { score: ForgeScore }) {
         </div>
         <span style={cs.confPct}>{score.confidence}%</span>
       </div>
-      {score.agreement    && <ForgeRow icon="✅" label="Agreement"    text={score.agreement} />}
-      {score.disagreement && <ForgeRow icon="⚠️" label="Disagreement" text={score.disagreement} />}
-      {score.assumptions  && <ForgeRow icon="💭" label="Assumptions"  text={score.assumptions} />}
-      {score.verify       && <ForgeRow icon="🔍" label="Verify"       text={score.verify} />}
+      {score.agreement    && <ForgeRow icon="✓" label="Agreement"    text={score.agreement} />}
+      {score.disagreement && <ForgeRow icon="✗" label="Disagreement" text={score.disagreement} />}
+      {score.assumptions  && <ForgeRow icon="≈" label="Assumptions"  text={score.assumptions} />}
+      {score.verify       && <ForgeRow icon="→" label="Verify"       text={score.verify} />}
     </div>
   );
 }
@@ -706,12 +806,71 @@ function ForgeRow({ icon, label, text }: { icon: string; label: string; text: st
 
 // ── RUN tag parser ────────────────────────────────────────────────────────────
 
-const RUN_TAG_RE = /\[RUN:(find_photos|organize|print)\]/i;
+const RUN_TAG_RE = /\[RUN:(find_photos|organize|organize_deep|search_photos|find_similar|print)\]/i;
 
 const RUN_LABELS: Record<string, string> = {
-  find_photos: 'Scan for Photos',
-  organize:    'Organize Files',
-  print:       'Choose File & Print',
+  find_photos:    'Scan for Photos',
+  organize:       'Organize Folder',
+  organize_deep:  'Deep Organize (All Sub-folders)',
+  search_photos:  'Search Photos by Name',
+  find_similar:   'Find Similar Photos',
+  print:          'Choose File & Print',
+};
+
+// ── Photo Results Grid ────────────────────────────────────────────────────────
+
+function PhotoGrid({ photos }: { photos: PhotoFile[] }) {
+  const [filing, setFiling] = React.useState(false);
+
+  const open   = (p: PhotoFile) => window.triforge.files.openFile(p.path);
+  const reveal = (p: PhotoFile) => window.triforge.files.showInFolder(p.path);
+
+  const fileAll = async () => {
+    const dest = await window.triforge.files.pickDir();
+    if (!dest) return;
+    setFiling(true);
+    try {
+      const result = await window.triforge.files.moveFiles(photos.map(p => p.path), dest);
+      alert(`Moved ${result.moved} photo${result.moved !== 1 ? 's' : ''} to ${dest}.${result.errors.length ? `\n${result.errors.length} skipped.` : ''}`);
+    } finally { setFiling(false); }
+  };
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      {photos.slice(0, 50).map(p => (
+        <div key={p.path} style={pgStyles.row}>
+          <div style={pgStyles.icon}>◻</div>
+          <div style={pgStyles.info}>
+            <div style={pgStyles.name}>{p.name}</div>
+            <div style={pgStyles.meta}>
+              {new Date(p.modified).toLocaleDateString()} · {(p.size / 1024).toFixed(0)} KB
+            </div>
+          </div>
+          <button style={pgStyles.btn} onClick={() => open(p)}>Open</button>
+          <button style={pgStyles.btn} onClick={() => reveal(p)}>Reveal</button>
+        </div>
+      ))}
+      {photos.length > 50 && (
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>…and {photos.length - 50} more</div>
+      )}
+      <button
+        style={{ ...pgStyles.btn, marginTop: 10, background: 'rgba(99,102,241,0.18)', width: '100%' }}
+        onClick={fileAll}
+        disabled={filing}
+      >
+        {filing ? 'Moving…' : `Move all ${photos.length} here…`}
+      </button>
+    </div>
+  );
+}
+
+const pgStyles = {
+  row:  { display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' } as React.CSSProperties,
+  icon: { fontSize: 18, flexShrink: 0 } as React.CSSProperties,
+  info: { flex: 1, minWidth: 0 } as React.CSSProperties,
+  name: { fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const },
+  meta: { fontSize: 11, color: 'var(--text-muted)', marginTop: 1 },
+  btn:  { fontSize: 11, padding: '3px 9px', background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 4, color: 'var(--text-secondary)', cursor: 'pointer', flexShrink: 0 } as React.CSSProperties,
 };
 
 // ── Regular MessageBubble ─────────────────────────────────────────────────────
@@ -728,6 +887,7 @@ function MessageBubble({ msg, isSpeaking, canSpeak, onSpeak, onRetry, onRunActio
     return (
       <div style={cs.systemMsg}>
         <span style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</span>
+        {msg.photos && msg.photos.length > 0 && <PhotoGrid photos={msg.photos} />}
       </div>
     );
   }
@@ -739,7 +899,7 @@ function MessageBubble({ msg, isSpeaking, canSpeak, onSpeak, onRetry, onRunActio
 
   return (
     <div style={{ ...cs.bubbleRow, ...(isUser ? cs.bubbleRowUser : {}) }}>
-      {!isUser && <div style={cs.avatar}>⚡</div>}
+      {!isUser && <div style={cs.avatar}>TF</div>}
       <div style={{ ...cs.bubble, ...(isUser ? cs.bubbleUser : cs.bubbleAi), ...(msg.isError ? cs.bubbleError : {}) }}>
         <div style={cs.bubbleContent}>{displayContent}</div>
         {runAction && onRunAction && (
@@ -758,13 +918,13 @@ function MessageBubble({ msg, isSpeaking, canSpeak, onSpeak, onRetry, onRunActio
           )}
           <span style={cs.timestamp}>{msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
           {!isUser && (
-            <button style={cs.speakBtn} onClick={() => navigator.clipboard.writeText(msg.content)} title="Copy">📋</button>
+            <button style={cs.speakBtn} onClick={() => navigator.clipboard.writeText(msg.content)} title="Copy">Copy</button>
           )}
           {!isUser && canSpeak && (
-            <button style={{ ...cs.speakBtn, ...(isSpeaking ? cs.speakBtnActive : {}) }} onClick={onSpeak} title="Read aloud">🔊</button>
+            <button style={{ ...cs.speakBtn, ...(isSpeaking ? cs.speakBtnActive : {}) }} onClick={onSpeak} title="Read aloud">Read</button>
           )}
           {onRetry && (
-            <button style={cs.retryBtn} onClick={onRetry} title="Retry">🔄 Retry</button>
+            <button style={cs.retryBtn} onClick={onRetry} title="Retry">Retry</button>
           )}
         </div>
       </div>
@@ -777,7 +937,7 @@ function MessageBubble({ msg, isSpeaking, canSpeak, onSpeak, onRetry, onRunActio
 function TypingIndicator() {
   return (
     <div style={cs.bubbleRow}>
-      <div style={cs.avatar}>⚡</div>
+      <div style={cs.avatar}>TF</div>
       <div style={{ ...cs.bubble, ...cs.bubbleAi, padding: '12px 16px' }}>
         <div style={cs.typingDots}><span /><span /><span /></div>
       </div>
@@ -791,23 +951,23 @@ function TypingIndicator() {
 function getWelcomeMessage(mode: string, keys: Record<string, boolean>): string {
   const active = Object.entries(keys).filter(([, v]) => v).map(([k]) => PROVIDER_LABELS[k] ?? k);
   if (active.length === 0) {
-    return '👋 Welcome to TriForge AI! Go to Settings → API Keys and add at least one key to get started.';
+    return 'TriForge requires at least one AI provider key to operate. Configure API keys in Settings → API Keys to activate the council.';
   }
   if (mode === 'consensus') {
-    return `👋 Your Think Tank is ready! ${active.join(', ')} are all active. Every question you ask will be answered by all ${active.length} AIs — then synthesized into one definitive answer. This is TriForge at full power.`;
+    return `Council active. ${active.join(', ')} are all online. Every query is processed by all ${active.length} models independently — then synthesized into a single verified answer with a Forge Score.`;
   }
   if (active.length > 1) {
-    return `👋 Welcome! ${active.join(' and ')} are active. Add ${active.length < 3 ? 'more keys' : ''} to unlock full Think Tank mode.`;
+    return `${active.join(' and ')} are active. Add the remaining provider key to enable full three-model consensus mode.`;
   }
-  return `👋 Welcome! Running with ${active[0]}. Add more API keys in Settings to unlock Think Tank consensus mode.`;
+  return `Running on ${active[0]}. Add additional provider keys in Settings to enable Think Tank consensus mode.`;
 }
 
 // ── Profile Status Strip ──────────────────────────────────────────────────────
 
-const PROFILE_DISPLAY: Record<string, { name: string; icon: string }> = {
-  restaurant: { name: 'Restaurant & Food Service', icon: '🍽️' },
-  trucking:   { name: 'Trucking & Freight',         icon: '🚛' },
-  consultant: { name: 'Consultant & Agency',        icon: '💼' },
+const PROFILE_DISPLAY: Record<string, { name: string }> = {
+  restaurant: { name: 'Restaurant & Food Service' },
+  trucking:   { name: 'Trucking & Freight' },
+  consultant: { name: 'Consultant & Agency' },
 };
 
 function ProfileStatusStrip({ profileId, onSwitch, onDeactivate }: {
@@ -815,10 +975,10 @@ function ProfileStatusStrip({ profileId, onSwitch, onDeactivate }: {
   onSwitch: () => void;
   onDeactivate: () => void;
 }) {
-  const info = PROFILE_DISPLAY[profileId] ?? { name: profileId, icon: '🛡️' };
+  const info = PROFILE_DISPLAY[profileId] ?? { name: profileId };
   return (
     <div style={stripStyle.bar}>
-      <span style={stripStyle.label}>{info.icon} <strong>{info.name}</strong> profile active</span>
+      <span style={stripStyle.label}>Active Profile: <strong>{info.name}</strong></span>
       <div style={stripStyle.actions}>
         <button style={stripStyle.btn} onClick={onSwitch}>Switch Profile</button>
         <button style={stripStyle.btn} onClick={onDeactivate}>Deactivate</button>

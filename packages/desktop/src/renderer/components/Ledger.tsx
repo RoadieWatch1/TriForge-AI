@@ -85,7 +85,7 @@ export function Ledger({ tier, onUpgradeClick }: LedgerProps) {
     return (
       <div style={{ ...s.page, alignItems: 'center', justifyContent: 'center' }}>
         <div style={s.upgradeGate}>
-          <div style={s.upgradeIcon}>📋</div>
+          <div style={s.upgradeIcon}>≡</div>
           <div style={s.upgradeTitle}>Decision Ledger</div>
           <div style={s.upgradeDesc}>
             Every Think Tank answer is automatically saved, searchable, and exportable — all in one place.
@@ -110,7 +110,7 @@ export function Ledger({ tier, onUpgradeClick }: LedgerProps) {
       {/* Header */}
       <div style={s.header}>
         <div>
-          <h2 style={s.title}>📋 Decision Ledger</h2>
+          <h2 style={s.title}>Decision Ledger</h2>
           <p style={s.subtitle}>Every Think Tank result is automatically saved here. Searchable, exportable, starred.</p>
         </div>
         <div style={s.headerActions}>
@@ -143,7 +143,7 @@ export function Ledger({ tier, onUpgradeClick }: LedgerProps) {
       <div style={s.list}>
         {sorted.length === 0 && (
           <div style={s.emptyState}>
-            <div style={s.emptyIcon}>📋</div>
+            <div style={s.emptyIcon}>≡</div>
             <div style={s.emptyTitle}>
               {search ? 'No results found' : 'Your ledger is empty'}
             </div>
@@ -167,7 +167,7 @@ export function Ledger({ tier, onUpgradeClick }: LedgerProps) {
                 {/* Star */}
                 <button style={s.starBtn} onClick={() => handleStar(entry.id, entry.starred)}
                   title={entry.starred ? 'Unstar' : 'Star'}>
-                  {entry.starred ? '⭐' : '☆'}
+                  {entry.starred ? '★' : '☆'}
                 </button>
 
                 {/* Content summary */}
@@ -214,10 +214,10 @@ export function Ledger({ tier, onUpgradeClick }: LedgerProps) {
                       <div style={s.detailSectionLabel}>FORGE SCORE</div>
                       <div style={s.forgeGrid}>
                         <ForgeBar confidence={entry.forgeScore.confidence} />
-                        {entry.forgeScore.agreement    && <ForgeDetailRow icon="✅" label="Agreement"    text={entry.forgeScore.agreement} />}
-                        {entry.forgeScore.disagreement && <ForgeDetailRow icon="⚠️" label="Disagreement" text={entry.forgeScore.disagreement} />}
-                        {entry.forgeScore.assumptions  && <ForgeDetailRow icon="💭" label="Assumptions"  text={entry.forgeScore.assumptions} />}
-                        {entry.forgeScore.verify       && <ForgeDetailRow icon="🔍" label="Verify"       text={entry.forgeScore.verify} />}
+                        {entry.forgeScore.agreement    && <ForgeDetailRow icon="✓" label="Agreement"    text={entry.forgeScore.agreement} />}
+                        {entry.forgeScore.disagreement && <ForgeDetailRow icon="✗" label="Disagreement" text={entry.forgeScore.disagreement} />}
+                        {entry.forgeScore.assumptions  && <ForgeDetailRow icon="≈" label="Assumptions"  text={entry.forgeScore.assumptions} />}
+                        {entry.forgeScore.verify       && <ForgeDetailRow icon="→" label="Verify"       text={entry.forgeScore.verify} />}
                       </div>
                     </div>
                   )}
@@ -254,7 +254,7 @@ export function Ledger({ tier, onUpgradeClick }: LedgerProps) {
                     </button>
                     <div style={{ flex: 1 }} />
                     <button style={s.deleteBtn} onClick={() => handleDelete(entry.id)}>
-                      🗑 Delete
+                      Delete
                     </button>
                   </div>
 

@@ -33,10 +33,13 @@ export async function buildSystemPrompt(store: Store): Promise<string> {
   const systemTools: string[] = [];
   if (hasFiles) {
     systemTools.push(
-      '• PHOTO FINDER — can scan the user\'s computer for photos (Pictures, Desktop, Downloads, OneDrive) and return a list with dates and sizes',
-      '• FILE ORGANIZER — can organize any directory by automatically sorting files into Photos / Videos / Music / Documents / Archives sub-folders',
-      '• FILE BROWSER — can list any directory the user specifies',
-      '• FILE OPENER — can open any file in its default application',
+      '• PHOTO FINDER — scans the user\'s computer (Pictures, Desktop, Downloads, OneDrive) and returns all photos sorted by date → append [RUN:find_photos]',
+      '• PHOTO SEARCH — searches every known photo location for photos matching a keyword or name → append [RUN:search_photos]',
+      '• SIMILAR PHOTO FINDER — user picks a reference photo; finds all photos from the same session or with similar names/dates → append [RUN:find_similar]',
+      '• FILE ORGANIZER — organizes a chosen folder (top level) into Photos / Videos / Music / Documents / Archives → append [RUN:organize]',
+      '• DEEP FILE ORGANIZER — recursively organizes an entire directory tree, pulling all nested files into root-level category folders → append [RUN:organize_deep]',
+      '• FILE BROWSER — lists any directory the user specifies',
+      '• FILE OPENER — opens any file in its default application',
     );
   }
   if (hasPrinter) {

@@ -265,7 +265,6 @@
 
   <script>
     // ── TriForge vocal greeting via Web Speech API ──────────────────────────────
-    // Built into Electron/Chromium — no API key, no network, works on first launch.
     (function () {
       if (!window.speechSynthesis) return;
 
@@ -275,46 +274,61 @@
         if (spoken) return;
         spoken = true;
 
-        // Voice priority: best natural voices per platform
         var voices = speechSynthesis.getVoices();
+
+        // Voice priority — natural/neural voices only. The old offline voices
+        // (Microsoft David, Zira, the base Aria) are what sound robotic.
+        // Windows 11 Online Neural voices are indistinguishable from human.
         var preferred = (
-          voices.find(function(v){ return v.name === 'Samantha'; })            || // macOS
-          voices.find(function(v){ return v.name === 'Alex'; })                || // macOS older
-          voices.find(function(v){ return /Aria.*Natural/i.test(v.name); })    || // Windows 11
-          voices.find(function(v){ return /Microsoft Aria/i.test(v.name); })   || // Windows 11
-          voices.find(function(v){ return /Google US English/i.test(v.name);}  ) // Chrome
+          // Windows 11 — Online Neural (best quality, requires network)
+          voices.find(function(v){ return /Microsoft (Aria|Jenny|Guy|Davis|Tony) Online.*Natural/i.test(v.name); }) ||
+          // macOS — Enhanced (downloaded high-quality voices)
+          voices.find(function(v){ return /(Ava|Allison|Samantha).*Enhanced/i.test(v.name); })                      ||
+          // macOS — standard natural voices
+          voices.find(function(v){ return v.name === 'Samantha'; })                                                  ||
+          // Windows 11 — offline Aria (acceptable fallback)
+          voices.find(function(v){ return /^Microsoft Aria$/i.test(v.name); })                                       ||
+          // Chrome / Linux
+          voices.find(function(v){ return /Google US English/i.test(v.name); })                                      ||
+          // Last resort: any local en-US voice
+          voices.find(function(v){ return v.lang === 'en-US' && v.localService; })
         );
 
+        // Each line carries its own post-silence (ms) before the next line fires.
+        // The beat after "Welcome to TriForge." is intentional — it lands the name.
         var lines = [
-          'Welcome to TriForge.',
-          'Three minds. One verified result.',
-          'Intelligence, forged.'
+          { text: 'Welcome to TriForge.',              pause: 950 },
+          { text: 'Three minds. One verified result.', pause: 750 },
+          { text: 'Intelligence, forged.',             pause: 0   },
         ];
 
-        // Chain via onend — Chromium silently drops queued speak() calls
-        // when fired all at once. onend guarantees sequential delivery.
         function speakLine(index) {
           if (index >= lines.length) return;
           var u = new SpeechSynthesisUtterance();
-          u.text   = lines[index];
-          u.rate   = 0.88;  // natural conversational pace
-          u.pitch  = 1.0;   // keep at default — lowering pitch is what causes robotic quality
+          u.text   = lines[index].text;
+          u.rate   = 0.82;   // deliberate — not rushed, not sluggish
+          u.pitch  = 1.0;    // never lower pitch — that's what causes robotic quality
           u.volume = 1.0;
           if (preferred) u.voice = preferred;
-          u.onend = function () { speakLine(index + 1); };
+          u.onend = function () {
+            var pause = lines[index].pause;
+            if (pause > 0) {
+              setTimeout(function () { speakLine(index + 1); }, pause);
+            } else {
+              speakLine(index + 1);
+            }
+          };
           speechSynthesis.speak(u);
         }
 
         setTimeout(function () { speakLine(0); }, 1800);
       }
 
-      // Voices may load asynchronously on first call
       var voices = speechSynthesis.getVoices();
       if (voices.length > 0) {
         greet();
       } else {
         speechSynthesis.addEventListener('voiceschanged', greet, { once: true });
-        // Safety fallback: if voiceschanged never fires, speak with default voice
         setTimeout(greet, 2200);
       }
     })();

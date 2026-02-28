@@ -64,7 +64,7 @@ export function UpgradeGate({ feature, neededTier, onClose, onUpgrade, proChecko
     <div style={overlay} onClick={onClose}>
       <div style={card} onClick={e => e.stopPropagation()}>
         {/* Icon */}
-        <div style={iconCircle}>🔒</div>
+        <div style={iconCircle}>⊡</div>
 
         {/* Heading */}
         <h2 style={heading}>{tierName} feature</h2>

@@ -10,7 +10,7 @@ import { isAtMessageLimit, hasCapability, lockedError, getMemoryLimit, TIERS } f
 import { hashPin, verifyPin, isValidPin } from './auth';
 import { buildSystemPrompt } from './systemPrompt';
 import { getProfile, listProfiles } from './profiles';
-import { scanForPhotos, listDirectory, organizeDirectory, getCommonDirs } from './filesystem';
+import { scanForPhotos, listDirectory, organizeDirectory, organizeDirectoryDeep, searchPhotos, findSimilarPhotos, moveFiles, getCommonDirs } from './filesystem';
 import { listPrinters, printFile, printText } from './printer';
 import {
   ProviderManager,
@@ -642,6 +642,34 @@ VERIFY: [1-3 specific things the user should double-check]
     const filesGranted = perms.find(p => p.key === 'files')?.granted;
     if (!filesGranted) return { moved: 0, folders: [], errors: ['PERMISSION_DENIED:files'] };
     return organizeDirectory(dirPath);
+  });
+
+  ipcMain.handle('files:organizeDeep', (_e, dirPath: string) => {
+    const perms = store.getPermissions();
+    const filesGranted = perms.find(p => p.key === 'files')?.granted;
+    if (!filesGranted) return { moved: 0, folders: [], errors: ['PERMISSION_DENIED:files'], directoriesScanned: 0 };
+    return organizeDirectoryDeep(dirPath);
+  });
+
+  ipcMain.handle('files:searchPhotos', (_e, query: string, startPath?: string) => {
+    const perms = store.getPermissions();
+    const filesGranted = perms.find(p => p.key === 'files')?.granted;
+    if (!filesGranted) return { photos: [], error: 'PERMISSION_DENIED:files' };
+    return { photos: searchPhotos(query, startPath) };
+  });
+
+  ipcMain.handle('files:findSimilar', (_e, refPath: string, startPath?: string) => {
+    const perms = store.getPermissions();
+    const filesGranted = perms.find(p => p.key === 'files')?.granted;
+    if (!filesGranted) return { photos: [], error: 'PERMISSION_DENIED:files' };
+    return { photos: findSimilarPhotos(refPath, startPath) };
+  });
+
+  ipcMain.handle('files:moveFiles', (_e, srcPaths: string[], destDir: string) => {
+    const perms = store.getPermissions();
+    const filesGranted = perms.find(p => p.key === 'files')?.granted;
+    if (!filesGranted) return { moved: 0, errors: ['PERMISSION_DENIED:files'] };
+    return moveFiles(srcPaths, destDir);
   });
 
   ipcMain.handle('files:openFile', (_e, filePath: string) => {
