@@ -29,6 +29,18 @@ jobs:
           cd packages/desktop
           npm version "$VERSION" --no-git-tag-version
 
+      # electron-builder v25 expects APPLE_API_KEY to be a FILE PATH, not file
+      # contents. Write the secret to a temp .p8 file and export its path so
+      # electron-builder's built-in notarization picks it up correctly.
+      - name: Write notarization key to temp file
+        if: ${{ env.APPLE_API_KEY_CONTENT != '' }}
+        env:
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          KEY_FILE="$RUNNER_TEMP/notarization_key.p8"
+          printf '%s' "$APPLE_API_KEY_CONTENT" > "$KEY_FILE"
+          echo "APPLE_API_KEY=$KEY_FILE" >> $GITHUB_ENV
+
       - name: Build app
         run: npm run build:desktop
 
@@ -40,7 +52,7 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTS_PASSWORD }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           ELECTRON_BUILDER_COMPRESSION_LEVEL: '0'
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          # APPLE_API_KEY is set via GITHUB_ENV above (as a file path)
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
 

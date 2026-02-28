@@ -34,7 +34,6 @@
     "entitlementsInherit": "assets/entitlements.mac.plist",
     "identity": "Developer ID Application"
   },
-  "afterSign": "build/notarize.js",
 
   "dmg": {
     "artifactName": "TriForge-AI.dmg",
