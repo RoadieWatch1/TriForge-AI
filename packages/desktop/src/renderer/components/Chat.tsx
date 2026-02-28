@@ -541,6 +541,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           <textarea
             ref={inputRef}
             style={cs.textarea}
+            spellCheck={true}
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(input); } }}
