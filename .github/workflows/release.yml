@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  # ── macOS build (arm64 DMG) ─────────────────────────────────────────────────
+  # ── macOS build (universal DMG) ──────────────────────────────────────────────
   build-mac:
     runs-on: macos-latest
     steps:
@@ -22,6 +22,12 @@ jobs:
 
       - name: Install dependencies
         run: npm install
+
+      - name: Sync app version from git tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cd packages/desktop
+          npm version "$VERSION" --no-git-tag-version
 
       - name: Build app
         run: npm run build:desktop
@@ -57,6 +63,13 @@ jobs:
 
       - name: Install dependencies
         run: npm install
+
+      - name: Sync app version from git tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cd packages/desktop
+          npm version "$VERSION" --no-git-tag-version
 
       - name: Build app
         run: npm run build:desktop
