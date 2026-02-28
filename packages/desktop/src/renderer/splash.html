@@ -285,23 +285,27 @@
           voices.find(function(v){ return /Google US English/i.test(v.name);}  ) // Chrome
         );
 
-        function line(text, rate, pitch) {
+        var lines = [
+          'Welcome to TriForge.',
+          'Three minds. One verified result.',
+          'Intelligence, forged.'
+        ];
+
+        // Chain via onend — Chromium silently drops queued speak() calls
+        // when fired all at once. onend guarantees sequential delivery.
+        function speakLine(index) {
+          if (index >= lines.length) return;
           var u = new SpeechSynthesisUtterance();
-          u.text   = text;
-          u.rate   = rate;
-          u.pitch  = pitch;
+          u.text   = lines[index];
+          u.rate   = 0.88;  // natural conversational pace
+          u.pitch  = 1.0;   // keep at default — lowering pitch is what causes robotic quality
           u.volume = 1.0;
           if (preferred) u.voice = preferred;
-          return u;
+          u.onend = function () { speakLine(index + 1); };
+          speechSynthesis.speak(u);
         }
 
-        // Three lines queued — browser speech synthesis plays them sequentially.
-        // Periods create a natural internal beat; the queue gap adds the pause between lines.
-        setTimeout(function () {
-          speechSynthesis.speak(line('Welcome to TriForge.',              0.78, 0.76));
-          speechSynthesis.speak(line('Three minds. One verified result.', 0.76, 0.76));
-          speechSynthesis.speak(line('Intelligence, forged.',             0.72, 0.74));
-        }, 1800);
+        setTimeout(function () { speakLine(0); }, 1800);
       }
 
       // Voices may load asynchronously on first call
