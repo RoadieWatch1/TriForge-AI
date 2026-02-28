@@ -21,8 +21,8 @@ interface LedgerEntry {
 }
 
 const RISK_COLORS: Record<string, string> = { Low: '#10a37f', Medium: '#f59e0b', High: '#ef4444' };
-const PROVIDER_COLORS: Record<string, string> = { openai: '#10a37f', claude: '#d97706', gemini: '#4285f4' };
-const PROVIDER_LABELS: Record<string, string> = { openai: 'OpenAI', claude: 'Claude', gemini: 'Gemini' };
+const PROVIDER_COLORS: Record<string, string> = { openai: '#10a37f', claude: '#d97706', grok: '#6366f1' };
+const PROVIDER_LABELS: Record<string, string> = { openai: 'OpenAI', claude: 'Claude', grok: 'Grok' };
 
 function formatAge(ts: number): string {
   const d = Math.floor((Date.now() - ts) / 86400000);

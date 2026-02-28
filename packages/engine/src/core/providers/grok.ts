@@ -1,17 +1,17 @@
 /**
- * Gemini Provider — uses Google AI Studio OpenAI-compatible API via native fetch.
+ * Grok Provider — uses xAI's OpenAI-compatible API via native fetch.
  */
 
 import { AIProvider, AIProviderConfig, ProviderError, retryWithBackoff } from './provider';
 import { ReviewResult } from '../types';
 
-const DEFAULT_MODEL = 'gemini-2.0-flash';
-const API_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
-const VALIDATE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/models';
+const DEFAULT_MODEL = 'grok-3';
+const API_URL = 'https://api.x.ai/v1/chat/completions';
+const VALIDATE_URL = 'https://api.x.ai/v1/models';
 const TIMEOUT_MS = 120_000;
 
-export class GeminiProvider implements AIProvider {
-  readonly name = 'gemini' as const;
+export class GrokProvider implements AIProvider {
+  readonly name = 'grok' as const;
   private config: AIProviderConfig;
 
   constructor(config: AIProviderConfig) {
@@ -46,18 +46,18 @@ export class GeminiProvider implements AIProvider {
         });
       } catch (err: any) {
         if (err.name === 'AbortError') {
-          throw new ProviderError('gemini', 0, 'Request cancelled or timed out.');
+          throw new ProviderError('grok', 0, 'Request cancelled or timed out.');
         }
-        throw new ProviderError('gemini', 0, `Network error: ${err.message}`);
+        throw new ProviderError('grok', 0, `Network error: ${err.message}`);
       }
 
       if (!res.ok) {
         const body = await res.text().catch(() => '');
         const retryAfter = res.headers.get('retry-after');
         throw new ProviderError(
-          'gemini',
+          'grok',
           res.status,
-          `Gemini API error ${res.status}: ${body.substring(0, 200)}`,
+          `Grok API error ${res.status}: ${body.substring(0, 200)}`,
           retryAfter ? parseInt(retryAfter, 10) * 1000 : undefined
         );
       }
@@ -65,7 +65,7 @@ export class GeminiProvider implements AIProvider {
       const json: any = await res.json();
       const content = json?.choices?.[0]?.message?.content;
       if (!content) {
-        throw new ProviderError('gemini', 0, 'Gemini returned an empty response.');
+        throw new ProviderError('grok', 0, 'Grok returned an empty response.');
       }
       return content;
     }, signal);
@@ -109,14 +109,14 @@ export class GeminiProvider implements AIProvider {
       });
     } catch (err: any) {
       if (err.name === 'AbortError') {
-        throw new ProviderError('gemini', 0, 'Request cancelled or timed out.');
+        throw new ProviderError('grok', 0, 'Request cancelled or timed out.');
       }
-      throw new ProviderError('gemini', 0, `Network error: ${err.message}`);
+      throw new ProviderError('grok', 0, `Network error: ${err.message}`);
     }
 
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      throw new ProviderError('gemini', res.status, `Gemini API error ${res.status}: ${body.substring(0, 200)}`);
+      throw new ProviderError('grok', res.status, `Grok API error ${res.status}: ${body.substring(0, 200)}`);
     }
 
     const reader = res.body!.getReader();
@@ -145,7 +145,7 @@ export class GeminiProvider implements AIProvider {
       }
     } catch (err: any) {
       if (err.name === 'AbortError') {
-        throw new ProviderError('gemini', 0, 'Request cancelled or timed out.');
+        throw new ProviderError('grok', 0, 'Request cancelled or timed out.');
       }
       throw err;
     }
@@ -270,7 +270,7 @@ Keep the list minimal and focused.`;
       const cleaned = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
       const parsed = JSON.parse(cleaned);
       return {
-        provider: 'gemini',
+        provider: 'grok',
         filePath,
         fileHash,
         verdict: parsed.verdict === 'APPROVE' ? 'APPROVE' : 'REQUEST_CHANGES',
@@ -280,9 +280,9 @@ Keep the list minimal and focused.`;
         timestamp: new Date(),
       };
     } catch (err) {
-      console.error('[TriForge] Gemini parseReview failed — malformed JSON from provider:', err, '\nRaw (first 200 chars):', raw.substring(0, 200));
+      console.error('[TriForge] Grok parseReview failed — malformed JSON from provider:', err, '\nRaw (first 200 chars):', raw.substring(0, 200));
       return {
-        provider: 'gemini',
+        provider: 'grok',
         filePath,
         fileHash,
         verdict: 'REQUEST_CHANGES',

@@ -54,7 +54,7 @@
     /* Per-AI beam colors */
     .c-claude  { stroke: #f97316; }
     .c-gpt     { stroke: #10b981; }
-    .c-gemini  { stroke: #3b82f6; }
+    .c-grok    { stroke: #6366f1; }
 
     /* AI node outer halos */
     .halo {
@@ -66,7 +66,7 @@
     }
     .halo.claude  { fill: #f97316; stroke: #f97316; }
     .halo.gpt     { fill: #10b981; stroke: #10b981; animation-delay: 0.73s; }
-    .halo.gemini  { fill: #3b82f6; stroke: #3b82f6; animation-delay: 1.47s; }
+    .halo.grok    { fill: #6366f1; stroke: #6366f1; animation-delay: 1.47s; }
 
     /* AI node cores */
     .node {
@@ -75,7 +75,7 @@
     }
     .node.claude  { fill: #f97316; stroke: #f97316; }
     .node.gpt     { fill: #10b981; stroke: #10b981; }
-    .node.gemini  { fill: #3b82f6; stroke: #3b82f6; }
+    .node.grok    { fill: #6366f1; stroke: #6366f1; }
 
     /* Node brand labels */
     .brand {
@@ -137,7 +137,7 @@
     }
     .dot.d1 { background: #f97316; }
     .dot.d2 { background: #818cf8; animation-delay: 0.22s; }
-    .dot.d3 { background: #3b82f6; animation-delay: 0.44s; }
+    .dot.d3 { background: #6366f1; animation-delay: 0.44s; }
     .dot.d4 { background: #10b981; animation-delay: 0.66s; }
 
     .version {
@@ -181,7 +181,7 @@
     Triangle layout (inside viewBox 0 0 380 165):
       CLAUDE  — top center       (190, 22)  — orange
       GPT     — bottom-left      ( 85, 148) — teal
-      GEMINI  — bottom-right     (295, 148) — blue
+      GROK    — bottom-right     (295, 148) — indigo
       FORGE   — center           (190,  88) — indigo
   -->
   <svg class="forge" viewBox="0 0 380 165" xmlns="http://www.w3.org/2000/svg">
@@ -216,9 +216,9 @@
     <line class="beam-static c-gpt"    x1="98"  y1="139" x2="179" y2="96"/>
     <line class="beam-anim   c-gpt"    x1="98"  y1="139" x2="179" y2="96"/>
 
-    <!-- GEMINI bottom-right (295,148) → center (190,88) -->
-    <line class="beam-static c-gemini" x1="282" y1="139" x2="201" y2="96"/>
-    <line class="beam-anim   c-gemini" x1="282" y1="139" x2="201" y2="96"/>
+    <!-- GROK bottom-right (295,148) → center (190,88) -->
+    <line class="beam-static c-grok" x1="282" y1="139" x2="201" y2="96"/>
+    <line class="beam-anim   c-grok" x1="282" y1="139" x2="201" y2="96"/>
 
     <!-- ── CLAUDE node — top ── -->
     <circle class="halo claude" cx="190" cy="22" r="22"/>
@@ -236,12 +236,12 @@
           fill="#10b981" filter="url(#f-teal)">G</text>
     <text x="42" y="158" text-anchor="middle" class="brand" fill="#34d399">GPT</text>
 
-    <!-- ── GEMINI node — bottom-right ── -->
-    <circle class="halo gemini" cx="295" cy="148" r="22"/>
-    <circle class="node gemini" cx="295" cy="148" r="13" filter="url(#f-blue)"/>
+    <!-- ── GROK node — bottom-right ── -->
+    <circle class="halo grok" cx="295" cy="148" r="22"/>
+    <circle class="node grok" cx="295" cy="148" r="13" filter="url(#f-blue)"/>
     <text x="295" y="153" text-anchor="middle" font-size="11" font-weight="800"
-          fill="#3b82f6" filter="url(#f-blue)">G</text>
-    <text x="337" y="158" text-anchor="middle" class="brand" fill="#60a5fa">GEMINI</text>
+          fill="#6366f1" filter="url(#f-blue)">X</text>
+    <text x="337" y="158" text-anchor="middle" class="brand" fill="#818cf8">GROK</text>
 
     <!-- ── Center forge ── -->
     <circle class="forge-outer" cx="190" cy="88" r="38"/>

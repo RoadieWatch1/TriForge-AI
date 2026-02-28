@@ -1,6 +1,6 @@
 # TriForge AI
 
-A VS Code extension that runs a **tri-model AI consensus engine** — OpenAI, Claude, and Gemini debate every code change before it's applied to your project.
+A VS Code extension that runs a **tri-model AI consensus engine** — OpenAI, Claude, and Grok debate every code change before it's applied to your project.
 
 ## How It Works
 
@@ -30,7 +30,7 @@ The number of active providers determines the mode automatically:
 | Command | Description |
 |---|---|
 | `TriForge AI: Open Chat` | Open the main chat panel (`Ctrl+Shift+T`) |
-| `TriForge AI: Add/Update API Key` | Store an API key for OpenAI, Claude, or Gemini |
+| `TriForge AI: Add/Update API Key` | Store an API key for OpenAI, Claude, or Grok |
 | `TriForge AI: Remove API Key` | Remove a stored API key |
 | `TriForge AI: Check Provider Status` | See which providers are active |
 | `TriForge AI: Export Debate as Markdown` | Save the full AI debate log |
@@ -49,8 +49,8 @@ The number of active providers determines the mode automatically:
 | `triforgeAi.autoApprove` | `false` | Auto-apply low-risk patches without a confirmation prompt |
 | `triforgeAi.openai.model` | `gpt-4o` | OpenAI model to use |
 | `triforgeAi.claude.model` | `claude-sonnet-4-20250514` | Claude model to use |
-| `triforgeAi.gemini.model` | `gemini-2.0-flash` | Gemini model to use |
+| `triforgeAi.grok.model` | `grok-3` | Grok model to use |
 
 ## Requirements
 
-At least one API key from OpenAI, Anthropic, or Google AI Studio. All keys are stored securely in VS Code's Secret Storage.
+At least one API key from OpenAI, Anthropic, or xAI. All keys are stored securely in VS Code's Secret Storage.

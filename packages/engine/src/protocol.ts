@@ -6,7 +6,7 @@
  * - add structured Think Tank OS primitives (CouncilResult, ActionStep, DecisionLog, HealthSnapshot)
  */
 
-export type ProviderName = 'openai' | 'gemini' | 'claude';
+export type ProviderName = 'openai' | 'grok' | 'claude';
 export type OperatingMode = 'none' | 'single' | 'pair' | 'consensus';
 
 export type RiskLevel = 'low' | 'medium' | 'high';

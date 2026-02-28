@@ -116,7 +116,7 @@ suite('TriForgeOrchestrator', () => {
 
   test('pairReview: builder responds, reviewer adds critique', async () => {
     const builder = new MockProvider('openai').setGenerateResponse('builder answer');
-    const reviewer = new MockProvider('gemini').setGenerateResponse('reviewer critique');
+    const reviewer = new MockProvider('grok').setGenerateResponse('reviewer critique');
     const result = await makeOrchestrator([builder, reviewer]).pairReview('help me', '');
     assert.strictEqual(result.builder, 'builder answer');
     assert.strictEqual(result.reviewer, 'reviewer critique');
@@ -138,7 +138,7 @@ suite('TriForgeOrchestrator', () => {
     const builder = new MockProvider('openai').setPlan([
       { filePath: 'old.ts', action: 'delete', reason: 'unused' },
     ]);
-    const reviewer = new MockProvider('gemini');
+    const reviewer = new MockProvider('grok');
     const result = await makeOrchestrator([builder, reviewer]).orchestrate('remove old.ts', '');
     assert.strictEqual(result.fileDebates.length, 1);
     assert.strictEqual(result.fileDebates[0].status, 'approved');
@@ -151,7 +151,7 @@ suite('TriForgeOrchestrator', () => {
     const planner = new MockProvider('openai').setPlan([
       { filePath: 'foo.ts', action: 'create', reason: 'new file' },
     ]);
-    const reviewer = new MockProvider('gemini').setVerdicts('APPROVE');
+    const reviewer = new MockProvider('grok').setVerdicts('APPROVE');
     const result = await makeOrchestrator([planner, reviewer]).orchestrate('add foo.ts', '');
 
     assert.strictEqual(result.approvedFiles.length, 1);
@@ -165,7 +165,7 @@ suite('TriForgeOrchestrator', () => {
     const planner = new MockProvider('openai').setPlan([
       { filePath: 'bar.ts', action: 'create', reason: 'new' },
     ]);
-    const reviewer1 = new MockProvider('gemini').setVerdicts('APPROVE');
+    const reviewer1 = new MockProvider('grok').setVerdicts('APPROVE');
     const reviewer2 = new MockProvider('claude').setVerdicts('APPROVE');
     const result = await makeOrchestrator([planner, reviewer1, reviewer2]).orchestrate('add bar.ts', '');
 
@@ -177,13 +177,13 @@ suite('TriForgeOrchestrator', () => {
   // --- orchestrate: approval after revision ---
 
   test('orchestrate: reviewer requests changes once, approves next round → 2 rounds', async () => {
-    // 2 providers: openai builds round 1, gemini builds round 2
-    // gemini reviews round 1 (REQUEST_CHANGES), openai reviews round 2 (APPROVE)
+    // 2 providers: openai builds round 1, grok builds round 2
+    // grok reviews round 1 (REQUEST_CHANGES), openai reviews round 2 (APPROVE)
     const p0 = new MockProvider('openai')
       .setPlan([{ filePath: 'app.ts', action: 'create', reason: 'new' }])
       .setVerdicts('APPROVE'); // reviews in round 2
 
-    const p1 = new MockProvider('gemini')
+    const p1 = new MockProvider('grok')
       .setVerdicts('REQUEST_CHANGES'); // reviews in round 1
 
     const result = await makeOrchestrator([p0, p1]).orchestrate('build app.ts', '');
@@ -201,7 +201,7 @@ suite('TriForgeOrchestrator', () => {
       .setPlan([{ filePath: 'x.ts', action: 'create', reason: 'new' }])
       .setVerdicts('REQUEST_CHANGES', 'REQUEST_CHANGES');
 
-    const p1 = new MockProvider('gemini')
+    const p1 = new MockProvider('grok')
       .setVerdicts('REQUEST_CHANGES', 'REQUEST_CHANGES');
 
     const result = await makeOrchestrator([p0, p1], 2).orchestrate('build x.ts', '');
@@ -215,13 +215,13 @@ suite('TriForgeOrchestrator', () => {
   // --- orchestrate: split verdict (one approves, one rejects) ---
 
   test('orchestrate: split verdict is not consensus → continues to next round', async () => {
-    // Round 1: gemini APPROVE, claude REQUEST_CHANGES → not unanimous → no consensus
-    // Round 2: openai APPROVE, claude APPROVE → consensus (openai reviews when gemini builds)
+    // Round 1: grok APPROVE, claude REQUEST_CHANGES → not unanimous → no consensus
+    // Round 2: openai APPROVE, claude APPROVE → consensus (openai reviews when grok builds)
     const planner = new MockProvider('openai')
       .setPlan([{ filePath: 'split.ts', action: 'create', reason: 'new' }])
       .setVerdicts('APPROVE'); // openai reviews in round 2
 
-    const reviewer1 = new MockProvider('gemini')
+    const reviewer1 = new MockProvider('grok')
       .setVerdicts('APPROVE'); // reviews in round 1
 
     const reviewer2 = new MockProvider('claude')
@@ -242,7 +242,7 @@ suite('TriForgeOrchestrator', () => {
       { filePath: 'b.ts', action: 'create', reason: 'new' },
     ]);
     // reviewer approves both files (2 reviews total)
-    const reviewer = new MockProvider('gemini').setVerdicts('APPROVE', 'APPROVE');
+    const reviewer = new MockProvider('grok').setVerdicts('APPROVE', 'APPROVE');
 
     const result = await makeOrchestrator([planner, reviewer]).orchestrate('add two files', '');
 
@@ -276,7 +276,7 @@ suite('TriForgeOrchestrator', () => {
       .setPlan([{ filePath: 'out.ts', action: 'create', reason: 'new' }])
       .setDraft('export const x = 1;');
 
-    const reviewer = new MockProvider('gemini').setVerdicts('APPROVE');
+    const reviewer = new MockProvider('grok').setVerdicts('APPROVE');
 
     const result = await makeOrchestrator([builder, reviewer]).orchestrate('build out.ts', '');
 

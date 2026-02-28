@@ -67,13 +67,13 @@ interface Props {
 const PROVIDER_COLORS: Record<string, string> = {
   openai: '#10a37f',
   claude: '#d97706',
-  gemini: '#4285f4',
+  grok:   '#6366f1',
 };
 
 const PROVIDER_LABELS: Record<string, string> = {
   openai: 'OpenAI',
   claude: 'Claude',
-  gemini: 'Gemini',
+  grok:   'Grok',
 };
 
 const INTENSITY_COLORS: Record<string, string> = {
@@ -667,7 +667,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       {/* Status bar */}
       <div style={cs.statusBar}>
         <div style={cs.statusDots}>
-          {(['openai', 'claude', 'gemini'] as const).map(p => {
+          {(['openai', 'claude', 'grok'] as const).map(p => {
             const active = keyStatus[p];
             const color = PROVIDER_COLORS[p];
             return (
@@ -680,7 +680,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
               }}>
                 <div style={{ width: 6, height: 6, borderRadius: '50%', background: active ? color : 'var(--bg-elevated)', border: `1.5px solid ${active ? color : 'var(--border)'}`, flexShrink: 0 }} />
                 <span style={{ fontSize: 10, fontWeight: 600, color: active ? color : 'var(--text-muted)', letterSpacing: '0.03em' }}>
-                  {p === 'openai' ? 'GPT' : p === 'claude' ? 'Claude' : 'Gemini'}
+                  {p === 'openai' ? 'GPT' : p === 'claude' ? 'Claude' : 'Grok'}
                 </span>
               </div>
             );
@@ -939,7 +939,7 @@ function friendlyProviderError(provider: string, raw: string): React.ReactNode {
     const links: Record<string, string> = {
       claude: 'https://console.anthropic.com/settings/billing',
       openai: 'https://platform.openai.com/settings/organization/billing',
-      gemini: 'https://aistudio.google.com/apikey',
+      grok:   'https://console.x.ai/',
     };
     const link = links[provider.toLowerCase()];
     return (

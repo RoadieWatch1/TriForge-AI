@@ -41,10 +41,10 @@ export function App() {
   const [ready, setReady] = useState(false);
   const [firstRun, setFirstRun] = useState(false);
   const [permissions, setPermissions] = useState<Permission[]>([]);
-  const [keyStatus, setKeyStatus] = useState<Record<string, boolean>>({ openai: false, claude: false, gemini: false });
+  const [keyStatus, setKeyStatus] = useState<Record<string, boolean>>({ openai: false, claude: false, grok: false });
   const [mode, setMode] = useState('none');
   const [screen, setScreen] = useState<Screen>('chat');
-  const [apiKeys, setApiKeys] = useState<Record<string, string>>({ openai: '', claude: '', gemini: '' });
+  const [apiKeys, setApiKeys] = useState<Record<string, string>>({ openai: '', claude: '', grok: '' });
   const [saving, setSaving] = useState<string | null>(null);
   const [tier, setTier] = useState<string>('free');
   const [messagesThisMonth, setMessagesThisMonth] = useState(0);
@@ -322,7 +322,7 @@ interface SettingsProps {
 const PROVIDERS = [
   { id: 'openai', label: 'OpenAI', placeholder: 'sk-…', color: '#10a37f', billingUrl: 'https://platform.openai.com/settings/organization/billing', keysUrl: 'https://platform.openai.com/api-keys' },
   { id: 'claude', label: 'Anthropic Claude', placeholder: 'sk-ant-…', color: '#d97706', billingUrl: 'https://console.anthropic.com/settings/billing', keysUrl: 'https://console.anthropic.com/settings/keys' },
-  { id: 'gemini', label: 'Google Gemini', placeholder: 'AIza…', color: '#4285f4', billingUrl: 'https://aistudio.google.com/apikey', keysUrl: 'https://aistudio.google.com/apikey' },
+  { id: 'grok', label: 'xAI Grok', placeholder: 'xai-…', color: '#6366f1', billingUrl: 'https://console.x.ai/', keysUrl: 'https://console.x.ai/' },
 ];
 
 function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, hasPin, lockUsername, onSaveKey, onRemoveKey, onUpdatePermissions, onPinChanged }: SettingsProps) {
@@ -358,7 +358,7 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
         Keys are stored locally and never transmitted. At least one is required to activate the council.
       </p>
       <p style={{ color: '#f59e0b', fontSize: 12, marginBottom: 16, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 6, padding: '7px 10px' }}>
-        <strong>Note:</strong> All three APIs require paid billing. Anthropic (Claude) has no free tier — add credits before use. Google Gemini free tier has very low rate limits. OpenAI requires a minimum deposit.
+        <strong>Note:</strong> All three APIs require paid billing. Anthropic (Claude) has no free tier — add credits before use. xAI Grok requires a credit balance at console.x.ai. OpenAI requires a minimum deposit.
       </p>
       {PROVIDERS.map(p => (
         <div key={p.id} style={styles.keyRow}>

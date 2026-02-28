@@ -16,7 +16,7 @@ export * from './protocol';
 export type { AIProvider, AIProviderConfig } from './core/providers/provider';
 export { ProviderError } from './core/providers/provider';
 export { OpenAIProvider } from './core/providers/openai';
-export { GeminiProvider } from './core/providers/gemini';
+export { GrokProvider } from './core/providers/grok';
 export { ClaudeProvider } from './core/providers/claude';
 
 // Core engine

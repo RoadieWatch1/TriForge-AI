@@ -29,20 +29,20 @@ interface ForgeState {
 const PROVIDER_COLORS: Record<string, string> = {
   openai:  '#10a37f',
   claude:  '#a855f7',
-  gemini:  '#3b82f6',
+  grok:    '#6366f1',
 };
 
 const PROVIDER_LABELS: Record<string, string> = {
   openai:  'GPT-4',
   claude:  'Claude',
-  gemini:  'Gemini',
+  grok:    'Grok',
 };
 
 // SVG geometry — triangle arrangement
 const CORES = {
   claude:  { cx: 150, cy: 46 },
   openai:  { cx: 55,  cy: 188 },
-  gemini:  { cx: 245, cy: 188 },
+  grok:    { cx: 245, cy: 188 },
 };
 const CENTER = { x: 150, y: 128 };
 
@@ -58,7 +58,7 @@ function hexToRgb(hex: string): string {
 function defaultForgeState(): ForgeState {
   return {
     phase: 'querying',
-    providers: { openai: 'waiting', claude: 'waiting', gemini: 'waiting' },
+    providers: { openai: 'waiting', claude: 'waiting', grok: 'waiting' },
     completedCount: 0,
     total: 3,
     escalating: false,

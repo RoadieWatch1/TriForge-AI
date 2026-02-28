@@ -1,7 +1,7 @@
 import { StorageAdapter } from '../platform';
 import { AIProvider, AIProviderConfig } from './providers/provider';
 import { OpenAIProvider } from './providers/openai';
-import { GeminiProvider } from './providers/gemini';
+import { GrokProvider } from './providers/grok';
 import { ClaudeProvider } from './providers/claude';
 import { ProviderName, OperatingMode, ProviderStatus, ModeInfo, SessionRecord } from '../protocol';
 import { DecisionLog } from './decisionLog';
@@ -9,13 +9,13 @@ import { Memory } from './memory';
 
 const SECRET_KEYS: Record<ProviderName, string> = {
   openai: 'triforge.openai.apiKey',
-  gemini: 'triforge.gemini.apiKey',
+  grok:   'triforge.grok.apiKey',
   claude: 'triforge.claude.apiKey',
 };
 
 const PROVIDER_LABELS: Record<ProviderName, string> = {
   openai: 'OpenAI',
-  gemini: 'Gemini',
+  grok:   'Grok',
   claude: 'Claude',
 };
 
@@ -91,7 +91,7 @@ export class ProviderManager {
   }
 
   async getActiveProviders(): Promise<AIProvider[]> {
-    const names: ProviderName[] = ['openai', 'gemini', 'claude'];
+    const names: ProviderName[] = ['openai', 'grok', 'claude'];
     const providers: AIProvider[] = [];
     for (const name of names) {
       const provider = await this.getProvider(name);
@@ -107,7 +107,7 @@ export class ProviderManager {
   private _instantiate(name: ProviderName, config: AIProviderConfig): AIProvider {
     switch (name) {
       case 'openai': return new OpenAIProvider(config);
-      case 'gemini': return new GeminiProvider(config);
+      case 'grok': return new GrokProvider(config);
       case 'claude': return new ClaudeProvider(config);
     }
   }
@@ -116,7 +116,7 @@ export class ProviderManager {
 
   async detectMode(): Promise<ModeInfo> {
     const available: ProviderName[] = [];
-    const names: ProviderName[] = ['openai', 'gemini', 'claude'];
+    const names: ProviderName[] = ['openai', 'grok', 'claude'];
     for (const name of names) {
       if (await this.hasKey(name)) { available.push(name); }
     }
@@ -147,7 +147,7 @@ export class ProviderManager {
   }
 
   async getStatus(): Promise<ProviderStatus[]> {
-    const names: ProviderName[] = ['openai', 'gemini', 'claude'];
+    const names: ProviderName[] = ['openai', 'grok', 'claude'];
     const statuses: ProviderStatus[] = [];
     for (const name of names) {
       statuses.push({

@@ -35,7 +35,7 @@ function _activate(context: vscode.ExtensionContext) {
       const provider = await vscode.window.showQuickPick(
         [
           { label: 'OpenAI', value: 'openai' as ProviderName },
-          { label: 'Gemini', value: 'gemini' as ProviderName },
+          { label: 'Grok', value: 'grok' as ProviderName },
           { label: 'Claude', value: 'claude' as ProviderName },
         ],
         { placeHolder: 'Select AI provider to configure' }
@@ -67,7 +67,7 @@ function _activate(context: vscode.ExtensionContext) {
       const provider = await vscode.window.showQuickPick(
         [
           { label: 'OpenAI', value: 'openai' as ProviderName },
-          { label: 'Gemini', value: 'gemini' as ProviderName },
+          { label: 'Grok', value: 'grok' as ProviderName },
           { label: 'Claude', value: 'claude' as ProviderName },
         ],
         { placeHolder: 'Select AI provider to disconnect' }

@@ -143,7 +143,7 @@ export class TriForgeChatPanel {
 
   // ─── Message Router ────────────────────────────────────────────────
 
-  private static readonly _validProviders: ProviderName[] = ['openai', 'gemini', 'claude'];
+  private static readonly _validProviders: ProviderName[] = ['openai', 'grok', 'claude'];
   private static _isValidProvider(v: unknown): v is ProviderName {
     return typeof v === 'string' && TriForgeChatPanel._validProviders.includes(v as ProviderName);
   }
@@ -1233,7 +1233,7 @@ export class TriForgeChatPanel {
       border-left: 3px solid var(--accent-teal); align-self: flex-start;
     }
     .message.ai.openai { border-left-color: #ef4444; color: #ef4444; }
-    .message.ai.gemini { border-left-color: #4285f4; color: #4285f4; }
+    .message.ai.grok { border-left-color: #6366f1; color: #6366f1; }
     .message.ai.claude { border-left-color: #f97316; color: #f97316; }
     .message.user {
       background: var(--accent-orange); color: #fff;
@@ -1302,7 +1302,7 @@ export class TriForgeChatPanel {
       background: var(--bg-surface); margin-bottom: 3px;
     }
     .debate-bubble.db-openai { border-left: 3px solid #ef4444; }
-    .debate-bubble.db-gemini { border-left: 3px solid #4285f4; }
+    .debate-bubble.db-grok { border-left: 3px solid #6366f1; }
     .debate-bubble.db-claude { border-left: 3px solid #f97316; }
     .debate-bubble-header {
       display: flex; align-items: center; gap: 6px; margin-bottom: 3px;
@@ -1319,7 +1319,7 @@ export class TriForgeChatPanel {
 
     /* --- Provider name colors (reused across status bar, labels, bubbles) --- */
     .pn-openai { color: #ef4444; font-weight: 600; }
-    .pn-gemini { color: #4285f4; font-weight: 600; }
+    .pn-grok { color: #6366f1; font-weight: 600; }
     .pn-claude { color: #f97316; font-weight: 600; }
 
     /* --- Patch Preview --- */
@@ -1638,7 +1638,7 @@ export class TriForgeChatPanel {
       flex-shrink: 0;
     }
     .api-link-btn .alb-icon.openai { background: #ef4444; }
-    .api-link-btn .alb-icon.gemini { background: #4285f4; }
+    .api-link-btn .alb-icon.grok { background: #6366f1; }
     .api-link-btn .alb-icon.claude { background: #f97316; }
     .api-link-btn .alb-body { flex: 1; }
     .api-link-btn .alb-title {
@@ -2219,7 +2219,7 @@ export class TriForgeChatPanel {
   <!-- Status Bar -->
   <div class="status-bar">
     <span class="provider-dot" title="OpenAI"><span class="dot" id="dotOpenai"></span> <span class="pn-openai">OpenAI</span></span>
-    <span class="provider-dot" title="Gemini"><span class="dot" id="dotGemini"></span> <span class="pn-gemini">Gemini</span></span>
+    <span class="provider-dot" title="Grok"><span class="dot" id="dotGrok"></span> <span class="pn-grok">Grok</span></span>
     <span class="provider-dot" title="Claude"><span class="dot" id="dotClaude"></span> <span class="pn-claude">Claude</span></span>
     <span class="mode-badge none" id="modeBadge">No Keys</span>
     <button class="mode-toggle" id="modeToggle" title="Switch between Guided and Professional mode">Guided</button>
@@ -2309,11 +2309,11 @@ export class TriForgeChatPanel {
             <button data-save="openai">Save</button>
             <span class="status-text missing" id="statusOpenai">missing</span>
           </div>
-          <div class="key-row" id="keyRow-gemini">
-            <label class="pn-gemini">Gemini</label>
-            <input type="password" id="keyGemini" placeholder="AIza..." />
-            <button data-save="gemini">Save</button>
-            <span class="status-text missing" id="statusGemini">missing</span>
+          <div class="key-row" id="keyRow-grok">
+            <label class="pn-grok">Grok</label>
+            <input type="password" id="keyGrok" placeholder="xai-..." />
+            <button data-save="grok">Save</button>
+            <span class="status-text missing" id="statusGrok">missing</span>
           </div>
           <div class="key-row" id="keyRow-claude">
             <label class="pn-claude">Claude</label>
@@ -2484,11 +2484,11 @@ export class TriForgeChatPanel {
             </div>
             <span class="alb-arrow">&#8599;</span>
           </button>
-          <button class="api-link-btn" data-url="https://aistudio.google.com/apikey">
-            <div class="alb-icon gemini">G</div>
+          <button class="api-link-btn" data-url="https://console.x.ai/">
+            <div class="alb-icon grok">X</div>
             <div class="alb-body">
-              <div class="alb-title">Get Gemini API Key</div>
-              <div class="alb-url">aistudio.google.com</div>
+              <div class="alb-title">Get Grok API Key</div>
+              <div class="alb-url">console.x.ai</div>
             </div>
             <span class="alb-arrow">&#8599;</span>
           </button>
@@ -3014,7 +3014,7 @@ export class TriForgeChatPanel {
     }
 
     function setActiveProvider(provider) {
-      ['openai', 'gemini', 'claude'].forEach(function(p) {
+      ['openai', 'grok', 'claude'].forEach(function(p) {
         var dot = document.getElementById('dot' + p.charAt(0).toUpperCase() + p.slice(1));
         if (dot) { dot.classList.remove('active'); }
       });
@@ -3025,7 +3025,7 @@ export class TriForgeChatPanel {
     }
 
     function clearActiveDots() {
-      ['openai', 'gemini', 'claude'].forEach(function(p) {
+      ['openai', 'grok', 'claude'].forEach(function(p) {
         var dot = document.getElementById('dot' + p.charAt(0).toUpperCase() + p.slice(1));
         if (dot) { dot.classList.remove('active'); }
       });
@@ -3111,7 +3111,7 @@ export class TriForgeChatPanel {
     }
 
     // --- Status Update ---
-    var KEY_PLACEHOLDERS = { openai: 'sk-...', gemini: 'AIza...', claude: 'sk-ant-...' };
+    var KEY_PLACEHOLDERS = { openai: 'sk-...', grok: 'xai-...', claude: 'sk-ant-...' };
 
     function updateProviderStatus(providers, modeInfo) {
       for (var i = 0; i < providers.length; i++) {

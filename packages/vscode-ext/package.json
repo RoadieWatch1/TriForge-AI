@@ -122,10 +122,10 @@
           "default": "gpt-4o",
           "description": "OpenAI model to use"
         },
-        "triforgeAi.gemini.model": {
+        "triforgeAi.grok.model": {
           "type": "string",
-          "default": "gemini-2.0-flash",
-          "description": "Google Gemini model to use (e.g. gemini-2.0-flash, gemini-1.5-pro)"
+          "default": "grok-3",
+          "description": "xAI Grok model to use (e.g. grok-3, grok-2)"
         },
         "triforgeAi.claude.model": {
           "type": "string",
