@@ -31,7 +31,8 @@
     "hardenedRuntime": true,
     "gatekeeperAssess": false,
     "entitlements": "assets/entitlements.mac.plist",
-    "entitlementsInherit": "assets/entitlements.mac.plist"
+    "entitlementsInherit": "assets/entitlements.mac.plist",
+    "identity": "Developer ID Application"
   },
   "afterSign": "build/notarize.js",
 
