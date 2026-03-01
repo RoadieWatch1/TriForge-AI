@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TriForge AI Code Council — VS Code Extension</title>
+  <meta name="description" content="TriForge AI Code Council brings a structured three-model AI deliberation engine directly into VS Code. Draft, critique, and ship better code with OpenAI, Claude, and Grok working together inside your editor." />
+  <meta property="og:title" content="TriForge AI Code Council — VS Code Extension" />
+  <meta property="og:description" content="Three AI models. One editor. Structured council deliberation for every line of code you ship." />
+  <meta property="og:image" content="./logo.png" />
+  <link rel="icon" href="./logo.png" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0a0a0d;
+      --bg2:       #111118;
+      --bg3:       #18181f;
+      --border:    rgba(255,255,255,0.07);
+      --orange:    #f97316;
+      --teal:      #2dd4bf;
+      --indigo:    #6366f1;
+      --purple:    #a855f7;
+      --green:     #10b981;
+      --text:      #f0f0f5;
+      --muted:     #8b8b9e;
+      --dim:       #4b4b5e;
+      --radius:    14px;
+      --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 16px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    a { color: inherit; text-decoration: none; }
+
+    /* ── NAV ─────────────────────────────────────────────────── */
+    nav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 40px; height: 64px;
+      background: rgba(10,10,13,0.85);
+      backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav-logo { display: flex; align-items: center; gap: 10px; }
+    .nav-logo img { height: 36px; width: auto; }
+    .nav-logo span { font-size: 17px; font-weight: 700; letter-spacing: -0.3px; }
+    .nav-logo .nav-product {
+      font-size: 12px; font-weight: 700; letter-spacing: 0.06em;
+      text-transform: uppercase;
+      background: rgba(99,102,241,0.15);
+      border: 1px solid rgba(99,102,241,0.3);
+      color: #a5b4fc;
+      padding: 3px 9px; border-radius: 6px;
+    }
+    .nav-links { display: flex; align-items: center; gap: 28px; }
+    .nav-links a { font-size: 14px; color: var(--muted); transition: color 0.2s; }
+    .nav-links a:hover { color: var(--text); }
+    .btn-nav {
+      background: var(--indigo);
+      color: #fff !important;
+      padding: 8px 20px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 14px;
+      transition: opacity 0.2s;
+    }
+    .btn-nav:hover { opacity: 0.85; }
+    .btn-nav-ghost {
+      border: 1px solid var(--border);
+      color: var(--muted) !important;
+      padding: 7px 18px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 14px;
+      transition: all 0.2s;
+    }
+    .btn-nav-ghost:hover { color: var(--text) !important; border-color: rgba(255,255,255,0.2); }
+
+    /* ── HERO ────────────────────────────────────────────────── */
+    .hero {
+      min-height: 100vh;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      text-align: center;
+      padding: 120px 24px 80px;
+      position: relative;
+      overflow: hidden;
+    }
+    .hero-glow {
+      position: absolute; inset: 0; z-index: 0;
+      background:
+        radial-gradient(ellipse 60% 40% at 50% 0%, rgba(99,102,241,0.15) 0%, transparent 70%),
+        radial-gradient(ellipse 40% 30% at 20% 60%, rgba(168,85,247,0.1) 0%, transparent 60%),
+        radial-gradient(ellipse 40% 30% at 80% 70%, rgba(16,185,129,0.08) 0%, transparent 60%);
+      pointer-events: none;
+    }
+    .hero > * { position: relative; z-index: 1; }
+    .hero-badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: rgba(99,102,241,0.12);
+      border: 1px solid rgba(99,102,241,0.3);
+      border-radius: 100px;
+      padding: 6px 16px;
+      font-size: 13px; font-weight: 600;
+      color: #a5b4fc;
+      margin-bottom: 28px;
+      letter-spacing: 0.02em;
+    }
+    .hero h1 {
+      font-size: clamp(38px, 6.5vw, 72px);
+      font-weight: 800;
+      line-height: 1.08;
+      letter-spacing: -2px;
+      margin-bottom: 24px;
+      max-width: 900px;
+    }
+    .hero h1 .grad {
+      background: linear-gradient(135deg, var(--indigo) 0%, var(--purple) 50%, var(--teal) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .hero-sub {
+      font-size: clamp(16px, 2.3vw, 20px);
+      color: var(--muted);
+      max-width: 620px;
+      margin-bottom: 44px;
+      line-height: 1.65;
+    }
+    .hero-ctas { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; margin-bottom: 48px; }
+    .btn-primary {
+      display: inline-flex; align-items: center; gap: 10px;
+      background: linear-gradient(135deg, var(--indigo), var(--purple));
+      color: #fff;
+      padding: 15px 32px;
+      border-radius: 12px;
+      font-size: 16px; font-weight: 700;
+      transition: transform 0.2s, box-shadow 0.2s;
+      box-shadow: 0 0 0 0 rgba(99,102,241,0.4);
+    }
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 30px rgba(99,102,241,0.4);
+    }
+    .btn-secondary {
+      display: inline-flex; align-items: center; gap: 10px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 15px 32px;
+      border-radius: 12px;
+      font-size: 16px; font-weight: 600;
+      transition: background 0.2s;
+    }
+    .btn-secondary:hover { background: rgba(255,255,255,0.09); }
+    .hero-trial-note {
+      font-size: 13px; color: var(--dim);
+      display: flex; align-items: center; gap: 8px;
+    }
+    .hero-trial-note strong { color: var(--muted); }
+
+    /* ── VS CODE SCREENSHOT MOCK ──────────────────────────────── */
+    .editor-mock {
+      margin-top: 56px;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      max-width: 720px;
+      width: 100%;
+      text-align: left;
+      position: relative;
+      overflow: hidden;
+    }
+    .editor-mock::before {
+      content: '';
+      position: absolute; top: 0; left: 0; right: 0; height: 2px;
+      background: linear-gradient(90deg, var(--indigo), var(--purple), var(--teal));
+    }
+    .editor-chrome {
+      display: flex; gap: 6px; margin-bottom: 16px;
+    }
+    .editor-dot { width: 12px; height: 12px; border-radius: 50%; background: rgba(255,255,255,0.1); }
+    .editor-tab {
+      font-size: 11px; color: var(--muted);
+      background: var(--bg3); border-radius: 4px; padding: 3px 10px;
+    }
+    .editor-tab.active { color: #a5b4fc; background: rgba(99,102,241,0.1); border: 1px solid rgba(99,102,241,0.2); }
+    .council-phase {
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .phase-row {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 10px 12px;
+      background: var(--bg3);
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+    .phase-badge {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+      padding: 2px 7px; border-radius: 4px; flex-shrink: 0; margin-top: 1px;
+      text-transform: uppercase;
+    }
+    .phase-badge.draft   { background: rgba(249,115,22,0.15); color: #fb923c; }
+    .phase-badge.risk    { background: rgba(239,68,68,0.12);  color: #f87171; }
+    .phase-badge.debate  { background: rgba(99,102,241,0.15); color: #a5b4fc; }
+    .phase-badge.final   { background: rgba(16,185,129,0.15); color: #10b981; }
+    .phase-text { font-size: 12px; color: var(--muted); line-height: 1.5; flex: 1; }
+    .phase-text strong { color: var(--text); }
+    .phase-providers { display: flex; gap: 4px; margin-top: 4px; }
+    .pvdr {
+      font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px;
+    }
+    .pvdr.openai { background: rgba(16,163,127,0.12); color: #10a37f; }
+    .pvdr.claude { background: rgba(217,119,6,0.12);  color: #d97706; }
+    .pvdr.grok   { background: rgba(99,102,241,0.12); color: #818cf8; }
+
+    /* ── SECTION BASE ────────────────────────────────────────── */
+    section { padding: 100px 24px; }
+    .container { max-width: 1100px; margin: 0 auto; }
+    .section-label {
+      font-size: 12px; font-weight: 700; letter-spacing: 0.12em;
+      text-transform: uppercase; color: var(--indigo);
+      margin-bottom: 14px;
+    }
+    .section-title {
+      font-size: clamp(28px, 4vw, 44px);
+      font-weight: 800; letter-spacing: -1px;
+      line-height: 1.15;
+      margin-bottom: 16px;
+    }
+    .section-sub {
+      font-size: 17px; color: var(--muted);
+      max-width: 560px; line-height: 1.7;
+    }
+    .center { text-align: center; }
+    .center .section-sub { margin: 0 auto; }
+
+    /* ── WHAT IS ──────────────────────────────────────────────── */
+    .what-bg { background: var(--bg2); }
+    .what-grid {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 60px; align-items: center; margin-top: 60px;
+    }
+    .what-text p { color: var(--muted); font-size: 16px; line-height: 1.8; margin-bottom: 16px; }
+    .what-text p:last-child { margin-bottom: 0; }
+    .what-text strong { color: var(--text); }
+    .what-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .stat-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px; text-align: center;
+    }
+    .stat-num {
+      font-size: 38px; font-weight: 800;
+      background: linear-gradient(135deg, var(--indigo), var(--purple));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+      line-height: 1; margin-bottom: 6px;
+    }
+    .stat-label { font-size: 13px; color: var(--muted); font-weight: 600; }
+
+    /* ── HOW THE COUNCIL WORKS ───────────────────────────────── */
+    .pipeline-bg { background: var(--bg2); }
+    .pipeline {
+      display: flex; flex-direction: column; gap: 0;
+      margin-top: 56px; max-width: 760px; margin-left: auto; margin-right: auto;
+    }
+    .pipe-step {
+      display: grid; grid-template-columns: 64px 1fr; gap: 24px;
+      padding-bottom: 44px; position: relative;
+    }
+    .pipe-step:not(:last-child) .pipe-line {
+      position: absolute; left: 31px; top: 52px; bottom: 0;
+      width: 2px; background: linear-gradient(180deg, rgba(99,102,241,0.4), rgba(99,102,241,0.05));
+    }
+    .pipe-num {
+      width: 52px; height: 52px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 800; font-size: 18px; color: #fff;
+      flex-shrink: 0; position: relative; z-index: 1;
+    }
+    .pipe-num.n1 { background: linear-gradient(135deg, #f97316, #ea580c); }
+    .pipe-num.n2 { background: linear-gradient(135deg, #ef4444, #dc2626); }
+    .pipe-num.n3 { background: linear-gradient(135deg, #6366f1, #4f46e5); }
+    .pipe-num.n4 { background: linear-gradient(135deg, #8b5cf6, #7c3aed); }
+    .pipe-num.n5 { background: linear-gradient(135deg, #10b981, #059669); }
+    .pipe-content h3 { font-size: 18px; font-weight: 700; margin-bottom: 8px; padding-top: 12px; }
+    .pipe-content p { font-size: 15px; color: var(--muted); line-height: 1.7; }
+
+    /* ── FEATURES ────────────────────────────────────────────── */
+    .features-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr);
+      gap: 20px; margin-top: 56px;
+    }
+    .feature-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+      transition: border-color 0.2s;
+    }
+    .feature-card:hover { border-color: rgba(99,102,241,0.3); }
+    .feature-icon { font-size: 28px; margin-bottom: 14px; }
+    .feature-card h3 { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
+    .feature-card p { font-size: 14px; color: var(--muted); line-height: 1.7; }
+
+    /* ── TRIAL CALLOUT ───────────────────────────────────────── */
+    .trial-banner {
+      margin-top: 56px;
+      background: linear-gradient(135deg, rgba(16,185,129,0.06), rgba(99,102,241,0.06));
+      border: 1px solid rgba(16,185,129,0.2);
+      border-radius: var(--radius);
+      padding: 40px;
+      display: flex; align-items: center; gap: 40px;
+      flex-wrap: wrap;
+    }
+    .trial-icon { font-size: 48px; flex-shrink: 0; }
+    .trial-text { flex: 1; }
+    .trial-text h3 { font-size: 22px; font-weight: 700; margin-bottom: 8px; }
+    .trial-text p { font-size: 15px; color: var(--muted); max-width: 500px; line-height: 1.7; }
+    .trial-cta { flex-shrink: 0; }
+
+    /* ── PRICING ─────────────────────────────────────────────── */
+    .pricing-bg { background: var(--bg2); }
+    .pricing-pair {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 24px; margin-top: 56px; max-width: 760px;
+      margin-left: auto; margin-right: auto;
+      align-items: start;
+    }
+    .price-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 36px;
+      position: relative;
+    }
+    .price-card.featured {
+      background: linear-gradient(135deg, rgba(99,102,241,0.06), rgba(168,85,247,0.06));
+      border-color: rgba(99,102,241,0.35);
+    }
+    .featured-badge {
+      position: absolute; top: -12px; left: 50%; transform: translateX(-50%);
+      background: linear-gradient(135deg, var(--indigo), var(--purple));
+      color: #fff; font-size: 11px; font-weight: 700;
+      padding: 4px 14px; border-radius: 100px; letter-spacing: 0.06em;
+      text-transform: uppercase; white-space: nowrap;
+    }
+    .price-tier { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-bottom: 12px; }
+    .price-amount { font-size: 44px; font-weight: 800; letter-spacing: -1px; margin-bottom: 4px; }
+    .price-amount span { font-size: 18px; font-weight: 400; color: var(--muted); }
+    .price-desc { font-size: 14px; color: var(--muted); margin-bottom: 24px; line-height: 1.5; }
+    .price-features { list-style: none; display: flex; flex-direction: column; gap: 10px; margin-bottom: 28px; }
+    .price-features li { font-size: 14px; display: flex; align-items: flex-start; gap: 8px; }
+    .price-features li::before { content: '✓'; color: var(--teal); font-weight: 700; flex-shrink: 0; margin-top: 1px; }
+    .price-features li.x::before { content: '✗'; color: var(--dim); }
+    .btn-price {
+      display: block; text-align: center;
+      padding: 13px 24px; border-radius: 10px;
+      font-size: 15px; font-weight: 700;
+      background: var(--bg3); border: 1px solid var(--border);
+      transition: all 0.2s; color: var(--text);
+    }
+    .price-card.featured .btn-price {
+      background: linear-gradient(135deg, var(--indigo), var(--purple));
+      border-color: transparent;
+    }
+    .btn-price:hover { opacity: 0.85; transform: translateY(-1px); }
+    .price-note { font-size: 12px; color: var(--dim); text-align: center; margin-top: 10px; }
+
+    /* ── DESKTOP CTA ─────────────────────────────────────────── */
+    .desktop-cta-box {
+      margin-top: 80px;
+      background: linear-gradient(135deg, rgba(249,115,22,0.06), rgba(168,85,247,0.06));
+      border: 1px solid rgba(249,115,22,0.2);
+      border-radius: var(--radius);
+      padding: 40px;
+      display: flex; align-items: center; gap: 32px;
+      flex-wrap: wrap;
+    }
+    .desktop-cta-text { flex: 1; }
+    .desktop-cta-text h3 { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
+    .desktop-cta-text p { font-size: 14px; color: var(--muted); line-height: 1.6; }
+    .btn-orange {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: linear-gradient(135deg, var(--orange), #ea580c);
+      color: #fff; padding: 12px 24px; border-radius: 10px;
+      font-size: 15px; font-weight: 700;
+      white-space: nowrap;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .btn-orange:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(249,115,22,0.3); }
+
+    /* ── FOOTER ──────────────────────────────────────────────── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 48px 24px;
+    }
+    .footer-inner {
+      max-width: 1100px; margin: 0 auto;
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 20px;
+    }
+    .footer-logo { display: flex; align-items: center; gap: 10px; }
+    .footer-logo img { height: 30px; }
+    .footer-logo span { font-size: 15px; font-weight: 700; }
+    .footer-links { display: flex; gap: 24px; flex-wrap: wrap; }
+    .footer-links a { font-size: 13px; color: var(--dim); transition: color 0.2s; }
+    .footer-links a:hover { color: var(--text); }
+    .footer-copy { font-size: 13px; color: var(--dim); }
+
+    /* ── RESPONSIVE ──────────────────────────────────────────── */
+    @media (max-width: 768px) {
+      nav { padding: 0 20px; }
+      .nav-links { display: none; }
+      .what-grid { grid-template-columns: 1fr; gap: 40px; }
+      .features-grid { grid-template-columns: 1fr 1fr; }
+      .pricing-pair { grid-template-columns: 1fr; max-width: 400px; }
+      .trial-banner { flex-direction: column; gap: 24px; }
+      .desktop-cta-box { flex-direction: column; }
+      .footer-inner { flex-direction: column; align-items: flex-start; }
+    }
+    @media (max-width: 480px) {
+      section { padding: 70px 16px; }
+      .features-grid { grid-template-columns: 1fr; }
+      .hero { padding: 100px 16px 60px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ── NAV ── -->
+  <nav>
+    <div class="nav-logo">
+      <a href="./index.html" style="display:flex;align-items:center;gap:10px;">
+        <img src="./logo.png" alt="TriForge AI" />
+        <span>TriForge AI</span>
+      </a>
+      <span class="nav-product">Code Council</span>
+    </div>
+    <div class="nav-links">
+      <a href="#what">What it does</a>
+      <a href="#how">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#pricing">Pricing</a>
+      <a href="./index.html">Desktop App</a>
+      <a href="#pricing" class="btn-nav">Start Free Trial</a>
+    </div>
+  </nav>
+
+  <!-- ── HERO ── -->
+  <section class="hero" id="home">
+    <div class="hero-glow"></div>
+    <div class="hero-badge">⬡ VS Code Extension · Now Available</div>
+    <h1>Your Code Council,<br /><span class="grad">Inside VS Code.</span></h1>
+    <p class="hero-sub">
+      TriForge AI Code Council runs OpenAI, Claude, and Grok as a structured deliberation
+      panel directly in your editor. Draft, critique, debate, and ship code with
+      three AI minds reaching consensus — without leaving VS Code.
+    </p>
+    <div class="hero-ctas">
+      <a href="https://marketplace.visualstudio.com/items?itemName=triforgeai.triforge-ai"
+         class="btn-primary">
+        <span>⬇</span> Install in VS Code — Free
+      </a>
+      <a href="#pricing" class="btn-secondary">
+        <span>◆</span> Subscribe — $15/month
+      </a>
+    </div>
+    <p class="hero-trial-note">
+      <span>✓</span>
+      <strong>1-day free trial</strong> — no credit card required &nbsp;·&nbsp; Solo mode always free
+    </p>
+
+    <!-- Council pipeline preview -->
+    <div class="editor-mock">
+      <div class="editor-chrome">
+        <div class="editor-dot"></div>
+        <div class="editor-dot"></div>
+        <div class="editor-dot"></div>
+        <div class="editor-tab">my-api.ts</div>
+        <div class="editor-tab active">⬡ TriForge Council</div>
+      </div>
+      <div class="council-phase">
+        <div class="phase-row">
+          <span class="phase-badge draft">Draft</span>
+          <div class="phase-text">
+            <strong>OpenAI GPT-4o</strong> — Generating fast implementation draft&hellip;
+            <div class="phase-providers"><span class="pvdr openai">OpenAI</span></div>
+          </div>
+        </div>
+        <div class="phase-row">
+          <span class="phase-badge risk">Risk</span>
+          <div class="phase-text">
+            <strong>Risk Analysis</strong> — Identified 2 potential issues: unvalidated input, missing error boundary.
+          </div>
+        </div>
+        <div class="phase-row">
+          <span class="phase-badge debate">Debate</span>
+          <div class="phase-text">
+            <strong>Cross-critique</strong> — Claude and Grok reviewing the draft for security and logic gaps.
+            <div class="phase-providers">
+              <span class="pvdr claude">Claude</span>
+              <span class="pvdr grok">Grok</span>
+            </div>
+          </div>
+        </div>
+        <div class="phase-row">
+          <span class="phase-badge final">Consensus</span>
+          <div class="phase-text">
+            <strong>Council agrees</strong> — Unified solution ready. Confidence 94%. Apply to editor?
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── WHAT IS ── -->
+  <section class="what-bg" id="what">
+    <div class="container">
+      <div class="what-grid">
+        <div class="what-text">
+          <div class="section-label">What is TriForge AI Code Council</div>
+          <h2 class="section-title">Not a copilot.<br />A council.</h2>
+          <p>
+            Every AI coding tool gives you one answer from one model. TriForge AI Code
+            Council is different. It runs <strong>three frontier AI models simultaneously</strong> —
+            OpenAI GPT, Anthropic Claude, and xAI Grok — and puts them through a
+            structured deliberation pipeline before showing you the result.
+          </p>
+          <p>
+            First, one model drafts. Then all three critique for bugs, security issues, and
+            logical gaps. Then they debate. Then they reach <strong>consensus</strong>.
+            What you get isn't a suggestion — it's a vetted solution.
+          </p>
+          <p>
+            Solo mode works with any single provider and is <strong>always free</strong>.
+            Full Council mode — with cross-critique and consensus — requires a subscription
+            after the 1-day trial.
+          </p>
+        </div>
+        <div class="what-stats">
+          <div class="stat-card">
+            <div class="stat-num">3</div>
+            <div class="stat-label">AI Models Deliberating</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-num">5</div>
+            <div class="stat-label">Pipeline Phases</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-num">0</div>
+            <div class="stat-label">Data on Our Servers</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-num">1</div>
+            <div class="stat-label">Day Free Trial</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── HOW THE COUNCIL PIPELINE WORKS ── -->
+  <section id="how">
+    <div class="container">
+      <div class="center">
+        <div class="section-label">How it works</div>
+        <h2 class="section-title">Five phases.<br />One trusted answer.</h2>
+        <p class="section-sub">
+          Every Council run follows the same structured deliberation pipeline — the same way
+          a senior engineering team reviews code before it ships.
+        </p>
+      </div>
+      <div class="pipeline">
+        <div class="pipe-step">
+          <div class="pipe-line"></div>
+          <div class="pipe-num n1">1</div>
+          <div class="pipe-content">
+            <h3>Fast Draft</h3>
+            <p>The fastest available model generates an initial implementation. This is the raw first draft — optimized for speed, not perfection. It becomes the subject of scrutiny in the phases that follow.</p>
+          </div>
+        </div>
+        <div class="pipe-step">
+          <div class="pipe-line"></div>
+          <div class="pipe-num n2">2</div>
+          <div class="pipe-content">
+            <h3>Risk Analysis</h3>
+            <p>TriForge scans the draft for security vulnerabilities, injection risks, logic errors, and edge cases. The risk level (LOW / MEDIUM / HIGH / CRITICAL) adjusts how intensely the council debates in the next phase.</p>
+          </div>
+        </div>
+        <div class="pipe-step">
+          <div class="pipe-line"></div>
+          <div class="pipe-num n3">3</div>
+          <div class="pipe-content">
+            <h3>Cross-Critique</h3>
+            <p>Each model reviews the draft independently and delivers a structured verdict — agree, disagree, or partial. Models with objections must explain the specific flaw and propose a concrete fix. No vague rejections.</p>
+          </div>
+        </div>
+        <div class="pipe-step">
+          <div class="pipe-line"></div>
+          <div class="pipe-num n4">4</div>
+          <div class="pipe-content">
+            <h3>Debate</h3>
+            <p>When models disagree, the council enters debate mode. Models challenge each other's reasoning directly. TriForge mediates — it can call synthesis, extended debate, or escalate to you for a decision.</p>
+          </div>
+        </div>
+        <div class="pipe-step">
+          <div class="pipe-num n5">5</div>
+          <div class="pipe-content">
+            <h3>Consensus & Apply</h3>
+            <p>The council reaches a final verdict. The agreed solution is shown alongside a confidence score. You can apply it directly to your editor, preview it in VS Code's diff viewer first, or request an alternative take from any model.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── FEATURES ── -->
+  <section class="pipeline-bg" id="features">
+    <div class="container">
+      <div class="center">
+        <div class="section-label">Built for Developers</div>
+        <h2 class="section-title">Everything in your editor.<br />Nothing outside it.</h2>
+        <p class="section-sub">
+          Code Council is a native VS Code extension. Every feature lives inside the editor —
+          no browser, no context switching.
+        </p>
+      </div>
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon">🧠</div>
+          <h3>Tri-Model Council</h3>
+          <p>OpenAI, Claude, and Grok deliberate in parallel. Each model plays a structured role — drafter, critic, or synthesizer — depending on the phase.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🔍</div>
+          <h3>Right-Click Actions</h3>
+          <p>Select any code and right-click to Explain, Write Tests, Refactor, or Find Bugs. The council opens automatically with your selection pre-loaded.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🌿</div>
+          <h3>Git Integration</h3>
+          <p>Stage, unstage, commit, push — all from the Council panel. See a diff preview of staged changes, browse recent commits, and manage branches without leaving the extension.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">📁</div>
+          <h3>Workspace Explorer</h3>
+          <p>Browse your project file tree and attach files as context for any council run. Add specific files to ground the AI's analysis in your actual codebase.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🔀</div>
+          <h3>Inline Diff Apply</h3>
+          <p>When the council produces a solution, review it side-by-side in VS Code's native diff editor before accepting. One click to apply, one to discard.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">📋</div>
+          <h3>Prompt History</h3>
+          <p>Every prompt you run is saved in a searchable history panel. Re-run any previous query, or use it as a starting point for a new one.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">⚙️</div>
+          <h3>Model Picker</h3>
+          <p>Choose which specific model each provider uses directly from the panel — GPT-4o, Claude Sonnet, Grok-3, and more. No settings file required.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">📊</div>
+          <h3>Intensity Control</h3>
+          <p>Set the council's debate intensity from Cooperative to Ruthless. Higher intensity means more adversarial critique — useful for security-critical or production-bound code.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">📄</div>
+          <h3>Export Council Report</h3>
+          <p>Export the full deliberation — all model responses, risk analysis, debate rounds, and final consensus — as a formatted Markdown file for documentation or review.</p>
+        </div>
+      </div>
+
+      <!-- Trial banner -->
+      <div class="trial-banner">
+        <div class="trial-icon">⏱</div>
+        <div class="trial-text">
+          <h3>1-day free trial — no account required</h3>
+          <p>Install the extension and the full Council mode is available immediately for 1 day. No sign-up, no credit card. Solo mode (one provider) stays free forever after the trial.</p>
+        </div>
+        <div class="trial-cta">
+          <a href="https://marketplace.visualstudio.com/items?itemName=triforgeai.triforge-ai" class="btn-primary">
+            Install Free
+          </a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── PRICING ── -->
+  <section id="pricing">
+    <div class="container">
+      <div class="center">
+        <div class="section-label">Pricing</div>
+        <h2 class="section-title">Start free.<br />Unlock the full council.</h2>
+        <p class="section-sub">
+          Use your own API keys. You pay OpenAI, Anthropic, and xAI directly — TriForge never
+          marks up your API usage. The subscription covers access to the council orchestration engine.
+        </p>
+      </div>
+      <div class="pricing-pair">
+        <div class="price-card">
+          <div class="price-tier">Solo — Free</div>
+          <div class="price-amount">$0 <span>/ month</span></div>
+          <div class="price-desc">Single-provider mode. Always free, no trial required.</div>
+          <ul class="price-features">
+            <li>1 AI provider (your choice)</li>
+            <li>Explain, Refactor, Find Bugs, Write Tests</li>
+            <li>Right-click context menu</li>
+            <li>Workspace file context</li>
+            <li>Prompt history</li>
+            <li>Git panel (stage, commit, push)</li>
+            <li class="x">Multi-model deliberation</li>
+            <li class="x">Cross-critique &amp; debate</li>
+            <li class="x">Consensus mode</li>
+          </ul>
+          <a href="https://marketplace.visualstudio.com/items?itemName=triforgeai.triforge-ai"
+             class="btn-price">Install Free</a>
+        </div>
+        <div class="price-card featured">
+          <div class="featured-badge">Full Council</div>
+          <div class="price-tier">Council Pro</div>
+          <div class="price-amount">$15 <span>/ month</span></div>
+          <div class="price-desc">1-day free trial · Cancel anytime · Your API keys, your cost</div>
+          <ul class="price-features">
+            <li>Everything in Solo</li>
+            <li>All 3 AI models (OpenAI + Claude + Grok)</li>
+            <li>Full deliberation pipeline</li>
+            <li>Risk analysis (LOW → CRITICAL)</li>
+            <li>Cross-critique &amp; structured debate</li>
+            <li>Consensus mode with confidence scores</li>
+            <li>Intensity control (Cooperative → Ruthless)</li>
+            <li>Export council reports as Markdown</li>
+            <li>Model picker per provider</li>
+          </ul>
+          <a href="https://triforgeai.lemonsqueezy.com/checkout/buy/975b3d76-fb47-4cf8-b182-83c3dc020a13"
+             class="btn-price">Start Free Trial</a>
+          <p class="price-note">1 day free · then $15/month · cancel anytime</p>
+        </div>
+      </div>
+
+      <!-- Desktop app cross-link -->
+      <div class="desktop-cta-box">
+        <div class="desktop-cta-text">
+          <h3>Also available as a Desktop App</h3>
+          <p>
+            TriForge AI for Mac and Windows brings the same three-model think tank to your entire desktop —
+            with voice input, long-term memory, file system access, and more.
+            Free to start, Pro and Business plans available.
+          </p>
+        </div>
+        <a href="./index.html#download" class="btn-orange">
+          <span>⬇</span> Download Desktop App
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── FOOTER ── -->
+  <footer>
+    <div class="footer-inner">
+      <div class="footer-logo">
+        <img src="./logo.png" alt="TriForge AI" />
+        <span>TriForge AI</span>
+      </div>
+      <div class="footer-links">
+        <a href="./index.html">Desktop App</a>
+        <a href="#what">About</a>
+        <a href="#features">Features</a>
+        <a href="#pricing">Pricing</a>
+        <a href="./index.html#terms">Terms</a>
+        <a href="mailto:support@triforgeai.com">Contact</a>
+      </div>
+      <div class="footer-copy">© 2026 TriForge AI LLC. All rights reserved.</div>
+    </div>
+  </footer>
+
+</body>
+</html>

@@ -64,6 +64,16 @@
         "command": "triforge-ai.exportDebate",
         "title": "TriForge AI: Export Council Report as Markdown",
         "category": "TriForge AI"
+      },
+      {
+        "command": "triforge-ai.activateLicense",
+        "title": "TriForge AI: Activate License",
+        "category": "TriForge AI"
+      },
+      {
+        "command": "triforge-ai.deactivateLicense",
+        "title": "TriForge AI: Remove License",
+        "category": "TriForge AI"
       }
     ],
     "submenus": [

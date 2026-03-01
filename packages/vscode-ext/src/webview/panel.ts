@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import { execSync } from 'child_process';
 import { ProviderManager, ProviderName } from '@triforge/engine';
 import { ChangePatch } from '../core/patch';
+import { LicenseManager, LicenseStatus, LS_CHECKOUT } from '../core/license';
 
 // ── Data Contracts ─────────────────────────────────────────────────────────
 
@@ -131,6 +132,7 @@ export class TriForgeCouncilPanel {
   private _intensityState: IntensityState = { mode: 'ADAPTIVE', level: 'ANALYTICAL' };
   private _ledgerEnabled: boolean | null = null;
   private _ledgerConsentShown = false;
+  private _licenseManager!: LicenseManager;
 
   private static readonly _validProviders: ProviderName[] = ['openai', 'grok', 'claude'];
   private static _isValidProvider(v: unknown): v is ProviderName {
@@ -140,11 +142,13 @@ export class TriForgeCouncilPanel {
   private constructor(
     panel: vscode.WebviewPanel,
     extensionUri: vscode.Uri,
-    providerManager: ProviderManager
+    providerManager: ProviderManager,
+    licenseManager: LicenseManager
   ) {
     this._panel = panel;
     this._extensionUri = extensionUri;
     this._providerManager = providerManager;
+    this._licenseManager = licenseManager;
 
     this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
     this._providerManager.onDidChangeStatus(() => { this.refreshProviderStatus(); });
@@ -152,7 +156,7 @@ export class TriForgeCouncilPanel {
     this.updateContent();
   }
 
-  public static createOrShow(extensionUri: vscode.Uri, providerManager: ProviderManager) {
+  public static createOrShow(extensionUri: vscode.Uri, providerManager: ProviderManager, licenseManager: LicenseManager) {
     const column = vscode.window.activeTextEditor?.viewColumn;
     if (TriForgeCouncilPanel.currentPanel) {
       TriForgeCouncilPanel.currentPanel._panel.reveal(column);
@@ -169,7 +173,11 @@ export class TriForgeCouncilPanel {
         retainContextWhenHidden: true,
       }
     );
-    TriForgeCouncilPanel.currentPanel = new TriForgeCouncilPanel(panel, extensionUri, providerManager);
+    TriForgeCouncilPanel.currentPanel = new TriForgeCouncilPanel(panel, extensionUri, providerManager, licenseManager);
+  }
+
+  public sendLicenseStatus(status: LicenseStatus): void {
+    this._send({ type: 'license-status', status });
   }
 
   public dispose() {
@@ -533,6 +541,34 @@ export class TriForgeCouncilPanel {
             this._send({ type: 'config-model-saved', provider, model: model || '' });
             break;
           }
+          case 'license:getStatus': {
+            const s = await this._licenseManager.getStatus();
+            this._send({ type: 'license-status', status: s });
+            break;
+          }
+          case 'license:activate': {
+            this._send({ type: 'license-activating' });
+            const result = await this._licenseManager.activateLicense((message.key as string)?.trim() ?? '');
+            if (result.success) {
+              const s = await this._licenseManager.getStatus();
+              this._send({ type: 'license-status', status: s });
+              vscode.window.showInformationMessage('TriForge AI: License activated.');
+            } else {
+              this._send({ type: 'license-error', error: result.error ?? 'Activation failed.' });
+            }
+            break;
+          }
+          case 'license:deactivate': {
+            await this._licenseManager.deactivateLicense();
+            const s = await this._licenseManager.getStatus();
+            this._send({ type: 'license-status', status: s });
+            vscode.window.showInformationMessage('TriForge AI: License removed.');
+            break;
+          }
+          case 'openExternal': {
+            vscode.env.openExternal(vscode.Uri.parse(message.url as string));
+            break;
+          }
         }
       },
       undefined,
@@ -545,6 +581,20 @@ export class TriForgeCouncilPanel {
   private async _runCouncilPipeline(
     prompt: string, originalCode: string, intensity: string
   ): Promise<void> {
+    // License gate: council mode (2+ providers) requires trial or active license
+    const allProviders = await this._providerManager.getActiveProviders();
+    if (allProviders.length >= 2) {
+      const lic = await this._licenseManager.getStatus();
+      if (!lic.isCouncilAllowed) {
+        this._send({
+          type: 'license-gate',
+          message: 'Your 1-day trial has ended. Subscribe to TriForge AI Code Council to unlock full multi-model deliberation. Solo mode (1 provider) is always free.',
+          checkoutUrl: LS_CHECKOUT,
+        });
+        return;
+      }
+    }
+
     this._abortController?.abort();
     this._abortController = new AbortController();
     const signal = this._abortController.signal;
@@ -565,10 +615,10 @@ export class TriForgeCouncilPanel {
 
     // Quorum detection
     this._unavailableProviders.clear();
-    const allProviders = await this._providerManager.getActiveProviders();
+    const activeProviders = await this._providerManager.getActiveProviders();
     this._councilMode =
-      allProviders.length >= 3 ? 'FULL' :
-      allProviders.length === 2 ? 'PARTIAL' : 'SOLO';
+      activeProviders.length >= 3 ? 'FULL' :
+      activeProviders.length === 2 ? 'PARTIAL' : 'SOLO';
     this._send({ type: 'council-mode', mode: this._councilMode });
 
     try {
@@ -1539,6 +1589,7 @@ export class TriForgeCouncilPanel {
 
   private _getWebviewContent(): string {
     const nonce = this._getNonce();
+    const lsCheckout = LS_CHECKOUT;
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1623,6 +1674,9 @@ export class TriForgeCouncilPanel {
   .gcommit .gmsg  { color:rgba(255,255,255,0.4);overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
   .hitem { font-size:10px;padding:3px 6px;border-radius:3px;cursor:pointer;color:rgba(255,255,255,0.38);white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
   .hitem:hover { background:rgba(255,255,255,0.05);color:rgba(255,255,255,0.7); }
+  #lic-badge.lic-trial   { background:rgba(99,102,241,0.15);border:1px solid rgba(99,102,241,0.3);color:#a5b4fc; }
+  #lic-badge.lic-active  { background:rgba(16,185,129,0.15);border:1px solid rgba(16,185,129,0.3);color:#10b981; }
+  #lic-badge.lic-expired { background:rgba(239,68,68,0.12); border:1px solid rgba(239,68,68,0.25);color:#f87171; }
   .sh {
     display: flex; align-items: center; gap: 6px; padding: 6px 11px;
     background: rgba(255,255,255,0.025); border-bottom: 1px solid var(--border);
@@ -1889,6 +1943,15 @@ export class TriForgeCouncilPanel {
     <div id="etst"></div>
     <div id="bypass-b">Draft applied immediately &#x2014; council review bypassed.</div>
 
+    <!-- License gate overlay -->
+    <div id="lic-gate" style="display:none;padding:12px;border:1px solid rgba(99,102,241,0.3);border-radius:6px;background:rgba(99,102,241,0.06);margin:4px 0;flex-direction:column;gap:8px;">
+      <p id="lic-gate-msg" style="font-size:12px;color:rgba(255,255,255,0.65);line-height:1.5;margin:0;"></p>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button class="btn-s" id="btn-gate-upgrade" style="font-size:11px;background:linear-gradient(135deg,#6366f1,#818cf8);border:none;color:#fff;padding:4px 12px;border-radius:4px;font-weight:600;cursor:pointer;">Subscribe &#x2014; $15/mo</button>
+        <button class="btn-s" id="btn-gate-key" style="font-size:11px;">I have a license key</button>
+      </div>
+    </div>
+
     <!-- Settings -->
     <div class="sec" id="s-cfg">
       <div class="sh" id="cfg-sh" style="cursor:pointer;user-select:none;">API Keys
@@ -1907,6 +1970,38 @@ export class TriForgeCouncilPanel {
           <div class="krow"><label>Grok Model</label><input type="text" id="m-grok" list="dl-grok-models" placeholder="grok-3"/><button class="btn-s" id="ms-grok">Save</button></div>
         </div>
         <div class="krow"><label>Audio</label><button class="ibtn on" id="btn-audio">On</button></div>
+        <!-- License section -->
+        <div style="border-top:1px solid var(--border);margin:4px 0;padding-top:8px;display:flex;flex-direction:column;gap:6px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <span style="font-size:10px;font-weight:700;letter-spacing:0.6px;color:rgba(255,255,255,0.45);">LICENSE</span>
+            <span id="lic-badge" style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:9px;background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.4);">Loading&#x2026;</span>
+          </div>
+          <div id="lic-msg" style="font-size:11px;color:rgba(255,255,255,0.5);line-height:1.4;"></div>
+          <!-- Trial countdown bar -->
+          <div id="lic-trial-bar" style="display:none;">
+            <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+              <span style="font-size:10px;color:rgba(255,255,255,0.4);">Trial expires in</span>
+              <span id="lic-days" style="font-size:10px;font-weight:700;color:#10b981;"></span>
+            </div>
+            <div style="height:3px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden;">
+              <div id="lic-prog" style="height:100%;border-radius:2px;transition:width 0.4s;"></div>
+            </div>
+          </div>
+          <!-- Key input (expired / no key) -->
+          <div id="lic-key-row" style="display:none;flex-direction:column;gap:4px;">
+            <div style="display:flex;gap:4px;">
+              <input type="text" id="lic-key-inp" placeholder="Enter license key&#x2026;" style="flex:1;font-size:11px;font-family:monospace;"/>
+              <button class="btn-s" id="btn-lic-activate" style="font-size:11px;padding:3px 9px;">Activate</button>
+            </div>
+            <div id="lic-err" style="font-size:10px;color:#ef4444;display:none;"></div>
+            <button id="btn-lic-upgrade" style="width:100%;font-size:11px;background:linear-gradient(135deg,#6366f1,#818cf8);border:none;padding:5px 0;border-radius:4px;color:#fff;font-weight:600;cursor:pointer;margin-top:2px;">Subscribe &#x2014; $15/month &#x2197;</button>
+          </div>
+          <!-- Active key display -->
+          <div id="lic-active-row" style="display:none;align-items:center;justify-content:space-between;">
+            <span id="lic-key-disp" style="font-size:10px;font-family:monospace;color:rgba(255,255,255,0.4);"></span>
+            <button class="btn-d" id="btn-lic-remove" style="font-size:10px;padding:2px 7px;">Remove</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -2219,7 +2314,8 @@ const vs = acquireVsCodeApi();
 function send(cmd, d){ vs.postMessage(Object.assign({command:cmd}, d||{})); }
 
 // State
-const S = { phase:'IDLE', intensity:'adaptive', providers:{}, debOpen:false, running:false, councilMode:'FULL', dlVersions:[], audioEnabled:true, wsFiles:[], ctxFiles:[], promptHistory:[] };
+var LS_CHECKOUT='${lsCheckout}';
+const S = { phase:'IDLE', intensity:'adaptive', providers:{}, debOpen:false, running:false, councilMode:'FULL', dlVersions:[], audioEnabled:true, wsFiles:[], ctxFiles:[], promptHistory:[], upgradeUrl:'' };
 const PH_ORD = ['DRAFTING','RISK_CHECK','CRITIQUE','DEBATE','COMPLETE'];
 
 // DOM
@@ -2564,6 +2660,32 @@ function onGitStatus(d){
   if(ma){ ma.textContent=total?'':'Working tree clean.'; ma.style.display=total?'none':'block'; }
 }
 
+function onLicenseStatus(s){
+  if(!s){ return; }
+  var badge=$('lic-badge'),msg=$('lic-msg'),trialBar=$('lic-trial-bar'),
+      keyRow=$('lic-key-row'),activeRow=$('lic-active-row'),keyDisp=$('lic-key-disp'),
+      daysEl=$('lic-days'),prog=$('lic-prog'),lg=$('lic-gate');
+  [trialBar,keyRow,activeRow].forEach(function(el){ if(el){ el.style.display='none'; } });
+  if(badge){ badge.className=''; }
+  if(lg){ lg.style.display='none'; }
+  if(s.state==='active'){
+    if(badge){ badge.classList.add('lic-active'); badge.textContent='PRO'; }
+    if(msg){ msg.textContent=s.statusLabel||''; }
+    if(activeRow){ activeRow.style.display='flex'; }
+    if(keyDisp){ keyDisp.textContent=s.licenseKey||''; }
+  } else if(s.state==='trial'){
+    if(badge){ badge.classList.add('lic-trial'); badge.textContent='TRIAL'; }
+    if(msg){ msg.textContent=s.statusLabel||''; }
+    if(trialBar){ trialBar.style.display='block'; }
+    if(daysEl){ daysEl.textContent=(s.trialDaysLeft||0)+' days'; }
+    var pct=Math.max(0,Math.min(100,((s.trialDaysLeft||0)/1)*100));
+    if(prog){ prog.style.width=pct+'%'; prog.style.background=pct<30?'#ef4444':pct<60?'#f59e0b':'linear-gradient(90deg,#6366f1,#10b981)'; }
+  } else {
+    if(badge){ badge.classList.add('lic-expired'); badge.textContent='EXPIRED'; }
+    if(msg){ msg.textContent=s.statusLabel||''; }
+    if(keyRow){ keyRow.style.display='flex'; }
+  }
+}
 function onBranches(d){
   var sel=$('git-branch-select'); if(!sel){ return; }
   sel.innerHTML='';
@@ -2741,6 +2863,21 @@ window.addEventListener('message', function(e){
     case 'git-log':            onGitLog(d); break;
     case 'config-models':      onConfigModels(d); break;
     case 'config-model-saved': toast('\u2713 Model saved.',true); break;
+    case 'license-status':     onLicenseStatus(d.status); break;
+    case 'license-activating':
+      var ab=$('btn-lic-activate'); if(ab){ ab.textContent='Activating\u2026'; ab.disabled=true; }
+      var er=$('lic-err'); if(er){ er.style.display='none'; }
+      break;
+    case 'license-error':
+      var ab=$('btn-lic-activate'); if(ab){ ab.textContent='Activate'; ab.disabled=false; }
+      var er=$('lic-err'); if(er){ er.textContent=d.error||'Activation failed.'; er.style.display='block'; }
+      break;
+    case 'license-gate':
+      S.upgradeUrl=d.checkoutUrl||LS_CHECKOUT;
+      var lg=$('lic-gate'),lgm=$('lic-gate-msg');
+      if(lg){ lg.style.display='flex'; }
+      if(lgm){ lgm.textContent=d.message||'Council mode requires an active license.'; }
+      break;
     case 'escalated':
       S.intensity=d.intensity;
       document.querySelectorAll('.ibtn').forEach(function(b){ b.classList.toggle('on', b.dataset.i===d.intensity); });
@@ -2906,6 +3043,20 @@ $('btn-co-synth')&&$('btn-co-synth').addEventListener('click',function(){ hide('
 });
 $('btn-audio')&&$('btn-audio').addEventListener('click',function(){ S.audioEnabled=!S.audioEnabled; this.textContent=S.audioEnabled?'On':'Off'; this.classList.toggle('on',S.audioEnabled); });
 
+// License button bindings
+$('btn-lic-activate')&&$('btn-lic-activate').addEventListener('click',function(){
+  var k=($('lic-key-inp')||{}).value||''; if(!k.trim()){ return; }
+  send('license:activate',{key:k.trim()}); $('lic-key-inp').value='';
+});
+$('btn-lic-remove')&&$('btn-lic-remove').addEventListener('click',function(){ send('license:deactivate'); });
+$('btn-lic-upgrade')&&$('btn-lic-upgrade').addEventListener('click',function(){ send('openExternal',{url:S.upgradeUrl||LS_CHECKOUT}); });
+$('btn-gate-upgrade')&&$('btn-gate-upgrade').addEventListener('click',function(){ send('openExternal',{url:S.upgradeUrl||LS_CHECKOUT}); });
+$('btn-gate-key')&&$('btn-gate-key').addEventListener('click',function(){
+  var lg=$('lic-gate'); if(lg){ lg.style.display='none'; }
+  var kr=$('lic-key-row'); if(kr){ kr.style.display='flex'; }
+  var inp=$('lic-key-inp'); if(inp){ inp.focus(); }
+});
+
 // Event delegation for dynamic card buttons (CSP-safe, no inline onclick)
 document.addEventListener('click',function(e){
   var t=e.target; if(!t){ return; }
@@ -2922,6 +3073,7 @@ send('workspace:getTree');
 send('git:status');
 send('git:branches');
 send('git:log');
+send('license:getStatus');
 } catch(e) {
   var t=document.getElementById('etst');
   if(t){ t.textContent='JS Error: '+(e&&e.message||String(e)); t.className=''; t.style.display='block'; t.style.color='#ef4444'; t.style.padding='8px'; t.style.fontSize='11px'; }
