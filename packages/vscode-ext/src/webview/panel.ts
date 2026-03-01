@@ -1891,8 +1891,10 @@ export class TriForgeCouncilPanel {
 
     <!-- Settings -->
     <div class="sec" id="s-cfg">
-      <div class="sh">API Keys</div>
-      <div class="sc" style="display:flex;flex-direction:column;gap:8px;padding-bottom:14px;">
+      <div class="sh" id="cfg-sh" style="cursor:pointer;user-select:none;">API Keys
+        <span id="cfg-chevron" style="margin-left:auto;font-size:11px;color:rgba(255,255,255,0.35);transition:transform 0.15s;">&#x25BE;</span>
+      </div>
+      <div class="sc" id="cfg-body" style="display:flex;flex-direction:column;gap:8px;padding-bottom:14px;">
         <div class="krow"><label>OpenAI</label><input type="password" id="k-openai" placeholder="sk-..."/><button class="btn-s" id="ks-openai">Save</button><button class="btn-d" id="kr-openai">Remove</button></div>
         <div class="krow"><label>Claude</label><input type="password" id="k-claude" placeholder="sk-ant-..."/><button class="btn-s" id="ks-claude">Save</button><button class="btn-d" id="kr-claude">Remove</button></div>
         <div class="krow"><label>Grok</label><input type="password" id="k-grok" placeholder="xai-..."/><button class="btn-s" id="ks-grok">Save</button><button class="btn-d" id="kr-grok">Remove</button></div>
@@ -2830,6 +2832,13 @@ $('btn-cfg')&&$('btn-cfg').addEventListener('click',function(){
 });
 // Settings open by default — mark gear active on load
 (function(){ var b=$('btn-cfg'); if(b){ b.classList.add('active'); } })();
+// Collapsible settings section
+$('cfg-sh')&&$('cfg-sh').addEventListener('click',function(){
+  var body=$('cfg-body'), chev=$('cfg-chevron'); if(!body){ return; }
+  var collapsed=body.style.display==='none';
+  body.style.display=collapsed?'flex':'none';
+  if(chev){ chev.style.transform=collapsed?'':'rotate(-90deg)'; }
+});
 document.querySelectorAll('.ibtn').forEach(function(btn){
   btn.addEventListener('click',function(){
     document.querySelectorAll('.ibtn').forEach(function(b){ b.classList.remove('on'); });
