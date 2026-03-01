@@ -1,6 +1,6 @@
 {
   "name": "triforge-ai",
-  "displayName": "triforge-ai",
+  "displayName": "Triforge AI Code Council",
   "description": "Structured tri-model AI Council — fast draft, risk analysis, cross-critique, and consensus",
   "version": "0.0.1",
   "engines": {

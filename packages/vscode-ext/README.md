@@ -29,7 +29,7 @@ The number of active providers determines the mode automatically:
 
 | Command | Description |
 |---|---|
-| `TriForge AI: Open Chat` | Open the main chat panel (`Ctrl+Shift+T`) |
+| `TriForge AI: Open Council` | Open the Triforge AI Code Council panel (`Ctrl+Shift+T`) |
 | `TriForge AI: Add/Update API Key` | Store an API key for OpenAI, Claude, or Grok |
 | `TriForge AI: Remove API Key` | Remove a stored API key |
 | `TriForge AI: Check Provider Status` | See which providers are active |

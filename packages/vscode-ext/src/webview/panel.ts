@@ -160,7 +160,7 @@ export class TriForgeCouncilPanel {
     }
     const panel = vscode.window.createWebviewPanel(
       'triForgeCouncil',
-      'TriForge Council',
+      'Triforge AI Code Council',
       column || vscode.ViewColumn.One,
       {
         enableScripts: true,
@@ -218,7 +218,7 @@ export class TriForgeCouncilPanel {
     }
     const s = this._session;
     const lines: string[] = [
-      '# TriForge Council Export',
+      '# Triforge AI Code Council Export',
       '',
       `**Prompt:** ${s.prompt}`,
       `**Phase:** ${s.phase}`,
@@ -1545,7 +1545,7 @@ export class TriForgeCouncilPanel {
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
-<title>TriForge Council</title>
+<title>Triforge AI Code Council</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -1875,7 +1875,7 @@ export class TriForgeCouncilPanel {
 <div id="app">
 
   <header>
-    <div class="logo">&#x2B21; TriForge Council</div>
+    <div class="logo">&#x2B21; Triforge AI Code Council</div>
     <div class="pdots">
       <span class="pdot" id="d-openai" data-p="openai">GPT</span>
       <span class="pdot" id="d-claude" data-p="claude">Claude</span>
