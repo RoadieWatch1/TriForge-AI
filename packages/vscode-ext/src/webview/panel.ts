@@ -1287,6 +1287,7 @@ export class TriForgeCouncilPanel {
     color: var(--vscode-editor-foreground, #ccc);
     background: var(--vscode-editor-background, #1e1e1e);
     overflow-x: hidden;
+    overflow-y: auto;
   }
   :root {
     --c-gpt:    #10b981; --c-claude: #f97316; --c-grok: #818cf8; --c-forge: #6366f1;
@@ -1594,6 +1595,17 @@ export class TriForgeCouncilPanel {
     <div id="etst"></div>
     <div id="bypass-b">Draft applied immediately &#x2014; council review bypassed.</div>
 
+    <!-- Settings -->
+    <div class="sec hidden" id="s-cfg">
+      <div class="sh">API Keys</div>
+      <div class="sc" style="display:flex;flex-direction:column;gap:5px;padding-bottom:11px;">
+        <div class="krow"><label>OpenAI</label><input type="password" id="k-openai" placeholder="sk-..."/><button class="btn-s" onclick="saveKey('openai')">Save</button><button class="btn-d" onclick="rmKey('openai')">Remove</button></div>
+        <div class="krow"><label>Claude</label><input type="password" id="k-claude" placeholder="sk-ant-..."/><button class="btn-s" onclick="saveKey('claude')">Save</button><button class="btn-d" onclick="rmKey('claude')">Remove</button></div>
+        <div class="krow"><label>Grok</label><input type="password" id="k-grok" placeholder="xai-..."/><button class="btn-s" onclick="saveKey('grok')">Save</button><button class="btn-d" onclick="rmKey('grok')">Remove</button></div>
+        <div class="krow"><label>Audio</label><button class="ibtn on" id="btn-audio" onclick="toggleAudio()">On</button></div>
+      </div>
+    </div>
+
     <!-- Input -->
     <div class="sec" id="s-input">
       <div class="sh">Council Request</div>
@@ -1813,16 +1825,6 @@ export class TriForgeCouncilPanel {
       <p id="synth-rationale" class="rea"></p>
     </div>
 
-    <!-- Settings -->
-    <div class="sec hidden" id="s-cfg">
-      <div class="sh">API Keys</div>
-      <div class="sc" style="display:flex;flex-direction:column;gap:5px;padding-bottom:11px;">
-        <div class="krow"><label>OpenAI</label><input type="password" id="k-openai" placeholder="sk-..."/><button class="btn-s" onclick="saveKey('openai')">Save</button><button class="btn-d" onclick="rmKey('openai')">Remove</button></div>
-        <div class="krow"><label>Claude</label><input type="password" id="k-claude" placeholder="sk-ant-..."/><button class="btn-s" onclick="saveKey('claude')">Save</button><button class="btn-d" onclick="rmKey('claude')">Remove</button></div>
-        <div class="krow"><label>Grok</label><input type="password" id="k-grok" placeholder="xai-..."/><button class="btn-s" onclick="saveKey('grok')">Save</button><button class="btn-d" onclick="rmKey('grok')">Remove</button></div>
-        <div class="krow"><label>Audio</label><button class="ibtn on" id="btn-audio" onclick="toggleAudio()">On</button></div>
-      </div>
-    </div>
   </main>
 </div>
 
