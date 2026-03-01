@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import { execSync } from 'child_process';
 import { ProviderManager, ProviderName } from '@triforge/engine';
 import { ChangePatch } from '../core/patch';
 
@@ -71,19 +72,22 @@ interface AlternativeProposal {
 }
 
 interface CouncilSession {
-  id:           string;
-  prompt:       string;
-  originalCode: string;
-  phase:        SessionPhase;
-  draft?:       DraftResult;
-  risk?:        RiskAnalysis;
-  verdicts?:    SeatVerdict[];
-  debate?:      CouncilDebate;
-  consensus?:   ConsensusState;
-  finalCode?:   string;
-  alternative?: AlternativeProposal;
-  intensity:    string;
-  viewMode:     'SUMMARY' | 'DEBATE';
+  id:               string;
+  prompt:           string;
+  originalCode:     string;
+  phase:            SessionPhase;
+  draft?:           DraftResult;
+  risk?:            RiskAnalysis;
+  verdicts?:        SeatVerdict[];
+  debate?:          CouncilDebate;
+  consensus?:       ConsensusState;
+  finalCode?:       string;
+  alternative?:     AlternativeProposal;
+  intensity:        string;
+  viewMode:         'SUMMARY' | 'DEBATE';
+  filePath?:        string;
+  fullFileContent?: string;
+  contextFiles:     Record<string, string>;
 }
 
 // ── Intensity Policy ──────────────────────────────────────────────────────
@@ -196,7 +200,12 @@ export class TriForgeCouncilPanel {
   }
 
   /** Called by selection commands — pre-fills inputs and auto-starts the pipeline. */
-  public runForSelection(prompt: string, code: string, intensity: string): void {
+  public runForSelection(prompt: string, code: string, intensity: string, filePath?: string, fullFileContent?: string): void {
+    if (this._session) {
+      this._session.filePath = filePath ?? '';
+      this._session.fullFileContent = fullFileContent ?? '';
+      this._session.contextFiles = {};
+    }
     this._send({ type: 'council-started', prompt, originalCode: code, intensity });
     this._runCouncilPipeline(prompt, code, intensity);
   }
@@ -376,6 +385,154 @@ export class TriForgeCouncilPanel {
             if (url) { vscode.env.openExternal(vscode.Uri.parse(url)); }
             break;
           }
+          case 'workspace:getTree': {
+            const files = await this._getWorkspaceTree();
+            this._send({ type: 'workspace-tree', files });
+            break;
+          }
+          case 'workspace:addContext': {
+            if (!this._session) { break; }
+            if (!this._session.contextFiles) { this._session.contextFiles = {}; }
+            const content = await this._readWorkspaceFile(message.relPath as string);
+            this._session.contextFiles[message.relPath as string] = content;
+            this._send({ type: 'context-updated', contextFiles: Object.keys(this._session.contextFiles) });
+            break;
+          }
+          case 'workspace:removeContext': {
+            if (!this._session?.contextFiles) { break; }
+            delete this._session.contextFiles[message.relPath as string];
+            this._send({ type: 'context-updated', contextFiles: Object.keys(this._session.contextFiles) });
+            break;
+          }
+          case 'workspace:clearContext': {
+            if (this._session) { this._session.contextFiles = {}; }
+            this._send({ type: 'context-updated', contextFiles: [] });
+            break;
+          }
+          case 'git:status': {
+            try { this._send({ type: 'git-status', ...this._getGitStatus() }); }
+            catch(e) { this._send({ type: 'git-error', message: String(e) }); }
+            break;
+          }
+          case 'git:stageAll': {
+            try { this._runGit(['add', '-A']); this._send({ type: 'git-status', ...this._getGitStatus() }); }
+            catch(e) { this._send({ type: 'git-error', message: String(e) }); }
+            break;
+          }
+          case 'git:stage': {
+            try { this._runGit(['add', '--', message.file as string]); this._send({ type: 'git-status', ...this._getGitStatus() }); }
+            catch(e) { this._send({ type: 'git-error', message: String(e) }); }
+            break;
+          }
+          case 'git:unstage': {
+            try { this._runGit(['restore', '--staged', '--', message.file as string]); this._send({ type: 'git-status', ...this._getGitStatus() }); }
+            catch(e) { this._send({ type: 'git-error', message: String(e) }); }
+            break;
+          }
+          case 'git:unstageAll': {
+            try { this._runGit(['restore', '--staged', '.']); this._send({ type: 'git-status', ...this._getGitStatus() }); }
+            catch(e) { this._send({ type: 'git-error', message: String(e) }); }
+            break;
+          }
+          case 'git:commit': {
+            try {
+              const msg = (message.message as string)?.trim();
+              if (!msg) { this._send({ type: 'git-error', message: 'Commit message required.' }); break; }
+              this._runGit(['commit', '-m', JSON.stringify(msg)]);
+              this._send({ type: 'git-committed', status: this._getGitStatus() });
+            } catch(e) { this._send({ type: 'git-error', message: String(e) }); }
+            break;
+          }
+          case 'git:push': {
+            try {
+              const branch = this._runGit(['rev-parse', '--abbrev-ref', 'HEAD']).trim();
+              const confirm = await vscode.window.showWarningMessage(
+                `Push branch "${branch}" to remote origin?`, { modal: true }, 'Push', 'Cancel'
+              );
+              if (confirm !== 'Push') { break; }
+              this._runGit(['push']);
+              this._send({ type: 'git-pushed' });
+              vscode.window.showInformationMessage('TriForge AI: Pushed successfully.');
+            } catch(e) { this._send({ type: 'git-error', message: String(e) }); }
+            break;
+          }
+          case 'git:generateMessage': {
+            try {
+              const diff = this._runGit(['diff', '--staged']);
+              if (!diff.trim()) { this._send({ type: 'git-error', message: 'No staged changes to generate message from.' }); break; }
+              const providers = await this._providerManager.getActiveProviders();
+              const provider = providers[0];
+              if (!provider) { this._send({ type: 'git-error', message: 'No AI provider configured.' }); break; }
+              this._send({ type: 'git-generating' });
+              const ctrl = new AbortController();
+              const msg = await provider.chat([
+                { role: 'system', content: 'Write a concise git commit message (imperative mood, max 72 chars first line, optional body after blank line). Return ONLY the commit message text — no JSON, no markdown fences, no explanation.' },
+                { role: 'user', content: `Generate a commit message for this diff:\n\n${diff.slice(0, 8000)}` },
+              ], ctrl.signal);
+              this._send({ type: 'git-message-ready', message: msg.trim() });
+            } catch(e) { this._send({ type: 'git-error', message: String(e) }); }
+            break;
+          }
+          case 'git:branches': {
+            try { this._send({ type: 'git-branches', ...this._getBranches() }); }
+            catch(e) { this._send({ type: 'git-error', message: String(e) }); }
+            break;
+          }
+          case 'git:diff': {
+            try { this._send({ type: 'git-diff', diff: this._runGit(['diff', '--staged']) }); }
+            catch(e) { this._send({ type: 'git-error', message: String(e) }); }
+            break;
+          }
+          case 'git:log': {
+            try {
+              const raw = this._runGit(['log', '--oneline', '-10']);
+              const commits = raw.split('\n').filter(l => l.trim()).map(l => ({
+                hash: l.slice(0, 7),
+                message: l.slice(8).trim(),
+              }));
+              this._send({ type: 'git-log', commits });
+            } catch(e) { this._send({ type: 'git-error', message: String(e) }); }
+            break;
+          }
+          case 'git:createBranch': {
+            try {
+              const name = (message.name as string)?.trim();
+              if (!name) { this._send({ type: 'git-error', message: 'Branch name required.' }); break; }
+              this._runGit(['checkout', '-b', name]);
+              this._send({ type: 'git-branches', ...this._getBranches() });
+              this._send({ type: 'git-status', ...this._getGitStatus() });
+            } catch(e) { this._send({ type: 'git-error', message: String(e) }); }
+            break;
+          }
+          case 'git:switchBranch': {
+            try {
+              const name = (message.name as string)?.trim();
+              if (!name) { break; }
+              this._runGit(['checkout', name]);
+              this._send({ type: 'git-branches', ...this._getBranches() });
+              this._send({ type: 'git-status', ...this._getGitStatus() });
+            } catch(e) { this._send({ type: 'git-error', message: String(e) }); }
+            break;
+          }
+          case 'config:getModels': {
+            const cfg = vscode.workspace.getConfiguration('triforgeAi');
+            this._send({
+              type: 'config-models',
+              openai: cfg.get<string>('openai.model') || '',
+              claude: cfg.get<string>('claude.model') || '',
+              grok:   cfg.get<string>('grok.model')   || '',
+            });
+            break;
+          }
+          case 'config:setModel': {
+            const provider = message.provider as string;
+            const model    = (message.model as string)?.trim() || undefined;
+            await vscode.workspace.getConfiguration('triforgeAi').update(
+              `${provider}.model`, model, vscode.ConfigurationTarget.Global
+            );
+            this._send({ type: 'config-model-saved', provider, model: model || '' });
+            break;
+          }
         }
       },
       undefined,
@@ -401,6 +558,9 @@ export class TriForgeCouncilPanel {
       id: Date.now().toString(36), prompt,
       originalCode: originalCode ?? '',
       phase: 'DRAFTING', intensity: this._intensityState.level.toLowerCase(), viewMode: 'SUMMARY',
+      contextFiles: this._session?.contextFiles ?? {},
+      filePath: this._session?.filePath,
+      fullFileContent: this._session?.fullFileContent,
     };
 
     // Quorum detection
@@ -616,7 +776,7 @@ export class TriForgeCouncilPanel {
 
     const messages = [
       { role: 'system', content: systemPrompt },
-      { role: 'user', content: `Task: ${prompt}\n\nOriginal context:\n${originalCode || '(empty \u2014 new implementation)'}` },
+      { role: 'user', content: `Task: ${prompt}\n\nOriginal context:\n${originalCode || '(empty \u2014 new implementation)'}${this._buildContextBlock()}` },
     ];
 
     // Try providers in order, skipping timed-out ones
@@ -688,7 +848,7 @@ export class TriForgeCouncilPanel {
 
     const userMessage =
       `Original task: ${prompt}\n\nProposed implementation:\n\`\`\`\n${draft.code}\n\`\`\`\n\n` +
-      `Original code:\n${originalCode || '(new implementation)'}`;
+      `Original code:\n${originalCode || '(new implementation)'}${this._buildContextBlock()}`;
 
     const results = await Promise.all(critics.map(async (critic): Promise<SeatVerdict | null> => {
       if (this._unavailableProviders.has(critic.name)) { return null; }
@@ -755,7 +915,7 @@ export class TriForgeCouncilPanel {
         { role: 'user', content:
           `Original task: ${prompt}\n\nYour original implementation:\n\`\`\`\n${draft.code}\n\`\`\`\n\n` +
           `Council critique:\n${critiqueText}\n\nRevise addressing the concerns. ` +
-          'If objections are invalid, explain why and keep original.' },
+          `If objections are invalid, explain why and keep original.${this._buildContextBlock()}` },
       ], signal);
       const parsed = this._parseJson<CouncilDebate>(raw);
       return {
@@ -812,7 +972,19 @@ export class TriForgeCouncilPanel {
       vscode.window.showWarningMessage('TriForge AI: Open a file in the editor to apply code.');
       return;
     }
-    // Always-on explicit apply gate
+
+    // Open VS Code diff editor so the user can preview proposed changes
+    const newDoc = await vscode.workspace.openTextDocument({
+      content: code,
+      language: editor.document.languageId,
+    });
+    await vscode.commands.executeCommand(
+      'vscode.diff',
+      editor.document.uri,
+      newDoc.uri,
+      'TriForge AI \u2014 Proposed Changes'
+    );
+
     const risk      = this._session?.risk?.level ?? '\u2014';
     const consensus = this._session?.consensus ?? '\u2014';
     const conf      = this._session?.draft?.confidence ?? '\u2014';
@@ -822,23 +994,30 @@ export class TriForgeCouncilPanel {
     );
     if (choice !== 'Apply') {
       this._send({ type: 'apply-cancelled' });
+      await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
       return;
     }
+
     // RUTHLESS: second confirmation modal
     if (this._intensityState.level === 'RUTHLESS') {
       const second = await vscode.window.showWarningMessage(
-        `\u26a0 RUTHLESS mode \u2014 final confirmation.\n\nRisk: ${risk}  |  Council: ${this._councilMode}\nThis code passed adversarial scrutiny. Apply anyway?`,
+        `RUTHLESS mode \u2014 final confirmation.\n\nRisk: ${risk}  |  Council: ${this._councilMode}\nThis code passed adversarial scrutiny. Apply anyway?`,
         { modal: true }, 'Confirm Apply', 'Cancel'
       );
       if (second !== 'Confirm Apply') {
         this._send({ type: 'apply-cancelled' });
+        await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
         return;
       }
     }
+
+    // Refocus original file, apply, close diff tab
+    await vscode.window.showTextDocument(editor.document);
     await editor.edit(b => {
       const doc = editor.document;
       b.replace(new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length)), code);
     });
+    await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
     const fp = path.basename(editor.document.fileName);
     this._send({ type: 'apply-done', filePath: fp });
     vscode.window.showInformationMessage(`TriForge AI: Code applied to ${fp}`);
@@ -988,6 +1167,85 @@ export class TriForgeCouncilPanel {
     return 'Standard analytical review.';
   }
 
+  // ── Git Integration ───────────────────────────────────────────────────────
+
+  private _runGit(args: string[]): string {
+    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!cwd) { throw new Error('No workspace folder open.'); }
+    return execSync(`git ${args.join(' ')}`, { cwd, encoding: 'utf8', timeout: 10000 });
+  }
+
+  private _getGitStatus(): { staged: string[], modified: string[], untracked: string[], branch: string } {
+    const output = this._runGit(['status', '--porcelain']);
+    const branch = this._runGit(['rev-parse', '--abbrev-ref', 'HEAD']).trim();
+    const staged: string[] = [], modified: string[] = [], untracked: string[] = [];
+    for (const line of output.split('\n')) {
+      if (!line.trim()) { continue; }
+      const x = line[0], y = line[1], file = line.slice(3).trim();
+      if (x !== ' ' && x !== '?') { staged.push(file); }
+      if (y === 'M' || (x === ' ' && y !== ' ')) { modified.push(file); }
+      if (x === '?') { untracked.push(file); }
+    }
+    return { staged, modified, untracked, branch };
+  }
+
+  private _getBranches(): { current: string; all: string[] } {
+    const raw = this._runGit(['branch']);
+    const all: string[] = [];
+    let current = '';
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) { continue; }
+      const isCurrent = line.startsWith('*');
+      const name = line.replace(/^\*?\s*/, '').trim();
+      if (isCurrent) { current = name; }
+      all.push(name);
+    }
+    return { current, all };
+  }
+
+  // ── Workspace File Awareness ─────────────────────────────────────────────
+
+  private _getRelPath(absPath: string): string {
+    const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    return ws ? path.relative(ws, absPath).replace(/\\/g, '/') : path.basename(absPath);
+  }
+
+  private async _getWorkspaceTree(): Promise<{rel: string, lang: string}[]> {
+    const ws = vscode.workspace.workspaceFolders?.[0];
+    if (!ws) { return []; }
+    const files = await vscode.workspace.findFiles(
+      '**/*.{ts,tsx,js,jsx,py,go,rs,java,cs,cpp,c,h,json,yaml,yml,md,html,css,scss,vue,svelte}',
+      '{**/node_modules/**,**/.git/**,**/dist/**,**/out/**,**/build/**,**/.next/**,**/coverage/**,**/.vscode-test/**}'
+    );
+    return files.slice(0, 800)
+      .map(f => ({ fsPath: f.fsPath, rel: path.relative(ws.uri.fsPath, f.fsPath).replace(/\\/g, '/'), lang: path.extname(f.fsPath).slice(1) }))
+      .sort((a, b) => a.rel.localeCompare(b.rel))
+      .map(f => ({ rel: f.rel, lang: f.lang }));
+  }
+
+  private async _readWorkspaceFile(relPath: string): Promise<string> {
+    const ws = vscode.workspace.workspaceFolders?.[0];
+    if (!ws) { return ''; }
+    try {
+      const uri = vscode.Uri.joinPath(ws.uri, relPath);
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      return Buffer.from(bytes).toString('utf8').split('\n').slice(0, 300).join('\n');
+    } catch { return ''; }
+  }
+
+  private _buildContextBlock(): string {
+    const parts: string[] = [];
+    if (this._session?.fullFileContent && this._session.filePath) {
+      const rel = this._getRelPath(this._session.filePath);
+      const lines = this._session.fullFileContent.split('\n').slice(0, 200).join('\n');
+      parts.push(`### Current File: ${rel}\n\`\`\`\n${lines}\n\`\`\``);
+    }
+    for (const [rel, content] of Object.entries(this._session?.contextFiles ?? {})) {
+      parts.push(`### Context: ${rel}\n\`\`\`\n${content}\n\`\`\``);
+    }
+    return parts.length ? '\n\n## Workspace Context\n' + parts.join('\n\n') : '';
+  }
+
   // ── Provider Directives ───────────────────────────────────────────────────
 
   private _getProviderDirective(provider: string, intensity: IntensityLevel): string {
@@ -1036,7 +1294,7 @@ export class TriForgeCouncilPanel {
       `Original task: ${prompt}\n\nProposed implementation:\n\`\`\`\n${draft.code}\n\`\`\`\n\n` +
       `Original code:\n${originalCode || '(new implementation)'}\n\n` +
       `First-pass council verdicts:\n${firstVerdictSummary}\n\n` +
-      'Provide your final verdict accounting for the council\'s prior analysis.';
+      `Provide your final verdict accounting for the council's prior analysis.${this._buildContextBlock()}`;
 
     const results = await Promise.all(critics.map(async (critic): Promise<SeatVerdict | null> => {
       if (this._unavailableProviders.has(critic.name)) { return null; }
@@ -1338,6 +1596,33 @@ export class TriForgeCouncilPanel {
   main { flex: 1; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
   .sec { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--sec-bg); }
   .sec.hidden { display: none !important; }
+  /* File explorer */
+  .fitem { display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:3px;cursor:pointer;font-size:11px;font-family:monospace;color:rgba(255,255,255,0.6);transition:background 0.12s; }
+  .fitem:hover { background:rgba(255,255,255,0.06); }
+  .fitem.ctx-on { background:rgba(99,102,241,0.12);color:#a5b4fc; }
+  .fitem .fext { font-size:9px;color:rgba(255,255,255,0.3);flex-shrink:0;width:28px;text-align:right; }
+  .fitem .fname { flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left; }
+  .ctx-tag { display:flex;align-items:center;gap:4px;padding:2px 7px;border-radius:3px;background:rgba(99,102,241,0.1);border:1px solid rgba(99,102,241,0.25);font-size:10px;color:#a5b4fc;font-family:monospace; }
+  .ctx-tag span { flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+  .ctx-rm { background:none;border:none;color:rgba(255,255,255,0.3);cursor:pointer;font-size:13px;padding:0 2px;line-height:1; }
+  .ctx-rm:hover { color:#ef4444; }
+  .gfile { display:flex;align-items:center;gap:5px;padding:2px 4px;border-radius:3px;font-size:11px;font-family:monospace; }
+  .gfile .gname { flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+  .gfile .gbtn { background:none;border:1px solid rgba(255,255,255,0.15);color:rgba(255,255,255,0.5);cursor:pointer;font-size:10px;padding:1px 5px;border-radius:2px;flex-shrink:0; }
+  .gfile .gbtn:hover { background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.8); }
+  .gfile-staged .gname { color:#10b981; }
+  .gfile-changed .gname { color:#f59e0b; }
+  .gfile-untracked .gname { color:rgba(255,255,255,0.4); }
+  .diff-add  { color:#10b981; }
+  .diff-rm   { color:#ef4444; }
+  .diff-hunk { color:#818cf8; }
+  .diff-file { color:rgba(255,255,255,0.55);font-weight:700; }
+  .gcommit       { display:flex;gap:6px;font-size:10px;font-family:monospace;padding:2px 3px;border-radius:2px; }
+  .gcommit:hover { background:rgba(255,255,255,0.04); }
+  .gcommit .ghash { color:#818cf8;flex-shrink:0; }
+  .gcommit .gmsg  { color:rgba(255,255,255,0.4);overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+  .hitem { font-size:10px;padding:3px 6px;border-radius:3px;cursor:pointer;color:rgba(255,255,255,0.38);white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+  .hitem:hover { background:rgba(255,255,255,0.05);color:rgba(255,255,255,0.7); }
   .sh {
     display: flex; align-items: center; gap: 6px; padding: 6px 11px;
     background: rgba(255,255,255,0.025); border-bottom: 1px solid var(--border);
@@ -1611,7 +1896,90 @@ export class TriForgeCouncilPanel {
         <div class="krow"><label>OpenAI</label><input type="password" id="k-openai" placeholder="sk-..."/><button class="btn-s" id="ks-openai">Save</button><button class="btn-d" id="kr-openai">Remove</button></div>
         <div class="krow"><label>Claude</label><input type="password" id="k-claude" placeholder="sk-ant-..."/><button class="btn-s" id="ks-claude">Save</button><button class="btn-d" id="kr-claude">Remove</button></div>
         <div class="krow"><label>Grok</label><input type="password" id="k-grok" placeholder="xai-..."/><button class="btn-s" id="ks-grok">Save</button><button class="btn-d" id="kr-grok">Remove</button></div>
+        <div style="border-top:1px solid var(--border);margin:2px 0;padding-top:6px;display:flex;flex-direction:column;gap:6px;">
+          <datalist id="dl-openai-models"><option value="gpt-4o"/><option value="gpt-4o-mini"/><option value="o1"/><option value="o3-mini"/></datalist>
+          <datalist id="dl-claude-models"><option value="claude-opus-4-6"/><option value="claude-sonnet-4-6"/><option value="claude-haiku-4-5-20251001"/></datalist>
+          <datalist id="dl-grok-models"><option value="grok-3"/><option value="grok-2"/></datalist>
+          <div class="krow"><label>OpenAI Model</label><input type="text" id="m-openai" list="dl-openai-models" placeholder="gpt-4o"/><button class="btn-s" id="ms-openai">Save</button></div>
+          <div class="krow"><label>Claude Model</label><input type="text" id="m-claude" list="dl-claude-models" placeholder="claude-sonnet-4-6"/><button class="btn-s" id="ms-claude">Save</button></div>
+          <div class="krow"><label>Grok Model</label><input type="text" id="m-grok" list="dl-grok-models" placeholder="grok-3"/><button class="btn-s" id="ms-grok">Save</button></div>
+        </div>
         <div class="krow"><label>Audio</label><button class="ibtn on" id="btn-audio">On</button></div>
+      </div>
+    </div>
+
+    <!-- Workspace File Explorer -->
+    <div class="sec" id="s-explorer">
+      <div class="sh">Workspace Files
+        <div class="meta">
+          <span id="ctx-count" class="badge hidden"></span>
+          <button class="btn-d" id="btn-ctx-clear" style="display:none;font-size:10px;padding:2px 6px;">Clear</button>
+        </div>
+      </div>
+      <div class="sc" style="padding-bottom:8px;">
+        <input id="file-search" type="text" placeholder="Search files&#x2026;" style="width:100%;margin-bottom:6px;"/>
+        <div id="file-list" style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;"></div>
+        <div id="ctx-files" style="margin-top:6px;display:flex;flex-direction:column;gap:2px;"></div>
+      </div>
+    </div>
+
+    <!-- Git -->
+    <div class="sec" id="s-git">
+      <div class="sh">Git
+        <div class="meta">
+          <span id="git-branch" class="badge" style="display:none;background:rgba(99,102,241,0.15);border:1px solid rgba(99,102,241,0.3);color:#a5b4fc;"></span>
+          <button class="btn-s" id="btn-git-refresh" style="font-size:10px;padding:2px 7px;">&#x21bb;</button>
+        </div>
+      </div>
+      <div class="sc" style="padding-bottom:10px;">
+        <div id="git-branch-mgr" style="margin-bottom:8px;display:flex;flex-direction:column;gap:4px;">
+          <div style="display:flex;gap:4px;align-items:center;">
+            <select id="git-branch-select" style="flex:1;font-size:11px;background:var(--in-bg);border:1px solid var(--in-brd);color:inherit;border-radius:3px;padding:2px 4px;"></select>
+            <button class="btn-s" id="btn-git-switch" style="font-size:10px;padding:2px 6px;">Switch</button>
+          </div>
+          <div style="display:flex;gap:4px;align-items:center;">
+            <input id="git-new-branch" type="text" placeholder="new-branch-name" style="flex:1;font-size:11px;"/>
+            <button class="btn-s" id="btn-git-create" style="font-size:10px;padding:2px 6px;">Create</button>
+          </div>
+        </div>
+        <div id="git-msg-area" style="font-size:11px;color:rgba(255,255,255,0.35);padding:2px 0 6px;">Loading&#x2026;</div>
+
+        <div id="git-staged-sec" style="display:none;margin-bottom:6px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;">
+            <span style="font-size:10px;font-weight:700;color:#10b981;letter-spacing:0.5px;">STAGED</span>
+            <button class="btn-d" id="btn-unstage-all" style="font-size:10px;padding:1px 6px;">Unstage All</button>
+          </div>
+          <div id="git-staged" style="display:flex;flex-direction:column;gap:2px;"></div>
+        </div>
+
+        <div id="git-diff-wrap" style="display:none;margin-bottom:6px;">
+          <pre id="git-diff-view" style="font-size:10px;font-family:monospace;max-height:160px;overflow-y:auto;background:rgba(0,0,0,0.25);border-radius:3px;padding:6px;white-space:pre;margin:0;line-height:1.5;"></pre>
+        </div>
+        <div style="margin-bottom:6px;">
+          <button class="btn-s" id="btn-git-diff" style="width:100%;font-size:10px;padding:2px;">View Staged Diff</button>
+        </div>
+
+        <div id="git-changes-sec" style="display:none;margin-bottom:6px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;">
+            <span style="font-size:10px;font-weight:700;color:#f59e0b;letter-spacing:0.5px;">CHANGES</span>
+            <button class="btn-s" id="btn-stage-all" style="font-size:10px;padding:1px 6px;">Stage All</button>
+          </div>
+          <div id="git-changes" style="display:flex;flex-direction:column;gap:2px;"></div>
+        </div>
+
+        <div style="margin-top:8px;display:flex;flex-direction:column;gap:5px;">
+          <textarea id="git-commit-msg" placeholder="Commit message&#x2026;" style="width:100%;height:54px;resize:vertical;"></textarea>
+          <div style="display:flex;gap:5px;">
+            <button class="btn-s" id="btn-git-ai-msg" style="flex:1;">AI Message</button>
+            <button class="btn-p" id="btn-git-commit" style="flex:1;">Commit</button>
+            <button class="btn-s" id="btn-git-push" style="flex:1;background:rgba(99,102,241,0.15);border-color:rgba(99,102,241,0.3);color:#a5b4fc;">Push</button>
+          </div>
+        </div>
+
+        <div id="git-log-sec" style="margin-top:8px;">
+          <div style="font-size:10px;font-weight:700;color:rgba(255,255,255,0.25);letter-spacing:0.5px;margin-bottom:3px;">RECENT COMMITS</div>
+          <div id="git-log-list" style="display:flex;flex-direction:column;gap:1px;max-height:100px;overflow-y:auto;"></div>
+        </div>
       </div>
     </div>
 
@@ -1636,6 +2004,10 @@ export class TriForgeCouncilPanel {
           <button class="ibtn"    data-i="ruthless">Ruthless</button>
           <span id="i-auto-lbl" class="i-auto-lbl hidden"></span>
           <button class="btn-p" id="btn-run">Run Council &#x25B6;</button>
+        </div>
+        <div id="s-history" style="margin-top:4px;display:none;">
+          <div style="font-size:10px;font-weight:700;color:rgba(255,255,255,0.2);letter-spacing:0.5px;margin-bottom:3px;">RECENT PROMPTS</div>
+          <div id="hist-list" style="display:flex;flex-direction:column;gap:1px;max-height:110px;overflow-y:auto;"></div>
         </div>
       </div>
     </div>
@@ -1845,7 +2217,7 @@ const vs = acquireVsCodeApi();
 function send(cmd, d){ vs.postMessage(Object.assign({command:cmd}, d||{})); }
 
 // State
-const S = { phase:'IDLE', intensity:'adaptive', providers:{}, debOpen:false, running:false, councilMode:'FULL', dlVersions:[], audioEnabled:true };
+const S = { phase:'IDLE', intensity:'adaptive', providers:{}, debOpen:false, running:false, councilMode:'FULL', dlVersions:[], audioEnabled:true, wsFiles:[], ctxFiles:[], promptHistory:[] };
 const PH_ORD = ['DRAFTING','RISK_CHECK','CRITIQUE','DEBATE','COMPLETE'];
 
 // DOM
@@ -2113,6 +2485,142 @@ function onSynthesisReady(d){
   playConsensusTone();
 }
 
+// File explorer
+function renderFileList(q){
+  var fl=$('file-list'); if(!fl){ return; }
+  var list=S.wsFiles;
+  if(q){ list=list.filter(function(f){ return f.rel.toLowerCase().indexOf(q.toLowerCase())>=0; }); }
+  fl.innerHTML='';
+  list.slice(0,120).forEach(function(f){
+    var on=S.ctxFiles.indexOf(f.rel)>=0;
+    var div=document.createElement('div');
+    div.className='fitem'+(on?' ctx-on':'');
+    div.title=f.rel;
+    div.innerHTML='<span class="fext">'+esc(f.lang||'')+'</span><span class="fname">'+esc(f.rel)+'</span>';
+    div.addEventListener('click',function(){ send(on?'workspace:removeContext':'workspace:addContext',{relPath:f.rel}); });
+    fl.appendChild(div);
+  });
+  if(list.length===0){ fl.innerHTML='<div style="font-size:11px;color:rgba(255,255,255,0.3);padding:4px 6px;">No files found.</div>'; }
+}
+function onWorkspaceTree(d){
+  S.wsFiles=d.files||[];
+  renderFileList(($('file-search')||{}).value||'');
+}
+function onContextUpdated(d){
+  S.ctxFiles=d.contextFiles||[];
+  var cc=$('ctx-count'), cb=$('btn-ctx-clear');
+  if(cc){ if(S.ctxFiles.length){ cc.textContent=S.ctxFiles.length+' file'+(S.ctxFiles.length!==1?'s':''); cc.classList.remove('hidden'); } else { cc.classList.add('hidden'); } }
+  if(cb){ cb.style.display=S.ctxFiles.length?'inline-block':'none'; }
+  var cf=$('ctx-files'); if(!cf){ return; }
+  cf.innerHTML='';
+  S.ctxFiles.forEach(function(rel){
+    var tag=document.createElement('div'); tag.className='ctx-tag';
+    var lbl=document.createElement('span'); lbl.title=rel; lbl.textContent=rel;
+    var rm=document.createElement('button'); rm.className='ctx-rm'; rm.title='Remove'; rm.textContent='\u00d7';
+    rm.addEventListener('click',function(){ send('workspace:removeContext',{relPath:rel}); });
+    tag.appendChild(lbl); tag.appendChild(rm);
+    cf.appendChild(tag);
+  });
+  renderFileList(($('file-search')||{}).value||'');
+}
+
+// Git helpers
+function mkGFile(f,type){
+  var div=document.createElement('div'); div.className='gfile gfile-'+type;
+  var btn=document.createElement('button'); btn.className='gbtn';
+  if(type==='staged'){
+    btn.textContent='Unstage';
+    btn.addEventListener('click',function(){ send('git:unstage',{file:f}); });
+  } else {
+    btn.textContent='Stage';
+    btn.addEventListener('click',function(){ send('git:stage',{file:f}); });
+  }
+  var nm=document.createElement('span'); nm.className='gname'; nm.title=f; nm.textContent=f;
+  div.appendChild(btn); div.appendChild(nm);
+  return div;
+}
+function onGitStatus(d){
+  var bb=$('git-branch');
+  if(bb){ if(d.branch){ bb.textContent=d.branch; bb.style.display='inline'; } else { bb.style.display='none'; } }
+  var stgS=$('git-staged-sec'), stg=$('git-staged');
+  if(d.staged&&d.staged.length){
+    if(stgS){ stgS.style.display='block'; }
+    if(stg){ stg.innerHTML=''; d.staged.forEach(function(f){ stg.appendChild(mkGFile(f,'staged')); }); }
+  } else { if(stgS){ stgS.style.display='none'; } }
+  var chS=$('git-changes-sec'), ch=$('git-changes');
+  var allCh=(d.modified||[]).concat(d.untracked||[]);
+  if(allCh.length){
+    if(chS){ chS.style.display='block'; }
+    if(ch){
+      ch.innerHTML='';
+      (d.modified||[]).forEach(function(f){ ch.appendChild(mkGFile(f,'changed')); });
+      (d.untracked||[]).forEach(function(f){ ch.appendChild(mkGFile(f,'untracked')); });
+    }
+  } else { if(chS){ chS.style.display='none'; } }
+  var ma=$('git-msg-area');
+  var total=(d.staged||[]).length+allCh.length;
+  if(ma){ ma.textContent=total?'':'Working tree clean.'; ma.style.display=total?'none':'block'; }
+}
+
+function onBranches(d){
+  var sel=$('git-branch-select'); if(!sel){ return; }
+  sel.innerHTML='';
+  (d.all||[]).forEach(function(b){
+    var o=document.createElement('option'); o.value=b; o.textContent=b;
+    if(b===d.current){ o.selected=true; }
+    sel.appendChild(o);
+  });
+}
+function onGitDiff(d){
+  var pre=$('git-diff-view'), wrap=$('git-diff-wrap');
+  if(!pre||!wrap){ return; }
+  if(!d.diff||!d.diff.trim()){ pre.textContent='No staged changes.'; wrap.style.display='block'; return; }
+  pre.innerHTML='';
+  d.diff.split('\n').forEach(function(line){
+    var span=document.createElement('span');
+    if(line.startsWith('+')&&!line.startsWith('+++'))      { span.className='diff-add'; }
+    else if(line.startsWith('-')&&!line.startsWith('---')) { span.className='diff-rm'; }
+    else if(line.startsWith('@@'))                         { span.className='diff-hunk'; }
+    else if(/^(diff |index |--- |\+\+\+ )/.test(line))    { span.className='diff-file'; }
+    span.textContent=line+'\n';
+    pre.appendChild(span);
+  });
+  wrap.style.display='block';
+}
+function onGitLog(d){
+  var ll=$('git-log-list'); if(!ll){ return; }
+  ll.innerHTML='';
+  if(!d.commits||!d.commits.length){ ll.innerHTML='<span style="font-size:10px;color:rgba(255,255,255,0.2);">No commits yet.</span>'; return; }
+  d.commits.forEach(function(c){
+    var row=document.createElement('div'); row.className='gcommit';
+    var h=document.createElement('span'); h.className='ghash'; h.textContent=c.hash;
+    var m=document.createElement('span'); m.className='gmsg'; m.title=c.message; m.textContent=c.message;
+    row.appendChild(h); row.appendChild(m); ll.appendChild(row);
+  });
+}
+function onConfigModels(d){
+  var mo=$('m-openai'); if(mo){ mo.value=d.openai||''; }
+  var mc=$('m-claude'); if(mc){ mc.value=d.claude||''; }
+  var mg=$('m-grok');   if(mg){ mg.value=d.grok||''; }
+}
+function renderPromptHistory(){
+  var hl=$('hist-list'), hw=$('s-history'); if(!hl||!hw){ return; }
+  if(!S.promptHistory.length){ hw.style.display='none'; return; }
+  hw.style.display='block'; hl.innerHTML='';
+  S.promptHistory.forEach(function(p){
+    var el=document.createElement('div'); el.className='hitem'; el.title=p; el.textContent=p;
+    el.addEventListener('click',function(){ var ti=$('task-input'); if(ti){ ti.value=p; ti.focus(); } });
+    hl.appendChild(el);
+  });
+}
+function addToHistory(text){
+  if(!text||!text.trim()){ return; }
+  S.promptHistory=S.promptHistory.filter(function(p){ return p!==text; });
+  S.promptHistory.unshift(text);
+  if(S.promptHistory.length>20){ S.promptHistory.length=20; }
+  renderPromptHistory();
+}
+
 // Apply cancelled
 function onApplyCancelled(){
   toast('Patch not applied.', false);
@@ -2183,6 +2691,8 @@ function reset(){
   const rviz=$('s-viz'); if(rviz){ rviz.classList.remove('depth-active'); }
   document.body.classList.remove('ruthless-active');
   ['claude','gpt','grok'].forEach(function(p){ const n=$('vn-'+p); if(n){ n.classList.remove('depth-on'); } });
+  // Reset context files (keep file tree loaded)
+  send('workspace:clearContext');
 }
 
 // Message listener
@@ -2206,6 +2716,29 @@ window.addEventListener('message', function(e){
     case 'deadlock':          onDeadlock(d); break;
     case 'synthesis-ready':   onSynthesisReady(d); break;
     case 'critical-objection': onCriticalObjection(d); break;
+    case 'workspace-tree':  onWorkspaceTree(d); break;
+    case 'context-updated': onContextUpdated(d); break;
+    case 'git-status':        onGitStatus(d); break;
+    case 'git-error':         toast(d.message||'Git error.',false); break;
+    case 'git-committed':
+      toast('\u2713 Committed.',true);
+      onGitStatus(d.status||{});
+      var gm=$('git-commit-msg'); if(gm){ gm.value=''; }
+      send('git:log'); send('git:branches');
+      break;
+    case 'git-pushed':        toast('\u2713 Pushed.',true); send('git:status'); send('git:log'); break;
+    case 'git-generating':
+      var b=$('btn-git-ai-msg'); if(b){ b.textContent='Generating\u2026'; b.disabled=true; }
+      break;
+    case 'git-message-ready':
+      var b=$('btn-git-ai-msg'); if(b){ b.textContent='AI Message'; b.disabled=false; }
+      var gm=$('git-commit-msg'); if(gm){ gm.value=d.message||''; }
+      break;
+    case 'git-branches':       onBranches(d); break;
+    case 'git-diff':           onGitDiff(d); break;
+    case 'git-log':            onGitLog(d); break;
+    case 'config-models':      onConfigModels(d); break;
+    case 'config-model-saved': toast('\u2713 Model saved.',true); break;
     case 'escalated':
       S.intensity=d.intensity;
       document.querySelectorAll('.ibtn').forEach(function(b){ b.classList.toggle('on', b.dataset.i===d.intensity); });
@@ -2231,6 +2764,7 @@ window.addEventListener('message', function(e){
 $('btn-run')&&$('btn-run').addEventListener('click',function(){
   const p=($('task-input')||{}).value||'', c=($('ctx-input')||{}).value||'';
   if(!p.trim()){ toast('Please describe your task before running the council.'); return; }
+  addToHistory(p.trim());
   const al=$('i-auto-lbl'); if(al){ al.textContent=''; al.classList.add('hidden'); }
   send('council:run',{prompt:p.trim(),context:c.trim(),intensity:S.intensity});
 });
@@ -2240,6 +2774,34 @@ $('btn-apply')&&$('btn-apply').addEventListener('click',function(){ send('counci
 $('btn-esc')&&$('btn-esc').addEventListener('click',function(){ send('council:escalate'); });
 $('btn-export')&&$('btn-export').addEventListener('click',function(){ send('council:export'); });
 $('btn-reset')&&$('btn-reset').addEventListener('click',reset);
+$('file-search')&&$('file-search').addEventListener('input',function(){ renderFileList(this.value); });
+$('btn-ctx-clear')&&$('btn-ctx-clear').addEventListener('click',function(){ send('workspace:clearContext'); });
+$('btn-git-refresh')&&$('btn-git-refresh').addEventListener('click',function(){ send('git:status'); });
+$('btn-stage-all')&&$('btn-stage-all').addEventListener('click',function(){ send('git:stageAll'); });
+$('btn-unstage-all')&&$('btn-unstage-all').addEventListener('click',function(){ send('git:unstageAll'); });
+$('btn-git-commit')&&$('btn-git-commit').addEventListener('click',function(){
+  var msg=($('git-commit-msg')||{}).value||'';
+  if(!msg.trim()){ toast('Enter a commit message first.'); return; }
+  send('git:commit',{message:msg.trim()});
+});
+$('btn-git-push')&&$('btn-git-push').addEventListener('click',function(){ send('git:push'); });
+$('btn-git-ai-msg')&&$('btn-git-ai-msg').addEventListener('click',function(){ send('git:generateMessage'); });
+$('btn-git-switch')&&$('btn-git-switch').addEventListener('click',function(){
+  var sel=$('git-branch-select'); if(!sel||!sel.value){ return; }
+  send('git:switchBranch',{name:sel.value});
+});
+$('btn-git-create')&&$('btn-git-create').addEventListener('click',function(){
+  var inp=$('git-new-branch'); if(!inp||!inp.value.trim()){ return; }
+  send('git:createBranch',{name:inp.value.trim()}); inp.value='';
+});
+$('btn-git-diff')&&$('btn-git-diff').addEventListener('click',function(){
+  var wrap=$('git-diff-wrap');
+  if(wrap&&wrap.style.display!=='none'){ wrap.style.display='none'; this.textContent='View Staged Diff'; return; }
+  this.textContent='Hide Diff'; send('git:diff');
+});
+$('ms-openai')&&$('ms-openai').addEventListener('click',function(){ send('config:setModel',{provider:'openai',model:($('m-openai')||{}).value||''}); });
+$('ms-claude')&&$('ms-claude').addEventListener('click',function(){ send('config:setModel',{provider:'claude',model:($('m-claude')||{}).value||''}); });
+$('ms-grok')&&$('ms-grok').addEventListener('click',function(){   send('config:setModel',{provider:'grok',  model:($('m-grok')||{}).value||''}); });
 $('btn-debate')&&$('btn-debate').addEventListener('click',function(){
   const ds=$('s-debate');
   if(!ds){ return; }
@@ -2346,6 +2908,11 @@ document.addEventListener('click',function(e){
 
 // Init
 send('getProviders');
+send('config:getModels');
+send('workspace:getTree');
+send('git:status');
+send('git:branches');
+send('git:log');
 } catch(e) {
   var t=document.getElementById('etst');
   if(t){ t.textContent='JS Error: '+(e&&e.message||String(e)); t.className=''; t.style.display='block'; t.style.color='#ef4444'; t.style.padding='8px'; t.style.fontSize='11px'; }

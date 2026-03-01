@@ -109,10 +109,12 @@ function _activate(context: vscode.ExtensionContext) {
       }
       TriForgeCouncilPanel.createOrShow(context.extensionUri, providerManager);
       if (TriForgeCouncilPanel.currentPanel) {
-        const fileName = path.basename(editor.document.fileName);
+        const filePath = editor.document.fileName;
+        const fileName = path.basename(filePath);
         const lang = editor.document.languageId;
+        const fullFileContent = editor.document.getText();
         const prompt = buildPrompt(selection, lang, fileName);
-        TriForgeCouncilPanel.currentPanel.runForSelection(prompt, selection, intensity);
+        TriForgeCouncilPanel.currentPanel.runForSelection(prompt, selection, intensity, filePath, fullFileContent);
       }
     };
   }
