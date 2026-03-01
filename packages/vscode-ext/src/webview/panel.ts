@@ -1604,8 +1604,7 @@ export class TriForgeCouncilPanel {
     font-size: 13px;
     color: var(--vscode-editor-foreground, #ccc);
     background: var(--vscode-editor-background, #1e1e1e);
-    overflow-x: hidden;
-    overflow-y: auto;
+    height: 100vh; overflow: hidden;
   }
   :root {
     --c-gpt:    #10b981; --c-claude: #f97316; --c-grok: #818cf8; --c-forge: #6366f1;
@@ -1618,16 +1617,120 @@ export class TriForgeCouncilPanel {
     --in-bg:     var(--vscode-input-background, rgba(255,255,255,0.05));
     --in-brd:    var(--vscode-input-border, rgba(255,255,255,0.15));
   }
-  #app { display: flex; flex-direction: column; min-height: 100vh; }
 
-  /* Header */
+  /* ── Think Tank Grid Layout ─────────────────────────────────────────────── */
+  #app {
+    display: grid; height: 100vh; overflow: hidden;
+    grid-template-rows: auto auto 1fr auto;
+    grid-template-areas: "header" "topbar" "workspace" "bottom";
+  }
   header {
-    display: flex; align-items: center; gap: 8px;
-    padding: 7px 12px;
+    grid-area: header;
+    display: flex; align-items: center; gap: 8px; padding: 7px 12px;
     background: var(--vscode-titleBar-activeBackground, rgba(0,0,0,0.3));
     border-bottom: 1px solid var(--border);
-    position: sticky; top: 0; z-index: 50;
   }
+  #topbar {
+    grid-area: topbar; border-bottom: 1px solid var(--border);
+    background: rgba(0,0,0,0.12); padding: 7px 10px;
+    display: flex; flex-direction: column; gap: 5px;
+  }
+  #topbar-row1 { display: flex; gap: 6px; align-items: flex-start; }
+  #task-input-wrap { flex: 1; position: relative; }
+  #task-input { width: 100%; min-height: 50px; max-height: 110px; resize: vertical; }
+  .topbar-run { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
+  #topbar-row2 { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+  #ctx-wrap { display: none; margin-top: 3px; }
+  #ctx-input { width: 100%; min-height: 40px; font-family: 'Menlo','Monaco','Courier New',monospace; font-size: 11px; }
+  #topbar-phase { display: none; align-items: center; gap: 7px; padding: 3px 0; flex-wrap: wrap; }
+  #topbar-phase.active { display: flex; }
+  #pmsg { font-size: 11px; color: rgba(255,255,255,0.38); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #workspace {
+    grid-area: workspace; display: grid; overflow: hidden; min-height: 0;
+    grid-template-columns: 22% 1fr 25%;
+    grid-template-areas: "left center right";
+  }
+  #left-panel {
+    grid-area: left; overflow-y: auto; border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+  }
+  #center-panel {
+    grid-area: center; overflow-y: auto; display: flex; flex-direction: column; min-height: 0;
+  }
+  #right-panel {
+    grid-area: right; overflow-y: auto; border-left: 1px solid var(--border);
+    display: flex; flex-direction: column;
+  }
+  #bottom-panel {
+    grid-area: bottom; border-top: 1px solid var(--border);
+    overflow-y: auto; max-height: 260px;
+    background: rgba(0,0,0,0.1);
+  }
+
+  /* ── Left / Panel sections ───────────────────────────────────────────────── */
+  .panel-sec { border-bottom: 1px solid var(--border); }
+  .panel-sh {
+    display: flex; align-items: center; gap: 6px; padding: 6px 10px;
+    background: rgba(255,255,255,0.02); font-size: 10px; font-weight: 700;
+    letter-spacing: 0.8px; text-transform: uppercase; color: rgba(255,255,255,0.35);
+    cursor: pointer; user-select: none;
+  }
+  .panel-sh:hover { background: rgba(255,255,255,0.04); }
+  .panel-sh .meta { margin-left: auto; display: flex; gap: 5px; align-items: center; }
+  .panel-chevron { margin-left: auto; font-size: 10px; color: rgba(255,255,255,0.3); transition: transform 0.15s; }
+  .panel-body { padding: 8px 10px; }
+
+  /* ── Sections (center/right) ─────────────────────────────────────────────── */
+  .sec { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--sec-bg); margin: 6px; }
+  .sec.hidden { display: none !important; }
+
+  /* ── AI Columns ──────────────────────────────────────────────────────────── */
+  #ai-cols-wrap { display: grid; grid-template-columns: 1fr 1fr 1fr; flex: 1; min-height: 0; overflow: hidden; }
+  .ai-col { display: flex; flex-direction: column; border-right: 1px solid var(--border); min-height: 0; overflow-y: auto; }
+  .ai-col:last-child { border-right: none; }
+  .ai-col-hdr {
+    display: flex; align-items: center; gap: 6px; padding: 6px 9px;
+    border-bottom: 1px solid var(--border); font-size: 10px; font-weight: 700;
+    letter-spacing: 0.8px; text-transform: uppercase; position: sticky; top: 0; z-index: 5;
+    background: var(--vscode-editor-background, #1e1e1e);
+  }
+  .ai-col-hdr.gpt-hdr { border-top: 2px solid var(--c-gpt); }
+  .ai-col-hdr.cld-hdr { border-top: 2px solid var(--c-claude); }
+  .ai-col-hdr.grk-hdr { border-top: 2px solid var(--c-grok); }
+  .ai-col-name { font-size: 11px; font-weight: 800; }
+  .ai-col-name.gpt-n { color: var(--c-gpt); }
+  .ai-col-name.cld-n { color: var(--c-claude); }
+  .ai-col-name.grk-n { color: var(--c-grok); }
+  .ai-state {
+    font-size: 9px; font-weight: 700; letter-spacing: 0.5px; padding: 1px 5px; border-radius: 8px;
+    background: rgba(255,255,255,0.05); color: rgba(255,255,255,0.3); border: 1px solid rgba(255,255,255,0.08); margin-left: auto;
+  }
+  .ai-state.st-drafting  { background: rgba(249,115,22,0.12); color: #fb923c; border-color: rgba(249,115,22,0.3); animation: sp 0.9s ease-in-out infinite; }
+  .ai-state.st-reviewing { background: rgba(99,102,241,0.12); color: #a5b4fc; border-color: rgba(99,102,241,0.3); animation: sp 1.4s ease-in-out infinite; }
+  .ai-state.st-agreed    { background: rgba(16,185,129,0.12); color: #10b981; border-color: rgba(16,185,129,0.3); }
+  .ai-state.st-disagrees { background: rgba(239,68,68,0.12);  color: #f87171; border-color: rgba(239,68,68,0.3); }
+  .ai-state.st-voting    { background: rgba(59,130,246,0.12);  color: #60a5fa; border-color: rgba(59,130,246,0.3); animation: sp 1.2s ease-in-out infinite; }
+  .ai-col-body { flex: 1; padding: 6px 8px; display: flex; flex-direction: column; gap: 6px; }
+  .col-card { border: 1px solid rgba(255,255,255,0.07); border-radius: 5px; background: rgba(255,255,255,0.02); padding: 7px 9px; font-size: 11px; }
+  .col-card-lbl { font-size: 9px; font-weight: 700; letter-spacing: 0.6px; color: rgba(255,255,255,0.3); text-transform: uppercase; margin-bottom: 4px; }
+  .col-rea { font-size: 11px; color: rgba(255,255,255,0.5); font-style: italic; line-height: 1.45; }
+  .col-code { font-family: 'Menlo','Monaco','Courier New',monospace; font-size: 10px; line-height: 1.45; color: rgba(255,255,255,0.75); white-space: pre-wrap; word-break: break-word; max-height: 110px; overflow: hidden; margin-top: 5px; background: rgba(0,0,0,0.2); border-radius: 3px; padding: 5px 7px; }
+  .col-card.ag  { border-color: rgba(16,185,129,0.28); background: rgba(16,185,129,0.035); }
+  .col-card.dis { border-color: rgba(239,68,68,0.28);  background: rgba(239,68,68,0.035); }
+  .col-idle { font-size: 11px; color: rgba(255,255,255,0.16); padding: 12px 9px; text-align: center; font-style: italic; }
+
+  /* ── Center idle / active ────────────────────────────────────────────────── */
+  #center-idle {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 8px; color: rgba(255,255,255,0.2);
+    font-size: 12px; text-align: center; padding: 20px;
+  }
+  #center-active { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+  #center-active.hidden { display: none !important; }
+  #right-idle { flex: 1; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0.18); font-size: 11px; text-align: center; padding: 16px; }
+  #right-idle.hidden { display: none !important; }
+
+  /* ── Header ──────────────────────────────────────────────────────────────── */
   .logo { font-size: 11px; font-weight: 700; letter-spacing: 1px; color: rgba(255,255,255,0.5); flex-shrink: 0; }
   .pdots { display: flex; gap: 5px; flex: 1; }
   .pdot {
@@ -1642,11 +1745,6 @@ export class TriForgeCouncilPanel {
   .icon-btn { background: none; border: none; cursor: pointer; color: rgba(255,255,255,0.4); font-size: 14px; padding: 2px 5px; border-radius: 3px; transition: color 0.15s; }
   .icon-btn:hover { color: rgba(255,255,255,0.85); }
   .icon-btn.active { color: var(--c-forge); }
-
-  /* Layout */
-  main { flex: 1; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
-  .sec { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--sec-bg); }
-  .sec.hidden { display: none !important; }
   /* File explorer */
   .fitem { display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:3px;cursor:pointer;font-size:11px;font-family:monospace;color:rgba(255,255,255,0.6);transition:background 0.12s; }
   .fitem:hover { background:rgba(255,255,255,0.06); }
@@ -1928,6 +2026,7 @@ export class TriForgeCouncilPanel {
 <body>
 <div id="app">
 
+  <!-- Header -->
   <header>
     <div class="logo">&#x2B21; Triforge AI Code Council</div>
     <div class="pdots">
@@ -1939,372 +2038,425 @@ export class TriForgeCouncilPanel {
     <button class="icon-btn" id="btn-cfg" title="Settings">&#x2699;</button>
   </header>
 
-  <main>
+  <!-- Top bar: Prompt + Controls (always visible) -->
+  <div id="topbar">
+    <div id="topbar-row1">
+      <div id="task-input-wrap">
+        <textarea id="task-input" placeholder="Describe what you need implemented or improved&#x2026;"></textarea>
+      </div>
+      <div class="topbar-run">
+        <button class="btn-p" id="btn-run" style="white-space:nowrap;padding:6px 12px;">Run &#x25B6;</button>
+        <button class="btn-s" id="btn-abort" style="font-size:11px;padding:3px 9px;display:none;">Abort</button>
+        <button class="btn-g" id="btn-reset" style="font-size:11px;padding:3px 6px;">&#x21BA;</button>
+      </div>
+    </div>
+    <div id="topbar-row2">
+      <span style="font-size:10px;color:rgba(255,255,255,0.35);text-transform:uppercase;letter-spacing:0.3px;">Intensity:</span>
+      <button class="ibtn on" data-i="adaptive">Adaptive</button>
+      <button class="ibtn"    data-i="cooperative">Cooperative</button>
+      <button class="ibtn"    data-i="analytical">Analytical</button>
+      <button class="ibtn"    data-i="critical">Critical</button>
+      <button class="ibtn"    data-i="ruthless">Ruthless</button>
+      <span id="i-auto-lbl" class="i-auto-lbl hidden"></span>
+      <button class="btn-s" id="btn-ctx-toggle" style="font-size:11px;padding:3px 9px;margin-left:auto;">+ Context</button>
+    </div>
+    <div id="ctx-wrap">
+      <label for="ctx-input">Code Context (optional)</label>
+      <textarea id="ctx-input" placeholder="Paste the current implementation here&#x2026;"></textarea>
+    </div>
+    <!-- Phase steps (shown during run) -->
+    <div id="topbar-phase">
+      <div class="psteps">
+        <span class="ps" data-ph="DRAFTING">Draft</span>
+        <span class="ps" data-ph="RISK_CHECK">Risk</span>
+        <span class="ps" data-ph="CRITIQUE">Critique</span>
+        <span class="ps" data-ph="DEBATE">Debate</span>
+        <span class="ps" data-ph="COMPLETE">&#x2713; Done</span>
+      </div>
+      <span id="pmsg"></span>
+    </div>
+    <!-- Kept for JS show/hide compat (display:none!important) -->
+    <div id="s-input"  style="display:none!important;"></div>
+    <div id="s-phase"  style="display:none!important;"></div>
+  </div>
+
+  <!-- Workspace: Left | Center | Right -->
+  <div id="workspace">
+
+    <!-- LEFT PANEL -->
+    <div id="left-panel">
+
+      <!-- Settings -->
+      <div class="panel-sec" id="s-cfg">
+        <div class="panel-sh" id="cfg-sh">Settings / API Keys
+          <span id="cfg-chevron" class="panel-chevron">&#x25BE;</span>
+        </div>
+        <div id="cfg-body" style="display:flex;flex-direction:column;gap:8px;padding:8px 10px 14px;">
+          <div class="krow"><label>OpenAI</label><input type="password" id="k-openai" placeholder="sk-..."/><button class="btn-s" id="ks-openai">Save</button><button class="btn-d" id="kr-openai">Remove</button></div>
+          <div class="krow"><label>Claude</label><input type="password" id="k-claude" placeholder="sk-ant-..."/><button class="btn-s" id="ks-claude">Save</button><button class="btn-d" id="kr-claude">Remove</button></div>
+          <div class="krow"><label>Grok</label><input type="password" id="k-grok" placeholder="xai-..."/><button class="btn-s" id="ks-grok">Save</button><button class="btn-d" id="kr-grok">Remove</button></div>
+          <div style="border-top:1px solid var(--border);margin:2px 0;padding-top:6px;display:flex;flex-direction:column;gap:6px;">
+            <datalist id="dl-openai-models"><option value="gpt-4o"/><option value="gpt-4o-mini"/><option value="o1"/><option value="o3-mini"/></datalist>
+            <datalist id="dl-claude-models"><option value="claude-opus-4-6"/><option value="claude-sonnet-4-6"/><option value="claude-haiku-4-5-20251001"/></datalist>
+            <datalist id="dl-grok-models"><option value="grok-3"/><option value="grok-2"/></datalist>
+            <div class="krow"><label>OpenAI Model</label><input type="text" id="m-openai" list="dl-openai-models" placeholder="gpt-4o"/><button class="btn-s" id="ms-openai">Save</button></div>
+            <div class="krow"><label>Claude Model</label><input type="text" id="m-claude" list="dl-claude-models" placeholder="claude-sonnet-4-6"/><button class="btn-s" id="ms-claude">Save</button></div>
+            <div class="krow"><label>Grok Model</label><input type="text" id="m-grok" list="dl-grok-models" placeholder="grok-3"/><button class="btn-s" id="ms-grok">Save</button></div>
+          </div>
+          <div class="krow"><label>Audio</label><button class="ibtn on" id="btn-audio">On</button></div>
+          <!-- License -->
+          <div style="border-top:1px solid var(--border);margin:4px 0;padding-top:8px;display:flex;flex-direction:column;gap:6px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+              <span style="font-size:10px;font-weight:700;letter-spacing:0.6px;color:rgba(255,255,255,0.45);">LICENSE</span>
+              <span id="lic-badge" style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:9px;background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.4);">Loading&#x2026;</span>
+            </div>
+            <div id="lic-msg" style="font-size:11px;color:rgba(255,255,255,0.5);line-height:1.4;"></div>
+            <div id="lic-trial-bar" style="display:none;">
+              <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+                <span style="font-size:10px;color:rgba(255,255,255,0.4);">Trial expires in</span>
+                <span id="lic-days" style="font-size:10px;font-weight:700;color:#10b981;"></span>
+              </div>
+              <div style="height:3px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden;">
+                <div id="lic-prog" style="height:100%;border-radius:2px;transition:width 0.4s;"></div>
+              </div>
+            </div>
+            <div id="lic-key-row" style="display:none;flex-direction:column;gap:4px;">
+              <div style="display:flex;gap:4px;">
+                <input type="text" id="lic-key-inp" placeholder="Enter license key&#x2026;" style="flex:1;font-size:11px;font-family:monospace;"/>
+                <button class="btn-s" id="btn-lic-activate" style="font-size:11px;padding:3px 9px;">Activate</button>
+              </div>
+              <div id="lic-err" style="font-size:10px;color:#ef4444;display:none;"></div>
+              <button id="btn-lic-upgrade" style="width:100%;font-size:11px;background:linear-gradient(135deg,#6366f1,#818cf8);border:none;padding:5px 0;border-radius:4px;color:#fff;font-weight:600;cursor:pointer;margin-top:2px;">Subscribe &#x2014; $15/month &#x2197;</button>
+            </div>
+            <div id="lic-active-row" style="display:none;align-items:center;justify-content:space-between;">
+              <span id="lic-key-disp" style="font-size:10px;font-family:monospace;color:rgba(255,255,255,0.4);"></span>
+              <button class="btn-d" id="btn-lic-remove" style="font-size:10px;padding:2px 7px;">Remove</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Workspace Files -->
+      <div class="panel-sec" id="s-explorer">
+        <div class="panel-sh">Workspace Files
+          <div class="meta">
+            <span id="ctx-count" class="badge hidden"></span>
+            <button class="btn-d" id="btn-ctx-clear" style="display:none;font-size:10px;padding:2px 6px;">Clear</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          <input id="file-search" type="text" placeholder="Search files&#x2026;" style="margin-bottom:6px;"/>
+          <div id="file-list" style="max-height:130px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;"></div>
+          <div id="ctx-files" style="margin-top:6px;display:flex;flex-direction:column;gap:2px;"></div>
+        </div>
+      </div>
+
+      <!-- Git -->
+      <div class="panel-sec" id="s-git">
+        <div class="panel-sh">Git
+          <div class="meta">
+            <span id="git-branch" class="badge" style="display:none;background:rgba(99,102,241,0.15);border:1px solid rgba(99,102,241,0.3);color:#a5b4fc;"></span>
+            <button class="btn-s" id="btn-git-refresh" style="font-size:10px;padding:2px 7px;">&#x21bb;</button>
+          </div>
+        </div>
+        <div class="panel-body" style="padding-bottom:10px;">
+          <div id="git-branch-mgr" style="margin-bottom:8px;display:flex;flex-direction:column;gap:4px;">
+            <div style="display:flex;gap:4px;align-items:center;">
+              <select id="git-branch-select" style="flex:1;font-size:11px;background:var(--in-bg);border:1px solid var(--in-brd);color:inherit;border-radius:3px;padding:2px 4px;"></select>
+              <button class="btn-s" id="btn-git-switch" style="font-size:10px;padding:2px 6px;">Switch</button>
+            </div>
+            <div style="display:flex;gap:4px;align-items:center;">
+              <input id="git-new-branch" type="text" placeholder="new-branch-name" style="flex:1;font-size:11px;"/>
+              <button class="btn-s" id="btn-git-create" style="font-size:10px;padding:2px 6px;">Create</button>
+            </div>
+          </div>
+          <div id="git-msg-area" style="font-size:11px;color:rgba(255,255,255,0.35);padding:2px 0 6px;">Loading&#x2026;</div>
+          <div id="git-staged-sec" style="display:none;margin-bottom:6px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;">
+              <span style="font-size:10px;font-weight:700;color:#10b981;letter-spacing:0.5px;">STAGED</span>
+              <button class="btn-d" id="btn-unstage-all" style="font-size:10px;padding:1px 6px;">Unstage All</button>
+            </div>
+            <div id="git-staged" style="display:flex;flex-direction:column;gap:2px;"></div>
+          </div>
+          <div id="git-diff-wrap" style="display:none;margin-bottom:6px;">
+            <pre id="git-diff-view" style="font-size:10px;font-family:monospace;max-height:120px;overflow-y:auto;background:rgba(0,0,0,0.25);border-radius:3px;padding:6px;white-space:pre;margin:0;line-height:1.5;"></pre>
+          </div>
+          <div style="margin-bottom:6px;">
+            <button class="btn-s" id="btn-git-diff" style="width:100%;font-size:10px;padding:2px;">View Staged Diff</button>
+          </div>
+          <div id="git-changes-sec" style="display:none;margin-bottom:6px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;">
+              <span style="font-size:10px;font-weight:700;color:#f59e0b;letter-spacing:0.5px;">CHANGES</span>
+              <button class="btn-s" id="btn-stage-all" style="font-size:10px;padding:1px 6px;">Stage All</button>
+            </div>
+            <div id="git-changes" style="display:flex;flex-direction:column;gap:2px;"></div>
+          </div>
+          <div style="margin-top:8px;display:flex;flex-direction:column;gap:5px;">
+            <textarea id="git-commit-msg" placeholder="Commit message&#x2026;" style="width:100%;height:54px;resize:vertical;"></textarea>
+            <div style="display:flex;gap:5px;">
+              <button class="btn-s" id="btn-git-ai-msg" style="flex:1;">AI Message</button>
+              <button class="btn-p" id="btn-git-commit" style="flex:1;">Commit</button>
+              <button class="btn-s" id="btn-git-push" style="flex:1;background:rgba(99,102,241,0.15);border-color:rgba(99,102,241,0.3);color:#a5b4fc;">Push</button>
+            </div>
+          </div>
+          <div id="git-log-sec" style="margin-top:8px;">
+            <div style="font-size:10px;font-weight:700;color:rgba(255,255,255,0.25);letter-spacing:0.5px;margin-bottom:3px;">RECENT COMMITS</div>
+            <div id="git-log-list" style="display:flex;flex-direction:column;gap:1px;max-height:80px;overflow-y:auto;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Prompt History -->
+      <div class="panel-sec" id="s-history">
+        <div class="panel-sh">Recent Prompts</div>
+        <div class="panel-body">
+          <div id="hist-list" style="display:flex;flex-direction:column;gap:1px;max-height:100px;overflow-y:auto;"></div>
+        </div>
+      </div>
+
+    </div><!-- /left-panel -->
+
+    <!-- CENTER PANEL: AI Council -->
+    <div id="center-panel">
+
+      <!-- License gate -->
+      <div id="lic-gate" style="display:none;padding:12px;border:1px solid rgba(99,102,241,0.3);border-radius:6px;background:rgba(99,102,241,0.06);margin:8px;flex-direction:column;gap:8px;">
+        <p id="lic-gate-msg" style="font-size:12px;color:rgba(255,255,255,0.65);line-height:1.5;margin:0;"></p>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button class="btn-s" id="btn-gate-upgrade" style="font-size:11px;background:linear-gradient(135deg,#6366f1,#818cf8);border:none;color:#fff;padding:4px 12px;border-radius:4px;font-weight:600;cursor:pointer;">Subscribe &#x2014; $15/mo</button>
+          <button class="btn-s" id="btn-gate-key" style="font-size:11px;">I have a license key</button>
+        </div>
+      </div>
+      <div id="bypass-b" style="display:none;padding:7px 12px;font-size:12px;background:rgba(245,158,11,0.09);border-bottom:1px solid rgba(245,158,11,0.3);color:#f59e0b;">Draft applied immediately &#x2014; council review bypassed.</div>
+
+      <!-- Idle -->
+      <div id="center-idle">
+        <div style="font-size:28px;opacity:0.15;">&#x2B21;</div>
+        <div>Enter a task above and click <strong>Run</strong> to convene the AI Council.</div>
+        <div style="font-size:10px;margin-top:4px;opacity:0.6;">GPT &#xB7; Claude &#xB7; Grok deliberate in parallel</div>
+      </div>
+
+      <!-- Active: SVG + 3 AI Columns -->
+      <div id="center-active" class="hidden">
+
+        <!-- SVG Merge Zone -->
+        <div id="s-viz" class="hidden">
+          <svg id="cviz" viewBox="0 0 300 88" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <filter id="fo" x="-60%" y="-60%" width="220%" height="220%">
+                <feGaussianBlur stdDeviation="3" result="b"/>
+                <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+              <filter id="ft" x="-60%" y="-60%" width="220%" height="220%">
+                <feGaussianBlur stdDeviation="3" result="b"/>
+                <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+              <filter id="fi2" x="-80%" y="-80%" width="260%" height="260%">
+                <feGaussianBlur stdDeviation="5" result="b"/>
+                <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+            </defs>
+            <line id="bm-claude" class="vbeam" x1="150" y1="22" x2="150" y2="46"/>
+            <line id="bm-gpt"    class="vbeam" x1="50"  y1="74" x2="138" y2="55"/>
+            <line id="bm-grok"   class="vbeam" x1="250" y1="74" x2="162" y2="55"/>
+            <g class="vnode" id="vn-claude">
+              <circle class="vn-halo" cx="150" cy="13" r="16" fill="#f97316" stroke="#f97316"/>
+              <circle class="vn-core" cx="150" cy="13" r="10" filter="url(#fo)"/>
+              <text x="150" y="17" text-anchor="middle" font-size="8" font-weight="800" fill="#f97316" filter="url(#fo)">C</text>
+              <text x="150" y="4"  text-anchor="middle" class="vn-lbl">CLAUDE</text>
+            </g>
+            <g class="vnode" id="vn-gpt">
+              <circle class="vn-halo" cx="40" cy="78" r="16" fill="#10b981" stroke="#10b981"/>
+              <circle class="vn-core" cx="40" cy="78" r="10" filter="url(#ft)"/>
+              <text x="40" y="82" text-anchor="middle" font-size="8" font-weight="800" fill="#10b981" filter="url(#ft)">G</text>
+              <text x="12" y="88" text-anchor="middle" class="vn-lbl">GPT</text>
+            </g>
+            <g class="vnode" id="vn-grok">
+              <circle class="vn-halo" cx="260" cy="78" r="16" fill="#818cf8" stroke="#818cf8"/>
+              <circle class="vn-core" cx="260" cy="78" r="10" filter="url(#fi2)"/>
+              <text x="260" y="82" text-anchor="middle" font-size="8" font-weight="800" fill="#818cf8" filter="url(#fi2)">X</text>
+              <text x="288" y="88" text-anchor="middle" class="vn-lbl">GROK</text>
+            </g>
+            <g id="vn-forge">
+              <circle class="vfo" cx="150" cy="55" r="22"/>
+              <circle class="vfi" cx="150" cy="55" r="14" filter="url(#fi2)"/>
+              <text x="150" y="61" text-anchor="middle" font-size="13" filter="url(#fi2)" style="filter:drop-shadow(0 0 5px rgba(255,210,60,.8))">&#x26A1;</text>
+            </g>
+          </svg>
+        </div>
+
+        <!-- 3 AI Columns -->
+        <div id="ai-cols-wrap">
+
+          <!-- GPT Column -->
+          <div class="ai-col" id="col-openai">
+            <div class="ai-col-hdr gpt-hdr">
+              <span class="ai-col-name gpt-n">GPT</span>
+              <span class="ai-state" id="col-state-openai">idle</span>
+            </div>
+            <div class="ai-col-body">
+              <div id="col-draft-openai" style="display:none;">
+                <div class="col-card"><div class="col-card-lbl">Draft</div><div class="col-rea" id="col-rea-openai"></div><pre class="col-code" id="col-code-openai"></pre></div>
+              </div>
+              <div id="col-risk-openai" style="display:none;">
+                <div class="col-card"><div class="col-card-lbl">Risk</div><div style="font-size:11px;color:rgba(255,255,255,0.5);" id="col-risk-lbl-openai"></div></div>
+              </div>
+              <div id="col-cards-openai"></div>
+              <div class="col-idle" id="col-idle-openai">Waiting&#x2026;</div>
+            </div>
+          </div>
+
+          <!-- Claude Column -->
+          <div class="ai-col" id="col-claude">
+            <div class="ai-col-hdr cld-hdr">
+              <span class="ai-col-name cld-n">Claude</span>
+              <span class="ai-state" id="col-state-claude">idle</span>
+            </div>
+            <div class="ai-col-body">
+              <div id="col-draft-claude" style="display:none;">
+                <div class="col-card"><div class="col-card-lbl">Draft</div><div class="col-rea" id="col-rea-claude"></div><pre class="col-code" id="col-code-claude"></pre></div>
+              </div>
+              <div id="col-risk-claude" style="display:none;">
+                <div class="col-card"><div class="col-card-lbl">Risk</div><div style="font-size:11px;color:rgba(255,255,255,0.5);" id="col-risk-lbl-claude"></div></div>
+              </div>
+              <div id="col-cards-claude"></div>
+              <div class="col-idle" id="col-idle-claude">Waiting&#x2026;</div>
+            </div>
+          </div>
+
+          <!-- Grok Column -->
+          <div class="ai-col" id="col-grok">
+            <div class="ai-col-hdr grk-hdr">
+              <span class="ai-col-name grk-n">Grok</span>
+              <span class="ai-state" id="col-state-grok">idle</span>
+            </div>
+            <div class="ai-col-body">
+              <div id="col-draft-grok" style="display:none;">
+                <div class="col-card"><div class="col-card-lbl">Draft</div><div class="col-rea" id="col-rea-grok"></div><pre class="col-code" id="col-code-grok"></pre></div>
+              </div>
+              <div id="col-risk-grok" style="display:none;">
+                <div class="col-card"><div class="col-card-lbl">Risk</div><div style="font-size:11px;color:rgba(255,255,255,0.5);" id="col-risk-lbl-grok"></div></div>
+              </div>
+              <div id="col-cards-grok"></div>
+              <div class="col-idle" id="col-idle-grok">Waiting&#x2026;</div>
+            </div>
+          </div>
+
+        </div><!-- /ai-cols-wrap -->
+
+        <!-- Draft/Risk/Verdicts kept hidden for JS/export compat -->
+        <div class="sec hidden" id="s-draft" style="display:none!important;">
+          <div class="sh">Fast Draft<div class="meta"><span id="dp-badge" class="badge">&#x2014;</span><span id="dr-badge" class="badge">&#x2014;</span><span id="dc-badge" class="badge">&#x2014;</span></div></div>
+          <p id="d-reason" class="rea"></p><pre id="d-code" class="cb"></pre>
+          <div class="arow"><button class="btn-s" id="btn-bypass">Apply Draft Immediately</button></div>
+        </div>
+        <div class="sec hidden" id="s-risk" style="display:none!important;">
+          <div class="sh">Risk Analysis<div class="meta"><span id="rl-badge" class="badge">&#x2014;</span></div></div>
+          <ul id="rtlist" class="tlist"></ul>
+        </div>
+        <div class="sec hidden" id="s-agree" style="display:none!important;">
+          <div class="sh">Council Verdicts<div class="meta"><span id="cs-badge" class="badge">&#x2014;</span></div></div>
+          <div id="vcards"></div>
+        </div>
+
+      </div><!-- /center-active -->
+
+    </div><!-- /center-panel -->
+
+    <!-- RIGHT PANEL: Final Output -->
+    <div id="right-panel">
+
+      <div id="right-idle">
+        <div><div style="font-size:22px;opacity:0.15;margin-bottom:8px;">&#x25A6;</div>Final output appears here after the council completes.</div>
+      </div>
+
+      <!-- Final result -->
+      <div class="sec hidden" id="s-result">
+        <div class="sh">Final Implementation<div class="meta"><span id="rc-badge" class="badge">&#x2014;</span></div></div>
+        <pre id="r-code" class="cb"></pre>
+        <div class="arow">
+          <button class="btn-p" id="btn-apply">Apply Patch</button>
+          <button class="btn-s" id="btn-debate">View Debate</button>
+          <button class="btn-s" id="btn-esc">Escalate</button>
+          <button class="btn-s" id="btn-export">Export</button>
+          <button class="btn-g" id="btn-reset2">&#x21BA; New</button>
+        </div>
+      <!-- Alternative -->
+      <div class="sec hidden" id="s-alt">
+        <div class="sh">Alternative Proposal<div class="meta"><span id="ap-badge" class="badge">&#x2014;</span><span id="ac-badge" class="badge">&#x2014;</span><span id="ar-badge" class="badge">&#x2014;</span></div></div>
+        <p id="a-reason" class="rea"></p>
+        <pre id="a-code" class="cb"></pre>
+        <div class="arow">
+          <button class="btn-p" id="btn-adopt">Adopt This</button>
+          <button class="btn-s" id="btn-vote">Council Vote</button>
+          <button class="btn-g" id="btn-discard">Discard</button>
+        </div>
+      </div>
+
+      <!-- Synthesis note -->
+      <div class="sec hidden" id="s-synth-note">
+        <div class="sh">Synthesis Rationale</div>
+        <p id="synth-rationale" class="rea"></p>
+      </div>
+
+    </div><!-- /right-panel -->
+
+  </div><!-- /workspace -->
+
+  <!-- BOTTOM PANEL: Debate + Deadlock + Critical Objection -->
+  <div id="bottom-panel">
     <div id="etst"></div>
-    <div id="bypass-b">Draft applied immediately &#x2014; council review bypassed.</div>
 
-    <!-- License gate overlay -->
-    <div id="lic-gate" style="display:none;padding:12px;border:1px solid rgba(99,102,241,0.3);border-radius:6px;background:rgba(99,102,241,0.06);margin:4px 0;flex-direction:column;gap:8px;">
-      <p id="lic-gate-msg" style="font-size:12px;color:rgba(255,255,255,0.65);line-height:1.5;margin:0;"></p>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;">
-        <button class="btn-s" id="btn-gate-upgrade" style="font-size:11px;background:linear-gradient(135deg,#6366f1,#818cf8);border:none;color:#fff;padding:4px 12px;border-radius:4px;font-weight:600;cursor:pointer;">Subscribe &#x2014; $15/mo</button>
-        <button class="btn-s" id="btn-gate-key" style="font-size:11px;">I have a license key</button>
-      </div>
-    </div>
-
-    <!-- Settings -->
-    <div class="sec" id="s-cfg">
-      <div class="sh" id="cfg-sh" style="cursor:pointer;user-select:none;">API Keys
-        <span id="cfg-chevron" style="margin-left:auto;font-size:11px;color:rgba(255,255,255,0.35);transition:transform 0.15s;">&#x25BE;</span>
-      </div>
-      <div class="sc" id="cfg-body" style="display:flex;flex-direction:column;gap:8px;padding-bottom:14px;">
-        <div class="krow"><label>OpenAI</label><input type="password" id="k-openai" placeholder="sk-..."/><button class="btn-s" id="ks-openai">Save</button><button class="btn-d" id="kr-openai">Remove</button></div>
-        <div class="krow"><label>Claude</label><input type="password" id="k-claude" placeholder="sk-ant-..."/><button class="btn-s" id="ks-claude">Save</button><button class="btn-d" id="kr-claude">Remove</button></div>
-        <div class="krow"><label>Grok</label><input type="password" id="k-grok" placeholder="xai-..."/><button class="btn-s" id="ks-grok">Save</button><button class="btn-d" id="kr-grok">Remove</button></div>
-        <div style="border-top:1px solid var(--border);margin:2px 0;padding-top:6px;display:flex;flex-direction:column;gap:6px;">
-          <datalist id="dl-openai-models"><option value="gpt-4o"/><option value="gpt-4o-mini"/><option value="o1"/><option value="o3-mini"/></datalist>
-          <datalist id="dl-claude-models"><option value="claude-opus-4-6"/><option value="claude-sonnet-4-6"/><option value="claude-haiku-4-5-20251001"/></datalist>
-          <datalist id="dl-grok-models"><option value="grok-3"/><option value="grok-2"/></datalist>
-          <div class="krow"><label>OpenAI Model</label><input type="text" id="m-openai" list="dl-openai-models" placeholder="gpt-4o"/><button class="btn-s" id="ms-openai">Save</button></div>
-          <div class="krow"><label>Claude Model</label><input type="text" id="m-claude" list="dl-claude-models" placeholder="claude-sonnet-4-6"/><button class="btn-s" id="ms-claude">Save</button></div>
-          <div class="krow"><label>Grok Model</label><input type="text" id="m-grok" list="dl-grok-models" placeholder="grok-3"/><button class="btn-s" id="ms-grok">Save</button></div>
-        </div>
-        <div class="krow"><label>Audio</label><button class="ibtn on" id="btn-audio">On</button></div>
-        <!-- License section -->
-        <div style="border-top:1px solid var(--border);margin:4px 0;padding-top:8px;display:flex;flex-direction:column;gap:6px;">
-          <div style="display:flex;align-items:center;justify-content:space-between;">
-            <span style="font-size:10px;font-weight:700;letter-spacing:0.6px;color:rgba(255,255,255,0.45);">LICENSE</span>
-            <span id="lic-badge" style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:9px;background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.4);">Loading&#x2026;</span>
-          </div>
-          <div id="lic-msg" style="font-size:11px;color:rgba(255,255,255,0.5);line-height:1.4;"></div>
-          <!-- Trial countdown bar -->
-          <div id="lic-trial-bar" style="display:none;">
-            <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
-              <span style="font-size:10px;color:rgba(255,255,255,0.4);">Trial expires in</span>
-              <span id="lic-days" style="font-size:10px;font-weight:700;color:#10b981;"></span>
-            </div>
-            <div style="height:3px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden;">
-              <div id="lic-prog" style="height:100%;border-radius:2px;transition:width 0.4s;"></div>
-            </div>
-          </div>
-          <!-- Key input (expired / no key) -->
-          <div id="lic-key-row" style="display:none;flex-direction:column;gap:4px;">
-            <div style="display:flex;gap:4px;">
-              <input type="text" id="lic-key-inp" placeholder="Enter license key&#x2026;" style="flex:1;font-size:11px;font-family:monospace;"/>
-              <button class="btn-s" id="btn-lic-activate" style="font-size:11px;padding:3px 9px;">Activate</button>
-            </div>
-            <div id="lic-err" style="font-size:10px;color:#ef4444;display:none;"></div>
-            <button id="btn-lic-upgrade" style="width:100%;font-size:11px;background:linear-gradient(135deg,#6366f1,#818cf8);border:none;padding:5px 0;border-radius:4px;color:#fff;font-weight:600;cursor:pointer;margin-top:2px;">Subscribe &#x2014; $15/month &#x2197;</button>
-          </div>
-          <!-- Active key display -->
-          <div id="lic-active-row" style="display:none;align-items:center;justify-content:space-between;">
-            <span id="lic-key-disp" style="font-size:10px;font-family:monospace;color:rgba(255,255,255,0.4);"></span>
-            <button class="btn-d" id="btn-lic-remove" style="font-size:10px;padding:2px 7px;">Remove</button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Workspace File Explorer -->
-    <div class="sec" id="s-explorer">
-      <div class="sh">Workspace Files
-        <div class="meta">
-          <span id="ctx-count" class="badge hidden"></span>
-          <button class="btn-d" id="btn-ctx-clear" style="display:none;font-size:10px;padding:2px 6px;">Clear</button>
-        </div>
-      </div>
-      <div class="sc" style="padding-bottom:8px;">
-        <input id="file-search" type="text" placeholder="Search files&#x2026;" style="width:100%;margin-bottom:6px;"/>
-        <div id="file-list" style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;"></div>
-        <div id="ctx-files" style="margin-top:6px;display:flex;flex-direction:column;gap:2px;"></div>
-      </div>
-    </div>
-
-    <!-- Git -->
-    <div class="sec" id="s-git">
-      <div class="sh">Git
-        <div class="meta">
-          <span id="git-branch" class="badge" style="display:none;background:rgba(99,102,241,0.15);border:1px solid rgba(99,102,241,0.3);color:#a5b4fc;"></span>
-          <button class="btn-s" id="btn-git-refresh" style="font-size:10px;padding:2px 7px;">&#x21bb;</button>
-        </div>
-      </div>
-      <div class="sc" style="padding-bottom:10px;">
-        <div id="git-branch-mgr" style="margin-bottom:8px;display:flex;flex-direction:column;gap:4px;">
-          <div style="display:flex;gap:4px;align-items:center;">
-            <select id="git-branch-select" style="flex:1;font-size:11px;background:var(--in-bg);border:1px solid var(--in-brd);color:inherit;border-radius:3px;padding:2px 4px;"></select>
-            <button class="btn-s" id="btn-git-switch" style="font-size:10px;padding:2px 6px;">Switch</button>
-          </div>
-          <div style="display:flex;gap:4px;align-items:center;">
-            <input id="git-new-branch" type="text" placeholder="new-branch-name" style="flex:1;font-size:11px;"/>
-            <button class="btn-s" id="btn-git-create" style="font-size:10px;padding:2px 6px;">Create</button>
-          </div>
-        </div>
-        <div id="git-msg-area" style="font-size:11px;color:rgba(255,255,255,0.35);padding:2px 0 6px;">Loading&#x2026;</div>
-
-        <div id="git-staged-sec" style="display:none;margin-bottom:6px;">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;">
-            <span style="font-size:10px;font-weight:700;color:#10b981;letter-spacing:0.5px;">STAGED</span>
-            <button class="btn-d" id="btn-unstage-all" style="font-size:10px;padding:1px 6px;">Unstage All</button>
-          </div>
-          <div id="git-staged" style="display:flex;flex-direction:column;gap:2px;"></div>
-        </div>
-
-        <div id="git-diff-wrap" style="display:none;margin-bottom:6px;">
-          <pre id="git-diff-view" style="font-size:10px;font-family:monospace;max-height:160px;overflow-y:auto;background:rgba(0,0,0,0.25);border-radius:3px;padding:6px;white-space:pre;margin:0;line-height:1.5;"></pre>
-        </div>
-        <div style="margin-bottom:6px;">
-          <button class="btn-s" id="btn-git-diff" style="width:100%;font-size:10px;padding:2px;">View Staged Diff</button>
-        </div>
-
-        <div id="git-changes-sec" style="display:none;margin-bottom:6px;">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;">
-            <span style="font-size:10px;font-weight:700;color:#f59e0b;letter-spacing:0.5px;">CHANGES</span>
-            <button class="btn-s" id="btn-stage-all" style="font-size:10px;padding:1px 6px;">Stage All</button>
-          </div>
-          <div id="git-changes" style="display:flex;flex-direction:column;gap:2px;"></div>
-        </div>
-
-        <div style="margin-top:8px;display:flex;flex-direction:column;gap:5px;">
-          <textarea id="git-commit-msg" placeholder="Commit message&#x2026;" style="width:100%;height:54px;resize:vertical;"></textarea>
-          <div style="display:flex;gap:5px;">
-            <button class="btn-s" id="btn-git-ai-msg" style="flex:1;">AI Message</button>
-            <button class="btn-p" id="btn-git-commit" style="flex:1;">Commit</button>
-            <button class="btn-s" id="btn-git-push" style="flex:1;background:rgba(99,102,241,0.15);border-color:rgba(99,102,241,0.3);color:#a5b4fc;">Push</button>
-          </div>
-        </div>
-
-        <div id="git-log-sec" style="margin-top:8px;">
-          <div style="font-size:10px;font-weight:700;color:rgba(255,255,255,0.25);letter-spacing:0.5px;margin-bottom:3px;">RECENT COMMITS</div>
-          <div id="git-log-list" style="display:flex;flex-direction:column;gap:1px;max-height:100px;overflow-y:auto;"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Input -->
-    <div class="sec" id="s-input">
-      <div class="sh">Council Request</div>
-      <div class="sc">
-        <div>
-          <label for="task-input">Task Description</label>
-          <textarea id="task-input" placeholder="Describe what you need implemented or improved&#x2026;"></textarea>
-        </div>
-        <div>
-          <label for="ctx-input">Code Context (optional)</label>
-          <textarea id="ctx-input" placeholder="Paste the current implementation here&#x2026;"></textarea>
-        </div>
-        <div class="irow">
-          <span>Intensity:</span>
-          <button class="ibtn on" data-i="adaptive">Adaptive</button>
-          <button class="ibtn"    data-i="cooperative">Cooperative</button>
-          <button class="ibtn"    data-i="analytical">Analytical</button>
-          <button class="ibtn"    data-i="critical">Critical</button>
-          <button class="ibtn"    data-i="ruthless">Ruthless</button>
-          <span id="i-auto-lbl" class="i-auto-lbl hidden"></span>
-          <button class="btn-p" id="btn-run">Run Council &#x25B6;</button>
-        </div>
-        <div id="s-history" style="margin-top:4px;display:none;">
-          <div style="font-size:10px;font-weight:700;color:rgba(255,255,255,0.2);letter-spacing:0.5px;margin-bottom:3px;">RECENT PROMPTS</div>
-          <div id="hist-list" style="display:flex;flex-direction:column;gap:1px;max-height:110px;overflow-y:auto;"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Visualization -->
-    <div class="sec hidden" id="s-viz">
-      <svg id="cviz" viewBox="0 0 300 124" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <filter id="fo" x="-60%" y="-60%" width="220%" height="220%">
-            <feGaussianBlur stdDeviation="3" result="b"/>
-            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-          </filter>
-          <filter id="ft" x="-60%" y="-60%" width="220%" height="220%">
-            <feGaussianBlur stdDeviation="3" result="b"/>
-            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-          </filter>
-          <filter id="fi2" x="-80%" y="-80%" width="260%" height="260%">
-            <feGaussianBlur stdDeviation="5" result="b"/>
-            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-          </filter>
-        </defs>
-        <!-- Beams to center (150,72) -->
-        <line id="bm-claude" class="vbeam" x1="150" y1="30" x2="150" y2="59"/>
-        <line id="bm-gpt"    class="vbeam" x1="71"  y1="99" x2="139" y2="77"/>
-        <line id="bm-grok"   class="vbeam" x1="229" y1="99" x2="161" y2="77"/>
-        <!-- Claude top (150,18) -->
-        <g class="vnode" id="vn-claude">
-          <circle class="vn-halo" cx="150" cy="18" r="20" fill="#f97316" stroke="#f97316"/>
-          <circle class="vn-core" cx="150" cy="18" r="13" filter="url(#fo)"/>
-          <text x="150" y="23" text-anchor="middle" font-size="10" font-weight="800" fill="#f97316" filter="url(#fo)">C</text>
-          <text x="150" y="6"  text-anchor="middle" class="vn-lbl">CLAUDE</text>
-        </g>
-        <!-- GPT bottom-left (60,108) -->
-        <g class="vnode" id="vn-gpt">
-          <circle class="vn-halo" cx="60" cy="108" r="20" fill="#10b981" stroke="#10b981"/>
-          <circle class="vn-core" cx="60" cy="108" r="13" filter="url(#ft)"/>
-          <text x="60" y="113" text-anchor="middle" font-size="10" font-weight="800" fill="#10b981" filter="url(#ft)">G</text>
-          <text x="22" y="122"  text-anchor="middle" class="vn-lbl">GPT</text>
-        </g>
-        <!-- Grok bottom-right (240,108) -->
-        <g class="vnode" id="vn-grok">
-          <circle class="vn-halo" cx="240" cy="108" r="20" fill="#818cf8" stroke="#818cf8"/>
-          <circle class="vn-core" cx="240" cy="108" r="13" filter="url(#fi2)"/>
-          <text x="240" y="113" text-anchor="middle" font-size="10" font-weight="800" fill="#818cf8" filter="url(#fi2)">X</text>
-          <text x="278" y="122"  text-anchor="middle" class="vn-lbl">GROK</text>
-        </g>
-        <!-- Center forge (150,72) -->
-        <g id="vn-forge">
-          <circle class="vfo" cx="150" cy="72" r="30"/>
-          <circle class="vfi" cx="150" cy="72" r="20" filter="url(#fi2)"/>
-          <text x="150" y="80" text-anchor="middle" font-size="17"
-                filter="url(#fi2)" style="filter:drop-shadow(0 0 5px rgba(255,210,60,.8))">&#x26A1;</text>
-        </g>
-      </svg>
-    </div>
-
-    <!-- Phase bar -->
-    <div class="sec hidden" id="s-phase">
-      <div class="sc">
-        <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
-          <div class="psteps">
-            <span class="ps" data-ph="DRAFTING">Draft</span>
-            <span class="ps" data-ph="RISK_CHECK">Risk</span>
-            <span class="ps" data-ph="CRITIQUE">Critique</span>
-            <span class="ps" data-ph="DEBATE">Debate</span>
-            <span class="ps" data-ph="COMPLETE">&#x2713; Done</span>
-          </div>
-          <span id="pmsg"></span>
-          <button class="btn-d" id="btn-abort" style="padding:3px 9px;font-size:11px;">Abort</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Draft -->
-    <div class="sec hidden" id="s-draft">
-      <div class="sh">Fast Draft<div class="meta"><span id="dp-badge" class="badge">&#x2014;</span><span id="dr-badge" class="badge">&#x2014;</span><span id="dc-badge" class="badge">&#x2014;</span></div></div>
-      <p id="d-reason" class="rea"></p>
-      <pre id="d-code" class="cb"></pre>
-      <div class="arow"><button class="btn-s" id="btn-bypass">Apply Draft Immediately</button></div>
-    </div>
-
-    <!-- Risk -->
-    <div class="sec hidden" id="s-risk">
-      <div class="sh">Risk Analysis<div class="meta"><span id="rl-badge" class="badge">&#x2014;</span></div></div>
-      <ul id="rtlist" class="tlist"></ul>
-    </div>
-
-    <!-- Verdicts -->
-    <div class="sec hidden" id="s-agree">
-      <div class="sh">Council Verdicts<div class="meta"><span id="cs-badge" class="badge">&#x2014;</span></div></div>
-      <div id="vcards"></div>
-    </div>
-
-    <!-- Final result -->
-    <div class="sec hidden" id="s-result">
-      <div class="sh">Final Implementation<div class="meta"><span id="rc-badge" class="badge">&#x2014;</span></div></div>
-      <pre id="r-code" class="cb"></pre>
-      <div class="arow">
-        <button class="btn-p"   id="btn-apply">Apply Patch</button>
-        <button class="btn-s"   id="btn-debate">View Debate</button>
-        <button class="btn-s"   id="btn-esc">Escalate Intensity</button>
-        <button class="btn-s"   id="btn-export">Export Report</button>
-        <button class="btn-g"   id="btn-reset">&#x21BA; New Request</button>
-      </div>
-    </div>
-
-    <!-- Debate (collapsible) -->
+    <!-- Debate -->
     <div class="sec hidden" id="s-debate">
-      <button class="cbtn" id="dtoggle">Debate Transcript<span class="tarr" id="darr">&#x25BC;</span></button>
+      <button class="cbtn" id="dtoggle">&#x1F4AC; Debate Transcript<span class="tarr" id="darr">&#x25BC;</span></button>
       <div id="dbody">
+        <div class="ctrack">
+          <span class="cv" id="db-c1">&#x2014;</span><span class="ca">&#x2192;</span>
+          <span class="cv" id="db-c2">&#x2014;</span><span class="ca">&#x2192;</span>
+          <span class="cv" id="db-c3">&#x2014;</span>
+          <span id="db-dt" class="cd"></span>
+        </div>
         <div class="dstage"><h4>Proposal</h4><p id="db-prop"></p></div>
         <div class="dstage"><h4>Critique</h4><p id="db-crit"></p></div>
         <div class="dstage"><h4>Revision</h4><p id="db-rev"></p></div>
         <div class="dstage"><h4>Final Decision</h4><p id="db-fin"></p></div>
-        <div class="ctrack">
-          <span class="cv" id="db-c1">&#x2014;</span>
-          <span class="ca">&#x2192;</span>
-          <span class="cv" id="db-c2">&#x2014;</span>
-          <span class="ca">&#x2192;</span>
-          <span class="cv" id="db-c3">&#x2014;</span>
-          <span id="db-dt" class="cd"></span>
-        </div>
         <pre id="db-fcode" class="cb" style="display:none;"></pre>
-      </div>
-    </div>
-
-    <!-- Alternative -->
-    <div class="sec hidden" id="s-alt">
-      <div class="sh">Alternative Proposal<div class="meta"><span id="ap-badge" class="badge">&#x2014;</span><span id="ac-badge" class="badge">&#x2014;</span><span id="ar-badge" class="badge">&#x2014;</span></div></div>
-      <p id="a-reason" class="rea"></p>
-      <pre id="a-code" class="cb"></pre>
-      <div class="arow">
-        <button class="btn-p" id="btn-adopt">Adopt This</button>
-        <button class="btn-s" id="btn-vote">Run Council on This</button>
-        <button class="btn-g" id="btn-discard">Discard</button>
       </div>
     </div>
 
     <!-- Deadlock -->
     <div class="sec hidden" id="s-deadlock">
-      <div class="sh">&#x2696; Council Deadlock Detected<div class="meta"><span class="badge r-high">DEADLOCK</span></div></div>
+      <div class="sh">&#x26A0; Council Deadlock</div>
       <div class="sc">
-        <p style="font-size:12px;color:rgba(255,255,255,0.55);margin-bottom:8px;">The council is divided. Choose how to resolve the impasse:</p>
         <div class="deadlock-opts">
-          <button class="dopt-btn" id="btn-dl-escalate">
-            <span class="dopt-icon">&#x26A1;</span>
-            <div class="dopt-text"><div class="dopt-title">Escalate Intensity</div><div class="dopt-desc">Increase critique depth and re-vote</div></div>
-          </button>
-          <button class="dopt-btn" id="btn-dl-user">
-            <span class="dopt-icon">&#x1F9D1;</span>
-            <div class="dopt-text"><div class="dopt-title">User Breaks Tie</div><div class="dopt-desc">Choose from the competing versions</div></div>
-          </button>
-          <button class="dopt-btn" id="btn-dl-synthesis">
-            <span class="dopt-icon">&#x1F9EC;</span>
-            <div class="dopt-text"><div class="dopt-title">Force Synthesis</div><div class="dopt-desc">AI merges the best elements of all versions</div></div>
-          </button>
-          <button class="dopt-btn" id="btn-dl-extended">
-            <span class="dopt-icon">&#x1F525;</span>
-            <div class="dopt-text"><div class="dopt-title">Extended Debate Round</div><div class="dopt-desc">Each AI directly challenges competing proposals</div></div>
-          </button>
+          <button class="dopt-btn" id="btn-dl-escalate"><span class="dopt-icon">&#x1F525;</span><div><div class="dopt-title">Escalate Intensity</div><div class="dopt-desc">Re-run at higher scrutiny</div></div></button>
+          <button class="dopt-btn" id="btn-dl-user"><span class="dopt-icon">&#x1F9D1;</span><div><div class="dopt-title">User Breaks Tie&#x2026;</div><div class="dopt-desc">You pick the version</div></div></button>
+          <button class="dopt-btn" id="btn-dl-synthesis"><span class="dopt-icon">&#x1F9E9;</span><div><div class="dopt-title">Force Synthesis</div><div class="dopt-desc">AI merges all versions</div></div></button>
+          <button class="dopt-btn" id="btn-dl-extended"><span class="dopt-icon">&#x1F4AC;</span><div><div class="dopt-title">Extended Debate</div><div class="dopt-desc">Additional reasoning round</div></div></button>
         </div>
-        <div id="version-cards" class="hidden" style="margin-top:10px;display:flex;flex-direction:column;gap:6px;"></div>
+        <div id="version-cards" class="hidden" style="display:none;flex-direction:column;gap:8px;margin-top:10px;"></div>
       </div>
     </div>
 
-    <!-- Critical Objection (RUTHLESS) -->
+    <!-- Critical Objection -->
     <div class="sec hidden" id="s-critical-obj">
-      <div class="sh">&#x1F6A8; Critical Objection Raised<div class="meta"><span class="badge r-crit">CRITICAL</span></div></div>
+      <div class="sh">&#x26D4; Critical Objection Raised</div>
       <div class="sc">
         <div id="cobj-who" class="cobj-who"></div>
         <div id="cobj-summary" class="cobj-summary"></div>
         <div class="deadlock-opts">
-          <button class="dopt-btn" id="btn-co-alt">
-            <span class="dopt-icon">&#x1F504;</span>
-            <div class="dopt-text"><div class="dopt-title">Require Alternative</div><div class="dopt-desc">Request new implementation from dissenting AI</div></div>
-          </button>
-          <button class="dopt-btn dopt-danger" id="btn-co-override">
-            <span class="dopt-icon">&#x26A0;</span>
-            <div class="dopt-text"><div class="dopt-title">Override &amp; Apply</div><div class="dopt-desc">Double confirmation required. Logged as override.</div></div>
-          </button>
-          <button class="dopt-btn" id="btn-co-debate">
-            <span class="dopt-icon">&#x1F525;</span>
-            <div class="dopt-text"><div class="dopt-title">Extended Debate</div><div class="dopt-desc">All AIs must address dissent explicitly</div></div>
-          </button>
-          <button class="dopt-btn" id="btn-co-synth">
-            <span class="dopt-icon">&#x1F9EC;</span>
-            <div class="dopt-text"><div class="dopt-title">Force Synthesis</div><div class="dopt-desc">Merge best elements of competing implementations</div></div>
-          </button>
+          <button class="dopt-btn" id="btn-co-alt"><span class="dopt-icon">&#x1F503;</span><div><div class="dopt-title">Request Alternative</div><div class="dopt-desc">Different approach</div></div></button>
+          <button class="dopt-btn dopt-danger" id="btn-co-override"><span class="dopt-icon">&#x26A0;&#xFE0F;</span><div><div class="dopt-title">Override &amp; Apply</div><div class="dopt-desc">Apply despite objection</div></div></button>
+          <button class="dopt-btn" id="btn-co-debate"><span class="dopt-icon">&#x1F4AC;</span><div><div class="dopt-title">Extended Debate</div><div class="dopt-desc">Additional reasoning</div></div></button>
+          <button class="dopt-btn" id="btn-co-synth"><span class="dopt-icon">&#x1F9E9;</span><div><div class="dopt-title">Force Synthesis</div><div class="dopt-desc">Merge approaches</div></div></button>
         </div>
       </div>
     </div>
 
-    <!-- Synthesis note -->
-    <div class="sec hidden" id="s-synth-note">
-      <div class="sh">Synthesis Rationale</div>
-      <p id="synth-rationale" class="rea"></p>
-    </div>
+  </div><!-- /bottom-panel -->
 
-  </main>
-</div>
+</div><!-- /app -->
 
 <script nonce="${nonce}">
 (function(){
@@ -2386,7 +2538,13 @@ function onPhase(d){
     ['claude','gpt','grok'].forEach(function(p){ const n=$('vn-'+p); if(n){ n.classList.remove('depth-on'); } });
     document.body.classList.remove('ruthless-active');
     if(d.phase!=='COMPLETE'){
-      show('s-input'); hide('s-phase');
+      var ca=$('center-active'), ci=$('center-idle'), tp=$('topbar-phase');
+      if(ca){ ca.classList.add('hidden'); }
+      if(ci){ ci.classList.remove('hidden'); }
+      if(tp){ tp.classList.remove('active'); }
+      var run=$('btn-run'), abt=$('btn-abort');
+      if(run){ run.style.display=''; }
+      if(abt){ abt.style.display='none'; }
       resetNodes();
     }
     if(d.phase==='BYPASSED'){ const b=$('bypass-b'); if(b){ b.style.display='block'; } }
@@ -2394,8 +2552,14 @@ function onPhase(d){
   }
 
   S.running=true;
-  hide('s-input');
-  show('s-viz'); show('s-phase');
+  var ca2=$('center-active'), ci2=$('center-idle'), tp2=$('topbar-phase');
+  if(ca2){ ca2.classList.remove('hidden'); }
+  if(ci2){ ci2.classList.add('hidden'); }
+  if(tp2){ tp2.classList.add('active'); }
+  show('s-viz');
+  var run2=$('btn-run'), abt2=$('btn-abort');
+  if(run2){ run2.style.display='none'; }
+  if(abt2){ abt2.style.display=''; }
   updSteps(d.phase);
 
   // Depth activation during cognition
@@ -2427,7 +2591,13 @@ function onDraft(dr){
   if(cb){ cb.textContent=dr.confidence+'%'; }
   txt('d-reason', dr.reasoning);
   cod('d-code', dr.code);
-  show('s-draft');
+  // Populate per-column draft
+  var p=dr.provider;
+  var rea=$('col-rea-'+p); if(rea){ rea.textContent=dr.reasoning||''; }
+  var codel=$('col-code-'+p); if(codel){ codel.textContent=dr.code||''; }
+  var draftEl=$('col-draft-'+p); if(draftEl){ draftEl.style.display='block'; }
+  var idleEl=$('col-idle-'+p); if(idleEl){ idleEl.style.display='none'; }
+  var stEl=$('col-state-'+p); if(stEl){ stEl.textContent='drafting'; stEl.className='ai-state st-drafting'; }
   setNode(dr.provider, 'drafting');
 }
 
@@ -2435,15 +2605,25 @@ function onDraft(dr){
 function onRisk(r){
   const rb=$('rl-badge');
   if(rb){ rb.textContent=r.level; rb.className='badge '+rCls(r.level); }
-  const ul=$('rtlist'); if(!ul){ return; }
-  ul.innerHTML='';
-  const tgs=r.triggers||[];
-  if(tgs.length===0){
-    const li=document.createElement('li'); li.textContent='No risk factors detected.'; li.className='ok'; ul.appendChild(li);
-  } else {
-    tgs.forEach(function(t){ const li=document.createElement('li'); li.textContent=t; ul.appendChild(li); });
+  const ul=$('rtlist');
+  if(ul){
+    ul.innerHTML='';
+    const tgs=r.triggers||[];
+    if(tgs.length===0){
+      const li=document.createElement('li'); li.textContent='No risk factors detected.'; li.className='ok'; ul.appendChild(li);
+    } else {
+      tgs.forEach(function(t){ const li=document.createElement('li'); li.textContent=t; ul.appendChild(li); });
+    }
   }
-  show('s-risk');
+  // Show risk summary in all active provider columns
+  var summary=(r.level||'')+(r.triggers&&r.triggers.length?' — '+r.triggers.slice(0,2).join(', '):'');
+  ['openai','claude','grok'].forEach(function(p){
+    if(S.providers[p]){
+      var rlbl=$('col-risk-lbl-'+p); if(rlbl){ rlbl.textContent=summary; }
+      var rEl=$('col-risk-'+p); if(rEl){ rEl.style.display='block'; }
+      var stEl=$('col-state-'+p); if(stEl){ stEl.textContent='risk·'+r.level; stEl.className='ai-state'; }
+    }
+  });
 }
 
 // Verdict handler
@@ -2455,23 +2635,29 @@ function onVerdict(v){
   } else {
     setNode(v.provider,'agreed');
   }
-  const vc=$('vcards'); if(!vc){ return; }
-  const card=document.createElement('div');
-  card.className='vcard '+(v.agrees?'ag':'dis');
-  const objH=(v.agrees||!v.objections||!v.objections.length)?'':
-    '<ul class="vobjl">' + v.objections.slice(0,3).map(function(o){ return '<li>'+esc(o)+'</li>'; }).join('') + '</ul>';
-  const sugH=(v.agrees&&v.suggestedChanges&&v.suggestedChanges.length)?
-    '<ul class="vsugl">' + v.suggestedChanges.slice(0,2).map(function(c){ return '<li>'+esc(c)+'</li>'; }).join('') + '</ul>':'';
-  const altH=(!v.agrees)?
+  // Update column state badge
+  var stEl=$('col-state-'+v.provider);
+  if(stEl){ stEl.textContent=v.agrees?'agreed':'disagrees'; stEl.className='ai-state '+(v.agrees?'st-agreed':'st-disagrees'); }
+  // Build card HTML
+  var objH=(v.agrees||!v.objections||!v.objections.length)?'':
+    '<ul class="vobjl">'+v.objections.slice(0,3).map(function(o){ return '<li>'+esc(o)+'</li>'; }).join('')+'</ul>';
+  var sugH=(v.agrees&&v.suggestedChanges&&v.suggestedChanges.length)?
+    '<ul class="vsugl">'+v.suggestedChanges.slice(0,2).map(function(c){ return '<li>'+esc(c)+'</li>'; }).join('')+'</ul>':'';
+  var altH=(!v.agrees)?
     '<button class="btn-s" style="font-size:11px;padding:3px 8px;margin-top:5px;" data-action="reqAlt" data-provider="'+esc(v.provider)+'">Ask '+esc(pLbl(v.provider))+' for Alternative</button>':'';
-  card.innerHTML=
+  var inner=
     '<div class="vrow">'+
       '<span class="vicon">'+(v.agrees?'&#x2713;':'&#x2717;')+'</span>'+
       '<span class="vpro '+pCls(v.provider)+'">'+esc(pLbl(v.provider))+'</span>'+
       '<span class="vcon">'+v.confidence+'% confidence</span>'+
       '<span class="badge '+rCls(v.riskLevel)+'" style="margin-left:auto;">'+esc(v.riskLevel)+'</span>'+
     '</div>'+objH+sugH+altH;
-  vc.appendChild(card);
+  // Append to hidden vcards (export compat)
+  var vc=$('vcards');
+  if(vc){ var c1=document.createElement('div'); c1.className='vcard '+(v.agrees?'ag':'dis'); c1.innerHTML=inner; vc.appendChild(c1); }
+  // Append to per-column cards
+  var cc=$('col-cards-'+v.provider);
+  if(cc){ var c2=document.createElement('div'); c2.className='col-card '+(v.agrees?'ag':'dis'); c2.innerHTML=inner; cc.appendChild(c2); }
 }
 
 // Debate handler
@@ -2508,6 +2694,9 @@ function onComplete(d){
   cod('r-code', d.finalCode);
   const rc=$('rc-badge');
   if(rc){ rc.textContent=d.consensus; rc.className='badge '+cCls(d.consensus); }
+  // Remove phase bar, show right-panel result
+  var tp3=$('topbar-phase'); if(tp3){ tp3.classList.remove('active'); }
+  hide('right-idle');
   show('s-result');
 }
 
@@ -2678,7 +2867,7 @@ function onLicenseStatus(s){
     if(msg){ msg.textContent=s.statusLabel||''; }
     if(trialBar){ trialBar.style.display='block'; }
     if(daysEl){ daysEl.textContent=(s.trialDaysLeft||0)+' days'; }
-    var pct=Math.max(0,Math.min(100,((s.trialDaysLeft||0)/1)*100));
+    var pct=Math.max(0,Math.min(100,((s.trialDaysLeft||0)/7)*100));
     if(prog){ prog.style.width=pct+'%'; prog.style.background=pct<30?'#ef4444':pct<60?'#f59e0b':'linear-gradient(90deg,#6366f1,#10b981)'; }
   } else {
     if(badge){ badge.classList.add('lic-expired'); badge.textContent='EXPIRED'; }
@@ -2800,8 +2989,25 @@ function toast(msg, ok){
 // Reset
 function reset(){
   S.phase='IDLE'; S.running=false; S.debOpen=false; S.dlVersions=[];
-  ['s-viz','s-phase','s-draft','s-risk','s-agree','s-result','s-debate','s-alt','s-deadlock','s-synth-note','s-critical-obj'].forEach(hide);
-  show('s-input');
+  // Restore new layout idle state
+  var rca=$('center-active'), rci=$('center-idle'), rtp=$('topbar-phase');
+  if(rca){ rca.classList.add('hidden'); }
+  if(rci){ rci.classList.remove('hidden'); }
+  if(rtp){ rtp.classList.remove('active'); }
+  var rrun=$('btn-run'), rabt=$('btn-abort');
+  if(rrun){ rrun.style.display=''; }
+  if(rabt){ rabt.style.display='none'; }
+  // Clear AI columns
+  ['openai','claude','grok'].forEach(function(p){
+    var cd=$('col-draft-'+p); if(cd){ cd.style.display='none'; }
+    var cr=$('col-risk-'+p); if(cr){ cr.style.display='none'; }
+    var cc=$('col-cards-'+p); if(cc){ cc.innerHTML=''; }
+    var ci=$('col-idle-'+p); if(ci){ ci.style.display=''; }
+    var cs=$('col-state-'+p); if(cs){ cs.textContent='idle'; cs.className='ai-state'; }
+  });
+  // Restore right panel idle
+  show('right-idle'); hide('s-result');
+  ['s-viz','s-draft','s-risk','s-agree','s-debate','s-alt','s-deadlock','s-synth-note','s-critical-obj'].forEach(hide);
   resetNodes();
   const vc=$('vcards'); if(vc){ vc.innerHTML=''; }
   const dlvc=$('version-cards'); if(dlvc){ dlvc.innerHTML=''; dlvc.classList.add('hidden'); }
@@ -2833,7 +3039,19 @@ window.addEventListener('message', function(e){
     case 'alternative-ready': onAlt(d.alternative); break;
     case 'apply-done':        toast('\\u2713 Applied to '+d.filePath, true); break;
     case 'apply-cancelled':   onApplyCancelled(); break;
-    case 'error':             toast(d.message||'An error occurred.', false); if(S.running){ S.running=false; show('s-input'); } break;
+    case 'error':
+      toast(d.message||'An error occurred.', false);
+      if(S.running){
+        S.running=false;
+        var eca=$('center-active'), eci=$('center-idle'), etp=$('topbar-phase');
+        if(eca){ eca.classList.add('hidden'); }
+        if(eci){ eci.classList.remove('hidden'); }
+        if(etp){ etp.classList.remove('active'); }
+        var erun=$('btn-run'), eabt=$('btn-abort');
+        if(erun){ erun.style.display=''; }
+        if(eabt){ eabt.style.display='none'; }
+      }
+      break;
     case 'council-mode':      onCouncilMode(d); break;
     case 'provider-offline':  onProviderOffline(d); break;
     case 'intensity-resolved': onIntensityResolved(d); break;
@@ -3042,6 +3260,17 @@ $('btn-co-synth')&&$('btn-co-synth').addEventListener('click',function(){ hide('
   if(rb){ rb.addEventListener('click',function(){ send('removeApiKey',{provider:p}); }); }
 });
 $('btn-audio')&&$('btn-audio').addEventListener('click',function(){ S.audioEnabled=!S.audioEnabled; this.textContent=S.audioEnabled?'On':'Off'; this.classList.toggle('on',S.audioEnabled); });
+$('btn-reset2')&&$('btn-reset2').addEventListener('click',reset);
+// Context toggle — hide by default, toggle on click
+(function(){
+  var cw=$('ctx-wrap'); if(cw){ cw.style.display='none'; }
+  var ctb=$('btn-ctx-toggle'); if(ctb){ ctb.addEventListener('click',function(){
+    if(!cw){ return; }
+    var hidden=cw.style.display==='none';
+    cw.style.display=hidden?'':'none';
+    this.textContent=hidden?'- Context':'+ Context';
+  }); }
+})();
 
 // License button bindings
 $('btn-lic-activate')&&$('btn-lic-activate').addEventListener('click',function(){
