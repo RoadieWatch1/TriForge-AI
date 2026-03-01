@@ -1272,13 +1272,21 @@ export class TriForgeCouncilPanel {
 
   // ── Webview HTML ──────────────────────────────────────────────────────────
 
+  private _getNonce(): string {
+    let text = '';
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    for (let i = 0; i < 32; i++) { text += chars.charAt(Math.floor(Math.random() * chars.length)); }
+    return text;
+  }
+
   private _getWebviewContent(): string {
+    const nonce = this._getNonce();
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
 <title>TriForge Council</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1597,13 +1605,13 @@ export class TriForgeCouncilPanel {
     <div id="bypass-b">Draft applied immediately &#x2014; council review bypassed.</div>
 
     <!-- Settings -->
-    <div class="sec hidden" id="s-cfg">
+    <div class="sec" id="s-cfg">
       <div class="sh">API Keys</div>
-      <div class="sc" style="display:flex;flex-direction:column;gap:5px;padding-bottom:11px;">
-        <div class="krow"><label>OpenAI</label><input type="password" id="k-openai" placeholder="sk-..."/><button class="btn-s" onclick="saveKey('openai')">Save</button><button class="btn-d" onclick="rmKey('openai')">Remove</button></div>
-        <div class="krow"><label>Claude</label><input type="password" id="k-claude" placeholder="sk-ant-..."/><button class="btn-s" onclick="saveKey('claude')">Save</button><button class="btn-d" onclick="rmKey('claude')">Remove</button></div>
-        <div class="krow"><label>Grok</label><input type="password" id="k-grok" placeholder="xai-..."/><button class="btn-s" onclick="saveKey('grok')">Save</button><button class="btn-d" onclick="rmKey('grok')">Remove</button></div>
-        <div class="krow"><label>Audio</label><button class="ibtn on" id="btn-audio" onclick="toggleAudio()">On</button></div>
+      <div class="sc" style="display:flex;flex-direction:column;gap:8px;padding-bottom:14px;">
+        <div class="krow"><label>OpenAI</label><input type="password" id="k-openai" placeholder="sk-..."/><button class="btn-s" id="ks-openai">Save</button><button class="btn-d" id="kr-openai">Remove</button></div>
+        <div class="krow"><label>Claude</label><input type="password" id="k-claude" placeholder="sk-ant-..."/><button class="btn-s" id="ks-claude">Save</button><button class="btn-d" id="kr-claude">Remove</button></div>
+        <div class="krow"><label>Grok</label><input type="password" id="k-grok" placeholder="xai-..."/><button class="btn-s" id="ks-grok">Save</button><button class="btn-d" id="kr-grok">Remove</button></div>
+        <div class="krow"><label>Audio</label><button class="ibtn on" id="btn-audio">On</button></div>
       </div>
     </div>
 
@@ -1829,9 +1837,10 @@ export class TriForgeCouncilPanel {
   </main>
 </div>
 
-<script>
+<script nonce="${nonce}">
 (function(){
 'use strict';
+try {
 const vs = acquireVsCodeApi();
 function send(cmd, d){ vs.postMessage(Object.assign({command:cmd}, d||{})); }
 
@@ -1984,7 +1993,7 @@ function onVerdict(v){
   const sugH=(v.agrees&&v.suggestedChanges&&v.suggestedChanges.length)?
     '<ul class="vsugl">' + v.suggestedChanges.slice(0,2).map(function(c){ return '<li>'+esc(c)+'</li>'; }).join('') + '</ul>':'';
   const altH=(!v.agrees)?
-    '<button class="btn-s" style="font-size:11px;padding:3px 8px;margin-top:5px;" onclick="reqAlt(\''+esc(v.provider)+'\')">Ask '+esc(pLbl(v.provider))+' for Alternative</button>':'';
+    '<button class="btn-s" style="font-size:11px;padding:3px 8px;margin-top:5px;" data-action="reqAlt" data-provider="'+esc(v.provider)+'">Ask '+esc(pLbl(v.provider))+' for Alternative</button>':'';
   card.innerHTML=
     '<div class="vrow">'+
       '<span class="vicon">'+(v.agrees?'&#x2713;':'&#x2717;')+'</span>'+
@@ -2087,7 +2096,7 @@ function onDeadlock(d){
           '<span class="badge '+pCls(v.provider)+'">'+esc(pLbl(v.provider))+'</span>'+
           '<span style="font-size:11px;color:rgba(255,255,255,0.4);">Version '+esc(lbl)+'</span>'+
           '<span style="font-size:11px;color:rgba(255,255,255,0.45);flex:1;">'+esc(v.reasoning)+'</span>'+
-          '<button class="btn-s" style="font-size:11px;padding:3px 9px;" onclick="selectVersion(\''+esc(v.provider)+'\')">Select</button>'+
+          '<button class="btn-s" style="font-size:11px;padding:3px 9px;" data-action="selectVersion" data-provider="'+esc(v.provider)+'">Select</button>'+
         '</div>'+
         '<div class="vc-code">'+esc((v.code||'').slice(0,200))+'</div>';
       vc.appendChild(card);
@@ -2257,6 +2266,8 @@ $('btn-cfg')&&$('btn-cfg').addEventListener('click',function(){
   if(sc.classList.contains('hidden')){ show('s-cfg'); this.classList.add('active'); }
   else { hide('s-cfg'); this.classList.remove('active'); }
 });
+// Settings open by default — mark gear active on load
+(function(){ var b=$('btn-cfg'); if(b){ b.classList.add('active'); } })();
 document.querySelectorAll('.ibtn').forEach(function(btn){
   btn.addEventListener('click',function(){
     document.querySelectorAll('.ibtn').forEach(function(b){ b.classList.remove('on'); });
@@ -2302,7 +2313,7 @@ $('btn-co-alt')&&$('btn-co-alt').addEventListener('click',function(){
         '<span class="badge '+pCls(v.provider)+'">'+esc(pLbl(v.provider))+'</span>'+
         '<span style="font-size:11px;color:rgba(255,255,255,0.4);">Version '+esc(lbl)+'</span>'+
         '<span style="font-size:11px;color:rgba(255,255,255,0.45);flex:1;">'+esc(v.reasoning)+'</span>'+
-        '<button class="btn-s" style="font-size:11px;padding:3px 9px;" onclick="selectVersion(\''+esc(v.provider)+'\')">Select</button>'+
+        '<button class="btn-s" style="font-size:11px;padding:3px 9px;" data-action="selectVersion" data-provider="'+esc(v.provider)+'">Select</button>'+
         '</div><div class="vc-code">'+esc((v.code||'').slice(0,200))+'</div>';
       vc.appendChild(card);
     });
@@ -2316,15 +2327,29 @@ $('btn-co-override')&&$('btn-co-override').addEventListener('click',function(){ 
 $('btn-co-debate')&&$('btn-co-debate').addEventListener('click',function(){ hide('s-critical-obj'); show('s-phase'); send('council:deadlock:extended'); });
 $('btn-co-synth')&&$('btn-co-synth').addEventListener('click',function(){ hide('s-critical-obj'); show('s-phase'); send('council:deadlock:synthesis'); });
 
-// Global functions
-window.saveKey=function(p){ const inp=$('k-'+p); if(!inp||!inp.value.trim()){ return; } send('setApiKey',{provider:p,key:inp.value.trim()}); inp.value=''; toast('\\u2713 '+pLbl(p)+' key saved.', true); };
-window.rmKey=function(p){ send('removeApiKey',{provider:p}); };
-window.reqAlt=function(p){ send('council:requestAlt',{provider:p}); };
-window.selectVersion=function(p){ hide('s-deadlock'); show('s-phase'); send('council:selectVersion',{provider:p}); };
-window.toggleAudio=function(){ S.audioEnabled=!S.audioEnabled; const b=$('btn-audio'); if(b){ b.textContent=S.audioEnabled?'On':'Off'; b.classList.toggle('on',S.audioEnabled); } };
+// API key buttons (no inline onclick — CSP safe)
+['openai','claude','grok'].forEach(function(p){
+  var sb=$('ks-'+p), rb=$('kr-'+p);
+  if(sb){ sb.addEventListener('click',function(){ var inp=$('k-'+p); if(!inp||!inp.value.trim()){ return; } send('setApiKey',{provider:p,key:inp.value.trim()}); inp.value=''; toast('\u2713 '+pLbl(p)+' key saved.', true); }); }
+  if(rb){ rb.addEventListener('click',function(){ send('removeApiKey',{provider:p}); }); }
+});
+$('btn-audio')&&$('btn-audio').addEventListener('click',function(){ S.audioEnabled=!S.audioEnabled; this.textContent=S.audioEnabled?'On':'Off'; this.classList.toggle('on',S.audioEnabled); });
+
+// Event delegation for dynamic card buttons (CSP-safe, no inline onclick)
+document.addEventListener('click',function(e){
+  var t=e.target; if(!t){ return; }
+  var action=t.dataset&&t.dataset.action;
+  var prov=t.dataset&&t.dataset.provider;
+  if(action==='reqAlt'){ send('council:requestAlt',{provider:prov}); }
+  if(action==='selectVersion'){ hide('s-deadlock'); show('s-phase'); send('council:selectVersion',{provider:prov}); }
+});
 
 // Init
 send('getProviders');
+} catch(e) {
+  var t=document.getElementById('etst');
+  if(t){ t.textContent='JS Error: '+(e&&e.message||String(e)); t.className=''; t.style.display='block'; t.style.color='#ef4444'; t.style.padding='8px'; t.style.fontSize='11px'; }
+}
 })();
 </script>
 </body>
