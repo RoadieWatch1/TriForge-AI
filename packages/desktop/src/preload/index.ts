@@ -231,13 +231,23 @@ const api = {
     }>,
   },
 
-  // Forge Engine (Business Engine Mode — Phase 1)
+  // Forge Engine (Business Engine Mode — Phase 1 + 2)
   forgeEngine: {
     run: (profileType: string, answers: Record<string, string>) =>
       ipcRenderer.invoke('forgeEngine:run', { profileType, answers }) as Promise<{
         blueprint?: Record<string, string>;
         assets?: Array<{ type: string; body: string }>;
         buildOutput?: Record<string, string[]>;
+        error?: string;
+      }>,
+    executeFirstStep: (
+      profileType: string,
+      blueprint: Record<string, string>,
+      buildOutput: Record<string, string[]>,
+    ) =>
+      ipcRenderer.invoke('forgeEngine:executeFirstStep', { profileType, blueprint, buildOutput }) as Promise<{
+        executionPlan?: string[];
+        firstTask?: { title: string; description: string; output?: string };
         error?: string;
       }>,
   },

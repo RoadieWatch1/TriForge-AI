@@ -6,13 +6,19 @@ export type EngineProfileType = 'saas' | 'realestate' | 'restaurant';
 
 type AssetItem = { type: string; body: string };
 
+type ExecutionData = {
+  executionPlan: string[];
+  firstTask: { title: string; description: string; output?: string };
+};
+
 type ForgeSession = {
   profileType: EngineProfileType;
   answers: Record<string, string>;
   blueprint: Record<string, string>;
   assets: AssetItem[];
   buildOutput: Record<string, string[]>;
-  status: 'idle' | 'onboarding' | 'generating' | 'ready' | 'activating' | 'launched';
+  execution?: ExecutionData;
+  status: 'idle' | 'onboarding' | 'generating' | 'ready' | 'activating' | 'launched' | 'executing';
 };
 
 interface Question {
@@ -112,6 +118,7 @@ export function ForgeEngine({ profileType, onBack }: Props) {
   const [phaseText, setPhaseText] = useState('Initializing engine…');
   const [error, setError] = useState<string | null>(null);
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+  const [executionLoading, setExecutionLoading] = useState(false);
 
   // Listen to forge:update events during generation
   useEffect(() => {
@@ -167,16 +174,41 @@ export function ForgeEngine({ profileType, onBack }: Props) {
   }, [profileType, session, questions]);
 
   const handleLaunch = useCallback(() => {
+    const { blueprint, buildOutput } = session;
     setSession(s => { const u = { ...s, status: 'activating' as const }; saveSession(u); return u; });
-    setTimeout(() => {
+    setTimeout(async () => {
+      // Transition to launched
       setSession(s => {
         if (s.status !== 'activating') return s;
         const u = { ...s, status: 'launched' as const };
         saveSession(u);
         return u;
       });
+      // Start first-step execution in parallel
+      setExecutionLoading(true);
+      try {
+        const result = await (window as any).triforge.forgeEngine.executeFirstStep(
+          profileType, blueprint, buildOutput,
+        );
+        if (!result.error && result.firstTask) {
+          setSession(s => {
+            if (s.status !== 'launched' && s.status !== 'executing') return s;
+            const u: ForgeSession = {
+              ...s,
+              status: 'executing',
+              execution: {
+                executionPlan: result.executionPlan ?? [],
+                firstTask: result.firstTask,
+              },
+            };
+            saveSession(u);
+            return u;
+          });
+        }
+      } catch { /* silently fail — execution section stays in loading state */ }
+      finally { setExecutionLoading(false); }
     }, 1800);
-  }, []);
+  }, [session, profileType]);
 
   const handleReset = useCallback(() => {
     clearSession();
@@ -343,35 +375,81 @@ export function ForgeEngine({ profileType, onBack }: Props) {
         </div>
       )}
 
-      {/* LAUNCHED */}
-      {session.status === 'launched' && (
-        <div style={styles.launchedCard}>
-          <div style={styles.launchedInner}>
-            <div style={styles.launchedCheckmark}>✓</div>
-            <p style={styles.launchedTitle}>{meta.label} — Active</p>
-            <p style={styles.launchedSub}>
-              Your blueprint, assets, and technical foundation are ready to execute.
-              Everything above is built for your specific market — copy, deploy, and launch.
-            </p>
-            <div style={styles.launchedStats}>
-              <div style={styles.launchedStat}>
-                <span style={styles.launchedStatNum}>{Object.keys(session.blueprint).length}</span>
-                <span style={styles.launchedStatLabel}>Blueprint Sections</span>
+      {/* LAUNCHED + EXECUTING */}
+      {(session.status === 'launched' || session.status === 'executing') && (
+        <>
+          <div style={styles.launchedCard}>
+            <div style={styles.launchedInner}>
+              <div style={styles.launchedCheckmark}>✓</div>
+              <p style={styles.launchedTitle}>{meta.label} — Active</p>
+              <p style={styles.launchedSub}>
+                Your blueprint, assets, and technical foundation are ready to execute.
+                Everything above is built for your specific market — copy, deploy, and launch.
+              </p>
+              <div style={styles.launchedStats}>
+                <div style={styles.launchedStat}>
+                  <span style={styles.launchedStatNum}>{Object.keys(session.blueprint).length}</span>
+                  <span style={styles.launchedStatLabel}>Blueprint Sections</span>
+                </div>
+                <div style={styles.launchedStatDivider} />
+                <div style={styles.launchedStat}>
+                  <span style={styles.launchedStatNum}>{session.assets.length}</span>
+                  <span style={styles.launchedStatLabel}>Deploy-Ready Assets</span>
+                </div>
+                <div style={styles.launchedStatDivider} />
+                <div style={styles.launchedStat}>
+                  <span style={styles.launchedStatNum}>{Object.keys(session.buildOutput).length}</span>
+                  <span style={styles.launchedStatLabel}>System Components</span>
+                </div>
               </div>
-              <div style={styles.launchedStatDivider} />
-              <div style={styles.launchedStat}>
-                <span style={styles.launchedStatNum}>{session.assets.length}</span>
-                <span style={styles.launchedStatLabel}>Deploy-Ready Assets</span>
-              </div>
-              <div style={styles.launchedStatDivider} />
-              <div style={styles.launchedStat}>
-                <span style={styles.launchedStatNum}>{Object.keys(session.buildOutput).length}</span>
-                <span style={styles.launchedStatLabel}>System Components</span>
-              </div>
+              <button style={styles.newBuildBtn} onClick={handleReset}>Start New Build</button>
             </div>
-            <button style={styles.newBuildBtn} onClick={handleReset}>Start New Build</button>
           </div>
-        </div>
+
+          {/* Execution Started */}
+          <div style={styles.executionSection}>
+            <div style={styles.executionHeader}>
+              <span style={styles.executionAccent}>⚡</span>
+              <p style={styles.executionTitle}>Execution Started</p>
+            </div>
+
+            {executionLoading && !session.execution && (
+              <div style={styles.executionLoading}>
+                <div style={styles.execSpinner} />
+                <p style={styles.execLoadingText}>Generating your first action…</p>
+              </div>
+            )}
+
+            {session.execution && (
+              <>
+                {/* First Task */}
+                <div style={styles.firstTaskCard}>
+                  <p style={styles.firstTaskLabel}>First Step</p>
+                  <p style={styles.firstTaskTitle}>{session.execution.firstTask.title}</p>
+                  <p style={styles.firstTaskDesc}>{session.execution.firstTask.description}</p>
+                  {session.execution.firstTask.output && (
+                    <pre style={styles.firstTaskOutput}>{session.execution.firstTask.output}</pre>
+                  )}
+                </div>
+
+                {/* Execution Plan */}
+                {session.execution.executionPlan.length > 0 && (
+                  <div style={styles.planSection}>
+                    <p style={styles.planLabel}>Your Path to Launch</p>
+                    <div style={styles.planSteps}>
+                      {session.execution.executionPlan.map((step, i) => (
+                        <div key={i} style={styles.planStep}>
+                          <span style={styles.planStepNum}>{i + 1}</span>
+                          <span style={styles.planStepText}>{step}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </>
       )}
     </div>
   );
@@ -816,5 +894,140 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'rgba(255,255,255,0.7)',
     margin: 0,
     letterSpacing: '0.2px',
+  },
+  // Execution section
+  executionSection: {
+    background: 'rgba(255,255,255,0.03)',
+    border: '1px solid rgba(255,255,255,0.08)',
+    borderRadius: 10,
+    padding: '16px 16px 20px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 14,
+  } as React.CSSProperties,
+  executionHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+  },
+  executionAccent: {
+    fontSize: 13,
+  },
+  executionTitle: {
+    fontSize: 11,
+    fontWeight: 700,
+    color: 'rgba(255,255,255,0.6)',
+    letterSpacing: '0.8px',
+    textTransform: 'uppercase',
+    margin: 0,
+  },
+  executionLoading: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    padding: '8px 0',
+  },
+  execSpinner: {
+    width: 16,
+    height: 16,
+    borderRadius: '50%',
+    border: '2px solid rgba(99,102,241,0.2)',
+    borderTop: '2px solid #818cf8',
+    animation: 'spin 0.9s linear infinite',
+    flexShrink: 0,
+  },
+  execLoadingText: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.4)',
+    margin: 0,
+  },
+  // First task card
+  firstTaskCard: {
+    background: 'rgba(99,102,241,0.06)',
+    border: '1px solid rgba(99,102,241,0.18)',
+    borderRadius: 8,
+    padding: '14px 14px 16px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+  } as React.CSSProperties,
+  firstTaskLabel: {
+    fontSize: 9,
+    fontWeight: 700,
+    color: '#818cf8',
+    textTransform: 'uppercase',
+    letterSpacing: '0.8px',
+    margin: 0,
+  },
+  firstTaskTitle: {
+    fontSize: 13,
+    fontWeight: 700,
+    color: 'rgba(255,255,255,0.9)',
+    margin: 0,
+    letterSpacing: '0.1px',
+  },
+  firstTaskDesc: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.6)',
+    margin: 0,
+    lineHeight: 1.6,
+  },
+  firstTaskOutput: {
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.55)',
+    background: 'rgba(0,0,0,0.25)',
+    border: '1px solid rgba(255,255,255,0.07)',
+    borderRadius: 6,
+    padding: '10px 12px',
+    margin: '4px 0 0',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    fontFamily: 'monospace',
+    lineHeight: 1.55,
+  },
+  // Plan steps
+  planSection: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+  } as React.CSSProperties,
+  planLabel: {
+    fontSize: 9,
+    fontWeight: 700,
+    color: 'rgba(255,255,255,0.35)',
+    textTransform: 'uppercase',
+    letterSpacing: '0.7px',
+    margin: 0,
+  },
+  planSteps: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+  } as React.CSSProperties,
+  planStep: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  planStepNum: {
+    width: 20,
+    height: 20,
+    borderRadius: '50%',
+    background: 'rgba(255,255,255,0.06)',
+    border: '1px solid rgba(255,255,255,0.1)',
+    fontSize: 10,
+    fontWeight: 700,
+    color: 'rgba(255,255,255,0.4)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    lineHeight: 1,
+  } as React.CSSProperties,
+  planStepText: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.6)',
+    lineHeight: 1.5,
+    paddingTop: 2,
   },
 };

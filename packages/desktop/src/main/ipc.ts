@@ -896,10 +896,7 @@ VERIFY: [1-3 specific things the user should double-check]
 
     // Robust JSON extraction: strip fences, then find the outermost { ... } block.
     function extractJson(raw: string): string {
-      // Remove markdown code fences (```json ... ``` or ``` ... ```)
       const defenced = raw.replace(/^```(?:json)?\s*/im, '').replace(/\s*```\s*$/m, '').trim();
-      // Find the first '{' and last '}' to extract the JSON object even if
-      // the model prepended/appended prose.
       const start = defenced.indexOf('{');
       const end   = defenced.lastIndexOf('}');
       if (start === -1 || end === -1 || end <= start) return defenced;
@@ -927,6 +924,73 @@ VERIFY: [1-3 specific things the user should double-check]
       blueprint: parsed.blueprint ?? {},
       assets: Array.isArray(parsed.assets) ? parsed.assets : [],
       buildOutput: parsed.buildOutput ?? {},
+    };
+  });
+
+  // ── Forge Engine — Execute First Step (Phase 2) ───────────────────────────
+  ipcMain.handle('forgeEngine:executeFirstStep', async (_event, {
+    profileType,
+    blueprint,
+    buildOutput,
+  }: {
+    profileType: EngineProfileType;
+    blueprint: Record<string, string>;
+    buildOutput: Record<string, string[]>;
+  }) => {
+    const lic = await store.getLicense();
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('FORGE_PROFILES', tier)) {
+      return { error: lockedError('FORGE_PROFILES') };
+    }
+
+    const engine = getEngineConfig(profileType);
+    if (!engine) return { error: `Unknown engine type: ${profileType}` };
+
+    const { providerManager: pm } = await getEngine();
+    const providers = await pm.getActiveProviders();
+    if (providers.length === 0) return { error: 'No API keys configured.' };
+
+    const prompt = engine.executionPromptTemplate(blueprint, buildOutput);
+    // Single provider call — prefer GPT for instruction-following, fall back to Claude, then first available
+    const provider =
+      providers.find(p => p.name === 'openai') ??
+      providers.find(p => p.name === 'claude') ??
+      providers[0];
+
+    const msgs = [
+      {
+        role: 'system',
+        content: 'You are a business execution strategist. Return ONLY a valid JSON object — no prose, no markdown fences, no preamble. Zero hedging language. Every instruction is a direct action.',
+      },
+      { role: 'user', content: prompt },
+    ];
+
+    let raw: string;
+    try {
+      raw = await provider.chat(msgs);
+    } catch {
+      return { error: 'Execution plan generation failed. Please try again.' };
+    }
+
+    // Re-use same extraction logic
+    function extractExecJson(r: string): string {
+      const d = r.replace(/^```(?:json)?\s*/im, '').replace(/\s*```\s*$/m, '').trim();
+      const s = d.indexOf('{');
+      const e = d.lastIndexOf('}');
+      if (s === -1 || e === -1 || e <= s) return d;
+      return d.slice(s, e + 1);
+    }
+
+    let parsed: { executionPlan: string[]; firstTask: { title: string; description: string; output?: string } };
+    try {
+      parsed = JSON.parse(extractExecJson(raw));
+    } catch {
+      return { error: 'Could not parse execution plan. Please try again.' };
+    }
+
+    return {
+      executionPlan: Array.isArray(parsed.executionPlan) ? parsed.executionPlan : [],
+      firstTask: parsed.firstTask ?? null,
     };
   });
 

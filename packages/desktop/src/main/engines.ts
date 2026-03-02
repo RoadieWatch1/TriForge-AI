@@ -10,6 +10,7 @@ export interface EngineConfig {
   name: string;
   systemPrompt: string;
   promptTemplate: (answers: Record<string, string>) => string;
+  executionPromptTemplate: (blueprint: Record<string, string>, buildOutput: Record<string, string[]>) => string;
 }
 
 const saasEngine: EngineConfig = {
@@ -100,6 +101,33 @@ Now return the full JSON:
 }
 
 Fill every "body" field with the complete written content from the asset specs above. Do not leave any body empty or use brackets inside a body value.`.trim(),
+
+  executionPromptTemplate: (blueprint, buildOutput) => `
+You are an execution strategist. This SaaS founder just finished their business plan. Tell them exactly what to do TODAY and the 5 steps to reach their first paying customer.
+
+Their business:
+- Idea: ${blueprint.businessIdea ?? ''}
+- Target market: ${blueprint.targetMarket ?? ''}
+- Revenue model: ${blueprint.revenueModel ?? ''}
+- Tech stack: ${(buildOutput.techStack ?? [])[0] ?? 'not specified'}
+
+Return ONLY this JSON object — no prose, no markdown fences:
+{
+  "executionPlan": [
+    "Validate your core assumption: talk to 5 potential users this week using the cold email from your assets",
+    "Set up your development environment: initialize the repo, configure auth and payments with the tech stack above",
+    "Build your MVP: implement only the one feature that directly solves the core problem — nothing else",
+    "Deploy to production and onboard 10 beta testers from your target market",
+    "Activate your first paid acquisition channel and hit your 90-day revenue target"
+  ],
+  "firstTask": {
+    "title": "Set Up Your Development Foundation",
+    "description": "Start here. Create your project repository and install the core dependencies from your tech stack. Set up your auth provider and database before writing any product features — these are your foundation and take 4 hours to do right.",
+    "output": "Run these commands to initialize:\\n1. Create GitHub repo: [your-product-name]\\n2. Initialize project with your chosen framework\\n3. Add auth dependency (from your tech stack)\\n4. Add payments dependency\\n5. Configure your database connection\\n6. Push to main and open your first PR for the core feature"
+  }
+}
+
+Tailor the executionPlan steps and firstTask content specifically to this product and market: ${blueprint.businessIdea ?? ''}`.trim(),
 };
 
 const realestateEngine: EngineConfig = {
@@ -191,6 +219,33 @@ Now return the full JSON:
 }
 
 Fill every "body" field with the complete written content from the asset specs above. Write every word as if you are the agent — do not use brackets inside any body value.`.trim(),
+
+  executionPromptTemplate: (blueprint, buildOutput) => `
+You are an execution strategist. This real estate operator just built their growth plan. Tell them exactly what to do TODAY and the 5 steps to close their first deal.
+
+Their business:
+- Model: ${blueprint.businessIdea ?? ''}
+- Target client: ${blueprint.targetMarket ?? ''}
+- Strategy: ${blueprint.strategy ?? ''}
+- Funnel step 1: ${(buildOutput.funnelSteps ?? [])[0] ?? ''}
+
+Return ONLY this JSON object — no prose, no markdown fences:
+{
+  "executionPlan": [
+    "Identify your first 10 target leads: search the specific platforms for your market and price range",
+    "Make contact today using your cold call script from the assets — aim for 5 calls in the next 2 hours",
+    "Send follow-up emails using Email 1 from your drip sequence to every lead you reached",
+    "Book your first 3 consultation calls for this week using Calendly or your booking tool",
+    "Run your listing presentation with your first signed client and close the agreement"
+  ],
+  "firstTask": {
+    "title": "Contact Your First 10 Leads Today",
+    "description": "Find your leads on these platforms right now: Zillow (search by price range and status), Facebook Marketplace (local real estate groups), LinkedIn (search by job title + city for corporate relocations). Pull 10 names and phone numbers. Open your cold call script from the assets above. Make your first call within 60 minutes of reading this.",
+    "output": "Lead sources to search now:\\n1. Zillow — filter by price range, sort by 'Recently Listed'\\n2. Facebook Groups — search '[Your City] Real Estate'\\n3. LinkedIn — filter by 'Open to Work' + location for relocation leads\\n4. Your own network — text 5 contacts who may know someone buying or selling\\nTarget: 10 names + numbers in 30 minutes, first call within 60 minutes"
+  }
+}
+
+Tailor the executionPlan and firstTask specifically to this market and strategy: ${blueprint.businessIdea ?? ''}`.trim(),
 };
 
 const restaurantEngine: EngineConfig = {
@@ -290,6 +345,34 @@ Now return the full JSON:
 }
 
 Fill every "body" field with the complete written content from the asset specs above. Write every word as the restaurant owner — do not use brackets inside any body value.`.trim(),
+
+  executionPromptTemplate: (blueprint, buildOutput) => `
+You are an execution strategist. This restaurant owner just built their launch plan. Tell them exactly what to do TODAY and the 5 steps to serve their first paying guests.
+
+Their concept:
+- Concept: ${blueprint.businessIdea ?? ''}
+- Target guest: ${blueprint.targetMarket ?? ''}
+- Revenue model: ${blueprint.revenueModel ?? ''}
+- Grand opening strategy: ${blueprint.strategy ?? ''}
+- Menu highlight: ${(buildOutput.menu ?? [])[1] ?? ''}
+
+Return ONLY this JSON object — no prose, no markdown fences:
+{
+  "executionPlan": [
+    "Finalize and print your menu: use the exact items and prices from your menu build output",
+    "Claim and complete your Google Business Profile: post your announcement using the Google Business Post asset",
+    "Launch your first promotional offer: post the promo flyer copy to Instagram, Facebook, and Nextdoor today",
+    "Email 5 local offices using your B2B Catering Outreach Email asset to book your first group orders",
+    "Execute your grand opening day plan: run your opening-day marketing push and fill your first covers"
+  ],
+  "firstTask": {
+    "title": "Launch Your First Promotion Today",
+    "description": "Post your promotion right now using the assets above. Step 1: Go to Google Business Profile and paste your Google Business Post. Step 2: Open Instagram and post Caption 1 from your Instagram Captions asset with the photo of your signature dish. Step 3: Post your Promo Flyer copy to Nextdoor targeting your city. These 3 posts take 20 minutes and start generating awareness today.",
+    "output": "Post this sequence in the next 20 minutes:\\n1. Google Business Profile → paste your Google Business Post asset\\n2. Instagram → post Caption 1 with your hero dish photo\\n3. Nextdoor → paste your Promo Flyer Body copy\\n4. Facebook Local Groups → share the same promo\\nExpected result: first inquiries within 24 hours"
+  }
+}
+
+Tailor the executionPlan and firstTask specifically to this concept and location: ${blueprint.businessIdea ?? ''}`.trim(),
 };
 
 export const ENGINE_CONFIGS: Record<EngineProfileType, EngineConfig> = {
