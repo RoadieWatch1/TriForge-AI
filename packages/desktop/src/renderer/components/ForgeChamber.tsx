@@ -75,7 +75,9 @@ interface Props {
 export function ForgeChamber({ visible }: Props) {
   const [state, setState] = useState<ForgeState>(defaultForgeState);
   const [opacity, setOpacity] = useState(0);
+  const [showBurst, setShowBurst] = useState(false);
   const mountedRef = useRef(true);
+  const prevPhaseRef = useRef<ForgePhase>('querying');
 
   // Fade in over 200ms
   useEffect(() => {
@@ -86,6 +88,7 @@ export function ForgeChamber({ visible }: Props) {
   useEffect(() => {
     if (!visible) { setOpacity(0); return; }
     setState(defaultForgeState());
+    prevPhaseRef.current = 'querying';
     const t = setTimeout(() => { if (mountedRef.current) setOpacity(1); }, 30);
     return () => clearTimeout(t);
   }, [visible]);
@@ -114,20 +117,28 @@ export function ForgeChamber({ visible }: Props) {
         } else if (data.phase === 'escalating') {
           next.escalating = true;
           next.escalationReason = data.reason ?? 'Risk signals detected';
-          // Auto-clear escalation flash after 2.5s
           setTimeout(() => {
             if (mountedRef.current) setState(s => ({ ...s, escalating: false }));
           }, 2500);
 
         } else if (data.phase === 'synthesis:start') {
           next.phase = 'synthesizing';
-          // Ensure all cores show complete when synthesis begins
           for (const k of Object.keys(next.providers)) next.providers[k] = 'complete';
 
         } else if (data.phase === 'complete') {
+          // Trigger consensus burst when transitioning from synthesizing → complete
+          if (prevPhaseRef.current === 'synthesizing') {
+            setTimeout(() => {
+              if (mountedRef.current) {
+                setShowBurst(true);
+                setTimeout(() => { if (mountedRef.current) setShowBurst(false); }, 1400);
+              }
+            }, 0);
+          }
           next.phase = 'complete';
         }
 
+        prevPhaseRef.current = next.phase;
         return next;
       });
     });
@@ -141,11 +152,11 @@ export function ForgeChamber({ visible }: Props) {
   const centerIntensity = state.phase === 'synthesizing' ? 1 : consensusPct / 100;
 
   const statusText =
-    state.escalating               ? `Auto-escalating — ${state.escalationReason}` :
-    state.phase === 'synthesizing' ? 'Synthesizing intelligence…' :
-    state.phase === 'complete'     ? 'Consensus reached' :
+    state.escalating                 ? `Auto-escalating — ${state.escalationReason}` :
+    state.phase === 'synthesizing'   ? `Forging consensus from ${state.total} minds…` :
+    state.phase === 'complete'       ? 'Council consensus achieved' :
     state.completedCount === state.total && state.total > 0
-      ? 'All models responded'
+      ? 'All models responded — synthesizing…'
       : `${state.completedCount} of ${state.total} models responded`;
 
   return (
@@ -158,14 +169,18 @@ export function ForgeChamber({ visible }: Props) {
       marginBottom: 12,
       position: 'relative',
       overflow: 'hidden',
-      boxShadow: state.escalating ? '0 0 20px rgba(239,68,68,0.18)' : 'none',
+      boxShadow: state.escalating
+        ? '0 0 20px rgba(239,68,68,0.18)'
+        : state.phase === 'synthesizing'
+          ? '0 0 28px rgba(249,115,22,0.12)'
+          : 'none',
       transition: 'border 300ms ease, box-shadow 300ms ease, opacity 200ms ease',
     }}>
       {/* Ambient radial glow behind center */}
       <div style={{
         position: 'absolute',
         inset: 0,
-        background: `radial-gradient(ellipse 60% 80% at 50% 55%, rgba(249,115,22,${(centerIntensity * 0.07).toFixed(3)}) 0%, transparent 70%)`,
+        background: `radial-gradient(ellipse 60% 80% at 50% 55%, rgba(249,115,22,${(centerIntensity * 0.1).toFixed(3)}) 0%, transparent 70%)`,
         pointerEvents: 'none',
         transition: 'background 600ms ease',
       }} />
@@ -179,19 +194,17 @@ export function ForgeChamber({ visible }: Props) {
           animation: state.phase === 'complete' ? 'none' : 'forge-dot-pulse 1.4s ease-in-out infinite',
         }} />
         <span style={{
-          fontSize: 10,
-          fontWeight: 700,
-          letterSpacing: '0.18em',
-          color: '#f97316',
-          textTransform: 'uppercase',
+          fontSize: 10, fontWeight: 700, letterSpacing: '0.18em',
+          color: '#f97316', textTransform: 'uppercase',
         }}>
           The Forge Chamber
         </span>
         <span style={{
-          marginLeft: 'auto',
-          fontSize: 10,
-          color: 'rgba(255,255,255,0.25)',
+          marginLeft: 'auto', fontSize: 10,
+          color: state.phase === 'synthesizing' ? 'rgba(249,115,22,0.5)' : 'rgba(255,255,255,0.25)',
           letterSpacing: '0.06em',
+          fontWeight: state.phase === 'synthesizing' ? 700 : 400,
+          transition: 'color 300ms ease',
         }}>
           {state.phase === 'synthesizing' ? 'CONVERGING' : state.phase === 'complete' ? 'COMPLETE' : 'ACTIVE'}
         </span>
@@ -213,13 +226,18 @@ export function ForgeChamber({ visible }: Props) {
               x2={CENTER.x} y2={CENTER.y}
               gradientUnits="userSpaceOnUse"
             >
-              <stop offset="0%"   stopColor={PROVIDER_COLORS[key] ?? '#666'} stopOpacity="0.85" />
-              <stop offset="100%" stopColor="#f97316" stopOpacity="0.5" />
+              <stop offset="0%"   stopColor={PROVIDER_COLORS[key] ?? '#666'} stopOpacity="0.9" />
+              <stop offset="100%" stopColor="#f97316" stopOpacity="0.55" />
             </linearGradient>
           ))}
           {/* Center glow filter */}
           <filter id="fc-glow" x="-50%" y="-50%" width="200%" height="200%">
             <feGaussianBlur stdDeviation="3" result="blur" />
+            <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+          </filter>
+          {/* Stronger glow for synthesizing */}
+          <filter id="fc-glow-strong" x="-60%" y="-60%" width="220%" height="220%">
+            <feGaussianBlur stdDeviation="5" result="blur" />
             <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
           </filter>
         </defs>
@@ -228,9 +246,9 @@ export function ForgeChamber({ visible }: Props) {
         {(Object.entries(CORES) as [string, { cx: number; cy: number }][]).map(([key, pos]) => {
           const status: ProviderStatus = (state.providers[key] as ProviderStatus) ?? 'waiting';
           const beamOpacity =
-            state.phase === 'synthesizing' ? 0.9 :
-            status === 'complete'           ? 0.75 :
-            status === 'responding'         ? 0.45 : 0.08;
+            state.phase === 'synthesizing' ? 0.95 :
+            status === 'complete'           ? 0.78 :
+            status === 'responding'         ? 0.6  : 0.08;
           const animated = status === 'responding';
           return (
             <line
@@ -238,7 +256,7 @@ export function ForgeChamber({ visible }: Props) {
               x1={pos.cx} y1={pos.cy}
               x2={CENTER.x} y2={CENTER.y}
               stroke={`url(#beam-grad-${key})`}
-              strokeWidth={beamOpacity > 0.5 ? 1.5 : 1}
+              strokeWidth={status === 'responding' ? 2 : beamOpacity > 0.5 ? 1.5 : 1}
               opacity={beamOpacity}
               strokeDasharray={animated ? '5 5' : undefined}
               style={{
@@ -252,20 +270,35 @@ export function ForgeChamber({ visible }: Props) {
         {/* Center forge platform — outer diamond */}
         <polygon
           points={`${CENTER.x},${CENTER.y - 20} ${CENTER.x + 16},${CENTER.y + 5} ${CENTER.x},${CENTER.y + 18} ${CENTER.x - 16},${CENTER.y + 5}`}
-          fill={`rgba(249,115,22,${(0.06 + centerIntensity * 0.1).toFixed(3)})`}
+          fill={`rgba(249,115,22,${(0.06 + centerIntensity * 0.12).toFixed(3)})`}
           stroke="#f97316"
-          strokeWidth={state.phase === 'synthesizing' ? 1.5 : 0.8}
-          opacity={0.25 + centerIntensity * 0.65}
-          filter={state.phase === 'synthesizing' ? 'url(#fc-glow)' : undefined}
+          strokeWidth={state.phase === 'synthesizing' ? 2 : 0.8}
+          opacity={0.25 + centerIntensity * 0.7}
+          filter={state.phase === 'synthesizing' ? 'url(#fc-glow-strong)' : undefined}
           style={{ transition: 'all 500ms ease' }}
         />
         {/* Center forge platform — inner shard */}
         <polygon
           points={`${CENTER.x},${CENTER.y - 10} ${CENTER.x + 8},${CENTER.y + 2} ${CENTER.x},${CENTER.y + 9} ${CENTER.x - 8},${CENTER.y + 2}`}
           fill="#f97316"
-          opacity={0.15 + centerIntensity * 0.65}
+          opacity={0.15 + centerIntensity * 0.7}
           style={{ transition: 'opacity 500ms ease' }}
         />
+
+        {/* Consensus burst ring — shown briefly on phase='complete' */}
+        {showBurst && (
+          <circle
+            cx={CENTER.x} cy={CENTER.y}
+            r={22}
+            fill="none"
+            stroke="#f97316"
+            strokeWidth="1.5"
+            style={{
+              transformOrigin: `${CENTER.x}px ${CENTER.y}px`,
+              animation: 'forge-burst-ring 1.4s ease-out forwards',
+            }}
+          />
+        )}
 
         {/* Provider cores */}
         {(Object.entries(CORES) as [string, { cx: number; cy: number }][]).map(([key, pos]) => {
@@ -274,15 +307,15 @@ export function ForgeChamber({ visible }: Props) {
           const rgb = hexToRgb(color);
           const isActive = status !== 'waiting';
 
-          const outerOpacity   = status === 'waiting' ? 0.2  : status === 'responding' ? 0.55 : 0.7;
-          const fillOpacity    = status === 'waiting' ? 0.04 : status === 'responding' ? 0.18 : 0.28;
+          const outerOpacity   = status === 'waiting' ? 0.18 : status === 'responding' ? 0.65 : 0.75;
+          const fillOpacity    = status === 'waiting' ? 0.04 : status === 'responding' ? 0.22 : 0.3;
           const labelOpacity   = status === 'waiting' ? 0.3  : 0.9;
           const dotFill        = status === 'complete' ? color : status === 'responding' ? color : 'transparent';
           const dotOpacity     = status === 'waiting' ? 0.25 : 0.95;
           const coreGlow       = status === 'complete'
-            ? `drop-shadow(0 0 8px ${color}) drop-shadow(0 0 14px ${color}66)`
+            ? `drop-shadow(0 0 9px ${color}) drop-shadow(0 0 18px ${color}66)`
             : status === 'responding'
-              ? `drop-shadow(0 0 5px ${color})`
+              ? `drop-shadow(0 0 7px ${color})`
               : 'none';
 
           return (
@@ -305,7 +338,7 @@ export function ForgeChamber({ visible }: Props) {
                 opacity={isActive ? 1 : 0.4}
                 style={{
                   transition: 'all 400ms ease',
-                  animation: status === 'responding' ? 'forge-core-pulse 1s ease-in-out infinite' : 'none',
+                  animation: status === 'responding' ? 'forge-core-pulse 0.9s ease-in-out infinite' : 'none',
                 }}
               />
               {/* Provider label */}
@@ -339,42 +372,33 @@ export function ForgeChamber({ visible }: Props) {
       <div style={{ marginTop: 10, position: 'relative' }}>
         {/* Label row */}
         <div style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          fontSize: 9,
-          fontWeight: 600,
-          letterSpacing: '0.1em',
-          color: 'rgba(255,255,255,0.3)',
-          marginBottom: 5,
-          textTransform: 'uppercase',
+          display: 'flex', justifyContent: 'space-between',
+          fontSize: 9, fontWeight: 600, letterSpacing: '0.1em',
+          color: 'rgba(255,255,255,0.3)', marginBottom: 5, textTransform: 'uppercase',
         }}>
           <span>Divergence {divergencePct}%</span>
           <span>Consensus {consensusPct}%</span>
         </div>
         {/* Bar track */}
         <div style={{
-          height: 2,
-          background: 'rgba(255,255,255,0.07)',
-          borderRadius: 2,
-          overflow: 'hidden',
-          marginBottom: 8,
+          height: 2, background: 'rgba(255,255,255,0.07)', borderRadius: 2,
+          overflow: 'hidden', marginBottom: 8,
         }}>
           <div style={{
-            height: '100%',
-            width: `${consensusPct}%`,
-            background: 'linear-gradient(90deg, #f97316 0%, #a855f7 100%)',
-            borderRadius: 2,
-            transition: 'width 600ms ease',
-            boxShadow: consensusPct > 50 ? '0 0 6px rgba(168,85,247,0.4)' : 'none',
+            height: '100%', width: `${consensusPct}%`,
+            background: state.phase === 'synthesizing'
+              ? 'linear-gradient(90deg, #f97316 0%, #a855f7 50%, #10a37f 100%)'
+              : 'linear-gradient(90deg, #f97316 0%, #a855f7 100%)',
+            borderRadius: 2, transition: 'width 600ms ease',
+            boxShadow: consensusPct > 50 ? '0 0 8px rgba(168,85,247,0.5)' : 'none',
           }} />
         </div>
         {/* Status text */}
         <div style={{
           fontSize: 10,
-          color: state.escalating ? '#ef4444' : 'rgba(255,255,255,0.38)',
-          textAlign: 'center',
-          letterSpacing: '0.06em',
-          fontWeight: state.escalating ? 700 : 400,
+          color: state.escalating ? '#ef4444' : state.phase === 'complete' ? 'rgba(16,185,129,0.7)' : 'rgba(255,255,255,0.38)',
+          textAlign: 'center', letterSpacing: '0.06em',
+          fontWeight: state.escalating || state.phase === 'complete' ? 700 : 400,
           transition: 'color 300ms ease',
           animation: state.escalating ? 'forge-escalate-flash 0.6s ease-in-out infinite' : 'none',
         }}>
@@ -393,11 +417,16 @@ export function ForgeChamber({ visible }: Props) {
         }
         @keyframes forge-core-pulse {
           0%, 100% { opacity: 1; }
-          50%       { opacity: 0.55; }
+          50%       { opacity: 0.38; }
         }
         @keyframes forge-escalate-flash {
           0%, 100% { opacity: 1; }
           50%       { opacity: 0.4; }
+        }
+        @keyframes forge-burst-ring {
+          0%   { transform: scale(0.85); opacity: 0.85; }
+          60%  { transform: scale(2.2);  opacity: 0.45; }
+          100% { transform: scale(3.5);  opacity: 0;    }
         }
       `}</style>
     </div>

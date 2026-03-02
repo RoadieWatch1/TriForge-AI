@@ -231,6 +231,103 @@ const api = {
     }>,
   },
 
+  // Task Engine (Phase 3 + 3.5 — autonomous execution)
+  taskEngine: {
+    createTask: (goal: string, category: string) =>
+      ipcRenderer.invoke('taskEngine:createTask', goal, category) as Promise<{ task?: unknown; error?: string }>,
+    runTask: (taskId: string, trustOverride?: unknown) =>
+      ipcRenderer.invoke('taskEngine:runTask', taskId, trustOverride) as Promise<{ ok?: boolean; started?: boolean; error?: string }>,
+    approveStep: (taskId: string, stepId: string) =>
+      ipcRenderer.invoke('taskEngine:approveStep', taskId, stepId) as Promise<{ ok?: boolean; error?: string }>,
+    denyStep: (taskId: string, stepId: string, reason?: string) =>
+      ipcRenderer.invoke('taskEngine:denyStep', taskId, stepId, reason) as Promise<{ ok?: boolean; error?: string }>,
+    cancelTask: (taskId: string) =>
+      ipcRenderer.invoke('taskEngine:cancelTask', taskId) as Promise<{ ok?: boolean; error?: string }>,
+    getTask: (taskId: string) =>
+      ipcRenderer.invoke('taskEngine:getTask', taskId) as Promise<{ task?: unknown; error?: string }>,
+    listTasks: (filter?: { category?: string; status?: string }) =>
+      ipcRenderer.invoke('taskEngine:listTasks', filter) as Promise<{ tasks?: unknown[]; error?: string }>,
+    subscribeEvents: (sinceId?: string) =>
+      ipcRenderer.invoke('engine:subscribeEvents', sinceId) as Promise<{ events?: unknown[]; lastId?: string | null; error?: string }>,
+    onEvent: (cb: (ev: { type: string; [key: string]: unknown }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, ev: { type: string; [key: string]: unknown }) => cb(ev);
+      ipcRenderer.on('taskEngine:event', handler);
+      return () => ipcRenderer.removeListener('taskEngine:event', handler);
+    },
+    onSchedulerFired: (cb: (data: { jobId: string; goal: string; category: string }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, data: { jobId: string; goal: string; category: string }) => cb(data);
+      ipcRenderer.on('scheduler:jobFired', handler);
+      return () => ipcRenderer.removeListener('scheduler:jobFired', handler);
+    },
+  },
+
+  // Trust config
+  trust: {
+    getConfig: () =>
+      ipcRenderer.invoke('trust:getConfig') as Promise<{ config?: unknown; error?: string }>,
+    setConfig: (config: unknown) =>
+      ipcRenderer.invoke('trust:setConfig', config) as Promise<{ ok?: boolean; error?: string }>,
+  },
+
+  // Wallet (budget tracking)
+  wallet: {
+    getBalance: () =>
+      ipcRenderer.invoke('wallet:getBalance') as Promise<{ snapshot?: unknown; error?: string }>,
+  },
+
+  // Scheduler (recurring + once jobs)
+  scheduler: {
+    addJob: (taskGoal: string, category: string, cronExpr: string, label?: string) =>
+      ipcRenderer.invoke('scheduler:addJob', taskGoal, category, cronExpr, label) as Promise<{ job?: unknown; error?: string }>,
+    addOnceJob: (taskGoal: string, category: string, runAt: number) =>
+      ipcRenderer.invoke('scheduler:addOnceJob', taskGoal, category, runAt) as Promise<{ job?: unknown; error?: string }>,
+    cancelJob: (jobId: string) =>
+      ipcRenderer.invoke('scheduler:cancelJob', jobId) as Promise<{ ok?: boolean; error?: string }>,
+    listJobs: () =>
+      ipcRenderer.invoke('scheduler:listJobs') as Promise<{ jobs?: unknown[]; error?: string }>,
+  },
+
+  // Audit ledger (JSONL append-only log)
+  audit: {
+    getRecent: (n?: number) =>
+      ipcRenderer.invoke('audit:getRecent', n) as Promise<{ entries?: unknown[]; error?: string }>,
+    tailSince: (ts: number) =>
+      ipcRenderer.invoke('audit:tailSince', ts) as Promise<{ entries?: unknown[]; error?: string }>,
+  },
+
+  // Agent engine — health + event ring buffer (Phase 3.5)
+  agentEngine: {
+    getHealth: () =>
+      ipcRenderer.invoke('engine:getHealth') as Promise<{
+        runningTasks?: number;
+        queuedTasks?: number;
+        pendingApprovals?: number;
+        lastEventId?: string | null;
+        paperTradingOnly?: boolean;
+        error?: string;
+      }>,
+    subscribeEvents: (sinceId?: string) =>
+      ipcRenderer.invoke('engine:subscribeEvents', sinceId) as Promise<{ events?: unknown[]; lastId?: string | null; error?: string }>,
+  },
+
+  // Approval management (Phase 3.5)
+  approvals: {
+    list: () =>
+      ipcRenderer.invoke('approvals:list') as Promise<{ requests?: unknown[]; error?: string }>,
+    approve: (approvalId: string) =>
+      ipcRenderer.invoke('approvals:approve', approvalId) as Promise<{ ok?: boolean; error?: string }>,
+    deny: (approvalId: string, reason?: string) =>
+      ipcRenderer.invoke('approvals:deny', approvalId, reason) as Promise<{ ok?: boolean; error?: string }>,
+  },
+
+  // Task pause / resume (Phase 3.5)
+  agentTask: {
+    pause: (taskId: string) =>
+      ipcRenderer.invoke('task:pause', taskId) as Promise<{ ok?: boolean; error?: string }>,
+    resume: (taskId: string) =>
+      ipcRenderer.invoke('task:resume', taskId) as Promise<{ ok?: boolean; error?: string }>,
+  },
+
   // System
   system: {
     openExternal: (url: string) => ipcRenderer.invoke('system:openExternal', url),
@@ -322,6 +419,197 @@ const api = {
     list:  () => ipcRenderer.invoke('print:list') as Promise<{ printers: Array<{ name: string; isDefault: boolean; status: string }>; error?: string }>,
     file:  (filePath: string, printerName?: string) => ipcRenderer.invoke('print:file', filePath, printerName) as Promise<{ ok: boolean; error?: string }>,
     text:  (content: string, printerName?: string) => ipcRenderer.invoke('print:text', content, printerName) as Promise<{ ok: boolean; error?: string }>,
+  },
+
+  // Phase 4: Credentials (SMTP, Twitter, etc.) — only masked status returned, never plaintext
+  credentials: {
+    set:    (key: string, value: string) =>
+      ipcRenderer.invoke('credentials:set', key, value) as Promise<{ ok?: boolean; error?: string }>,
+    get:    (key: string) =>
+      ipcRenderer.invoke('credentials:get', key) as Promise<{ set?: boolean; masked?: string; error?: string }>,
+    delete: (key: string) =>
+      ipcRenderer.invoke('credentials:delete', key) as Promise<{ ok?: boolean; error?: string }>,
+    list:   () =>
+      ipcRenderer.invoke('credentials:list') as Promise<{ keys?: string[]; error?: string }>,
+  },
+
+  // Phase 4: Execution results (read-only analytics)
+  results: {
+    list: (taskId?: string) =>
+      ipcRenderer.invoke('results:list', taskId) as Promise<{
+        results?: Array<{
+          id: string; taskId: string; stepId: string; tool: string;
+          timestamp: number; success: boolean; paperMode: boolean;
+          data: unknown; metrics?: { emailsSent?: number; tweetId?: string; successRate?: number; charCount?: number };
+        }>;
+        error?: string;
+      }>,
+    getMetrics: (taskId?: string) =>
+      ipcRenderer.invoke('results:getMetrics', taskId) as Promise<{
+        metrics?: {
+          total: number; successful: number; failed: number; paperMode: number;
+          byTool: Record<string, { total: number; success: number }>;
+        };
+        error?: string;
+      }>,
+  },
+
+  // Phase 4: Service integration status (mail, twitter, etc.)
+  hustle: {
+    getServiceStatus: () =>
+      ipcRenderer.invoke('hustle:getServiceStatus') as Promise<{
+        mail?: boolean; twitter?: boolean; notify?: boolean; storage?: boolean; error?: string;
+      }>,
+  },
+
+  // Phase 5: Value Engine — campaigns, metrics, optimization
+  value: {
+    listCampaigns: () =>
+      ipcRenderer.invoke('value:listCampaigns') as Promise<{
+        campaigns?: Array<{
+          id: string; name: string; type: string; status: string;
+          createdAt: number; updatedAt: number; taskIds: string[];
+          description?: string;
+          goalMetrics?: { targetEmailsSent?: number; targetReplies?: number; targetLeads?: number; targetValueCents?: number };
+        }>;
+        error?: string;
+      }>,
+    createCampaign: (name: string, type: string, description?: string) =>
+      ipcRenderer.invoke('value:createCampaign', name, type, description) as Promise<{
+        campaign?: {
+          id: string; name: string; type: string; status: string;
+          createdAt: number; updatedAt: number; taskIds: string[];
+        };
+        error?: string;
+      }>,
+    linkTask: (campaignId: string, taskId: string) =>
+      ipcRenderer.invoke('value:linkTask', campaignId, taskId) as Promise<{ ok?: boolean; error?: string }>,
+    getCampaignMetrics: (campaignId: string) =>
+      ipcRenderer.invoke('value:getCampaignMetrics', campaignId) as Promise<{
+        metrics?: {
+          campaignId: string; emailsSent: number; emailsFailed: number;
+          repliesReceived: number; postsPublished: number; leadsGenerated: number;
+          spendCents: number; valueRecordedCents: number;
+          roi: number | null; replyRate: number | null; successRate: number | null;
+          lastUpdatedAt: number;
+        };
+        error?: string;
+      }>,
+    getGlobalMetrics: () =>
+      ipcRenderer.invoke('value:getGlobalMetrics') as Promise<{
+        metrics?: {
+          campaignId: string; emailsSent: number; emailsFailed: number;
+          repliesReceived: number; postsPublished: number; leadsGenerated: number;
+          spendCents: number; valueRecordedCents: number;
+          roi: number | null; replyRate: number | null; successRate: number | null;
+          lastUpdatedAt: number;
+        };
+        error?: string;
+      }>,
+    getOptimization: (campaignId: string) =>
+      ipcRenderer.invoke('value:getOptimization', campaignId) as Promise<{
+        result?: {
+          campaignId: string; suggestedActions: string[]; priority: string;
+          reasoning: string; generatedAt: number;
+        };
+        error?: string;
+      }>,
+    recordValue: (taskId: string, amountCents: number, note?: string, campaignId?: string) =>
+      ipcRenderer.invoke('value:recordValue', taskId, amountCents, note, campaignId) as Promise<{ ok?: boolean; error?: string }>,
+    recordReply: (taskId: string, from: string, sentiment: string, campaignId?: string) =>
+      ipcRenderer.invoke('value:recordReply', taskId, from, sentiment, campaignId) as Promise<{ ok?: boolean; error?: string }>,
+  },
+
+  // Phase 6: Growth Engine — loops + leads
+  growth: {
+    listLoops: () =>
+      ipcRenderer.invoke('growth:listLoops') as Promise<{
+        loops?: Array<{
+          id: string; type: string; goal: string; status: string;
+          campaignId?: string; createdAt: number; updatedAt: number;
+          lastRunAt?: number; nextRunAt?: number; runCount: number;
+          improvementNotes?: string;
+          config: {
+            dailyEmailLimit?: number; dailyPostLimit?: number;
+            targetAudience?: string; keywords?: string[];
+            emailList?: Array<{ email: string; name?: string; interest?: string }>;
+          };
+        }>;
+        error?: string;
+      }>,
+    createLoop: (
+      goal: string, type: string,
+      config: { dailyEmailLimit?: number; dailyPostLimit?: number; targetAudience?: string; keywords?: string[]; emailList?: Array<{ email: string; name?: string; interest?: string }> },
+      campaignId?: string,
+    ) => ipcRenderer.invoke('growth:createLoop', goal, type, config, campaignId) as Promise<{
+      loop?: { id: string; type: string; goal: string; status: string; createdAt: number };
+      error?: string;
+    }>,
+    pauseLoop:  (loopId: string) => ipcRenderer.invoke('growth:pauseLoop',  loopId) as Promise<{ ok?: boolean; error?: string }>,
+    resumeLoop: (loopId: string) => ipcRenderer.invoke('growth:resumeLoop', loopId) as Promise<{ ok?: boolean; error?: string }>,
+    deleteLoop: (loopId: string) => ipcRenderer.invoke('growth:deleteLoop', loopId) as Promise<{ ok?: boolean; error?: string }>,
+    runNow:     (loopId: string) => ipcRenderer.invoke('growth:runNow',     loopId) as Promise<{ ok?: boolean; started?: boolean; error?: string }>,
+    getLoopMetrics: (loopId: string) =>
+      ipcRenderer.invoke('growth:getLoopMetrics', loopId) as Promise<{
+        metrics?: { loopId: string; emailsSent: number; postsPublished: number; leadsTotal: number; leadsReplied: number; leadsConverted: number; conversionRate: number | null; replyRate: number | null; lastRunAt: number | null; nextRunAt: number | null };
+        error?: string;
+      }>,
+    getGlobalMetrics: () =>
+      ipcRenderer.invoke('growth:getGlobalMetrics') as Promise<{
+        metrics?: { totalLeads: number; totalEmailsSent: number; totalPostsPublished: number; totalConverted: number; activeLoops: number };
+        error?: string;
+      }>,
+    listLeads: (loopId?: string) =>
+      ipcRenderer.invoke('growth:listLeads', loopId) as Promise<{
+        leads?: Array<{ id: string; source: string; contact: string; name?: string; status: string; notes?: string; loopId?: string; createdAt: number; updatedAt: number }>;
+        error?: string;
+      }>,
+    addLead: (contact: string, name?: string, loopId?: string, campaignId?: string) =>
+      ipcRenderer.invoke('growth:addLead', contact, name, loopId, campaignId) as Promise<{
+        lead?: { id: string; contact: string; status: string; createdAt: number };
+        error?: string;
+      }>,
+    updateLead: (leadId: string, patch: { status?: string; notes?: string }) =>
+      ipcRenderer.invoke('growth:updateLead', leadId, patch) as Promise<{ ok?: boolean; error?: string }>,
+  },
+
+  // Phase 7: Compound Engine
+  compound: {
+    listStrategies: (type?: string) =>
+      ipcRenderer.invoke('compound:listStrategies', type) as Promise<{
+        strategies?: Array<{
+          id: string; type: string; description: string;
+          inputs: { subjectLine?: string; tone?: string; contentType?: string; keywords?: string[] };
+          performance: { sent?: number; replies?: number; leads?: number; conversions?: number; replyRate?: number; conversionRate?: number };
+          score: number; status: string;
+          loopId?: string; createdAt: number; updatedAt: number;
+        }>;
+        error?: string;
+      }>,
+    getTopStrategies: (limit?: number) =>
+      ipcRenderer.invoke('compound:getTopStrategies', limit) as Promise<{
+        strategies?: Array<{
+          id: string; type: string; description: string;
+          inputs: { subjectLine?: string; tone?: string; contentType?: string; keywords?: string[] };
+          performance: { sent?: number; replies?: number; leads?: number; conversions?: number; replyRate?: number; conversionRate?: number };
+          score: number; status: string;
+          loopId?: string; createdAt: number; updatedAt: number;
+        }>;
+        error?: string;
+      }>,
+    getStats: () =>
+      ipcRenderer.invoke('compound:getStats') as Promise<{
+        stats?: {
+          totalStrategies: number; highPerformers: number; lowPerformers: number;
+          testingStrategies: number; avgScore: number; lastOptimizedAt: number | null;
+        };
+        error?: string;
+      }>,
+    runOptimization: () =>
+      ipcRenderer.invoke('compound:runOptimization') as Promise<{
+        result?: { scaled: number; optimized: number };
+        error?: string;
+      }>,
   },
 };
 

@@ -7,6 +7,8 @@ import { LockScreen } from './components/LockScreen';
 import { AppBuilder } from './components/AppBuilder';
 import { Ledger } from './components/Ledger';
 import { ForgeProfiles } from './components/ForgeProfiles';
+import { MissionControl } from './components/MissionControl';
+import { AgentHQ } from './components/AgentHQ';
 
 // ── Error Boundary ───────────────────────────────────────────────────────────
 export class ErrorBoundary extends React.Component<
@@ -33,7 +35,7 @@ export class ErrorBoundary extends React.Component<
   }
 }
 
-type Screen = 'chat' | 'settings' | 'memory' | 'ledger' | 'plan' | 'builder' | 'profiles';
+type Screen = 'chat' | 'settings' | 'memory' | 'ledger' | 'plan' | 'builder' | 'profiles' | 'missioncontrol' | 'agenthq';
 
 const LOCK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -257,14 +259,16 @@ export function App() {
       <div style={styles.body}>
         {/* Sidebar */}
         <nav style={styles.sidebar}>
-          <NavBtn icon="◈" label="Chat"     active={screen === 'chat'}     onClick={() => setScreen('chat')} />
-          <NavBtn icon="⊞" label="Builder"  active={screen === 'builder'}  onClick={() => setScreen('builder')} />
-          <NavBtn icon="◎" label="Memory"   active={screen === 'memory'}   onClick={() => setScreen('memory')} />
-          <NavBtn icon="≡" label="Ledger"   active={screen === 'ledger'}   onClick={() => setScreen('ledger')} />
-          <NavBtn icon="⊡" label="Profiles" active={screen === 'profiles'} onClick={() => setScreen('profiles')} />
-          <NavBtn icon="⊕" label="Settings" active={screen === 'settings'} onClick={() => setScreen('settings')} />
+          <NavBtn icon="⬡" label="Forge"    active={screen === 'chat'}          onClick={() => setScreen('chat')} />
+          <NavBtn icon="⚡" label="Hustle"   active={screen === 'agenthq'}        onClick={() => setScreen('agenthq')} />
+          <NavBtn icon="⊟" label="Control"  active={screen === 'missioncontrol'} onClick={() => setScreen('missioncontrol')} />
+          <NavBtn icon="⊞" label="Builder"  active={screen === 'builder'}        onClick={() => setScreen('builder')} />
+          <NavBtn icon="◎" label="Memory"   active={screen === 'memory'}         onClick={() => setScreen('memory')} />
+          <NavBtn icon="≡" label="Ledger"   active={screen === 'ledger'}         onClick={() => setScreen('ledger')} />
+          <NavBtn icon="⊡" label="Profiles" active={screen === 'profiles'}       onClick={() => setScreen('profiles')} />
+          <NavBtn icon="⊕" label="Settings" active={screen === 'settings'}       onClick={() => setScreen('settings')} />
           <div style={{ flex: 1 }} />
-          <NavBtn icon="▷" label="Plan"     active={screen === 'plan'}     onClick={() => setScreen('plan')} />
+          <NavBtn icon="▷" label="Plan"     active={screen === 'plan'}           onClick={() => setScreen('plan')} />
         </nav>
 
         {/* Main content */}
@@ -308,6 +312,8 @@ export function App() {
               onUpgradeClick={() => setScreen('plan')}
             />
           )}
+          {screen === 'agenthq' && <AgentHQ />}
+          {screen === 'missioncontrol' && <MissionControl />}
           {screen === 'ledger' && <Ledger tier={tier} onUpgradeClick={() => setScreen('plan')} />}
           {screen === 'settings' && (
             <SettingsScreen

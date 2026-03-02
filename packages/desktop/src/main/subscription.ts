@@ -19,6 +19,7 @@ export type Capability =
   | 'WORKFLOW_REPLAY'      // replay past plans from Ledger
   | 'GOVERNANCE_PROFILES'  // custom permission profiles
   | 'FORGE_PROFILES'       // industry operational profiles (Restaurant, Trucking, Consultant)
+  | 'AGENT_TASKS'          // autonomous task engine with trust policies + audit ledger
   | 'UNLIMITED_MESSAGES';  // no monthly cap
 
 // ── Per-tier capability sets ──────────────────────────────────────────────────
@@ -45,6 +46,7 @@ const BUSINESS_CAPS: ReadonlySet<Capability> = new Set<Capability>([
   'FINANCE_TRADING',
   'WORKFLOW_REPLAY',
   'GOVERNANCE_PROFILES',
+  'AGENT_TASKS',
   'UNLIMITED_MESSAGES',
 ]);
 
@@ -91,6 +93,7 @@ export const CAPABILITY_LABELS: Record<Capability, string> = {
   WORKFLOW_REPLAY:     'Workflow replay from Ledger',
   GOVERNANCE_PROFILES: 'Governance profiles',
   FORGE_PROFILES:      'Forge Profiles (operational intelligence)',
+  AGENT_TASKS:         'Autonomous Task Engine (trust policies + audit ledger)',
   UNLIMITED_MESSAGES:  'Unlimited messages',
 };
 

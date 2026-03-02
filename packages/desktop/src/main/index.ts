@@ -4,6 +4,7 @@ import { Store } from './store';
 import { setupIpc } from './ipc';
 import { setupTray } from './tray';
 import { setupAutoUpdater } from './updater';
+import { TaskStore, Scheduler, AuditLedger } from '@triforge/engine';
 
 // Single instance lock
 if (!app.requestSingleInstanceLock()) {
@@ -172,6 +173,25 @@ app.whenReady().then(async () => {
   store = new Store();
   await store.init();
   setupIpc(store);
+
+  // 3a. Pre-load task engine data stores + start scheduler
+  const dataDir = app.getPath('userData');
+  new TaskStore(dataDir).loadAll(); // warms cache, marks stale 'running' tasks as 'paused'
+  const scheduler = new Scheduler(dataDir);
+  scheduler.onFire = (job) => {
+    // When a scheduled job fires, create + run a task via the main window
+    // (agentLoop is initialized lazily inside ipc.ts on first use)
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('scheduler:jobFired', {
+        jobId: job.id, goal: job.taskGoal, category: job.category,
+      });
+    }
+  };
+  scheduler.start();
+
+  // Ensure audit ledger directory is writable (creates file on first append)
+  new AuditLedger(dataDir); // constructor only stores path, no file I/O yet
 
   // 3. Create main window (hidden) and start loading the renderer
   createWindow();

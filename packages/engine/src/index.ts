@@ -41,3 +41,72 @@ export type { TaskResult, DebateProgress, FileChange, ReviewResult } from './cor
 
 // Tools / policy
 export { DEFAULT_POLICY } from './tools/index';
+
+// ── Task Engine (Phase 3 + 3.5) ───────────────────────────────────────────────
+
+// Types
+export type {
+  TaskCategory, TaskStatus, StepStatus, TrustLevel, TaskToolName, AuditEventType,
+  ScheduleType, Step, Plan, Task, TrustPolicy, TrustModeSnapshot, TrustDecision,
+  WalletSnapshot, SchedulerJob, AuditLedgerEntry, ToolDefinition, ToolContext,
+  EngineEvent, ApprovalRequest,
+} from './core/taskTypes';
+
+// Event bus singleton + ring buffer types
+export { eventBus } from './core/eventBus';
+export type { EventRecord } from './core/eventBus';
+
+// Subsystems
+export { AuditLedger } from './core/auditLedger';
+export { TaskStore } from './core/taskStore';
+export {
+  evaluateStepTrust, needsApproval, DEFAULT_TRUST_SNAPSHOT,
+  validateTrustMode, buildDefaultPolicyFor,
+  SAFE_AUTOPASS_TOOLS, PAPER_TRADING_ONLY,
+} from './core/trustEngine';
+export { WalletEngine } from './core/walletEngine';
+export { Scheduler } from './core/scheduler';
+export { agreementScore, mergePlans, fallbackPlan } from './core/decisionEngine';
+export { ThinkTankPlanner } from './core/thinkTankPlanner';
+export { AgentLoop } from './core/agentLoop';
+export { ApprovalStore } from './core/approvalStore';
+
+// Tools
+export { TaskToolRegistry, createDefaultRegistry } from './tools/taskRegistry';
+
+// Phase 4 — Real Execution
+export { serviceLocator } from './core/serviceLocator';
+export type { MailOptions, MailResult, TweetOptions, TweetResult } from './core/serviceLocator';
+export type { ExecutionResult, ExecutionMetrics } from './core/taskTypes';
+
+// Phase 5 — Value Engine
+export { CampaignStore } from './value/campaignStore';
+
+export { MetricsStore } from './value/metricsStore';
+export { ValueEngine } from './value/valueEngine';
+export { computeCampaignMetrics, aggregateMetrics } from './value/roi';
+export { generateOptimization } from './value/optimization';
+export type {
+  CampaignType, CampaignStatus, Campaign,
+  MetricsEventType, MetricsEvent,
+  CampaignMetrics,
+  OptimizationPriority, OptimizationResult,
+} from './value/valueTypes';
+
+// Phase 6 — Growth Engine
+export { LoopStore } from './growth/loopStore';
+export { LeadStore } from './growth/leadStore';
+export { ContentStore } from './growth/contentStore';
+export type {
+  GrowthLoopType, GrowthLoopStatus, GrowthLoop, EmailTarget,
+  LeadSource, LeadStatus, Lead,
+  ContentType, ContentStatus, ContentItem,
+  GrowthLoopMetrics,
+} from './growth/growthTypes';
+
+// Phase 7 — Compound Engine
+export { StrategyStore } from './compound/strategyStore';
+export { CompoundEngine } from './compound/compoundEngine';
+export { computeScore, categorize, evaluate } from './compound/evaluator';
+export { getScalingDecision, applyScaling } from './compound/scaler';
+export type { StrategyProfile, CompoundStats } from './compound/compoundTypes';

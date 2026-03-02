@@ -4,6 +4,7 @@ import { VoiceConversation } from './VoiceConversation';
 import { UpgradeGate } from './UpgradeGate';
 import { ExecutionPlanView, type ExecutionPlan } from './ExecutionPlanView';
 import { ForgeChamber } from './ForgeChamber';
+import { CouncilChamber } from './forge/CouncilChamber';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -247,6 +248,9 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   const [checkoutUrls, setCheckoutUrls] = useState<{ pro: string; business: string; portal: string }>({ pro: '', business: '', portal: '' });
   const [showQuickActions, setShowQuickActions] = useState(false);
   const [showWorkflows, setShowWorkflows] = useState(false);
+  // Council system state
+  const [agreementMap, setAgreementMap] = useState<Record<string, boolean | null>>({});
+  const [selectedProvider, setSelectedProvider] = useState<string>('merge');
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -412,6 +416,12 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         };
         appendMsg(aiMsg);
 
+        // Reset council agreement map — neutral by default (user must explicitly agree/disagree)
+        if (!result.error && result.responses) {
+          setAgreementMap({});
+          setSelectedProvider('merge');
+        }
+
         if (!result.error && result.synthesis && voiceMode) {
           speakMessage(aiMsg.id, result.synthesis);
         }
@@ -477,8 +487,26 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     const welcome = { id: crypto.randomUUID(), role: 'system' as const, content: getWelcomeMessage(mode, keyStatus), timestamp: new Date() };
     setMessages([welcome]);
     setInput('');
+    setAgreementMap({});
+    setSelectedProvider('merge');
     try { localStorage.removeItem(HISTORY_KEY); } catch { /* ok */ }
   };
+
+  // ── Council — propose alternative from a specific provider ────────────────────
+
+  const proposeAlternative = useCallback((provider: string) => {
+    const pl: Record<string, string> = { openai: 'GPT', claude: 'Claude', grok: 'Grok' };
+    const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+    if (!lastUserMsg) return;
+    sendMessage(`${pl[provider] ?? provider}, please propose an alternative approach to: "${lastUserMsg.content.slice(0, 200)}"`);
+  }, [messages, sendMessage]);
+
+  const mergeProviders = useCallback((p1: string, p2: string) => {
+    const pl: Record<string, string> = { openai: 'GPT', claude: 'Claude', grok: 'Grok' };
+    const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+    if (!lastUserMsg) return;
+    sendMessage(`Synthesize the best elements from ${pl[p1] ?? p1} and ${pl[p2] ?? p2}'s approaches on: "${lastUserMsg.content.slice(0, 200)}"`);
+  }, [messages, sendMessage]);
 
   // ── Task Runtime ────────────────────────────────────────────────────────────────
   // Decomposes goal with IntentEngine, generates an execution plan, then auto-runs it.
@@ -748,6 +776,26 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   const remaining = unlimited ? Infinity : Math.max(0, msgLimit - messagesThisMonth);
   const atLimit = !unlimited && remaining <= 0;
 
+  // Derived values for panels
+  const latestConsensusMsg = [...messages].reverse().find(m => m.role === 'assistant' && m.consensusResponses);
+  const latestAssistantMsg = localMode !== 'thinktank'
+    ? [...messages].reverse().find(m => m.role === 'assistant' && !m.streaming)
+    : null;
+  // Content shown in right panel for thinktank mode
+  const finalContent: string | null = latestConsensusMsg
+    ? (selectedProvider && selectedProvider !== 'merge')
+      ? (latestConsensusMsg.consensusResponses?.find(r => r.provider.toLowerCase() === selectedProvider)?.text ?? latestConsensusMsg.content)
+      : latestConsensusMsg.content
+    : null;
+
+  // Right panel ForgeScore display vars
+  const rfScore = latestConsensusMsg?.forgeScore ?? null;
+  const rfBarC = rfScore
+    ? rfScore.confidence >= 75 ? '#10a37f' : rfScore.confidence >= 50 ? '#f59e0b' : '#ef4444'
+    : null;
+  const rfRiskColors: Record<string, string> = { Low: '#10a37f', Medium: '#f59e0b', High: '#ef4444' };
+  const rfRc = rfScore ? (rfRiskColors[rfScore.risk] ?? '#f59e0b') : null;
+
   return (
     <div style={cs.container}>
       {gate && (
@@ -768,290 +816,423 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         />
       )}
 
-      {/* Status bar */}
-      <div style={cs.statusBar}>
-        <div style={cs.statusDots}>
-          {(['openai', 'claude', 'grok'] as const).map(p => {
-            const active = keyStatus[p];
-            const color = PROVIDER_COLORS[p];
-            return (
-              <div key={p} title={`${PROVIDER_LABELS[p]}: ${active ? 'active' : 'not configured'}`} style={{
-                display: 'flex', alignItems: 'center', gap: 4,
-                padding: '2px 7px', borderRadius: 20,
-                background: active ? `${color}18` : 'transparent',
-                border: `1px solid ${active ? `${color}55` : 'var(--border)'}`,
-                transition: 'all 0.3s',
-              }}>
-                <div style={{ width: 6, height: 6, borderRadius: '50%', background: active ? color : 'var(--bg-elevated)', border: `1.5px solid ${active ? color : 'var(--border)'}`, flexShrink: 0 }} />
-                <span style={{ fontSize: 10, fontWeight: 600, color: active ? color : 'var(--text-muted)', letterSpacing: '0.03em' }}>
-                  {p === 'openai' ? 'GPT' : p === 'claude' ? 'Claude' : 'Grok'}
-                </span>
-              </div>
-            );
-          })}
-        </div>
-        <div style={cs.toolbarDivider} />
-        {/* Mode selector — Chat / Think Tank / Run as Task */}
-        <div style={cs.modeSelector}>
-          {(['chat', 'thinktank', 'task'] as const).map(m => {
-            const labels: Record<typeof m, string> = { chat: 'Chat', thinktank: 'Think Tank', task: 'Run as Task' };
-            const isActive = localMode === m;
-            const disabled = !hasKeys || (m === 'thinktank' && mode !== 'consensus');
-            return (
-              <button
-                key={m}
-                style={{
-                  ...cs.modePill,
-                  ...(isActive ? cs.modePillActive : {}),
-                  ...(disabled ? cs.modePillDisabled : {}),
-                }}
-                onClick={() => !disabled && setLocalMode(m)}
-                title={m === 'thinktank' && mode !== 'consensus'
-                  ? 'Add 2+ API keys to enable Think Tank'
-                  : labels[m]}
-                disabled={disabled}
-              >
-                {labels[m]}
-              </button>
-            );
-          })}
-        </div>
-        {/* Intensity selector — shown in Think Tank mode */}
-        {localMode === 'thinktank' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 3, marginLeft: 4 }}>
-            {(Object.keys(INTENSITY_LABELS) as string[]).map(lvl => {
-              const active = intensity === lvl;
-              const color = INTENSITY_COLORS[lvl];
+      {/* TOP BAR */}
+      <div style={cs.topBar}>
+        {/* Row 1 — controls */}
+        <div style={cs.topBarControls}>
+          <div style={cs.statusDots}>
+            {(['openai', 'claude', 'grok'] as const).map(p => {
+              const active = keyStatus[p];
+              const color = PROVIDER_COLORS[p];
+              return (
+                <div key={p} title={`${PROVIDER_LABELS[p]}: ${active ? 'active' : 'not configured'}`} style={{
+                  display: 'flex', alignItems: 'center', gap: 4,
+                  padding: '2px 7px', borderRadius: 20,
+                  background: active ? `${color}18` : 'transparent',
+                  border: `1px solid ${active ? `${color}55` : 'var(--border)'}`,
+                  transition: 'all 0.3s',
+                }}>
+                  <div style={{ width: 6, height: 6, borderRadius: '50%', background: active ? color : 'var(--bg-elevated)', border: `1.5px solid ${active ? color : 'var(--border)'}`, flexShrink: 0 }} />
+                  <span style={{ fontSize: 10, fontWeight: 600, color: active ? color : 'var(--text-muted)', letterSpacing: '0.03em' }}>
+                    {p === 'openai' ? 'GPT' : p === 'claude' ? 'Claude' : 'Grok'}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          <div style={cs.toolbarDivider} />
+          <div style={cs.modeSelector}>
+            {(['chat', 'thinktank', 'task'] as const).map(m => {
+              const labels: Record<typeof m, string> = { chat: 'Chat', thinktank: 'Think Tank', task: 'Run as Task' };
+              const isActive = localMode === m;
+              const disabled = !hasKeys || (m === 'thinktank' && mode !== 'consensus');
               return (
                 <button
-                  key={lvl}
-                  title={INTENSITY_LABELS[lvl]}
-                  style={{
-                    padding: '2px 8px', borderRadius: 10, fontSize: 10, fontWeight: 600, cursor: 'pointer',
-                    background: active ? `${color}22` : 'transparent',
-                    color: active ? color : 'var(--text-muted)',
-                    border: `1px solid ${active ? `${color}66` : 'var(--border)'}`,
-                    transition: 'all 0.2s',
-                  }}
-                  onClick={() => { setIntensity(lvl); localStorage.setItem('triforge-intensity', lvl); setIntensitySuggestion(null); }}
+                  key={m}
+                  style={{ ...cs.modePill, ...(isActive ? cs.modePillActive : {}), ...(disabled ? cs.modePillDisabled : {}) }}
+                  onClick={() => !disabled && setLocalMode(m)}
+                  title={m === 'thinktank' && mode !== 'consensus' ? 'Add 2+ API keys to enable Think Tank' : labels[m]}
+                  disabled={disabled}
                 >
-                  {INTENSITY_LABELS[lvl]}
+                  {labels[m]}
                 </button>
               );
             })}
-            {intensitySuggestion && (
-              <button
-                title={`Apply suggested intensity: ${INTENSITY_LABELS[intensitySuggestion]}`}
-                style={{ marginLeft: 4, fontSize: 10, padding: '2px 8px', borderRadius: 10, background: `${INTENSITY_COLORS[intensitySuggestion]}18`, color: INTENSITY_COLORS[intensitySuggestion], border: `1px dashed ${INTENSITY_COLORS[intensitySuggestion]}66`, cursor: 'pointer', fontWeight: 600 }}
-                onClick={() => { setIntensity(intensitySuggestion); localStorage.setItem('triforge-intensity', intensitySuggestion); setIntensitySuggestion(null); }}
-              >
-                Suggested: {INTENSITY_LABELS[intensitySuggestion]} ↵
+          </div>
+          {localMode === 'thinktank' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 3, marginLeft: 4 }}>
+              {(Object.keys(INTENSITY_LABELS) as string[]).map(lvl => {
+                const active = intensity === lvl;
+                const color = INTENSITY_COLORS[lvl];
+                return (
+                  <button
+                    key={lvl}
+                    title={INTENSITY_LABELS[lvl]}
+                    style={{
+                      padding: '2px 8px', borderRadius: 10, fontSize: 10, fontWeight: 600, cursor: 'pointer',
+                      background: active ? `${color}22` : 'transparent',
+                      color: active ? color : 'var(--text-muted)',
+                      border: `1px solid ${active ? `${color}66` : 'var(--border)'}`,
+                      transition: 'all 0.2s',
+                    }}
+                    onClick={() => { setIntensity(lvl); localStorage.setItem('triforge-intensity', lvl); setIntensitySuggestion(null); }}
+                  >
+                    {INTENSITY_LABELS[lvl]}
+                  </button>
+                );
+              })}
+              {intensitySuggestion && (
+                <button
+                  title={`Apply suggested intensity: ${INTENSITY_LABELS[intensitySuggestion]}`}
+                  style={{ marginLeft: 4, fontSize: 10, padding: '2px 8px', borderRadius: 10, background: `${INTENSITY_COLORS[intensitySuggestion]}18`, color: INTENSITY_COLORS[intensitySuggestion], border: `1px dashed ${INTENSITY_COLORS[intensitySuggestion]}66`, cursor: 'pointer', fontWeight: 600 }}
+                  onClick={() => { setIntensity(intensitySuggestion); localStorage.setItem('triforge-intensity', intensitySuggestion); setIntensitySuggestion(null); }}
+                >
+                  Suggested: {INTENSITY_LABELS[intensitySuggestion]} ↵
+                </button>
+              )}
+            </div>
+          )}
+          <div style={{ flex: 1 }} />
+          {messages.length > 1 && (
+            <button style={cs.clearBtn} onClick={clearChat} title="Clear chat">✕ Clear</button>
+          )}
+          {unlimited
+            ? <span style={cs.quotaLabel}>∞ unlimited</span>
+            : <button style={{ ...cs.quotaLabel, ...(atLimit ? cs.quotaAtLimit : {}), background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                onClick={onUpgradeClick} title={atLimit ? 'Upgrade to send more' : `${remaining} messages left`}>
+                {atLimit ? '⚠ Limit reached' : `${remaining} / ${msgLimit} msgs`}
               </button>
-            )}
+          }
+        </div>
+
+        {/* Row 2 — input */}
+        <div style={cs.topBarInput}>
+          <VoiceButton
+            onTranscript={(text) => sendMessage(text)}
+            onError={(err) => addSystemMsg(`Voice input: ${err}`)}
+            disabled={sending}
+            hasOpenAI={keyStatus.openai}
+          />
+          <div style={cs.inputWrapper}>
+            <textarea
+              ref={inputRef}
+              style={cs.textarea}
+              spellCheck={true}
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  localMode === 'task' ? runAsTask(input) : sendMessage(input);
+                }
+              }}
+              placeholder={hasKeys
+                ? localMode === 'task'
+                  ? 'Describe your goal — TriForge will plan and execute it (Enter to run)'
+                  : localMode === 'thinktank'
+                    ? 'Ask the Council — all 3 models will respond independently (Enter to send)'
+                    : 'Message TriForge AI (Enter to send, Shift+Enter for newline)'
+                : 'Configure API keys in Settings to activate TriForge'
+              }
+              rows={1}
+              disabled={!hasKeys || sending}
+            />
+          </div>
+          <button
+            style={{ ...cs.sendBtn, ...(!input.trim() || sending || !hasKeys ? cs.sendBtnDisabled : {}) }}
+            onClick={() => localMode === 'task' ? runAsTask(input) : sendMessage(input)}
+            disabled={!input.trim() || sending || !hasKeys}
+            title={localMode === 'task' ? 'Run as Task' : 'Send'}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+            </svg>
+          </button>
+          <div style={cs.toolbarDivider} />
+          <button style={{ ...cs.actionBtn, ...(showQuickActions ? cs.actionBtnActive : {}) }}
+            onClick={() => setShowQuickActions(s => !s)} title="Quick actions">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+            <span style={cs.actionLabel}>Quick</span>
+          </button>
+          <button style={{ ...cs.actionBtn, ...(showWorkflows ? cs.actionBtnActive : {}) }}
+            onClick={() => { setShowWorkflows(s => !s); setShowQuickActions(false); }} title="Workflow templates">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+            <span style={cs.actionLabel}>Flows</span>
+          </button>
+        </div>
+
+        {/* Collapsible panels */}
+        {showWorkflows && (
+          <div style={cs.workflowPanel}>
+            <div style={cs.workflowPanelTitle}>Think Tank Workflows</div>
+            <div style={cs.workflowGrid}>
+              {WORKFLOWS.map(w => (
+                <button key={w.id} style={cs.workflowCard} onClick={() => fireWorkflow(w.id)}>
+                  <div>
+                    <div style={cs.workflowLabel}>{w.label}</div>
+                    <div style={cs.workflowDesc}>{w.desc}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
           </div>
         )}
-        <div style={{ flex: 1 }} />
-        {messages.length > 1 && (
-          <button style={cs.clearBtn} onClick={clearChat} title="Clear chat">✕ Clear</button>
-        )}
-        {unlimited
-          ? <span style={cs.quotaLabel}>∞ unlimited</span>
-          : <button style={{ ...cs.quotaLabel, ...(atLimit ? cs.quotaAtLimit : {}), background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
-              onClick={onUpgradeClick} title={atLimit ? 'Upgrade to send more' : `${remaining} messages left`}>
-              {atLimit ? '⚠ Limit reached' : `${remaining} / ${msgLimit} msgs`}
-            </button>
-        }
-      </div>
-
-      {/* Messages */}
-      <div style={cs.messages}>
-        {messages.map(msg => (
-          msg.consensusResponses
-            ? <ConsensusMessage key={msg.id} msg={msg} isSpeaking={speaking === msg.id}
-                canSpeak={true} onSpeak={() => speakMessage(msg.id, msg.content)}
-                tier={tier} onUpgradeClick={onUpgradeClick} />
-            : <MessageBubble key={msg.id} msg={msg} isSpeaking={speaking === msg.id}
-                canSpeak={true} onSpeak={() => speakMessage(msg.id, msg.content)}
-                onRetry={msg.isError && msg.role === 'assistant' ? () => {
-                  const prev = messages[messages.indexOf(msg) - 1];
-                  if (prev?.role === 'user') sendMessage(prev.content, msg.id);
-                } : undefined}
-                onRunAction={(action) => {
-                  if (action === 'index_docs')                          runIndexDocs();
-                  else if (action?.startsWith('search_docs:'))          runSearchDocs(action.slice('search_docs:'.length));
-                  else if (action === 'find_photos')                    runFindPhotos();
-                  else if (action === 'organize')                       runOrganizeDownloads();
-                  else if (action === 'organize_deep')                  runOrganizeDeep();
-                  else if (action === 'organize_desktop')               runOrganizeKnownDir('Desktop');
-                  else if (action === 'organize_downloads')             runOrganizeKnownDir('Downloads');
-                  else if (action === 'organize_documents')             runOrganizeKnownDir('Documents');
-                  else if (action === 'search_photos')                  runSearchPhotos();
-                  else if (action === 'find_similar')                   runFindSimilar();
-                  else if (action === 'print')                          runPickAndPrint();
-                }} />
-        ))}
-        {consensusThinking && <ForgeChamber visible={true} />}
-        {taskRunning && !consensusThinking && <ForgeChamber visible={true} />}
-        {sending && !consensusThinking && !singleModelStreaming && !taskRunning && <TypingIndicator />}
-        <div ref={bottomRef} />
-      </div>
-
-      {/* Workflow templates panel (collapsible) */}
-      {showWorkflows && (
-        <div style={cs.workflowPanel}>
-          <div style={cs.workflowPanelTitle}>Think Tank Workflows</div>
-          <div style={cs.workflowGrid}>
-            {WORKFLOWS.map(w => (
-              <button key={w.id} style={cs.workflowCard} onClick={() => fireWorkflow(w.id)}>
-                <div>
-                  <div style={cs.workflowLabel}>{w.label}</div>
-                  <div style={cs.workflowDesc}>{w.desc}</div>
-                </div>
+        {showQuickActions && (
+          <div style={cs.quickActionsPanel}>
+            {QUICK_ACTIONS.map(a => (
+              <button key={a.label} style={cs.quickBtn} onClick={() => handleQuickAction(a)}>
+                {a.label}
               </button>
             ))}
           </div>
-        </div>
-      )}
-
-      {/* Quick actions panel (collapsible) */}
-      {showQuickActions && (
-        <div style={cs.quickActionsPanel}>
-          {QUICK_ACTIONS.map(a => (
-            <button key={a.label} style={cs.quickBtn} onClick={() => handleQuickAction(a)}>
-              {a.label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* System action toolbar */}
-      <div style={cs.actionToolbar}>
-        <button style={{ ...cs.actionBtn, ...(showQuickActions ? cs.actionBtnActive : {}) }}
-          onClick={() => setShowQuickActions(s => !s)} title="Quick actions">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-          <span style={cs.actionLabel}>Quick</span>
-        </button>
-        <button style={{ ...cs.actionBtn, ...(showWorkflows ? cs.actionBtnActive : {}) }}
-          onClick={() => { setShowWorkflows(s => !s); setShowQuickActions(false); }} title="Workflow templates">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-          <span style={cs.actionLabel}>Workflows</span>
-        </button>
-        <div style={cs.toolbarDivider} />
-        <button style={cs.actionBtn} onClick={() => { setInput('Find my '); inputRef.current?.focus(); }} title="Find a document by content">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-          <span style={cs.actionLabel}>Find Doc</span>
-        </button>
-        <button style={cs.actionBtn} onClick={runOrganizeDownloads} title="Organize a folder">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><polyline points="9 14 12 17 15 14"/></svg>
-          <span style={cs.actionLabel}>Organize</span>
-        </button>
-        <button style={cs.actionBtn} onClick={runPickAndPrint} title="Print a file">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
-          <span style={cs.actionLabel}>Print</span>
-        </button>
-        <button style={cs.actionBtn} onClick={async () => {
-          const dir = await window.triforge.files.pickDir();
-          if (dir) {
-            const result = await window.triforge.files.listDir(dir);
-            if (result.error) { addSystemMsg(`${result.error}`); return; }
-            addSystemMsg(`${dir}\n${result.subdirs.length} folders, ${result.files.length} files\n` +
-              result.files.slice(0, 8).map(f => `• ${f.name}`).join('\n') +
-              (result.files.length > 8 ? `\n…and ${result.files.length - 8} more` : ''));
-          }
-        }} title="Browse a folder">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-          <span style={cs.actionLabel}>Browse</span>
-        </button>
-        <div style={cs.toolbarDivider} />
-        <button
-          style={{ ...cs.actionBtn, ...(voiceMode ? cs.actionBtnActive : {}) }}
-          onClick={() => {
-            const next = !voiceMode;
-            setVoiceMode(next);
-            localStorage.setItem('triforge-voice-mode', next ? 'on' : 'off');
-            if (!next) {
-              if (audioRef.current) { audioRef.current.pause(); audioRef.current.src = ''; }
-              window.speechSynthesis?.cancel();
-              setSpeaking(null);
-            }
-          }}
-          title={voiceMode ? 'Voice responses active — click to mute' : 'Voice responses off — click to enable'}
-        >
-          {voiceMode
-            ? <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round"/></svg>
-            : <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M11 5L6 9H2v6h4l5 4V5z"/><line x1="23" y1="9" x2="17" y2="15" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><line x1="17" y1="9" x2="23" y2="15" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
-          }
-          <span style={cs.actionLabel}>{voiceMode ? 'Voice On' : 'Voice'}</span>
-        </button>
-        <button
-          style={{ ...cs.actionBtn, ...(voiceChatActive ? cs.actionBtnActive : {}) }}
-          onClick={() => setVoiceChatActive(v => !v)}
-          title={voiceChatActive ? 'Stop voice conversation' : 'Voice conversation — talk to TriForge'}
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-            <path d="M19 10v2a7 7 0 0 1-14 0v-2" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round"/>
-            <line x1="12" y1="19" x2="12" y2="23" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-            <line x1="8" y1="23" x2="16" y2="23" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-          </svg>
-          <span style={cs.actionLabel}>{voiceChatActive ? 'Live Voice' : 'Voice Chat'}</span>
-        </button>
+        )}
       </div>
 
-      {/* Voice conversation panel */}
-      {voiceChatActive && (
-        <VoiceConversation
-          hasGrok={keyStatus.grok}
-          hasOpenAI={keyStatus.openai}
-          sending={sending}
-          onTranscript={(text) => sendMessage(text)}
-          onAssistantTranscript={(text) => appendMsg({ id: crypto.randomUUID(), role: 'assistant', content: text, timestamp: new Date() })}
-        />
-      )}
-
-      {/* Input area */}
-      <div style={cs.inputArea}>
-        <VoiceButton
-          onTranscript={(text) => sendMessage(text)}
-          onError={(err) => addSystemMsg(`Voice input: ${err}`)}
-          disabled={sending}
-          hasOpenAI={keyStatus.openai}
-        />
-        <div style={cs.inputWrapper}>
-          <textarea
-            ref={inputRef}
-            style={cs.textarea}
-            spellCheck={true}
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                localMode === 'task' ? runAsTask(input) : sendMessage(input);
-              }
-            }}
-            placeholder={hasKeys
-              ? localMode === 'task'
-                ? 'Describe your goal — TriForge will plan and execute it (Enter to run)'
-                : localMode === 'thinktank'
-                  ? 'Ask the Council — all 3 models will respond independently (Enter to send)'
-                  : 'Message TriForge AI (Enter to send, Shift+Enter for newline)'
-              : 'Configure API keys in Settings to activate TriForge'
-            }
-            rows={1}
-            disabled={!hasKeys || sending}
-          />
+      {/* WORKSPACE — 3-column grid */}
+      <div style={cs.workspace}>
+        {/* Left — Context Dock */}
+        <div style={cs.leftPanel}>
+          <div style={cs.panelSection}>
+            <div style={cs.panelSectionTitle}>AI COUNCIL</div>
+            {(['openai', 'claude', 'grok'] as const).map(p => {
+              const active = keyStatus[p];
+              const color = PROVIDER_COLORS[p];
+              return (
+                <div key={p} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 5 }}>
+                  <div style={{ width: 7, height: 7, borderRadius: '50%', background: active ? color : 'rgba(255,255,255,0.08)', flexShrink: 0 }} />
+                  <span style={{ fontSize: 11, color: active ? 'var(--text-primary)' : 'var(--text-muted)', fontWeight: active ? 600 : 400 }}>
+                    {PROVIDER_LABELS[p]}
+                  </span>
+                  {active && <span style={{ fontSize: 9, color, fontWeight: 700, marginLeft: 'auto', letterSpacing: '0.04em' }}>LIVE</span>}
+                </div>
+              );
+            })}
+          </div>
+          <div style={cs.panelSection}>
+            <div style={cs.panelSectionTitle}>SESSION</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.9 }}>
+              <div>Mode: <span style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>
+                {localMode === 'chat' ? 'Chat' : localMode === 'thinktank' ? 'Think Tank' : 'Task'}
+              </span></div>
+              <div>Messages: <span style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>
+                {messages.filter(m => m.role !== 'system').length}
+              </span></div>
+            </div>
+          </div>
+          <div style={cs.panelSection}>
+            <div style={cs.panelSectionTitle}>ACTIONS</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <button style={cs.dockBtn} onClick={() => { setInput('Find my '); inputRef.current?.focus(); }}>Find Doc</button>
+              <button style={cs.dockBtn} onClick={runOrganizeDownloads}>Organize Folder</button>
+              <button style={cs.dockBtn} onClick={runPickAndPrint}>Print File</button>
+              <button style={cs.dockBtn} onClick={async () => {
+                const dir = await window.triforge.files.pickDir();
+                if (dir) {
+                  const result = await window.triforge.files.listDir(dir);
+                  if (result.error) { addSystemMsg(`${result.error}`); return; }
+                  addSystemMsg(`${dir}\n${result.subdirs.length} folders, ${result.files.length} files\n` +
+                    result.files.slice(0, 8).map(f => `• ${f.name}`).join('\n') +
+                    (result.files.length > 8 ? `\n…and ${result.files.length - 8} more` : ''));
+                }
+              }}>Browse Folder</button>
+              <button
+                style={{ ...cs.dockBtn, ...(voiceMode ? { color: 'var(--accent)', borderColor: 'rgba(99,102,241,0.4)' } : {}) }}
+                onClick={() => {
+                  const next = !voiceMode;
+                  setVoiceMode(next);
+                  localStorage.setItem('triforge-voice-mode', next ? 'on' : 'off');
+                  if (!next) {
+                    if (audioRef.current) { audioRef.current.pause(); audioRef.current.src = ''; }
+                    window.speechSynthesis?.cancel();
+                    setSpeaking(null);
+                  }
+                }}
+              >
+                {voiceMode ? 'Voice: On' : 'Voice: Off'}
+              </button>
+              <button
+                style={{ ...cs.dockBtn, ...(voiceChatActive ? { color: 'var(--accent)', borderColor: 'rgba(99,102,241,0.4)' } : {}) }}
+                onClick={() => setVoiceChatActive(v => !v)}
+              >
+                {voiceChatActive ? 'Live Voice: On' : 'Voice Chat'}
+              </button>
+            </div>
+          </div>
+          <div style={cs.panelSection}>
+            <div style={cs.panelSectionTitle}>HUSTLE MODE</div>
+            <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.15)', textAlign: 'center', padding: '6px 0', fontStyle: 'italic', lineHeight: 1.5 }}>
+              Autonomous task automation
+            </div>
+            <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.1)', textAlign: 'center', letterSpacing: '0.08em', fontWeight: 700 }}>
+              COMING SOON
+            </div>
+          </div>
         </div>
-        <button
-          style={{ ...cs.sendBtn, ...(!input.trim() || sending || !hasKeys ? cs.sendBtnDisabled : {}) }}
-          onClick={() => localMode === 'task' ? runAsTask(input) : sendMessage(input)}
-          disabled={!input.trim() || sending || !hasKeys}
-          title={localMode === 'task' ? 'Run as Task' : 'Send'}
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
-          </svg>
-        </button>
+
+        {/* Center — Council Chamber (Think Tank) or Message Feed (Chat/Task) */}
+        <div style={cs.centerPanel}>
+          {localMode === 'thinktank' ? (
+            <CouncilChamber
+              latestMsg={latestConsensusMsg ?? null}
+              thinking={consensusThinking}
+              keyStatus={keyStatus}
+              agreementMap={agreementMap}
+              selectedProvider={selectedProvider}
+              onAgreementChange={(p, v) => setAgreementMap(m => ({ ...m, [p]: v }))}
+              onProposeAlternative={proposeAlternative}
+              onSelectOutput={setSelectedProvider}
+              onMergeProviders={mergeProviders}
+            />
+          ) : (
+            <>
+              {taskRunning && (
+                <div style={cs.chamberWrap}>
+                  <ForgeChamber visible={true} />
+                </div>
+              )}
+              {voiceChatActive && (
+                <VoiceConversation
+                  hasGrok={keyStatus.grok}
+                  hasOpenAI={keyStatus.openai}
+                  sending={sending}
+                  onTranscript={(text) => sendMessage(text)}
+                  onAssistantTranscript={(text) => appendMsg({ id: crypto.randomUUID(), role: 'assistant', content: text, timestamp: new Date() })}
+                />
+              )}
+              <div style={cs.messages}>
+                {messages.map(msg => (
+                  msg.consensusResponses
+                    ? <ConsensusMessage key={msg.id} msg={msg} isSpeaking={speaking === msg.id}
+                        canSpeak={true} onSpeak={() => speakMessage(msg.id, msg.content)}
+                        tier={tier} onUpgradeClick={onUpgradeClick} />
+                    : <MessageBubble key={msg.id} msg={msg} isSpeaking={speaking === msg.id}
+                        canSpeak={true} onSpeak={() => speakMessage(msg.id, msg.content)}
+                        onRetry={msg.isError && msg.role === 'assistant' ? () => {
+                          const prev = messages[messages.indexOf(msg) - 1];
+                          if (prev?.role === 'user') sendMessage(prev.content, msg.id);
+                        } : undefined}
+                        onRunAction={(action) => {
+                          if (action === 'index_docs')                          runIndexDocs();
+                          else if (action?.startsWith('search_docs:'))          runSearchDocs(action.slice('search_docs:'.length));
+                          else if (action === 'find_photos')                    runFindPhotos();
+                          else if (action === 'organize')                       runOrganizeDownloads();
+                          else if (action === 'organize_deep')                  runOrganizeDeep();
+                          else if (action === 'organize_desktop')               runOrganizeKnownDir('Desktop');
+                          else if (action === 'organize_downloads')             runOrganizeKnownDir('Downloads');
+                          else if (action === 'organize_documents')             runOrganizeKnownDir('Documents');
+                          else if (action === 'search_photos')                  runSearchPhotos();
+                          else if (action === 'find_similar')                   runFindSimilar();
+                          else if (action === 'print')                          runPickAndPrint();
+                        }} />
+                ))}
+                {sending && !consensusThinking && !singleModelStreaming && !taskRunning && <TypingIndicator />}
+                <div ref={bottomRef} />
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Right — Final Decision (Think Tank) or Latest Output (Chat/Task) */}
+        <div style={cs.rightPanel}>
+          {localMode === 'thinktank' ? (
+            <>
+              <div style={cs.rightHeader}>
+                <span style={cs.rightTitle}>Final Decision</span>
+                {latestConsensusMsg?.consensusResponses && (
+                  <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
+                    <button
+                      style={{ ...cs.copyBtn, ...(selectedProvider === 'merge' ? { color: 'var(--accent)', borderColor: 'rgba(99,102,241,0.4)' } : {}) }}
+                      onClick={() => setSelectedProvider('merge')}
+                    >
+                      Merged
+                    </button>
+                    {latestConsensusMsg.consensusResponses.map(r => {
+                      const pid = r.provider.toLowerCase();
+                      const color = PROVIDER_COLORS[pid] ?? 'var(--accent)';
+                      return (
+                        <button
+                          key={pid}
+                          style={{ ...cs.copyBtn, ...(selectedProvider === pid ? { color, borderColor: `${color}55` } : {}) }}
+                          onClick={() => setSelectedProvider(pid)}
+                        >
+                          {PROVIDER_LABELS[pid] ?? r.provider}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              {/* ForgeScore bar — confidence + risk + "why" */}
+              {rfScore && rfBarC && rfRc && finalContent && (
+                <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', background: 'rgba(0,0,0,0.12)', flexShrink: 0 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                    <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '0.08em', color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase' as const }}>Confidence</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                      <span style={{ fontSize: 14, fontWeight: 800, color: rfBarC }}>{rfScore.confidence}%</span>
+                      <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4, color: rfRc, background: `${rfRc}18`, border: `1px solid ${rfRc}44` }}>{rfScore.risk} Risk</span>
+                    </div>
+                  </div>
+                  <div style={{ height: 3, background: 'rgba(255,255,255,0.06)', borderRadius: 2, overflow: 'hidden', marginBottom: rfScore.agreement ? 7 : 0 }}>
+                    <div style={{ height: '100%', width: `${rfScore.confidence}%`, background: rfBarC, borderRadius: 2, transition: 'width 0.8s ease' }} />
+                  </div>
+                  {rfScore.agreement && (
+                    <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)', lineHeight: 1.5, marginTop: 4 }}>
+                      <strong style={{ color: '#10b981', fontWeight: 700 }}>Why:</strong> {rfScore.agreement.slice(0, 100)}
+                    </div>
+                  )}
+                </div>
+              )}
+              {finalContent ? (
+                <>
+                  <div style={cs.rightContent}>
+                    <MarkdownText text={finalContent} />
+                  </div>
+                  <div style={cs.applyRow}>
+                    <button style={cs.applyBtn} onClick={() => { setInput(finalContent.slice(0, 500)); inputRef.current?.focus(); }}>
+                      Use as Prompt →
+                    </button>
+                    <button style={{ ...cs.applyBtn, marginTop: 4, background: 'none', border: '1px solid var(--border)', color: 'var(--text-muted)' }} onClick={() => navigator.clipboard.writeText(finalContent)}>
+                      Copy
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div style={cs.rightIdle}>
+                  <div style={{ fontSize: 28, opacity: 0.1, marginBottom: 8 }}>⬡</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Council output</div>
+                  <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.18)', marginTop: 3 }}>appears here</div>
+                </div>
+              )}
+            </>
+          ) : latestAssistantMsg ? (
+            <>
+              <div style={cs.rightHeader}>
+                <span style={cs.rightTitle}>Latest Output</span>
+                <button style={cs.copyBtn} onClick={() => navigator.clipboard.writeText(latestAssistantMsg.content)}>Copy</button>
+              </div>
+              <div style={cs.rightContent}>
+                {latestAssistantMsg.forgeScore && <ForgeScorePanel score={latestAssistantMsg.forgeScore} />}
+                <MarkdownText text={latestAssistantMsg.content} />
+              </div>
+              <div style={cs.applyRow}>
+                <button style={cs.applyBtn} onClick={() => { setInput(latestAssistantMsg.content.slice(0, 500)); inputRef.current?.focus(); }}>
+                  Use as Prompt →
+                </button>
+              </div>
+            </>
+          ) : (
+            <div style={cs.rightIdle}>
+              <div style={{ fontSize: 28, opacity: 0.1, marginBottom: 8 }}>⬡</div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Latest output</div>
+              <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.18)', marginTop: 3 }}>appears here</div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* BOTTOM TIMELINE */}
+      <div style={cs.bottomTimeline}>
+        <SessionTimeline messages={messages} running={sending || consensusThinking || taskRunning} />
       </div>
 
       <audio ref={audioRef} style={{ display: 'none' }} />
@@ -1630,6 +1811,46 @@ const mdSt: Record<string, React.CSSProperties> = {
   inlineCode: { background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 4, padding: '1px 5px', fontFamily: 'Consolas, "Cascadia Code", monospace', fontSize: 12.5, color: '#c9d1d9' },
 };
 
+// ── Session Timeline ──────────────────────────────────────────────────────────
+
+function SessionTimeline({ messages, running }: { messages: Message[]; running: boolean }) {
+  const events = messages.filter(m => m.role !== 'system').slice(-10).map(m => ({
+    isUser: m.role === 'user',
+    label: m.role === 'user'
+      ? (m.content.slice(0, 22) + (m.content.length > 22 ? '…' : ''))
+      : m.consensusResponses ? '⬡ Think Tank' : '◈ Response',
+    time: new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    isConsensus: !!m.consensusResponses,
+  }));
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 0, height: '100%', padding: '0 16px', overflowX: 'auto' }}>
+      {running && (
+        <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 7px', borderRadius: 10,
+          background: 'var(--accent)22', color: 'var(--accent)', border: '1px solid var(--accent)44',
+          marginRight: 8, flexShrink: 0, letterSpacing: '0.06em' }}>
+          RUNNING
+        </span>
+      )}
+      {events.map((ev, i) => (
+        <React.Fragment key={i}>
+          {i > 0 && <div style={{ width: 12, height: 1, background: 'var(--border)', flexShrink: 0 }} />}
+          <div style={{
+            padding: '2px 8px', borderRadius: 6, flexShrink: 0,
+            background: ev.isConsensus ? 'var(--accent)11' : ev.isUser ? 'rgba(255,255,255,0.04)' : 'transparent',
+            border: `1px solid ${ev.isConsensus ? 'var(--accent)33' : 'var(--border)'}`,
+          }}>
+            <div style={{ fontSize: 9, color: 'var(--text-muted)', marginBottom: 1 }}>{ev.time}</div>
+            <div style={{ fontSize: 9, fontWeight: 600, whiteSpace: 'nowrap' as const,
+              color: ev.isConsensus ? 'var(--accent)' : ev.isUser ? 'var(--text-secondary)' : 'var(--text-muted)' }}>
+              {ev.label}
+            </div>
+          </div>
+        </React.Fragment>
+      ))}
+    </div>
+  );
+}
+
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const cs: Record<string, React.CSSProperties> = {
@@ -1743,4 +1964,25 @@ const cs: Record<string, React.CSSProperties> = {
   planBtn: { fontSize: 12, fontWeight: 600 as const, background: '#8b5cf622', border: '1px solid #8b5cf655', color: '#8b5cf6', borderRadius: 7, padding: '7px 14px', cursor: 'pointer' },
   planBtnLocked: { background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer' },
   planError: { fontSize: 12, color: '#ef4444' },
+
+  // ── Forge 3-column layout ─────────────────────────────────────────────────
+  topBar: { flexShrink: 0, background: 'var(--bg-surface)', borderBottom: '1px solid var(--border)', display: 'flex', flexDirection: 'column' as const },
+  topBarControls: { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 16px', borderBottom: '1px solid var(--border)' },
+  topBarInput: { display: 'flex', alignItems: 'flex-end', gap: 8, padding: '8px 16px' },
+  workspace: { flex: 1, display: 'grid', gridTemplateColumns: '196px 1fr 236px', overflow: 'hidden', minHeight: 0 },
+  leftPanel: { borderRight: '1px solid var(--border)', background: 'var(--bg-surface)', overflowY: 'auto' as const },
+  centerPanel: { display: 'flex', flexDirection: 'column' as const, overflow: 'hidden', minHeight: 0 },
+  rightPanel: { borderLeft: '1px solid var(--border)', background: 'var(--bg-surface)', display: 'flex', flexDirection: 'column' as const, overflow: 'hidden' },
+  chamberWrap: { flexShrink: 0, borderBottom: '1px solid var(--border)' },
+  bottomTimeline: { height: 42, borderTop: '1px solid var(--border)', background: 'var(--bg-surface)', flexShrink: 0, overflow: 'hidden' as const, display: 'flex', alignItems: 'center' },
+  panelSection: { padding: '8px 12px', borderBottom: '1px solid var(--border)' },
+  panelSectionTitle: { fontSize: 9, fontWeight: 800 as const, color: 'rgba(255,255,255,0.22)', letterSpacing: '0.12em', textTransform: 'uppercase' as const, marginBottom: 6 },
+  dockBtn: { width: '100%', textAlign: 'left' as const, background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text-secondary)', fontSize: 11, padding: '5px 10px', cursor: 'pointer' },
+  rightIdle: { flex: 1, display: 'flex', flexDirection: 'column' as const, alignItems: 'center', justifyContent: 'center' },
+  rightHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', borderBottom: '1px solid var(--border)', flexShrink: 0 },
+  rightTitle: { fontSize: 9, fontWeight: 800 as const, color: 'rgba(255,255,255,0.25)', letterSpacing: '0.12em', textTransform: 'uppercase' as const },
+  copyBtn: { fontSize: 11, background: 'none', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text-muted)', padding: '2px 8px', cursor: 'pointer' },
+  rightContent: { flex: 1, overflowY: 'auto' as const, padding: '12px' },
+  applyRow: { padding: '8px 12px', borderTop: '1px solid var(--border)', flexShrink: 0 },
+  applyBtn: { width: '100%', fontSize: 11, fontWeight: 600 as const, background: 'var(--accent)22', border: '1px solid var(--accent)55', color: 'var(--accent)', borderRadius: 6, padding: '6px 0', cursor: 'pointer' },
 };

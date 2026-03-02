@@ -14,14 +14,146 @@ import { scanForPhotos, listDirectory, organizeDirectory, organizeDirectoryDeep,
 import { scanForDocuments, ocrFile, detectDocTypes, searchIndex, type DocEntry } from './docIndex';
 import { GrokVoiceAgent } from './grokVoice';
 import { listPrinters, printFile, printText } from './printer';
+import { CredentialManager } from './credentials';
+import { createNotifyAdapter } from './notifications';
+import { createMailAdapter } from './mailService';
+import { ResultStore } from './resultStore';
+import { ValueEngine, CampaignStore, MetricsStore, CompoundEngine } from '@triforge/engine';
+import { GrowthService } from './growthService';
 import {
   ProviderManager,
   IntentEngine,
   type ProviderName,
+  AgentLoop,
+  AuditLedger,
+  TaskStore,
+  WalletEngine,
+  Scheduler,
+  ThinkTankPlanner,
+  ApprovalStore,
+  createDefaultRegistry,
+  eventBus,
+  serviceLocator,
+  DEFAULT_TRUST_SNAPSHOT,
+  validateTrustMode,
+  PAPER_TRADING_ONLY,
+  type TrustModeSnapshot,
+  type TaskCategory,
+  type TaskStatus,
+  type EventRecord,
 } from '@triforge/engine';
 
 let providerManager: ProviderManager | null = null;
 let intentEngine: IntentEngine | null = null;
+
+// ── Task Engine singletons (lazy-init inside handlers) ─────────────────────────
+let _taskStore: TaskStore | null = null;
+let _auditLedger: AuditLedger | null = null;
+let _walletEngine: WalletEngine | null = null;
+let _scheduler: Scheduler | null = null;
+let _approvalStore: ApprovalStore | null = null;
+let _agentLoop: AgentLoop | null = null;
+let _credentialManager: CredentialManager | null = null;
+let _resultStore: ResultStore | null = null;
+let _campaignStore: CampaignStore | null = null;
+let _metricsStore: MetricsStore | null = null;
+let _valueEngine: ValueEngine | null = null;
+let _growthService: GrowthService | null = null;
+let _compoundEngine: CompoundEngine | null = null;
+
+function _getDataDir(): string {
+  return app.getPath('userData');
+}
+
+function _getCredentialManager(store: Store): CredentialManager {
+  if (!_credentialManager) _credentialManager = new CredentialManager(store);
+  return _credentialManager;
+}
+
+function _getResultStore(): ResultStore {
+  if (!_resultStore) _resultStore = new ResultStore();
+  return _resultStore;
+}
+
+function _getCampaignStore(): CampaignStore {
+  if (!_campaignStore) _campaignStore = new CampaignStore(_getDataDir());
+  return _campaignStore;
+}
+
+function _getMetricsStore(): MetricsStore {
+  if (!_metricsStore) _metricsStore = new MetricsStore(_getDataDir());
+  return _metricsStore;
+}
+
+function _getValueEngine(): ValueEngine {
+  if (!_valueEngine) {
+    _valueEngine = new ValueEngine(_getMetricsStore(), _getCampaignStore());
+    _valueEngine.start();
+  }
+  return _valueEngine;
+}
+
+function _getCompoundEngine(): CompoundEngine {
+  if (!_compoundEngine) _compoundEngine = new CompoundEngine(_getDataDir(), () => providerManager);
+  return _compoundEngine;
+}
+
+function _getGrowthService(): GrowthService {
+  if (!_growthService) {
+    _growthService = new GrowthService(_getDataDir(), () => providerManager, _getCompoundEngine());
+  }
+  return _growthService;
+}
+
+function _getTaskStore(): TaskStore {
+  if (!_taskStore) {
+    _taskStore = new TaskStore(_getDataDir());
+    _taskStore.loadAll();
+  }
+  return _taskStore;
+}
+
+function _getAuditLedger(): AuditLedger {
+  if (!_auditLedger) _auditLedger = new AuditLedger(_getDataDir());
+  return _auditLedger;
+}
+
+function _getWalletEngine(store: Store): WalletEngine {
+  if (!_walletEngine) _walletEngine = new WalletEngine(store);
+  return _walletEngine;
+}
+
+function _getScheduler(): Scheduler {
+  if (!_scheduler) {
+    _scheduler = new Scheduler(_getDataDir());
+  }
+  return _scheduler;
+}
+
+function _getApprovalStore(): ApprovalStore {
+  if (!_approvalStore) _approvalStore = new ApprovalStore(_getDataDir());
+  return _approvalStore;
+}
+
+function _getAgentLoop(store: Store): AgentLoop {
+  if (!_agentLoop) {
+    if (!providerManager) throw new Error('ProviderManager not ready');
+    const planner = new ThinkTankPlanner(providerManager);
+    const registry = createDefaultRegistry();
+    _agentLoop = new AgentLoop(
+      _getTaskStore(),
+      planner,
+      registry,
+      _getWalletEngine(store),
+      _getAuditLedger(),
+      _getApprovalStore(),
+    );
+  }
+  return _agentLoop;
+}
+
+// Trust config stored in KV store
+const TRUST_KEY = 'triforge.trustConfig';
 
 // ── Input validation ──────────────────────────────────────────────────────────
 
@@ -97,6 +229,45 @@ export function setupIpc(store: Store): void {
     }
     return { providerManager, intentEngine };
   }
+
+  // ── Phase 4: Register service locator adapters ────────────────────────────
+  // These are registered once at startup; engine tools use them for real execution
+  const credMgr = _getCredentialManager(store);
+  const resultSt = _getResultStore();
+
+  serviceLocator.registerMailSender(createMailAdapter(credMgr));
+  serviceLocator.registerNotifier(createNotifyAdapter());
+  serviceLocator.registerResultLogger(resultSt.createLoggerAdapter());
+  serviceLocator.registerResultQuerier(resultSt.createQuerierAdapter());
+  serviceLocator.registerCredentialGetter((name: string) => credMgr.getByName(name));
+
+  // ── Persistent event forwarder — set once, forwards to all open windows ────
+  eventBus.onAny((ev) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('taskEngine:event', ev);
+    }
+  });
+
+  // ── Startup resume — resume interrupted tasks after 3s ───────────────────
+  setTimeout(async () => {
+    try {
+      _getApprovalStore().expireStale();
+      const loop = _getAgentLoop(store);
+      loop.startRetryLoop();
+      const tasks = _getTaskStore().list();
+      for (const t of tasks) {
+        if (['queued', 'planning', 'running'].includes(t.status)) {
+          loop.runTask(t.id).catch((err: unknown) => console.error('[startup-resume]', err));
+        }
+      }
+      // Phase 5 — start Value Engine
+      _getValueEngine();
+      // Phase 6 — start Growth Engine daily runner
+      _getGrowthService().startDailyRunner();
+    } catch (e) {
+      console.error('[startup-resume]', e);
+    }
+  }, 3000);
 
   // ── Permissions ─────────────────────────────────────────────────────────────
   ipcMain.handle('permissions:get', () => store.getPermissions());
@@ -1273,5 +1444,535 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   ipcMain.handle('voice:agent:disconnect', () => {
     grokVoiceAgent?.disconnect();
     grokVoiceAgent = null;
+  });
+
+  // ── Task Engine ───────────────────────────────────────────────────────────────
+
+  async function _agentTier(): Promise<'free' | 'pro' | 'business'> {
+    return ((await store.getLicense()).tier ?? 'free') as 'free' | 'pro' | 'business';
+  }
+
+  ipcMain.handle('taskEngine:createTask', async (_event, goal: string, category: TaskCategory) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      const loop = _getAgentLoop(store);
+      const task = loop.createTask(goal, category);
+      return { task };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle('taskEngine:runTask', async (_event, taskId: string, trustOverride?: TrustModeSnapshot) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      const loop = _getAgentLoop(store);
+      // Fire in background — events delivered by persistent forwarder
+      loop.runTask(taskId, trustOverride).catch((err: unknown) => console.error('[taskEngine:runTask]', err));
+      return { ok: true, started: true };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle('taskEngine:approveStep', async (_event, taskId: string, stepId: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      await _getAgentLoop(store).approveStep(taskId, stepId);
+      return { ok: true };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle('taskEngine:denyStep', async (_event, taskId: string, stepId: string, reason?: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      await _getAgentLoop(store).denyStep(taskId, stepId, reason);
+      return { ok: true };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle('taskEngine:cancelTask', async (_event, taskId: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      await _getAgentLoop(store).cancelTask(taskId);
+      return { ok: true };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle('taskEngine:getTask', async (_event, taskId: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    const task = _getTaskStore().read(taskId);
+    return { task };
+  });
+
+  ipcMain.handle('taskEngine:listTasks', async (_event, filter?: { category?: TaskCategory; status?: TaskStatus }) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    const tasks = _getTaskStore().list(filter);
+    return { tasks };
+  });
+
+  // ── Trust config ──────────────────────────────────────────────────────────────
+
+  ipcMain.handle('trust:getConfig', async () => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    const config = store.get<TrustModeSnapshot>(TRUST_KEY, DEFAULT_TRUST_SNAPSHOT);
+    return { config };
+  });
+
+  ipcMain.handle('trust:setConfig', async (_event, config: TrustModeSnapshot) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    const errors = validateTrustMode(config);
+    if (errors.length > 0) return { error: errors.join('; ') };
+    store.update(TRUST_KEY, config);
+    return { ok: true };
+  });
+
+  // ── Wallet ────────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('wallet:getBalance', async () => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    const snapshot = _getWalletEngine(store).getSnapshot();
+    return { snapshot };
+  });
+
+  // ── Scheduler ─────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('scheduler:addJob', async (_event, taskGoal: string, category: TaskCategory, cronExpr: string, label?: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    const job = _getScheduler().scheduleRecurring(taskGoal, category, cronExpr, label);
+    if (!job) return { error: 'Invalid cron expression. Use: daily@HH:MM or every@Nh' };
+    return { job };
+  });
+
+  ipcMain.handle('scheduler:addOnceJob', async (_event, taskGoal: string, category: TaskCategory, runAt: number) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    const job = _getScheduler().scheduleOnce(taskGoal, category, runAt);
+    return { job };
+  });
+
+  ipcMain.handle('scheduler:cancelJob', async (_event, jobId: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    const ok = _getScheduler().cancelJob(jobId);
+    return { ok };
+  });
+
+  ipcMain.handle('scheduler:listJobs', async () => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    const jobs = _getScheduler().listJobs();
+    return { jobs };
+  });
+
+  // ── Audit Ledger ──────────────────────────────────────────────────────────────
+
+  ipcMain.handle('audit:getRecent', async (_event, n: number = 50) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    const entries = await _getAuditLedger().getRecent(n);
+    return { entries };
+  });
+
+  ipcMain.handle('audit:tailSince', async (_event, ts: number) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    const entries = await _getAuditLedger().tailSince(ts);
+    return { entries };
+  });
+
+  // ── Engine event ring buffer ──────────────────────────────────────────────────
+
+  ipcMain.handle('engine:subscribeEvents', async (_event, sinceId?: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    const events: EventRecord[] = eventBus.since(sinceId);
+    const lastId = eventBus.getLastId();
+    return { events, lastId };
+  });
+
+  // ── Engine health ─────────────────────────────────────────────────────────────
+
+  ipcMain.handle('engine:getHealth', async () => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    const tasks = _getTaskStore().list();
+    const runningTasks  = tasks.filter(t => t.status === 'running').length;
+    const queuedTasks   = tasks.filter(t => ['queued', 'pending', 'planning'].includes(t.status)).length;
+    const pendingApprovals = _getApprovalStore().listPending().length;
+    const lastEventId   = eventBus.getLastId();
+    return { runningTasks, queuedTasks, pendingApprovals, lastEventId, paperTradingOnly: PAPER_TRADING_ONLY };
+  });
+
+  // ── Approvals ─────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('approvals:list', async () => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    const requests = _getApprovalStore().listPending();
+    return { requests };
+  });
+
+  ipcMain.handle('approvals:approve', async (_event, approvalId: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      const loop = _getAgentLoop(store);
+      await loop.approveApprovalRequest(approvalId);
+      // Resume task in background
+      const req = _getApprovalStore().get(approvalId);
+      if (req?.taskId) {
+        loop.runTask(req.taskId).catch((err: unknown) => console.error('[approvals:approve]', err));
+      }
+      return { ok: true };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle('approvals:deny', async (_event, approvalId: string, reason?: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      const loop = _getAgentLoop(store);
+      const req = _getApprovalStore().get(approvalId);
+      await loop.denyApprovalRequest(approvalId, reason);
+      // Continue remaining steps in background
+      if (req?.taskId) {
+        loop.runTask(req.taskId).catch((err: unknown) => console.error('[approvals:deny]', err));
+      }
+      return { ok: true };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  // ── Task pause / resume ───────────────────────────────────────────────────────
+
+  ipcMain.handle('task:pause', async (_event, taskId: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      await _getAgentLoop(store).pauseTask(taskId);
+      return { ok: true };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle('task:resume', async (_event, taskId: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      const loop = _getAgentLoop(store);
+      await loop.resumeTask(taskId);
+      loop.runTask(taskId).catch((err: unknown) => console.error('[task:resume]', err));
+      return { ok: true };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  // ── Phase 4: Credentials ──────────────────────────────────────────────────
+
+  ipcMain.handle('credentials:set', async (_e, key: string, value: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    if (typeof key !== 'string' || !key.trim()) return { error: 'Invalid key' };
+    if (typeof value !== 'string') return { error: 'Invalid value' };
+    try {
+      await _getCredentialManager(store).set(key as never, value);
+      // Re-register mail adapter so new SMTP config is picked up immediately
+      serviceLocator.registerMailSender(createMailAdapter(_getCredentialManager(store)));
+      return { ok: true };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle('credentials:get', async (_e, key: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      const value = await _getCredentialManager(store).get(key as never);
+      // Return masked value for display (never expose plaintext secrets to renderer)
+      return { set: value !== undefined && value !== '', masked: value ? '••••••••' : '' };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle('credentials:delete', async (_e, key: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      await _getCredentialManager(store).delete(key as never);
+      return { ok: true };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle('credentials:list', async () => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      const keys = await _getCredentialManager(store).list();
+      return { keys };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  // ── Phase 4: Execution Results ────────────────────────────────────────────
+
+  ipcMain.handle('results:list', async (_e, taskId?: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      const results = _getResultStore().query(taskId);
+      return { results };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle('results:getMetrics', async (_e, taskId?: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      const metrics = _getResultStore().getMetrics(taskId);
+      return { metrics };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  // ── Phase 4: Service status ────────────────────────────────────────────────
+
+  ipcMain.handle('hustle:getServiceStatus', async () => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    return serviceLocator.getStatus();
+  });
+
+  // ── Phase 5: Value Engine — Campaigns ────────────────────────────────────
+
+  ipcMain.handle('value:listCampaigns', async () => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      const campaigns = _getValueEngine().listCampaigns();
+      return { campaigns };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle('value:createCampaign', async (_e, name: string, type: string, description?: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      if (!name?.trim()) return { error: 'Campaign name is required' };
+      const campaign = _getValueEngine().createCampaign(
+        name.trim(),
+        type as import('@triforge/engine').CampaignType,
+        description,
+      );
+      return { campaign };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle('value:linkTask', async (_e, campaignId: string, taskId: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      const ok = _getValueEngine().linkTask(campaignId, taskId);
+      return { ok };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle('value:getCampaignMetrics', async (_e, campaignId: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      const metrics = _getValueEngine().getCampaignMetrics(campaignId);
+      return { metrics };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle('value:getGlobalMetrics', async () => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      const metrics = _getValueEngine().getGlobalMetrics();
+      return { metrics };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle('value:getOptimization', async (_e, campaignId: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      const result = _getValueEngine().getOptimization(campaignId);
+      return { result };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle('value:recordValue', async (_e, taskId: string, amountCents: number, note?: string, campaignId?: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      if (typeof amountCents !== 'number' || amountCents < 0) return { error: 'Invalid amount' };
+      _getValueEngine().recordValue(taskId, amountCents, note, campaignId);
+      return { ok: true };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle('value:recordReply', async (_e, taskId: string, from: string, sentiment: string, campaignId?: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      _getValueEngine().recordReply(
+        taskId,
+        from,
+        (sentiment ?? 'neutral') as 'positive' | 'neutral' | 'negative',
+        campaignId,
+      );
+      return { ok: true };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  // ── Phase 6: Growth Engine — Loops ────────────────────────────────────────
+
+  ipcMain.handle('growth:listLoops', async () => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      return { loops: _getGrowthService().listLoops() };
+    } catch (err) { return { error: String(err) }; }
+  });
+
+  ipcMain.handle('growth:createLoop', async (_e,
+    goal: string, type: string, config: Record<string, unknown>, campaignId?: string,
+  ) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      if (!goal?.trim()) return { error: 'Goal is required' };
+      const validTypes = ['outreach', 'content', 'hybrid'];
+      if (!validTypes.includes(type)) return { error: 'Invalid loop type' };
+      const loop = _getGrowthService().createLoop({
+        goal: goal.trim(),
+        type: type as import('@triforge/engine').GrowthLoopType,
+        status: 'active',
+        campaignId,
+        config: config ?? {},
+      });
+      return { loop };
+    } catch (err) { return { error: String(err) }; }
+  });
+
+  ipcMain.handle('growth:pauseLoop', async (_e, loopId: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      const loop = _getGrowthService().pauseLoop(loopId);
+      return loop ? { ok: true, loop } : { error: 'Loop not found' };
+    } catch (err) { return { error: String(err) }; }
+  });
+
+  ipcMain.handle('growth:resumeLoop', async (_e, loopId: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      const loop = _getGrowthService().resumeLoop(loopId);
+      return loop ? { ok: true, loop } : { error: 'Loop not found' };
+    } catch (err) { return { error: String(err) }; }
+  });
+
+  ipcMain.handle('growth:deleteLoop', async (_e, loopId: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      const ok = _getGrowthService().deleteLoop(loopId);
+      return { ok };
+    } catch (err) { return { error: String(err) }; }
+  });
+
+  ipcMain.handle('growth:runNow', async (_e, loopId: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      // Run in background — return immediately
+      _getGrowthService().runLoop(loopId).catch(console.error);
+      return { ok: true, started: true };
+    } catch (err) { return { error: String(err) }; }
+  });
+
+  ipcMain.handle('growth:getLoopMetrics', async (_e, loopId: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      return { metrics: _getGrowthService().getLoopMetrics(loopId) };
+    } catch (err) { return { error: String(err) }; }
+  });
+
+  ipcMain.handle('growth:getGlobalMetrics', async () => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      return { metrics: _getGrowthService().getGlobalGrowthMetrics() };
+    } catch (err) { return { error: String(err) }; }
+  });
+
+  // ── Phase 6: Growth Engine — Leads ────────────────────────────────────────
+
+  ipcMain.handle('growth:listLeads', async (_e, loopId?: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      return { leads: _getGrowthService().listLeads(loopId) };
+    } catch (err) { return { error: String(err) }; }
+  });
+
+  ipcMain.handle('growth:addLead', async (_e, contact: string, name?: string, loopId?: string, campaignId?: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      if (!contact?.trim()) return { error: 'Contact is required' };
+      const lead = _getGrowthService().addLead({
+        source: 'manual',
+        contact: contact.trim(),
+        name,
+        status: 'new',
+        loopId,
+        campaignId,
+      });
+      return { lead };
+    } catch (err) { return { error: String(err) }; }
+  });
+
+  ipcMain.handle('growth:updateLead', async (_e, leadId: string, patch: Record<string, unknown>) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      const lead = _getGrowthService().updateLead(leadId, patch);
+      return lead ? { ok: true, lead } : { error: 'Lead not found' };
+    } catch (err) { return { error: String(err) }; }
+  });
+
+  // ── Phase 7: Compound Engine ──────────────────────────────────────────────────
+
+  ipcMain.handle('compound:listStrategies', async (_e, type?: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      const validType = (type === 'outreach' || type === 'content') ? type : undefined;
+      return { strategies: _getCompoundEngine().getTopStrategies(50, validType) };
+    } catch (err) { return { error: String(err) }; }
+  });
+
+  ipcMain.handle('compound:getTopStrategies', async (_e, limit?: number) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      return { strategies: _getCompoundEngine().getTopStrategies(limit ?? 5) };
+    } catch (err) { return { error: String(err) }; }
+  });
+
+  ipcMain.handle('compound:getStats', async () => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      return { stats: _getCompoundEngine().getCompoundStats() };
+    } catch (err) { return { error: String(err) }; }
+  });
+
+  ipcMain.handle('compound:runOptimization', async () => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    try {
+      const result = _getGrowthService().runOptimization();
+      return { result };
+    } catch (err) { return { error: String(err) }; }
   });
 }
