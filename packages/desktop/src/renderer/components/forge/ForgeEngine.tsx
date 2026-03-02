@@ -12,7 +12,7 @@ type ForgeSession = {
   blueprint: Record<string, string>;
   assets: AssetItem[];
   buildOutput: Record<string, string[]>;
-  status: 'idle' | 'onboarding' | 'generating' | 'ready' | 'launched';
+  status: 'idle' | 'onboarding' | 'generating' | 'ready' | 'activating' | 'launched';
 };
 
 interface Question {
@@ -167,7 +167,15 @@ export function ForgeEngine({ profileType, onBack }: Props) {
   }, [profileType, session, questions]);
 
   const handleLaunch = useCallback(() => {
-    setSession(s => { const u = { ...s, status: 'launched' as const }; saveSession(u); return u; });
+    setSession(s => { const u = { ...s, status: 'activating' as const }; saveSession(u); return u; });
+    setTimeout(() => {
+      setSession(s => {
+        if (s.status !== 'activating') return s;
+        const u = { ...s, status: 'launched' as const };
+        saveSession(u);
+        return u;
+      });
+    }, 1800);
   }, []);
 
   const handleReset = useCallback(() => {
@@ -256,8 +264,8 @@ export function ForgeEngine({ profileType, onBack }: Props) {
       {session.status === 'ready' && (
         <div style={styles.readyRoot}>
 
-          {/* Business Blueprint */}
-          <Section title="Business Blueprint" accent="#818cf8">
+          {/* Your Business Blueprint */}
+          <Section title="Your Business Blueprint" accent="#818cf8">
             <div style={styles.blueprintGrid}>
               {Object.entries(session.blueprint).map(([key, value]) => (
                 <div key={key} style={styles.blueprintCard}>
@@ -268,9 +276,9 @@ export function ForgeEngine({ profileType, onBack }: Props) {
             </div>
           </Section>
 
-          {/* Deploy-Ready Assets */}
+          {/* Your Deploy-Ready Assets */}
           {session.assets.length > 0 && (
-            <Section title="Deploy-Ready Assets" accent="#818cf8">
+            <Section title="Your Deploy-Ready Assets" accent="#818cf8">
               <div style={styles.assetStack}>
                 {session.assets.map((asset, i) => {
                   const item = typeof asset === 'string'
@@ -295,13 +303,13 @@ export function ForgeEngine({ profileType, onBack }: Props) {
             </Section>
           )}
 
-          {/* Technical Foundation */}
+          {/* Your Technical Foundation */}
           {Object.keys(session.buildOutput).length > 0 && (
-            <Section title="Technical Foundation" accent="#34d399">
+            <Section title="Your Technical Foundation" accent="#34d399">
               <div style={styles.buildGrid}>
                 {Object.entries(session.buildOutput).map(([key, items]) => (
                   <div key={key} style={styles.buildCard}>
-                    <p style={styles.buildCardTitle}>{formatKey(key)}</p>
+                    <p style={styles.buildCardTitle}>Your {formatKey(key)}</p>
                     <div style={styles.buildList}>
                       {(Array.isArray(items) ? items : []).map((item, i) => (
                         <div key={i} style={styles.buildItem}>
@@ -321,6 +329,16 @@ export function ForgeEngine({ profileType, onBack }: Props) {
             <button style={styles.launchBtn} onClick={handleLaunch}>
               Activate This Business
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* ACTIVATING */}
+      {session.status === 'activating' && (
+        <div style={styles.activatingCard}>
+          <div style={styles.generatingInner}>
+            <div style={styles.activatingRing} />
+            <p style={styles.activatingText}>Activating your business engine…</p>
           </div>
         </div>
       )}
@@ -777,5 +795,26 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     padding: '7px 18px',
     cursor: 'pointer',
+  },
+  activatingCard: {
+    background: 'rgba(99,102,241,0.06)',
+    border: '1px solid rgba(99,102,241,0.2)',
+    borderRadius: 10,
+    padding: '36px 20px',
+  },
+  activatingRing: {
+    width: 44,
+    height: 44,
+    borderRadius: '50%',
+    border: '3px solid rgba(99,102,241,0.15)',
+    borderTop: '3px solid #818cf8',
+    animation: 'spin 1s linear infinite',
+  },
+  activatingText: {
+    fontSize: 14,
+    fontWeight: 600,
+    color: 'rgba(255,255,255,0.7)',
+    margin: 0,
+    letterSpacing: '0.2px',
   },
 };
