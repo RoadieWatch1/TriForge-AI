@@ -27,7 +27,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           cd packages/desktop
-          npm version "$VERSION" --no-git-tag-version
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
 
       # electron-builder v25 expects APPLE_API_KEY to be a FILE PATH, not file
       # contents. Write the secret to a temp .p8 file and export its path so
@@ -85,7 +85,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           cd packages/desktop
-          npm version "$VERSION" --no-git-tag-version
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
 
       - name: Build app
         run: npm run build:desktop
