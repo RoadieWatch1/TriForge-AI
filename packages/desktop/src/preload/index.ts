@@ -236,7 +236,7 @@ const api = {
     run: (profileType: string, answers: Record<string, string>) =>
       ipcRenderer.invoke('forgeEngine:run', { profileType, answers }) as Promise<{
         blueprint?: Record<string, string>;
-        assets?: string[];
+        assets?: Array<{ type: string; body: string }>;
         buildOutput?: Record<string, string[]>;
         error?: string;
       }>,
