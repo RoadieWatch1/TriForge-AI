@@ -2912,9 +2912,9 @@ function onGitLog(d){
   });
 }
 function onConfigModels(d){
-  var mo=$('m-openai'); if(mo){ mo.value=d.openai||''; }
-  var mc=$('m-claude'); if(mc){ mc.value=d.claude||''; }
-  var mg=$('m-grok');   if(mg){ mg.value=d.grok||''; }
+  var mo=$('m-openai'); if(mo){ mo.value=d.openai||'gpt-4o'; }
+  var mc=$('m-claude'); if(mc){ mc.value=d.claude||'claude-sonnet-4-6'; }
+  var mg=$('m-grok');   if(mg){ mg.value=d.grok||'grok-3'; }
 }
 function renderPromptHistory(){
   var hl=$('hist-list'), hw=$('s-history'); if(!hl||!hw){ return; }
@@ -3256,7 +3256,7 @@ $('btn-co-synth')&&$('btn-co-synth').addEventListener('click',function(){ hide('
 // API key buttons (no inline onclick — CSP safe)
 ['openai','claude','grok'].forEach(function(p){
   var sb=$('ks-'+p), rb=$('kr-'+p);
-  if(sb){ sb.addEventListener('click',function(){ var inp=$('k-'+p); if(!inp||!inp.value.trim()){ return; } send('setApiKey',{provider:p,key:inp.value.trim()}); inp.value=''; toast('\u2713 '+pLbl(p)+' key saved.', true); }); }
+  if(sb){ sb.addEventListener('click',function(){ var inp=$('k-'+p); if(!inp||!inp.value.trim()){ toast('Enter a '+pLbl(p)+' API key first.', false); return; } send('setApiKey',{provider:p,key:inp.value.trim()}); inp.value=''; toast('\u2713 '+pLbl(p)+' key saved.', true); }); }
   if(rb){ rb.addEventListener('click',function(){ send('removeApiKey',{provider:p}); }); }
 });
 $('btn-audio')&&$('btn-audio').addEventListener('click',function(){ S.audioEnabled=!S.audioEnabled; this.textContent=S.audioEnabled?'On':'Off'; this.classList.toggle('on',S.audioEnabled); });
