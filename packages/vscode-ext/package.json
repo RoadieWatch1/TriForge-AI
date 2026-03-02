@@ -3,11 +3,36 @@
   "displayName": "Triforge AI Code Council",
   "description": "Structured tri-model AI Council — fast draft, risk analysis, cross-critique, and consensus",
   "version": "0.0.1",
+  "publisher": "TriforgeAICodeCouncil",
+  "icon": "media/TriForgeAI_logo.png",
+  "license": "MIT",
+  "homepage": "https://github.com/RoadieWatch1/TriForge-AI#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RoadieWatch1/TriForge-AI.git"
+  },
+  "bugs": {
+    "url": "https://github.com/RoadieWatch1/TriForge-AI/issues"
+  },
+  "keywords": [
+    "ai",
+    "code council",
+    "consensus",
+    "openai",
+    "claude",
+    "grok",
+    "copilot",
+    "multi-model",
+    "debate",
+    "code review"
+  ],
   "engines": {
     "vscode": "^1.109.0"
   },
   "categories": [
-    "Other"
+    "AI",
+    "Machine Learning",
+    "Programming Languages"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -182,6 +207,7 @@
     "@types/vscode": "^1.109.0",
     "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.7.1",
     "esbuild": "^0.27.3",
     "eslint": "^9.39.2",
     "typescript": "^5.9.3",
