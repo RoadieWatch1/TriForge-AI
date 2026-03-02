@@ -231,6 +231,17 @@ const api = {
     }>,
   },
 
+  // Forge Engine (Business Engine Mode — Phase 1)
+  forgeEngine: {
+    run: (profileType: string, answers: Record<string, string>) =>
+      ipcRenderer.invoke('forgeEngine:run', { profileType, answers }) as Promise<{
+        blueprint?: Record<string, string>;
+        assets?: string[];
+        buildOutput?: Record<string, string[]>;
+        error?: string;
+      }>,
+  },
+
   // Task Engine (Phase 3 + 3.5 — autonomous execution)
   taskEngine: {
     createTask: (goal: string, category: string) =>

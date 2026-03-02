@@ -10,6 +10,7 @@ import { isAtMessageLimit, hasCapability, lockedError, getMemoryLimit, TIERS } f
 import { hashPin, verifyPin, isValidPin } from './auth';
 import { buildSystemPrompt } from './systemPrompt';
 import { getProfile, listProfiles } from './profiles';
+import { getEngineConfig, EngineProfileType } from './engines';
 import { scanForPhotos, listDirectory, organizeDirectory, organizeDirectoryDeep, searchPhotos, findSimilarPhotos, moveFiles, getCommonDirs } from './filesystem';
 import { scanForDocuments, ocrFile, detectDocTypes, searchIndex, type DocEntry } from './docIndex';
 import { GrokVoiceAgent } from './grokVoice';
@@ -821,6 +822,88 @@ VERIFY: [1-3 specific things the user should double-check]
     for (const r of responses) providerOutputs[r.provider] = r.text;
 
     return { markdown, providers: providerOutputs, ledgerEntryId };
+  });
+
+  // ── Forge Engine (Engine Mode — Phase 1) ─────────────────────────────────────
+  ipcMain.handle('forgeEngine:run', async (event, { profileType, answers }: { profileType: EngineProfileType; answers: Record<string, string> }) => {
+    const lic = await store.getLicense();
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('FORGE_PROFILES', tier)) {
+      return { error: lockedError('FORGE_PROFILES') };
+    }
+
+    const engine = getEngineConfig(profileType);
+    if (!engine) return { error: `Unknown engine type: ${profileType}` };
+
+    const { providerManager: pm } = await getEngine();
+    const providers = await pm.getActiveProviders();
+    if (providers.length === 0) return { error: 'No API keys configured. Add at least one in Settings.' };
+
+    const prompt = engine.promptTemplate(answers);
+    const msgs = [
+      { role: 'system', content: engine.systemPrompt },
+      { role: 'user', content: prompt },
+    ];
+
+    // Tri-model parallel — same pattern as forgeProfiles:generateBlueprint
+    event.sender.send('forge:update', { phase: 'querying', total: providers.length });
+
+    let completedCount = 0;
+    const settled = await Promise.allSettled(
+      providers.map(async p => {
+        event.sender.send('forge:update', { phase: 'provider:responding', provider: p.name });
+        const text = await p.chat(msgs);
+        completedCount++;
+        event.sender.send('forge:update', { phase: 'provider:complete', provider: p.name, completedCount, total: providers.length });
+        return { provider: p.name as string, text };
+      })
+    );
+
+    const responses = settled
+      .filter((r): r is PromiseFulfilledResult<{ provider: string; text: string }> => r.status === 'fulfilled')
+      .map(r => r.value)
+      .filter(r => r.text);
+
+    if (responses.length === 0) {
+      return { error: 'All providers failed. Check your API keys in Settings.' };
+    }
+
+    event.sender.send('forge:update', { phase: 'synthesis:start' });
+
+    // Synthesize from multiple responses when available
+    let rawOutput = responses[0].text;
+    if (responses.length > 1) {
+      try {
+        const synthMsgs = [
+          {
+            role: 'system',
+            content: 'You are a JSON synthesis engine. You will receive multiple JSON business engine outputs. Merge them into one superior JSON object keeping the best content from each. Return ONLY valid JSON — no prose, no markdown fences.',
+          },
+          {
+            role: 'user',
+            content: `Engine type: ${engine.name}\n\nInputs: ${JSON.stringify(answers)}\n\nDraft outputs:\n\n${responses.map(r => `// ${r.provider}:\n${r.text}`).join('\n\n')}\n\nReturn one merged JSON object with keys: blueprint, assets, buildOutput.`,
+          },
+        ];
+        rawOutput = await providers[0].chat(synthMsgs);
+      } catch { /* fall back to primary response */ }
+    }
+
+    // Strip markdown code fences if present, then parse JSON
+    const cleaned = rawOutput.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+    let parsed: { blueprint: unknown; assets: string[]; buildOutput: unknown };
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch {
+      return { error: 'Engine output could not be parsed. Please try again.' };
+    }
+
+    event.sender.send('forge:update', { phase: 'complete' });
+
+    return {
+      blueprint: parsed.blueprint ?? {},
+      assets: Array.isArray(parsed.assets) ? parsed.assets : [],
+      buildOutput: parsed.buildOutput ?? {},
+    };
   });
 
   // ── Decision Ledger ─────────────────────────────────────────────────────────
