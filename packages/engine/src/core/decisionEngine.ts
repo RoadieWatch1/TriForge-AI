@@ -82,6 +82,8 @@ export function fallbackPlan(goal: string, _category: TaskCategory): Plan {
         requiresApproval: false,
         estimatedCostCents: 0,
         status: 'pending',
+        attempts: 0,
+        maxAttempts: 3,
       },
     ],
     createdAt: Date.now(),

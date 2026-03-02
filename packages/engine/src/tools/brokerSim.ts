@@ -51,7 +51,7 @@ export async function runBrokerSim(
   args: Record<string, unknown>,
   _ctx: ToolContext,
 ): Promise<BrokerSimResult> {
-  const { symbol, side, qty, type, limitPrice, stopLoss } = args as BrokerSimArgs;
+  const { symbol, side, qty, type, limitPrice, stopLoss } = args as unknown as BrokerSimArgs;
 
   const basePrice = MOCK_PRICES[symbol?.toUpperCase()] ?? 100.00;
   // Add ±0.5% slippage simulation

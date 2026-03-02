@@ -32,7 +32,7 @@ export class MetricsStore {
   record(
     type: MetricsEventType,
     taskId: string,
-    payload: Omit<MetricsEvent, 'type' | 'id' | 'taskId' | 'timestamp'>,
+    payload: Record<string, unknown>,
   ): MetricsEvent {
     const event = {
       type,

@@ -39,7 +39,7 @@ export async function runSendEmail(
   args: Record<string, unknown>,
   ctx: ToolContext,
 ): Promise<SendEmailResult> {
-  const { to, subject, body, from, isHtml } = args as SendEmailArgs;
+  const { to, subject, body, from, isHtml } = args as unknown as SendEmailArgs;
 
   if (!to?.trim())      throw new Error('send_email: "to" is required');
   if (!subject?.trim()) throw new Error('send_email: "subject" is required');

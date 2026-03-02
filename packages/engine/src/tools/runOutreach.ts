@@ -56,7 +56,7 @@ export async function runRunOutreach(
     fromName,
     batchSize = 10,
     delayMs   = 1500,
-  } = args as RunOutreachArgs;
+  } = args as unknown as RunOutreachArgs;
 
   if (!subject?.trim())      throw new Error('run_outreach: "subject" is required');
   if (!bodyTemplate?.trim()) throw new Error('run_outreach: "bodyTemplate" is required');

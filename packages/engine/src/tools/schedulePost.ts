@@ -37,7 +37,7 @@ export async function runSchedulePost(
   args: Record<string, unknown>,
   _ctx: ToolContext,
 ): Promise<SchedulePostResult> {
-  const { platform = 'twitter', contentHint, scheduledAt } = args as SchedulePostArgs;
+  const { platform = 'twitter', contentHint, scheduledAt } = args as unknown as SchedulePostArgs;
 
   const limit = PLATFORM_LIMITS[platform] ?? 280;
   const content = `${contentHint ?? 'Exciting update coming soon'} — stay tuned for more!`.slice(0, limit);

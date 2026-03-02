@@ -30,7 +30,7 @@ export async function runDraftEmail(
   args: Record<string, unknown>,
   _ctx: ToolContext,
 ): Promise<DraftEmailResult> {
-  const { to, subject, bodyHint } = args as DraftEmailArgs;
+  const { to, subject, bodyHint } = args as unknown as DraftEmailArgs;
 
   const resolvedSubject = subject ?? `Re: ${(bodyHint ?? 'your message').slice(0, 50)}`;
   const body = [

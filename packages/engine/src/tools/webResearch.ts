@@ -37,7 +37,7 @@ export async function runWebResearch(
   args: Record<string, unknown>,
   ctx: ToolContext,
 ): Promise<WebResearchResult> {
-  const { url, query, maxChars = 2000 } = args as WebResearchArgs;
+  const { url, query, maxChars = 2000 } = args as unknown as WebResearchArgs;
 
   if (!url?.trim()) throw new Error('web_research: "url" is required');
 

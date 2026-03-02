@@ -34,7 +34,7 @@ export async function runPostTwitter(
   args: Record<string, unknown>,
   ctx: ToolContext,
 ): Promise<PostTwitterResult> {
-  const { content, replyToId } = args as PostTwitterArgs;
+  const { content, replyToId } = args as unknown as PostTwitterArgs;
 
   if (!content?.trim()) throw new Error('post_twitter: "content" is required');
 

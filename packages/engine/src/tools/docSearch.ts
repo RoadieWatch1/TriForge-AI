@@ -34,7 +34,7 @@ export async function runDocSearch(
   args: Record<string, unknown>,
   _ctx: ToolContext,
 ): Promise<DocSearchResult> {
-  const { query, limit = 5 } = args as DocSearchArgs;
+  const { query, limit = 5 } = args as unknown as DocSearchArgs;
   const terms = query.split(/\s+/).filter(Boolean).slice(0, 4);
 
   const results: SearchResult[] = Array.from({ length: Math.min(limit, 5) }, (_, i) => ({

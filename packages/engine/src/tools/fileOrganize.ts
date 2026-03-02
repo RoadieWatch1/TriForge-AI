@@ -34,7 +34,7 @@ export async function runFileOrganize(
   args: Record<string, unknown>,
   _ctx: ToolContext,
 ): Promise<FileOrganizeResult> {
-  const { dirHint = 'files' } = args as FileOrganizeArgs;
+  const { dirHint = 'files' } = args as unknown as FileOrganizeArgs;
 
   const categories = ['Documents', 'Images', 'Archives', 'Misc'];
   const extensions = ['.pdf', '.png', '.zip', '.txt'];
