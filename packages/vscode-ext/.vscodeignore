@@ -9,7 +9,6 @@ esbuild.js
 .vscode-test/**
 .gitignore
 .yarnrc
-vsc-extension-quickstart.md
 
 # Dependencies (bundled by esbuild — not needed at runtime)
 node_modules/**
