@@ -5,9 +5,9 @@ import { ForgeEngine, EngineProfileType } from './forge/ForgeEngine';
 
 interface Props {
   tier: string;
-  activeProfileId: string | null;
-  onProfileChange: (id: string | null) => void;
-  onSendToChat: (prompt: string) => void;
+  activeProfileId?: string | null;
+  onProfileChange?: (id: string | null) => void;
+  onSendToChat?: (prompt: string) => void;
   onUpgradeClick: () => void;
 }
 

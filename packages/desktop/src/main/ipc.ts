@@ -870,7 +870,13 @@ VERIFY: [1-3 specific things the user should double-check]
 
     event.sender.send('forge:update', { phase: 'synthesis:start' });
 
-    // Synthesize from multiple responses when available
+    // Synthesize from multiple responses when available.
+    // Prefer GPT (openai) for synthesis — most reliable JSON compliance.
+    const synthProvider =
+      providers.find(p => p.name === 'openai') ??
+      providers.find(p => p.name === 'claude') ??
+      providers[0];
+
     let rawOutput = responses[0].text;
     if (responses.length > 1) {
       try {
@@ -884,17 +890,35 @@ VERIFY: [1-3 specific things the user should double-check]
             content: `Engine type: ${engine.name}\n\nInputs: ${JSON.stringify(answers)}\n\nDraft outputs:\n\n${responses.map(r => `// ${r.provider}:\n${r.text}`).join('\n\n')}\n\nReturn one merged JSON object with keys: blueprint, assets, buildOutput.`,
           },
         ];
-        rawOutput = await providers[0].chat(synthMsgs);
+        rawOutput = await synthProvider.chat(synthMsgs);
       } catch { /* fall back to primary response */ }
     }
 
-    // Strip markdown code fences if present, then parse JSON
-    const cleaned = rawOutput.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+    // Robust JSON extraction: strip fences, then find the outermost { ... } block.
+    function extractJson(raw: string): string {
+      // Remove markdown code fences (```json ... ``` or ``` ... ```)
+      const defenced = raw.replace(/^```(?:json)?\s*/im, '').replace(/\s*```\s*$/m, '').trim();
+      // Find the first '{' and last '}' to extract the JSON object even if
+      // the model prepended/appended prose.
+      const start = defenced.indexOf('{');
+      const end   = defenced.lastIndexOf('}');
+      if (start === -1 || end === -1 || end <= start) return defenced;
+      return defenced.slice(start, end + 1);
+    }
+
     let parsed: { blueprint: unknown; assets: string[]; buildOutput: unknown };
     try {
-      parsed = JSON.parse(cleaned);
+      parsed = JSON.parse(extractJson(rawOutput));
     } catch {
-      return { error: 'Engine output could not be parsed. Please try again.' };
+      // Last resort: try each individual provider response in order
+      let fallbackParsed: typeof parsed | null = null;
+      for (const r of responses) {
+        try { fallbackParsed = JSON.parse(extractJson(r.text)); break; } catch { /* continue */ }
+      }
+      if (!fallbackParsed) {
+        return { error: 'Engine output could not be parsed. Please try again.' };
+      }
+      parsed = fallbackParsed;
     }
 
     event.sender.send('forge:update', { phase: 'complete' });
