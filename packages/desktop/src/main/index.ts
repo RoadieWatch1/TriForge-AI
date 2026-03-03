@@ -198,7 +198,7 @@ app.whenReady().then(async () => {
 
   // 4. When renderer is ready, enforce a minimum splash duration then swap windows
   mainWindow?.once('ready-to-show', () => {
-    const minSplashMs = 10500; // voice starts at 1800ms + ~6.5s speech + 1700ms deliberate pauses
+    const minSplashMs = 6500; // voice starts at 1400ms + ~4s single-utterance speech
     const elapsed = Date.now() - splashStart;
     const delay = Math.max(0, minSplashMs - elapsed);
     setTimeout(() => {
