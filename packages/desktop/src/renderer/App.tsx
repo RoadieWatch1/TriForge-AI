@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import type { Permission } from '../main/store';
 import { PermissionWizard } from './components/PermissionWizard';
-import { Chat } from './components/Chat';
+import { ForgeCommand } from './forge/ForgeCommand';
 import { LicensePanel } from './components/LicensePanel';
 import { LockScreen } from './components/LockScreen';
 import { AppBuilder } from './components/AppBuilder';
@@ -300,22 +300,12 @@ export function App() {
           {screen === 'automation' && <AutomationMode onNavigate={s => setScreen(s as Screen)} />}
           {screen === 'hustle'     && <HustleMode     onNavigate={s => setScreen(s as Screen)} />}
           {screen === 'chat' && (
-            <Chat
-              mode={mode}
+            <ForgeCommand
               keyStatus={keyStatus}
               tier={tier}
               messagesThisMonth={messagesThisMonth}
               onMessageSent={() => setMessagesThisMonth(n => n + 1)}
-              onUpgradeClick={() => setScreen('plan')}
-              onBuildApp={() => setScreen('builder')}
-              activeProfileId={activeProfileId}
-              onProfileSwitch={() => setScreen('profiles')}
-              onProfileDeactivate={async () => {
-                await window.triforge.forgeProfiles.deactivate();
-                setActiveProfileId(null);
-              }}
-              prefill={chatPrefill}
-              onClearPrefill={() => setChatPrefill(null)}
+              onUpgradeClick={() => setScreen('settings')}
             />
           )}
           {screen === 'builder' && <AppBuilder onBack={() => setScreen('dashboard')} />}
