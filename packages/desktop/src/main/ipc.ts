@@ -289,6 +289,8 @@ export function setupIpc(store: Store): void {
   _sensorManager.startGranted();
 
   // ── Autonomy Engine init ──────────────────────────────────────────────────────
+  // ProviderManager must exist before _getAgentLoop() is called — it throws otherwise.
+  if (!providerManager) providerManager = new ProviderManager(store);
   if (!_autonomyEngine) {
     const notifier = createNotifyAdapter();
     _autonomyEngine = new AutonomyEngine(
