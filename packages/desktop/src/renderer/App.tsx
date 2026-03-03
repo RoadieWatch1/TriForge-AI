@@ -271,6 +271,7 @@ export function App() {
         <nav style={styles.sidebar}>
           {/* Agent Modes */}
           <NavBtn icon="◈" label="Home"     active={screen === 'dashboard'}      onClick={() => setScreen('dashboard')} />
+          <NavBtn icon="⬡" label="TriForge" active={screen === 'chat'}           onClick={() => setScreen('chat')} />
           <NavBtn icon="⬡" label="Launch"   active={screen === 'profiles'}       onClick={() => setScreen('profiles')} />
           <NavBtn icon="↗" label="Operate"  active={screen === 'operator'}       onClick={() => setScreen('operator')} />
           <NavBtn icon="○" label="World"    active={screen === 'world'}          onClick={() => setScreen('world')} />
@@ -280,8 +281,6 @@ export function App() {
           <NavBtn icon="◇" label="Hustle"   active={screen === 'hustle'}         onClick={() => setScreen('hustle')} />
           {/* Divider */}
           <div style={styles.navDivider} />
-          {/* Tools */}
-          <NavBtn icon="⬡" label="Forge"    active={screen === 'chat'}           onClick={() => setScreen('chat')} />
           <NavBtn icon="⊞" label="Builder"  active={screen === 'builder'}        onClick={() => setScreen('builder')} />
           <NavBtn icon="◎" label="Memory"   active={screen === 'memory'}         onClick={() => setScreen('memory')} />
           <NavBtn icon="≡" label="Ledger"   active={screen === 'ledger'}         onClick={() => setScreen('ledger')} />
