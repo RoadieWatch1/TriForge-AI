@@ -78,6 +78,8 @@ interface Props {
   /** When set, pre-fills the chat input field once then clears. */
   prefill?: string | null;
   onClearPrefill?: () => void;
+  /** Navigate to the Command screen (◉) — used for strategic escalation suggestion. */
+  onNavigateToCommand?: () => void;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -215,7 +217,7 @@ Format with actual email copy that can be used directly, not just descriptions.`
 
 // ── Chat Component ─────────────────────────────────────────────────────────────
 
-export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, onUpgradeClick, onBuildApp, activeProfileId, onProfileSwitch, onProfileDeactivate, prefill, onClearPrefill }: Props) {
+export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, onUpgradeClick, onBuildApp, activeProfileId, onProfileSwitch, onProfileDeactivate, prefill, onClearPrefill, onNavigateToCommand }: Props) {
   const [messages, setMessages] = useState<Message[]>(() => {
     // Load persisted history on first render
     try {
@@ -263,19 +265,33 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   // Mission awareness (Phase 3 — ForgeCommand integration)
   const [lastMission, setLastMission] = useState<LastMissionSummary | null>(null);
   const [missionBannerDismissed, setMissionBannerDismissed] = useState(false);
+  const [escalationSuggested, setEscalationSuggested] = useState(false);
 
   useEffect(() => {
     window.triforge.license.checkoutUrls().then(setCheckoutUrls).catch(() => {});
   }, []);
 
-  // Load mission context from ForgeCommand (within 24h window)
+  // Load mission context from ForgeCommand (within 24h window) + inject awareness message
   useEffect(() => {
     const mission = loadLastMission();
     if (mission && Date.now() - mission.timestamp < 24 * 60 * 60 * 1000) {
       setLastMission(mission);
       setMissionBannerDismissed(false);
+      const alignment = mission.semanticScore ?? mission.confidenceScore;
+      const pillarsNote = mission.strategicPillars.length > 0
+        ? ` Key pillar: ${mission.strategicPillars[0]}.` : '';
+      const awarenessMsg: Message = {
+        id: 'mission-awareness',
+        role: 'system',
+        content: `Mission context loaded: "${mission.objective.slice(0, 60)}${mission.objective.length > 60 ? '…' : ''}" — ${alignment}% council alignment · ${mission.riskLevel} risk.${pillarsNote} Ask me to refine, explain, or build on it.`,
+        timestamp: new Date(mission.timestamp),
+      };
+      setMessages(prev =>
+        prev.some(m => m.id === 'mission-awareness') ? prev
+          : [prev[0], awarenessMsg, ...prev.slice(1)]
+      );
     }
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -310,6 +326,17 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     }, 400);
     return () => clearTimeout(t);
   }, [input, intensity, localMode]);
+
+  // Strategic escalation detection — suggest Command after 6+ user messages with strategic keywords
+  const STRATEGIC_KEYWORDS = ['launch', 'monetize', 'scale', 'roadmap', 'execution',
+    'budget', 'risk', 'strategy', 'market', 'revenue', 'growth', 'compete', 'expansion', 'funding'];
+  useEffect(() => {
+    if (escalationSuggested || !onNavigateToCommand) return;
+    const userMsgs = messages.filter(m => m.role === 'user');
+    if (userMsgs.length < 6) return;
+    const combined = userMsgs.map(m => m.content.toLowerCase()).join(' ');
+    if (STRATEGIC_KEYWORDS.some(kw => combined.includes(kw))) setEscalationSuggested(true);
+  }, [messages]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── TTS ───────────────────────────────────────────────────────────────────────
 
@@ -1039,6 +1066,17 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           </div>
         )}
       </div>
+
+      {/* Strategic escalation suggestion — appears after 6+ exchanges with strategic keywords */}
+      {escalationSuggested && onNavigateToCommand && (
+        <div style={cs.escalationSuggestion}>
+          <span style={cs.escalationText}>
+            This conversation feels strategic. Run a full council analysis in ◉ Command?
+          </span>
+          <button style={cs.escalationBtn} onClick={onNavigateToCommand}>Switch to Command</button>
+          <button style={cs.escalationDismiss} onClick={() => setEscalationSuggested(false)}>✕</button>
+        </div>
+      )}
 
       {/* WORKSPACE — 3-column grid */}
       <div style={cs.workspace}>
@@ -1907,6 +1945,21 @@ function SessionTimeline({ messages, running }: { messages: Message[]; running: 
 
 const cs: Record<string, React.CSSProperties> = {
   container: { display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' },
+
+  escalationSuggestion: {
+    display: 'flex', alignItems: 'center', gap: 10, padding: '7px 14px',
+    background: 'rgba(139,92,246,0.06)', borderTop: '1px solid rgba(139,92,246,0.15)', flexShrink: 0,
+  },
+  escalationText: { fontSize: 11, color: 'var(--text-muted)', flex: 1 },
+  escalationBtn: {
+    fontSize: 10, fontWeight: 600, padding: '3px 10px', borderRadius: 5,
+    background: 'rgba(139,92,246,0.15)', border: '1px solid rgba(139,92,246,0.35)',
+    color: '#a78bfa', cursor: 'pointer', flexShrink: 0,
+  },
+  escalationDismiss: {
+    fontSize: 11, background: 'none', border: 'none', color: 'var(--text-muted)',
+    cursor: 'pointer', padding: '2px 5px', lineHeight: 1,
+  },
 
   missionBanner: {
     display: 'flex', alignItems: 'center', justifyContent: 'space-between',

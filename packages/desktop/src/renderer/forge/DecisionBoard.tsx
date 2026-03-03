@@ -4,7 +4,7 @@ import type { ConsensusAnalysis, StructuredSynthesis, CostEstimate, ConflictZone
 import { InfluencePanel } from './InfluencePanel';
 import { ConflictZonePanel } from './ConflictZonePanel';
 import { CostOptimizer } from './CostOptimizer';
-import { recordBiasPress } from './ForgeContextStore';
+import { recordBiasPress, applyTrustEvolution } from './ForgeContextStore';
 
 interface Props {
   result: MissionResult;
@@ -318,7 +318,10 @@ export function DecisionBoard({
               Discuss in TriForge
             </button>
           )}
-          <button style={db.proceedBtn} onClick={onProceed}>
+          <button style={db.proceedBtn} onClick={() => {
+            applyTrustEvolution(influenceMap ?? {}, true);
+            onProceed();
+          }}>
             Proceed to Execution
           </button>
         </div>
@@ -423,6 +426,7 @@ export function DecisionBoard({
               style={db.controlBtn}
               onClick={() => {
                 if (c.biasType) recordBiasPress(c.biasType);
+                else applyTrustEvolution(influenceMap ?? {}, false);
                 onRerun(c.adjustment, c.intensity, c.biasType);
               }}
             >

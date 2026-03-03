@@ -14,6 +14,10 @@ import {
   saveLastMission,
   recordMissionComplete,
   getPersonaAdjustments,
+  loadTrustWeights,
+  recordConflictThemes,
+  getConflictHint,
+  loadLastMission as loadLastMissionForHint,
 } from './ForgeContextStore';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -220,6 +224,12 @@ export function ForgeCommand({ keyStatus, tier, messagesThisMonth, onMessageSent
   const [isRealigning, setIsRealigning] = useState(false);
   const [projectedInfluence, setProjectedInfluence] = useState<Record<string, number> | null>(null);
 
+  // Phase 3.5: conflict hint from prior missions
+  const [conflictHint] = useState<string | null>(() => {
+    const m = loadLastMissionForHint();
+    return m ? getConflictHint(m.objective) : null;
+  });
+
   const unsubRef = useRef<(() => void) | null>(null);
 
   // Load mission history
@@ -362,7 +372,29 @@ export function ForgeCommand({ keyStatus, tier, messagesThisMonth, onMessageSent
         config.aggressionLevel
       );
       const structuredSynth = parseStructuredSynthesis(missionResult.synthesis);
-      setConsensusAnalysis(analysis);
+
+      // Phase 3.5: apply trust weights to influence map, then normalize
+      const tw = loadTrustWeights();
+      const weighted: Record<string, number> = {};
+      let twTotal = 0;
+      for (const [name, raw] of Object.entries(analysis.influenceMap)) {
+        weighted[name] = raw * (tw[name] ?? 1.0);
+        twTotal += weighted[name];
+      }
+      const weightedInfluence: Record<string, number> = {};
+      for (const [name, val] of Object.entries(weighted)) {
+        weightedInfluence[name] = twTotal > 0
+          ? Math.round((val / twTotal) * 100)
+          : Math.round(100 / Object.keys(weighted).length);
+      }
+      const enrichedAnalysis = { ...analysis, influenceMap: weightedInfluence };
+      setConsensusAnalysis(enrichedAnalysis);
+
+      // Record conflict themes if high divergence
+      if (analysis.divergenceIndex > 40 && analysis.conflictZones.length > 0) {
+        recordConflictThemes(analysis.conflictZones.map(z => z.issue));
+      }
+
       setStructuredSynthesis(structuredSynth);
       setCostEstimate(estimateCosts(prompt, responsesMap));
       setIsRealigning(false);
@@ -375,8 +407,9 @@ export function ForgeCommand({ keyStatus, tier, messagesThisMonth, onMessageSent
         strategicPillars: structuredSynth.strategicPillars,
         riskLevel: missionResult.forgeScore.risk,
         confidenceScore: missionResult.forgeScore.confidence,
-        semanticScore: analysis.consensusScore,
-        providerInfluenceMap: analysis.influenceMap,
+        semanticScore: enrichedAnalysis.consensusScore,
+        providerInfluenceMap: enrichedAnalysis.influenceMap,
+        divergenceIndex: analysis.divergenceIndex,
         timestamp: Date.now(),
       });
       recordMissionComplete();
@@ -512,13 +545,21 @@ export function ForgeCommand({ keyStatus, tier, messagesThisMonth, onMessageSent
       {/* Phase content */}
       <div style={s.content}>
         {phase === 'briefing' && (
-          <MissionBriefing
-            onLaunch={launchMission}
-            keyStatus={keyStatus}
-            tier={tier}
-            savedMissions={missions}
-            onLoadMission={(_objective) => { /* pre-fill handled inside MissionBriefing */ }}
-          />
+          <>
+            {conflictHint && (
+              <div style={s.conflictHint}>
+                <span style={s.conflictHintIcon}>⚠</span>
+                {conflictHint}
+              </div>
+            )}
+            <MissionBriefing
+              onLaunch={launchMission}
+              keyStatus={keyStatus}
+              tier={tier}
+              savedMissions={missions}
+              onLoadMission={(_objective) => { /* pre-fill handled inside MissionBriefing */ }}
+            />
+          </>
         )}
 
         {(phase === 'assembling' || phase === 'debating' || phase === 'synthesizing') && (
@@ -610,6 +651,13 @@ const s: Record<string, React.CSSProperties> = {
     background: 'var(--bg)',
     overflow: 'hidden',
   },
+  conflictHint: {
+    margin: '0 0 10px 0', padding: '8px 14px',
+    background: 'rgba(245,158,11,0.08)', borderLeft: '3px solid rgba(245,158,11,0.6)',
+    borderRadius: 6, fontSize: 12, color: 'rgba(245,158,11,0.85)',
+    lineHeight: 1.5, display: 'flex', alignItems: 'flex-start', gap: 8,
+  },
+  conflictHintIcon: { fontSize: 14, flexShrink: 0, marginTop: 1 },
   header: {
     display: 'flex',
     alignItems: 'center',

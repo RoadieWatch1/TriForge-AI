@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import type { MissionConfig, SavedMission } from './ForgeCommand';
+import { loadBaselineBias } from './ForgeContextStore';
 
 interface Props {
   onLaunch: (config: MissionConfig) => void;
@@ -49,9 +50,9 @@ function SliderField({
 export function MissionBriefing({ onLaunch, keyStatus, tier, savedMissions, onLoadMission }: Props) {
   const [objective, setObjective] = useState('');
   const [constraints, setConstraints] = useState('');
-  const [riskTolerance, setRiskTolerance] = useState(3);
-  const [aggressionLevel, setAggressionLevel] = useState(3);
-  const [speedVsDepth, setSpeedVsDepth] = useState(3);
+  const [riskTolerance,   setRiskTolerance]   = useState(() => Math.round(loadBaselineBias().riskTolerance * 4 + 1));
+  const [aggressionLevel, setAggressionLevel] = useState(() => Math.round(loadBaselineBias().aggression    * 4 + 1));
+  const [speedVsDepth,    setSpeedVsDepth]    = useState(() => Math.round(loadBaselineBias().speedVsDepth  * 4 + 1));
   const [budgetSensitivity, setBudgetSensitivity] = useState<'Low' | 'Medium' | 'High'>('Medium');
   const [objectiveError, setObjectiveError] = useState('');
   const [showHistory, setShowHistory] = useState(false);

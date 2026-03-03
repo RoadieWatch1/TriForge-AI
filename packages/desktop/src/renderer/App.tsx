@@ -321,6 +321,7 @@ export function App() {
               onProfileDeactivate={() => setActiveProfileId(null)}
               prefill={chatPrefill}
               onClearPrefill={() => setChatPrefill(null)}
+              onNavigateToCommand={() => setScreen('forge')}
             />
           )}
           {screen === 'forge' && (
