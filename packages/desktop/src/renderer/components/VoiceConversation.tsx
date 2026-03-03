@@ -59,6 +59,10 @@ export function VoiceConversation({ hasGrok, hasOpenAI, sending, onTranscript, o
   const [status,  setStatus]  = useState<Status>('idle');
   const [errMsg,  setErrMsg]  = useState('');
 
+  // Keep a ref in sync with `active` so callbacks with stale closures can read it
+  const activeRef = useRef(false);
+  useEffect(() => { activeRef.current = active; }, [active]);
+
   // Audio refs
   const audioCtxRef     = useRef<AudioContext | null>(null);
   const processorRef    = useRef<ScriptProcessorNode | null>(null);
@@ -104,9 +108,10 @@ export function VoiceConversation({ hasGrok, hasOpenAI, sending, onTranscript, o
     streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
 
-    // Stop Grok agent
+    // Stop Grok agent — commit signals end-of-audio before closing
     unsubAgentRef.current?.();
     unsubAgentRef.current = null;
+    window.triforge.voice.agent.commit().catch(() => {});
     window.triforge.voice.agent.disconnect();
 
     // Stop Web Speech
@@ -201,7 +206,8 @@ export function VoiceConversation({ hasGrok, hasOpenAI, sending, onTranscript, o
     }
 
     const listen = () => {
-      if (!active) return;
+      // Use ref to avoid stale closure — check current active state
+      if (!activeRef.current) return;
       const rec = new SR();
       rec.lang = 'en-US';
       rec.interimResults = false;
@@ -217,14 +223,14 @@ export function VoiceConversation({ hasGrok, hasOpenAI, sending, onTranscript, o
       };
       rec.onerror = () => setStatus('idle');
       rec.onend   = () => {
-        // Restart after a brief gap if still active and not speaking
-        if (active) setTimeout(listen, 800);
+        // Restart quickly if still active (reduced from 800ms to 200ms)
+        if (activeRef.current) setTimeout(listen, 200);
       };
       rec.start();
     };
 
     listen();
-  }, [active, onTranscript]);
+  }, [onTranscript]);
 
   // ── Toggle active ────────────────────────────────────────────────────────────
 

@@ -98,15 +98,26 @@ export function VoiceButton({ onTranscript, onError, disabled, hasOpenAI }: Prop
   }, []);
 
   // ── Unified handlers ───────────────────────────────────────────────────────
+
+  // OpenAI/Whisper path: real hold-to-speak (mousedown/mouseup)
+  const handleMouseDown = () => {
+    if (disabled || state !== 'idle') return;
+    startWhisper();
+  };
+
+  const handleMouseUp = () => {
+    if (state === 'recording') stopWhisper();
+  };
+
+  const handleMouseLeave = () => {
+    if (state === 'recording') stopWhisper();
+  };
+
+  // Web Speech path: click-toggle
   const handleClick = () => {
-    if (disabled) return;
-    if (state === 'idle') {
-      if (hasOpenAI) startWhisper();
-      else startWebSpeech();
-    } else if (state === 'recording') {
-      if (hasOpenAI) stopWhisper();
-      else stopWebSpeech();
-    }
+    if (disabled || hasOpenAI) return;
+    if (state === 'idle') startWebSpeech();
+    else if (state === 'recording') stopWebSpeech();
   };
 
   const label =
@@ -126,6 +137,9 @@ export function VoiceButton({ onTranscript, onError, disabled, hasOpenAI }: Prop
           ...(isLoading ? styles.btnLoading : {}),
           ...(disabled ? styles.btnDisabled : {}),
         }}
+        onMouseDown={hasOpenAI ? handleMouseDown : undefined}
+        onMouseUp={hasOpenAI ? handleMouseUp : undefined}
+        onMouseLeave={hasOpenAI ? handleMouseLeave : undefined}
         onClick={handleClick}
         title={label}
         disabled={disabled || isLoading}
