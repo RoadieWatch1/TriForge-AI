@@ -393,6 +393,8 @@ const PROVIDERS = [
 ];
 
 function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, hasPin, lockUsername, onSaveKey, onRemoveKey, onUpdatePermissions, onPinChanged }: SettingsProps) {
+  const connectedCount = PROVIDERS.filter(p => keyStatus[p.id]).length;
+
   const togglePermission = async (key: string) => {
     const perm = permissions.find(p => p.key === key);
     if (!perm) return;
@@ -422,10 +424,52 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
     <div style={styles.settingsPage}>
       <h2 style={styles.sectionTitle}>API Keys</h2>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 8 }}>
-        Keys are stored locally and never transmitted. At least one is required to activate the council.
+        TriForge runs three AI models simultaneously — each needs its own API key. Add all three to unlock full Think Tank consensus mode. Keys are stored locally and never transmitted.
       </p>
+
+      {/* Think Tank progress banner */}
+      <div style={styles.thinkTankBanner}>
+        <div style={styles.thinkTankHeader}>
+          <span style={styles.thinkTankLabel}>Think Tank</span>
+          <span style={{ ...styles.thinkTankCount, color: connectedCount === 3 ? '#10a37f' : 'var(--text-secondary)' }}>
+            {connectedCount} / 3
+          </span>
+        </div>
+        <div style={styles.thinkTankDots}>
+          {PROVIDERS.map(p => (
+            <div key={p.id} style={styles.thinkTankProvider}>
+              <div style={{ ...styles.thinkTankDot, background: keyStatus[p.id] ? p.color : 'var(--border)' }} />
+              <span style={{ fontSize: 11, color: keyStatus[p.id] ? p.color : 'var(--text-muted)', fontWeight: keyStatus[p.id] ? 600 : 400 }}>
+                {p.label}
+              </span>
+              {!keyStatus[p.id] && (
+                <a
+                  href={p.keysUrl}
+                  onClick={e => { e.preventDefault(); window.triforge.system.openExternal(p.keysUrl); }}
+                  style={styles.thinkTankGetKey}
+                >
+                  Get key →
+                </a>
+              )}
+            </div>
+          ))}
+        </div>
+        <p style={styles.thinkTankMsg}>
+          {connectedCount === 3
+            ? 'All three AIs are online — full consensus mode active.'
+            : connectedCount === 0
+              ? 'Add API keys below. Click "Get key →" next to each provider to open their key page.'
+              : `${3 - connectedCount} more key${3 - connectedCount > 1 ? 's' : ''} needed for full consensus. Click "Get key →" to add them.`}
+        </p>
+      </div>
+
       <p style={{ color: '#f59e0b', fontSize: 12, marginBottom: 16, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 6, padding: '7px 10px' }}>
-        <strong>Note:</strong> All three APIs require paid billing. Anthropic (Claude) has no free tier — add credits before use. xAI Grok requires a credit balance at console.x.ai. OpenAI requires a minimum deposit.
+        <strong>Billing note:</strong> All three APIs require paid accounts. Anthropic (Claude) has no free tier — add credits at{' '}
+        <a href="https://console.anthropic.com/settings/billing" onClick={e => { e.preventDefault(); window.triforge.system.openExternal('https://console.anthropic.com/settings/billing'); }} style={{ color: '#f59e0b', textDecoration: 'underline', cursor: 'pointer' }}>console.anthropic.com</a>.{' '}
+        xAI Grok requires a credit balance at{' '}
+        <a href="https://console.x.ai/" onClick={e => { e.preventDefault(); window.triforge.system.openExternal('https://console.x.ai/'); }} style={{ color: '#f59e0b', textDecoration: 'underline', cursor: 'pointer' }}>console.x.ai</a>.{' '}
+        OpenAI requires a minimum deposit at{' '}
+        <a href="https://platform.openai.com/settings/organization/billing" onClick={e => { e.preventDefault(); window.triforge.system.openExternal('https://platform.openai.com/settings/organization/billing'); }} style={{ color: '#f59e0b', textDecoration: 'underline', cursor: 'pointer' }}>platform.openai.com</a>.
       </p>
       {PROVIDERS.map(p => (
         <div key={p.id} style={styles.keyRow}>
@@ -784,6 +828,16 @@ const styles: Record<string, React.CSSProperties & { WebkitAppRegion?: string }>
 
   settingsPage: { flex: 1, overflowY: 'auto', padding: 24 },
   sectionTitle: { fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 8 },
+
+  thinkTankBanner: { background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '12px 14px', marginBottom: 14 },
+  thinkTankHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
+  thinkTankLabel: { fontSize: 12, fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.06em', color: 'var(--text-muted)' },
+  thinkTankCount: { fontSize: 13, fontWeight: 700 },
+  thinkTankDots: { display: 'flex', flexDirection: 'column' as const, gap: 6, marginBottom: 10 },
+  thinkTankProvider: { display: 'flex', alignItems: 'center', gap: 8 },
+  thinkTankDot: { width: 8, height: 8, borderRadius: '50%', flexShrink: 0 },
+  thinkTankGetKey: { fontSize: 11, color: 'var(--accent)', textDecoration: 'underline', cursor: 'pointer', marginLeft: 4 },
+  thinkTankMsg: { fontSize: 12, color: 'var(--text-secondary)', margin: 0 },
 
   keyRow: { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '10px 14px' },
   providerDot: { width: 8, height: 8, borderRadius: '50%', flexShrink: 0 },

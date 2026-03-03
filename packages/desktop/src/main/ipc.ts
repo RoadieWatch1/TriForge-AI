@@ -21,6 +21,7 @@ import { createMailAdapter } from './mailService';
 import { SensorManager } from './sensors/index';
 import { navigate as browserNavigate, screenshot as browserScreenshot, fillForm as browserFillForm, scrape as browserScrape, closeBrowser } from './browser/index';
 import { SocialPoster } from './social/index';
+import { ApprovalServer } from './approvalServer';
 
 import { ResultStore } from './resultStore';
 import { ValueEngine, CampaignStore, MetricsStore, CompoundEngine } from '@triforge/engine';
@@ -73,6 +74,7 @@ let _sensorManager: SensorManager | null = null;
 let _autonomyEngine: AutonomyEngine | null = null;
 let _professionEngine: ProfessionEngine | null = null;
 let _itRegistry: import('@triforge/engine').TaskToolRegistry | null = null;
+let _approvalServer: ApprovalServer | null = null;
 
 function _getDataDir(): string {
   return app.getPath('userData');
@@ -2607,5 +2609,25 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('autonomy:discardPendingAction', (_e, actionId: string) => {
     return { ok: _autonomyEngine?.discardPendingAction(actionId) ?? false };
+  });
+
+  ipcMain.handle('autonomy:pendingCount', () => {
+    return { count: _autonomyEngine?.listPendingActions().length ?? 0 };
+  });
+
+  // ── Approval Server (remote/phone approvals on port 7337) ─────────────────────
+  ipcMain.handle('approvalServer:start', async () => {
+    if (!_autonomyEngine) return { ok: false, error: 'AutonomyEngine not ready' };
+    if (!_approvalServer) _approvalServer = new ApprovalServer(_autonomyEngine);
+    return _approvalServer.start();
+  });
+
+  ipcMain.handle('approvalServer:stop', () => {
+    _approvalServer?.stop();
+    return { ok: true };
+  });
+
+  ipcMain.handle('approvalServer:status', () => {
+    return _approvalServer?.status() ?? { running: false, port: 7337, url: 'http://localhost:7337' };
   });
 }

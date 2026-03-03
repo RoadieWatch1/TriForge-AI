@@ -217,14 +217,22 @@ export class AutonomyEngine {
       return { ok: false, error: 'Pending action has expired (>24h).' };
     }
 
-    const blocked = this.isActionBlockedByPolicy(pending.action);
-    if (blocked) {
-      return { ok: false, error: 'Action is still blocked by current risk policy.' };
+    // Re-validate through enforcePolicy — remote/phone approval cannot bypass the guard
+    const recheck = this.enforcePolicy(pending.action);
+    if (!recheck.allowed) {
+      const reason = 'reason' in recheck ? recheck.reason : 'policy_changed';
+      this._ledger.log('ACTION_BLOCKED', {
+        metadata: { workflowId: pending.workflowId, workflowName: pending.workflowName, actionType: pending.action.type, actionId, reason: `recheck:${reason}` },
+      }).catch(() => {});
+      return { ok: false, error: `Action blocked by current policy: ${reason}` };
     }
 
     this.pendingActions.delete(actionId);
     try {
       await this.executeActionDirect(pending.action, pending.trigger);
+      this._ledger.log('ACTION_EXECUTED', {
+        metadata: { workflowId: pending.workflowId, workflowName: pending.workflowName, actionType: pending.action.type, actionId, approved: true },
+      }).catch(() => {});
       return { ok: true };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -241,11 +249,7 @@ export class AutonomyEngine {
       if (wf.lastFiredAt && Date.now() - wf.lastFiredAt < cooldown) continue;
       wf.lastFiredAt = Date.now();
       this.save();
-      this.executeWorkflow(wf, ev).catch(() => {
-        try {
-          eventBus.emit({ type: 'WORKFLOW_FAILED', workflowId: wf.id, error: 'Workflow failed' });
-        } catch { /* ignore */ }
-      });
+      this.executeWorkflow(wf, ev).catch(() => { /* errors handled inside executeWorkflow */ });
     }
   }
 
@@ -259,20 +263,47 @@ export class AutonomyEngine {
   }
 
   private async executeWorkflow(wf: WorkflowDefinition, trigger: EngineEvent): Promise<void> {
-    for (const action of wf.actions) {
-      await this.executeAction(action, trigger, wf);
+    try {
+      for (const action of wf.actions) {
+        await this.executeAction(action, trigger, wf);
+      }
+      this.lastFiredWorkflowName = wf.name;
+      this.lastFiredAt = Date.now();
+      this._ledger.log('WORKFLOW_FIRED', { metadata: { workflowId: wf.id, workflowName: wf.name } }).catch(() => {});
+      eventBus.emit({ type: 'WORKFLOW_FIRED', workflowId: wf.id, workflowName: wf.name });
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      this._ledger.log('WORKFLOW_FAILED', { metadata: { workflowId: wf.id, workflowName: wf.name, error: errorMsg } }).catch(() => {});
+      eventBus.emit({ type: 'WORKFLOW_FAILED', workflowId: wf.id, error: errorMsg });
+      try { this.notifier('TriForge — Workflow Failed', `"${wf.name}" encountered an error.`); } catch { /* ignore */ }
+      throw err;
     }
-    this.lastFiredWorkflowName = wf.name;
-    this.lastFiredAt = Date.now();
-    eventBus.emit({ type: 'WORKFLOW_FIRED', workflowId: wf.id, workflowName: wf.name });
   }
 
   private async executeAction(action: WorkflowAction, trigger: EngineEvent, wf: WorkflowDefinition): Promise<void> {
+    // Primary governance gate — runs before any execution
+    const verdict = this.enforcePolicy(action);
+    if (!verdict.allowed) {
+      if ('requiresApproval' in verdict && verdict.requiresApproval) {
+        await this.queueForApproval(action, trigger, wf);
+      } else {
+        // Hard blocked — no approval path
+        this._ledger.log('ACTION_BLOCKED', {
+          metadata: { workflowId: wf.id, workflowName: wf.name, actionType: action.type, reason: verdict.reason },
+        }).catch(() => {});
+        try { this.notifier('TriForge — Action Blocked', `"${action.type}" in "${wf.name}" was blocked by policy.`); } catch { /* ignore */ }
+      }
+      return;
+    }
+    // Legacy approval flag (preserved — belt-and-suspenders)
     if (action.requiresApproval || this.isActionBlockedByPolicy(action)) {
       await this.queueForApproval(action, trigger, wf);
       return;
     }
     await this.executeActionDirect(action, trigger);
+    this._ledger.log('ACTION_EXECUTED', {
+      metadata: { workflowId: wf.id, workflowName: wf.name, actionType: action.type },
+    }).catch(() => {});
   }
 
   private isActionBlockedByPolicy(action: WorkflowAction): boolean {
@@ -291,6 +322,80 @@ export class AutonomyEngine {
     }
   }
 
+  // ── Mutation Classifier ───────────────────────────────────────────────────────
+
+  private classifyMutation(action: WorkflowAction): null | {
+    type: 'scriptRunner' | 'killProcess' | 'writeFile' | 'externalPost' | 'externalEmail' | 'browserForm';
+    detail?: Record<string, unknown>;
+  } {
+    if (action.type === 'run_tool') {
+      const tool = String(action.params['tool'] ?? '');
+      const args = action.params['args'] as Record<string, unknown> | undefined;
+
+      if (tool === 'it/scriptRunner' || tool === 'it_script_runner')
+        return { type: 'scriptRunner', detail: { tool, args } };
+      if ((tool === 'it/processes' || tool === 'it_processes') && args?.['op'] === 'kill')
+        return { type: 'killProcess', detail: { tool, args } };
+      if ((tool === 'it/services' || tool === 'it_services') &&
+          ['restart', 'stop', 'start'].includes(String(args?.['op'] ?? '')))
+        return { type: 'scriptRunner', detail: { tool, args } };
+      if (tool.startsWith('browser/') &&
+          ['fillForm', 'submit', 'click'].includes(String(args?.['op'] ?? '')))
+        return { type: 'browserForm', detail: { tool, args } };
+    }
+
+    if (action.type === 'write_file')
+      return { type: 'writeFile', detail: { path: String(action.params['path'] ?? '') } };
+    if (action.type === 'post_social') return { type: 'externalPost' };
+    if (action.type === 'send_email')  return { type: 'externalEmail' };
+
+    return null;
+  }
+
+  // ── Policy Enforcement Gate (runs before every action execution) ───────────────
+
+  private enforcePolicy(
+    action: WorkflowAction,
+  ): { allowed: true } | { allowed: false; requiresApproval?: true; reason: string } {
+    const mutation = this.classifyMutation(action);
+    if (!mutation) return { allowed: true };
+
+    const policy = this.riskPolicy;
+
+    // External side effects always require approval unless policy explicitly allows
+    if (mutation.type === 'externalPost') {
+      if (!policy.allowSocialPost) return { allowed: false, requiresApproval: true, reason: 'externalPost' };
+      return { allowed: true };
+    }
+    if (mutation.type === 'externalEmail') {
+      return { allowed: false, requiresApproval: true, reason: 'externalEmail' };
+    }
+    if (mutation.type === 'browserForm') {
+      if (!policy.allowBrowserFillForm) return { allowed: false, requiresApproval: true, reason: 'browserForm' };
+      return { allowed: true };
+    }
+
+    // File writes: safe path check first, then policy
+    if (mutation.type === 'writeFile') {
+      const p = String(action.params['path'] ?? '');
+      if (!p || !this.isSafePath(p)) return { allowed: false, requiresApproval: true, reason: 'UNSAFE_PATH' };
+      if (!policy.allowWriteFile) return { allowed: false, requiresApproval: true, reason: 'writeFile' };
+      return { allowed: true };
+    }
+
+    // Script-like actions — default strict (false = needs approval)
+    if (mutation.type === 'scriptRunner') {
+      if (!policy.allowScriptRunner) return { allowed: false, requiresApproval: true, reason: 'SCRIPT_APPROVAL' };
+      return { allowed: true };
+    }
+    if (mutation.type === 'killProcess') {
+      if (!policy.allowKillProcess) return { allowed: false, requiresApproval: true, reason: 'KILL_APPROVAL' };
+      return { allowed: true };
+    }
+
+    return { allowed: true };
+  }
+
   private async queueForApproval(action: WorkflowAction, trigger: EngineEvent, wf: WorkflowDefinition): Promise<void> {
     const actionId = crypto.randomUUID();
     this.pendingActions.set(actionId, {
@@ -299,6 +404,15 @@ export class AutonomyEngine {
       workflowName: wf.name,
       queuedAt: Date.now(),
     });
+    this._ledger.log('ACTION_APPROVAL_REQUIRED', {
+      metadata: {
+        workflowId: wf.id,
+        workflowName: wf.name,
+        actionType: action.type,
+        actionId,
+        tool: action.params['tool'] as string | undefined,
+      },
+    }).catch(() => {});
     this.notifier(
       'TriForge — Approval Required',
       'Workflow "' + wf.name + '" wants to execute "' + action.type + '". Open TriForge to approve.',

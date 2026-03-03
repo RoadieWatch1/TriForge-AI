@@ -3,6 +3,21 @@ import { TIERS, hasCapability } from './subscription';
 import type { Tier } from './license';
 import { getProfile } from './profiles';
 
+// ── Profession engine ref (set by ipc.ts after engine init) ───────────────────
+// Decoupled via interface so systemPrompt.ts stays platform-agnostic.
+interface ProfessionEngineRef {
+  getActive(): { systemPromptAdditions: string[] } | null;
+}
+let _professionEngineRef: ProfessionEngineRef | null = null;
+
+export function setProfessionEngine(engine: ProfessionEngineRef | null): void {
+  _professionEngineRef = engine;
+}
+
+export function getProfessionPromptAdditions(): string[] {
+  return _professionEngineRef?.getActive()?.systemPromptAdditions ?? [];
+}
+
 // ── Prompt cache ──────────────────────────────────────────────────────────────
 // Rebuilding the prompt on every message is wasteful. Cache it and only rebuild
 // when something that affects the prompt actually changes (tier, permissions,

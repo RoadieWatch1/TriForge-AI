@@ -1,6 +1,7 @@
 // sensors/index.ts — SensorManager: starts/stops all OS sensors based on permissions
 
 import { Store } from '../store';
+import { eventBus } from '@triforge/engine';
 import { FileWatcher } from './fileWatcher';
 import { ClipboardMonitor } from './clipboardMonitor';
 import { DiskMonitor } from './diskMonitor';
@@ -73,7 +74,10 @@ export class SensorManager {
       return { error: `PERMISSION_DENIED:${sensor.permissionKey}` };
     }
     try {
-      if (!sensor.isRunning()) sensor.start(config);
+      if (!sensor.isRunning()) {
+        sensor.start(config);
+        try { eventBus.emit({ type: 'SENSOR_STARTED', name }); } catch { /* ignore */ }
+      }
       return { ok: true };
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e) };
@@ -83,7 +87,11 @@ export class SensorManager {
   stopSensor(name: string): { ok?: boolean; error?: string } {
     const sensor = this.sensors.get(name);
     if (!sensor) return { error: `Unknown sensor: ${name}` };
+    const wasRunning = sensor.isRunning();
     sensor.stop();
+    if (wasRunning) {
+      try { eventBus.emit({ type: 'SENSOR_STOPPED', name }); } catch { /* ignore */ }
+    }
     return { ok: true };
   }
 

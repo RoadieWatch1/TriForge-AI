@@ -232,9 +232,9 @@ export class ProfessionEngine {
     }
 
     eventBus.emit({
-      type: 'WORKFLOW_FIRED',
-      workflowId: 'profession-engine',
-      workflowName: `Profession activated: ${profile.name}`,
+      type: 'PROFESSION_ACTIVATED',
+      profileId: profile.id,
+      profileName: profile.name,
     });
   }
 
@@ -251,14 +251,15 @@ export class ProfessionEngine {
       this.autonomyEngine.deleteWorkflow(id);
     }
 
-    const prev = this.activeProfile.name;
+    const prevId   = this.activeProfile.id;
+    const prevName = this.activeProfile.name;
     this.registeredWorkflowIds = [];
     this.activeProfile = null;
 
     eventBus.emit({
-      type: 'WORKFLOW_FIRED',
-      workflowId: 'profession-engine',
-      workflowName: `Profession deactivated: ${prev}`,
+      type: 'PROFESSION_DEACTIVATED',
+      profileId: prevId,
+      profileName: prevName,
     });
   }
 

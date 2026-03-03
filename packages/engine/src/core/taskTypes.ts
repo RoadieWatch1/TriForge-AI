@@ -46,7 +46,13 @@ export type AuditEventType =
   // Phase 4 — Real Execution
   | 'EMAIL_SENT' | 'TWEET_POSTED' | 'OUTREACH_COMPLETED' | 'RESULT_LOGGED'
   // IT Tool Pack
-  | 'IT_ACTION_PROPOSED' | 'IT_ACTION_APPROVED' | 'IT_ACTION_EXECUTED' | 'IT_ACTION_FAILED';
+  | 'IT_ACTION_PROPOSED' | 'IT_ACTION_APPROVED' | 'IT_ACTION_EXECUTED' | 'IT_ACTION_FAILED'
+  // Autonomy governance
+  | 'ACTION_BLOCKED' | 'ACTION_APPROVAL_REQUIRED' | 'ACTION_EXECUTED'
+  | 'WORKFLOW_FIRED' | 'WORKFLOW_FAILED'
+  // Profession + sensor lifecycle
+  | 'PROFESSION_ACTIVATED' | 'PROFESSION_DEACTIVATED'
+  | 'SENSOR_STARTED' | 'SENSOR_STOPPED';
 
 // ── Execution Result (Phase 4) ─────────────────────────────────────────────────
 
@@ -247,4 +253,10 @@ export type EngineEvent =
   | { type: 'WORKFLOW_FIRED';             workflowId: string; workflowName: string }
   | { type: 'WORKFLOW_FAILED';            workflowId: string; error: string }
   | { type: 'WORKFLOW_APPROVAL_PENDING';  actionId: string; workflowId: string; workflowName: string; actionType: string }
-  | { type: 'AUTONOMY_HEALTH';            activeWorkflows: number; sensorsRunning: number; pendingApprovals: number };
+  | { type: 'AUTONOMY_HEALTH';            activeWorkflows: number; sensorsRunning: number; pendingApprovals: number }
+  // Profession lifecycle
+  | { type: 'PROFESSION_ACTIVATED';   profileId: string; profileName: string }
+  | { type: 'PROFESSION_DEACTIVATED'; profileId: string; profileName: string }
+  // Sensor lifecycle
+  | { type: 'SENSOR_STARTED'; name: string }
+  | { type: 'SENSOR_STOPPED'; name: string };

@@ -818,6 +818,15 @@ const api = {
       ipcRenderer.invoke('autonomy:executeApprovedAction', actionId) as Promise<{ ok: boolean; error?: string }>,
     discard: (actionId: string) =>
       ipcRenderer.invoke('autonomy:discardPendingAction', actionId) as Promise<{ ok: boolean }>,
+    pendingCount: () =>
+      ipcRenderer.invoke('autonomy:pendingCount') as Promise<{ count: number }>,
+  },
+
+  // ── Approval Server (remote/phone approvals on port 7337) ─────────────────────
+  approvalServer: {
+    start:  () => ipcRenderer.invoke('approvalServer:start')  as Promise<{ ok: boolean; url?: string; error?: string }>,
+    stop:   () => ipcRenderer.invoke('approvalServer:stop')   as Promise<{ ok: boolean }>,
+    status: () => ipcRenderer.invoke('approvalServer:status') as Promise<{ running: boolean; port: number; url: string }>,
   },
 };
 
