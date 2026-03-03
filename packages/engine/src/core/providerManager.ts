@@ -35,6 +35,8 @@ export class ProviderManager {
   private _memory: Memory;
   /** Optional: returns per-provider model override. Injected by the platform. */
   private _getModelConfig: (name: ProviderName) => string | undefined;
+  /** Preferred provider order set by active profession profile. Empty = default order. */
+  private _preferredProviders: ProviderName[] = [];
 
   constructor(
     storage: StorageAdapter,
@@ -90,10 +92,26 @@ export class ProviderManager {
     return provider;
   }
 
+  // Set preferred provider order for the current session (driven by active profession).
+  // Preferred providers are listed first; others follow in default order.
+  setPreferredProviders(names: ProviderName[]): void {
+    this._preferredProviders = names.filter(n => ['openai', 'grok', 'claude'].includes(n));
+    this._fireStatusChange();
+  }
+
+  getPreferredProviders(): ProviderName[] {
+    return [...this._preferredProviders];
+  }
+
   async getActiveProviders(): Promise<AIProvider[]> {
-    const names: ProviderName[] = ['openai', 'grok', 'claude'];
+    const defaultOrder: ProviderName[] = ['openai', 'grok', 'claude'];
+    // Build sorted order: preferred first, then remaining defaults
+    const ordered: ProviderName[] = [
+      ...this._preferredProviders.filter(n => defaultOrder.includes(n)),
+      ...defaultOrder.filter(n => !this._preferredProviders.includes(n)),
+    ];
     const providers: AIProvider[] = [];
-    for (const name of names) {
+    for (const name of ordered) {
       const provider = await this.getProvider(name);
       if (provider) { providers.push(provider); }
     }

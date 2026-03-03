@@ -6,6 +6,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import crypto from 'crypto';
 import { eventBus } from './eventBus';
 import type { EngineEvent, TaskCategory } from './taskTypes';
@@ -86,7 +87,9 @@ export interface AutonomyStatus {
 export class AutonomyEngine {
   private workflows: WorkflowDefinition[] = [];
   private unsub: (() => void) | null = null;
+  private healthTimer: ReturnType<typeof setInterval> | null = null;
   private readonly storePath: string;
+  private readonly dataDir: string;
   private externalHandlers = new Map<string, ExternalActionHandler>();
   private riskPolicy: RiskPolicy = { ...DEFAULT_RISK_POLICY };
   private pendingActions = new Map<string, PendingAction>();
@@ -100,6 +103,7 @@ export class AutonomyEngine {
     private notifier: (title: string, body: string) => void,
     dataDir: string,
   ) {
+    this.dataDir = dataDir;
     this.storePath = path.join(dataDir, 'triforge-workflows.json');
     this.load();
   }
@@ -119,11 +123,25 @@ export class AutonomyEngine {
   start(): void {
     if (this.unsub) return;
     this.unsub = eventBus.onAny(ev => this.handleEvent(ev));
+    // Emit AUTONOMY_HEALTH every 60s so the UI and subscribers can track engine state
+    this.healthTimer = setInterval(() => this.emitHealth(), 60_000);
   }
 
   stop(): void {
     this.unsub?.();
     this.unsub = null;
+    if (this.healthTimer) { clearInterval(this.healthTimer); this.healthTimer = null; }
+  }
+
+  private emitHealth(): void {
+    try {
+      eventBus.emit({
+        type: 'AUTONOMY_HEALTH',
+        activeWorkflows:  this.workflows.filter(w => w.enabled).length,
+        sensorsRunning:   0,   // populated by SensorManager at the IPC layer
+        pendingApprovals: this.pendingActions.size,
+      });
+    } catch { /* ignore */ }
   }
 
   isRunning(): boolean { return this.unsub !== null; }
@@ -315,6 +333,9 @@ export class AutonomyEngine {
         const filePath = String(action.params['path'] ?? '');
         const content  = String(action.params['content'] ?? '');
         if (filePath) {
+          if (!this.isSafePath(filePath)) {
+            throw new Error(`write_file blocked: path "${filePath}" is outside allowed directories.`);
+          }
           fs.mkdirSync(path.dirname(filePath), { recursive: true });
           fs.writeFileSync(filePath, content, 'utf8');
         }
@@ -326,6 +347,16 @@ export class AutonomyEngine {
         break;
       }
     }
+  }
+
+  // isSafePath: write_file is only permitted inside dataDir or the user's home directory
+  private isSafePath(filePath: string): boolean {
+    const resolved = path.resolve(filePath);
+    const allowed = [
+      path.resolve(this.dataDir),
+      path.resolve(os.homedir()),
+    ];
+    return allowed.some(dir => resolved.startsWith(dir + path.sep) || resolved === dir);
   }
 
   // ── Persistence ──────────────────────────────────────────────────────────────

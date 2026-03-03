@@ -2527,6 +2527,10 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     const profile = BUILT_IN_PROFILES.find(p => p.id === profileId);
     if (!profile) return { error: `Unknown profile: ${profileId}` };
     _professionEngine.activate(profile);
+    // Wire preferred providers into ProviderManager (Commit 17)
+    if (providerManager && profile.behaviorModifiers?.preferredProviders?.length) {
+      providerManager.setPreferredProviders(profile.behaviorModifiers.preferredProviders as import('@triforge/engine').ProviderName[]);
+    }
     // Apply approval strictness as a hint on the risk policy
     const strictness = profile.approvalStrictness;
     if (strictness === 'relaxed' && _autonomyEngine) {
@@ -2569,6 +2573,8 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     _professionEngine.deactivate();
     // Reset risk policy to default on deactivate
     _autonomyEngine?.setRiskPolicy({});
+    // Clear preferred provider bias
+    providerManager?.setPreferredProviders([]);
     return { ok: true };
   });
 

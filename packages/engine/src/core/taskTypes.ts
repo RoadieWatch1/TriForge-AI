@@ -246,4 +246,5 @@ export type EngineEvent =
   | { type: 'SENSOR_RAM_HIGH';         usedPercent: number; usedGB: number; totalGB: number }
   | { type: 'WORKFLOW_FIRED';             workflowId: string; workflowName: string }
   | { type: 'WORKFLOW_FAILED';            workflowId: string; error: string }
-  | { type: 'WORKFLOW_APPROVAL_PENDING';  actionId: string; workflowId: string; workflowName: string; actionType: string };
+  | { type: 'WORKFLOW_APPROVAL_PENDING';  actionId: string; workflowId: string; workflowName: string; actionType: string }
+  | { type: 'AUTONOMY_HEALTH';            activeWorkflows: number; sensorsRunning: number; pendingApprovals: number };
