@@ -281,6 +281,7 @@ export function App() {
           {/* Divider */}
           <div style={styles.navDivider} />
           {/* Tools */}
+          <NavBtn icon="⬡" label="Forge"    active={screen === 'chat'}           onClick={() => setScreen('chat')} />
           <NavBtn icon="⊞" label="Builder"  active={screen === 'builder'}        onClick={() => setScreen('builder')} />
           <NavBtn icon="◎" label="Memory"   active={screen === 'memory'}         onClick={() => setScreen('memory')} />
           <NavBtn icon="≡" label="Ledger"   active={screen === 'ledger'}         onClick={() => setScreen('ledger')} />
