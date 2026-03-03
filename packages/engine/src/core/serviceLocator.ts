@@ -39,7 +39,7 @@ type TwitterPoster   = (opts: TweetOptions) => Promise<TweetResult>;
 type Notifier        = (title: string, body: string, category?: string) => void;
 type ResultLogger    = (result: ExecutionResult) => void;
 type ResultQuerier   = (taskId?: string) => ExecutionResult[];
-type CredentialGetter = (key: string) => string | null;
+type CredentialGetter = (key: string) => string | null | undefined | Promise<string | null | undefined>;
 
 // ── Registered adapters (set by desktop main, null = paper mode) ──────────────
 
@@ -103,8 +103,10 @@ export const serviceLocator = {
     return _queryResults ? _queryResults(taskId) : [];
   },
 
-  getCredential(key: string): string | null {
-    return _getCred ? _getCred(key) : null;
+  async getCredential(key: string): Promise<string | null> {
+    if (!_getCred) return null;
+    const result = await _getCred(key);
+    return result ?? null;
   },
 
   // ── Status checks ───────────────────────────────────────────────────────
