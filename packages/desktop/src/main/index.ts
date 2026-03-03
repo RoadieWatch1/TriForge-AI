@@ -196,19 +196,37 @@ app.whenReady().then(async () => {
   // 3. Create main window (hidden) and start loading the renderer
   createWindow();
 
+  // Helper: close splash and reveal main window (idempotent)
+  function showMain() {
+    if (splashWindow && !splashWindow.isDestroyed()) {
+      splashWindow.close();
+      splashWindow = null;
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  }
+
+  // Hard fallback: if ready-to-show never fires (renderer crash / slow load),
+  // force the main window visible after 12 s so the user is never stuck on splash.
+  const splashFallback = setTimeout(showMain, 12_000);
+
   // 4. When renderer is ready, enforce a minimum splash duration then swap windows
   mainWindow?.once('ready-to-show', () => {
+    clearTimeout(splashFallback);
     const minSplashMs = 6500; // voice starts at 1400ms + ~4s single-utterance speech
     const elapsed = Date.now() - splashStart;
     const delay = Math.max(0, minSplashMs - elapsed);
-    setTimeout(() => {
-      splashWindow?.close();
-      splashWindow = null;
-      mainWindow?.show();
-      mainWindow?.focus();
-    }, delay);
+    setTimeout(showMain, delay);
     // Wire auto-updater now that we have a live window reference
     if (mainWindow) setupAutoUpdater(mainWindow);
+  });
+
+  // If the renderer file fails to load entirely, bail out of splash immediately
+  mainWindow?.webContents.once('did-fail-load', () => {
+    clearTimeout(splashFallback);
+    showMain();
   });
 
   setupTray(
