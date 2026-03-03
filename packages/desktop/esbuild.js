@@ -33,7 +33,7 @@ const mainConfig = {
   platform: 'node',
   format: 'cjs',
   outfile: out('main/index.js'),
-  external: ['electron', 'better-sqlite3'],
+  external: ['electron', 'better-sqlite3', 'playwright-core'],
   absWorkingDir: pkgDir,
 };
 

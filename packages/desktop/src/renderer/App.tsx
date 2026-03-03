@@ -57,7 +57,7 @@ export function App() {
   const [permissions, setPermissions] = useState<Permission[]>([]);
   const [keyStatus, setKeyStatus] = useState<Record<string, boolean>>({ openai: false, claude: false, grok: false });
   const [mode, setMode] = useState('none');
-  const [screen, setScreen] = useState<Screen>('dashboard');
+  const [screen, setScreen] = useState<Screen>('chat');
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({ openai: '', claude: '', grok: '' });
   const [saving, setSaving] = useState<string | null>(null);
   const [tier, setTier] = useState<string>('free');
@@ -277,9 +277,9 @@ export function App() {
         {/* Sidebar */}
         <nav style={styles.sidebar}>
           {/* Agent Modes */}
-          <NavBtn icon="◈" label="Home"     active={screen === 'dashboard'}      onClick={() => setScreen('dashboard')} />
-          <NavBtn icon="⬡" label="TriForge" active={screen === 'chat'}           onClick={() => setScreen('chat')} />
-          <NavBtn icon="◉" label="Command"  active={screen === 'forge'}          onClick={() => setScreen('forge')} />
+          <NavBtn icon="⬡" label="TriForge"  active={screen === 'chat'}           onClick={() => setScreen('chat')} />
+          <NavBtn icon="◉" label="Command"   active={screen === 'forge'}          onClick={() => setScreen('forge')} />
+          <NavBtn icon="◈" label="Dashboard" active={screen === 'dashboard'}      onClick={() => setScreen('dashboard')} />
           <NavBtn icon="⬡" label="Launch"   active={screen === 'profiles'}       onClick={() => setScreen('profiles')} />
           <NavBtn icon="↗" label="Operate"  active={screen === 'operator'}       onClick={() => setScreen('operator')} />
           <NavBtn icon="○" label="World"    active={screen === 'world'}          onClick={() => setScreen('world')} />

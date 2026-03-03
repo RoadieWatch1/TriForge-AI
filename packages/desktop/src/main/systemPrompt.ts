@@ -16,8 +16,9 @@ function buildCacheKey(
   activeProfileId: string | null,
   userName: string,
   todayLabel: string,
+  professionId: string,
 ): string {
-  return [tier, grantedPermKeys.slice().sort().join(','), memoryCount, activeProfileId ?? '', userName, todayLabel].join('|');
+  return [tier, grantedPermKeys.slice().sort().join(','), memoryCount, activeProfileId ?? '', userName, todayLabel, professionId].join('|');
 }
 
 /**
@@ -25,7 +26,7 @@ function buildCacheKey(
  * Gives the AI its identity, user context, all system capabilities, and behavioral rules.
  * Result is cached and only rebuilt when inputs change.
  */
-export async function buildSystemPrompt(store: Store): Promise<string> {
+export async function buildSystemPrompt(store: Store, professionAdditions?: string[]): Promise<string> {
   const auth        = store.getAuth();
   const profile     = store.getUserProfile();
   const memories    = store.getMemory(30);
@@ -42,7 +43,10 @@ export async function buildSystemPrompt(store: Store): Promise<string> {
   const grantedPerms = permissions.filter(p => p.granted);
 
   // ── Cache check — skip rebuild if nothing affecting the prompt has changed ─
-  const cacheKey = buildCacheKey(tier, grantedPerms.map(p => p.key), memories.length, activeProfileId, userName, todayLabel);
+  const professionId = professionAdditions && professionAdditions.length > 0
+    ? professionAdditions[0].slice(0, 40)
+    : '';
+  const cacheKey = buildCacheKey(tier, grantedPerms.map(p => p.key), memories.length, activeProfileId, userName, todayLabel, professionId);
   if (promptCache && promptCache.key === cacheKey) return promptCache.prompt;
   const permBlock = grantedPerms.length > 0
     ? grantedPerms.map(p => `• ${p.label}: ${p.description}`).join('\n')
@@ -153,6 +157,9 @@ ${systemTools.length > 0 ? systemTools.join('\n') : '• Limited system access �
 ### Permissions granted by ${userName}:
 ${permBlock}
 ${profileBlock}
+${professionAdditions && professionAdditions.length > 0
+  ? `\n## Active Role Context\n${professionAdditions.join('\n')}\n`
+  : ''}
 ## How to Handle System Tasks
 When the user asks you to find documents, organize files, or print something:
 1. Confirm what you're about to do in one sentence

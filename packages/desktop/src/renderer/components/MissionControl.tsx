@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -40,6 +40,17 @@ const RISK_COLORS: Record<string, string> = { Low: '#10a37f', Medium: '#f59e0b',
 const TRUST_DOMAINS = ['Marketing', 'Outreach', 'Trading'];
 const TRUST_LEVELS = ['Off', 'Suggest', 'Approve', 'Full'];
 
+interface AutonomyStatusSnapshot {
+  professionName: string | null;
+  approvalStrictness: string | null;
+  runningSensors: number;
+  enabledWorkflows: number;
+  pendingApprovals: number;
+  lastFiredName: string | null;
+  lastFiredAt: number | null;
+  engineRunning: boolean;
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function MissionControl() {
@@ -56,6 +67,39 @@ export function MissionControl() {
       }
     } catch { /* ok */ }
   }, []);
+
+  const [autonomyStatus, setAutonomyStatus] = useState<AutonomyStatusSnapshot | null>(null);
+
+  const fetchAutonomyStatus = useCallback(async () => {
+    try {
+      const tf = (window as unknown as { triforge?: Record<string, unknown> }).triforge;
+      if (!tf) return;
+      const [profStatus, sensorList, wfList] = await Promise.allSettled([
+        (tf['profession'] as Record<string, () => Promise<unknown>>)?.['getStatus']?.(),
+        (tf['sensors'] as Record<string, () => Promise<unknown>>)?.['list']?.(),
+        (tf['autonomy'] as Record<string, () => Promise<unknown>>)?.['listWorkflows']?.(),
+      ]);
+      const prof = profStatus.status === 'fulfilled' ? (profStatus.value as Record<string, unknown> | null) : null;
+      const sensors = sensorList.status === 'fulfilled' ? (sensorList.value as Array<{ running: boolean }>) : [];
+      const workflows = wfList.status === 'fulfilled' ? (wfList.value as Array<{ enabled: boolean }>) : [];
+      setAutonomyStatus({
+        professionName:      prof ? String(prof['professionName'] ?? '') || null : null,
+        approvalStrictness:  prof ? String(prof['approvalStrictness'] ?? '') || null : null,
+        runningSensors:      Array.isArray(sensors) ? sensors.filter(s => s.running).length : 0,
+        enabledWorkflows:    Array.isArray(workflows) ? workflows.filter(w => w.enabled).length : 0,
+        pendingApprovals:    prof ? Number(prof['pendingActionCount'] ?? 0) : 0,
+        lastFiredName:       prof ? String(prof['lastFiredWorkflowName'] ?? '') || null : null,
+        lastFiredAt:         prof ? Number(prof['lastFiredAt'] ?? 0) || null : null,
+        engineRunning:       prof ? Boolean(prof['engineRunning']) : false,
+      });
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    fetchAutonomyStatus();
+    const timer = setInterval(fetchAutonomyStatus, 10_000);
+    return () => clearInterval(timer);
+  }, [fetchAutonomyStatus]);
 
   const assistantMsgs = messages.filter(m => m.role === 'assistant');
   const totalConsensus = assistantMsgs.filter(m => m.consensusResponses).length;
@@ -219,6 +263,56 @@ export function MissionControl() {
             ))}
           </div>
           <div style={mc.trustComingSoon}>Coming in a future update</div>
+
+          {/* Autonomy Status — non-invasive read-only panel */}
+          <div style={mc.sectionTitle}>AUTONOMY STATUS</div>
+          <div style={mc.autonomyPanel}>
+            <div style={mc.autonomyRow}>
+              <span style={mc.autonomyKey}>Engine</span>
+              <span style={{ ...mc.autonomyVal, color: autonomyStatus?.engineRunning ? '#10a37f' : 'var(--text-muted)' }}>
+                {autonomyStatus?.engineRunning ? 'Running' : 'Idle'}
+              </span>
+            </div>
+            <div style={mc.autonomyRow}>
+              <span style={mc.autonomyKey}>Profession</span>
+              <span style={mc.autonomyVal}>
+                {autonomyStatus?.professionName
+                  ? <span style={{ color: 'var(--accent)', fontWeight: 700 }}>{autonomyStatus.professionName}</span>
+                  : <span style={{ color: 'var(--text-muted)' }}>None</span>}
+              </span>
+            </div>
+            {autonomyStatus?.approvalStrictness && (
+              <div style={mc.autonomyRow}>
+                <span style={mc.autonomyKey}>Strictness</span>
+                <span style={{ ...mc.autonomyVal, textTransform: 'capitalize' }}>{autonomyStatus.approvalStrictness}</span>
+              </div>
+            )}
+            <div style={mc.autonomyRow}>
+              <span style={mc.autonomyKey}>Sensors</span>
+              <span style={mc.autonomyVal}>{autonomyStatus?.runningSensors ?? '—'} running</span>
+            </div>
+            <div style={mc.autonomyRow}>
+              <span style={mc.autonomyKey}>Workflows</span>
+              <span style={mc.autonomyVal}>{autonomyStatus?.enabledWorkflows ?? '—'} enabled</span>
+            </div>
+            <div style={mc.autonomyRow}>
+              <span style={mc.autonomyKey}>Pending</span>
+              <span style={{ ...mc.autonomyVal, color: (autonomyStatus?.pendingApprovals ?? 0) > 0 ? '#f59e0b' : 'var(--text-muted)' }}>
+                {autonomyStatus?.pendingApprovals ?? 0} approvals
+              </span>
+            </div>
+            {autonomyStatus?.lastFiredName && (
+              <div style={mc.autonomyLastFired}>
+                <span style={mc.autonomyKey}>Last fired</span>
+                <span style={mc.autonomyLastFiredName}>{autonomyStatus.lastFiredName}</span>
+                {autonomyStatus.lastFiredAt && (
+                  <span style={mc.autonomyMeta}>
+                    {new Date(autonomyStatus.lastFiredAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -275,4 +369,12 @@ const mc: Record<string, React.CSSProperties> = {
   trustLvl: { flex: 1, fontSize: 9, fontWeight: 600, padding: '3px 0', borderRadius: 4, background: 'none', border: '1px solid var(--border)', color: 'rgba(255,255,255,0.2)', cursor: 'not-allowed', textTransform: 'uppercase', letterSpacing: '0.04em' },
   trustLvlActive: { background: 'rgba(255,255,255,0.06)', color: 'var(--text-muted)', border: '1px solid rgba(255,255,255,0.12)' },
   trustComingSoon: { fontSize: 10, color: 'rgba(255,255,255,0.18)', textAlign: 'center', padding: '14px 12px 0', fontStyle: 'italic' },
+
+  autonomyPanel: { display: 'flex', flexDirection: 'column', gap: 5, padding: '4px 12px 8px' },
+  autonomyRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 },
+  autonomyKey: { fontSize: 10, color: 'rgba(255,255,255,0.35)', fontWeight: 600, flexShrink: 0 },
+  autonomyVal: { fontSize: 10, color: 'var(--text-secondary)', fontWeight: 500, textAlign: 'right' as const },
+  autonomyLastFired: { display: 'flex', flexDirection: 'column', gap: 2, paddingTop: 4, borderTop: '1px solid var(--border)', marginTop: 2 },
+  autonomyLastFiredName: { fontSize: 10, color: 'var(--text-secondary)', lineHeight: 1.4, wordBreak: 'break-word' as const },
+  autonomyMeta: { fontSize: 9, color: 'var(--text-muted)' },
 };

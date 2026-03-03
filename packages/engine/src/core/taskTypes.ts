@@ -24,7 +24,10 @@ export type StepStatus =
 export type TrustLevel = 'off' | 'suggest' | 'approve' | 'full';
 export type TaskToolName =
   | 'draft_email' | 'schedule_post' | 'doc_search' | 'file_organize' | 'broker_sim'
-  | 'send_email' | 'post_twitter' | 'run_outreach' | 'analyze_results' | 'web_research';
+  | 'send_email' | 'post_twitter' | 'run_outreach' | 'analyze_results' | 'web_research'
+  // IT Tool Pack
+  | 'it_diagnostics' | 'it_network_doctor' | 'it_event_logs'
+  | 'it_services' | 'it_processes' | 'it_script_runner' | 'it_patch_advisor';
 
 export type AuditEventType =
   | 'TASK_CREATED' | 'TASK_STARTED' | 'TASK_COMPLETED' | 'TASK_FAILED'
@@ -41,7 +44,9 @@ export type AuditEventType =
   | 'BUDGET_RESERVED' | 'BUDGET_COMMITTED' | 'BUDGET_RELEASED'
   | 'SCHEDULER_FIRED'
   // Phase 4 — Real Execution
-  | 'EMAIL_SENT' | 'TWEET_POSTED' | 'OUTREACH_COMPLETED' | 'RESULT_LOGGED';
+  | 'EMAIL_SENT' | 'TWEET_POSTED' | 'OUTREACH_COMPLETED' | 'RESULT_LOGGED'
+  // IT Tool Pack
+  | 'IT_ACTION_PROPOSED' | 'IT_ACTION_APPROVED' | 'IT_ACTION_EXECUTED' | 'IT_ACTION_FAILED';
 
 // ── Execution Result (Phase 4) ─────────────────────────────────────────────────
 
@@ -225,4 +230,20 @@ export type EngineEvent =
   | { type: 'EMAIL_SENT';            taskId: string; stepId: string; to: string[]; subject: string; paperMode: boolean }
   | { type: 'TWEET_POSTED';          taskId: string; stepId: string; tweetId: string; url: string; paperMode: boolean }
   | { type: 'OUTREACH_COMPLETED';    taskId: string; stepId: string; sent: number; failed: number; total: number }
-  | { type: 'RESULT_LOGGED';         taskId: string; stepId: string; tool: TaskToolName; success: boolean };
+  | { type: 'RESULT_LOGGED';         taskId: string; stepId: string; tool: TaskToolName; success: boolean }
+  // Phase Autonomy — OS Sensor Layer events
+  | { type: 'SENSOR_FILE_NEW';          path: string; name: string; dir: string }
+  | { type: 'SENSOR_EMAIL_NEW';         from: string; subject: string; body: string; uid: string }
+  | { type: 'SENSOR_CLIPBOARD_CHANGED'; content: string }
+  | { type: 'SENSOR_WEBSITE_CHANGED';   url: string; diff: string }
+  | { type: 'SENSOR_DISK_LOW';          path: string; freeGB: number; totalGB: number }
+  | { type: 'SENSOR_NETWORK_DOWN';      adapter: string }
+  | { type: 'SENSOR_NETWORK_UP';        adapter: string }
+  | { type: 'SENSOR_PROCESS_ALERT';     name: string; status: 'started' | 'stopped' }
+  | { type: 'SENSOR_EVENTLOG_ALERT';    source: string; level: string; message: string; eventId: number; ts: number }
+  | { type: 'SENSOR_SERVICE_ALERT';    name: string; status: 'stopped' | 'running' | 'restarting' }
+  | { type: 'SENSOR_CPU_HIGH';         usagePercent: number }
+  | { type: 'SENSOR_RAM_HIGH';         usedPercent: number; usedGB: number; totalGB: number }
+  | { type: 'WORKFLOW_FIRED';             workflowId: string; workflowName: string }
+  | { type: 'WORKFLOW_FAILED';            workflowId: string; error: string }
+  | { type: 'WORKFLOW_APPROVAL_PENDING';  actionId: string; workflowId: string; workflowName: string; actionType: string };

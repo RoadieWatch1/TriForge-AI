@@ -60,5 +60,22 @@ export function createDefaultRegistry(): TaskToolRegistry {
   registry.register(analyzeResultsDef, runAnalyzeResults);
   registry.register(webResearchDef,    runWebResearch);
 
+  // IT Tool Pack
+  const { runItDiagnostics,   itDiagnosticsDef }   = require('./it/diagnostics');
+  const { runItNetworkDoctor, itNetworkDoctorDef }  = require('./it/networkDoctor');
+  const { runItEventLogs,     itEventLogsDef }      = require('./it/eventLogs');
+  const { runItServices,      itServicesDef }       = require('./it/services');
+  const { runItProcesses,     itProcessesDef }      = require('./it/processes');
+  const { runItScriptRunner,  itScriptRunnerDef }   = require('./it/scriptRunner');
+  const { runItPatchAdvisor,  itPatchAdvisorDef }   = require('./it/patchAdvisor');
+
+  registry.register(itDiagnosticsDef,   runItDiagnostics);
+  registry.register(itNetworkDoctorDef, runItNetworkDoctor);
+  registry.register(itEventLogsDef,     runItEventLogs);
+  registry.register(itServicesDef,      runItServices);
+  registry.register(itProcessesDef,     runItProcesses);
+  registry.register(itScriptRunnerDef,  runItScriptRunner);
+  registry.register(itPatchAdvisorDef,  runItPatchAdvisor);
+
   return registry;
 }

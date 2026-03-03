@@ -251,6 +251,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   const [checkoutUrls, setCheckoutUrls] = useState<{ pro: string; business: string; portal: string }>({ pro: '', business: '', portal: '' });
   const [showQuickActions, setShowQuickActions] = useState(false);
   const [showWorkflows, setShowWorkflows] = useState(false);
+  const [attachedFile, setAttachedFile] = useState<{ name: string; path: string; content: string } | null>(null);
   // Council system state
   const [agreementMap, setAgreementMap] = useState<Record<string, boolean | null>>({});
   const [selectedProvider, setSelectedProvider] = useState<string>('merge');
@@ -396,6 +397,23 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
 
   const addSystemMsg = (content: string) => appendMsg({ id: crypto.randomUUID(), role: 'system', content, timestamp: new Date() });
 
+  const attachFile = useCallback(async () => {
+    const result = await window.triforge.files.pickFile();
+    if (!result) return;
+    const read = await window.triforge.files.readFile(result);
+    if (read.error === 'PERMISSION_DENIED:files') {
+      addSystemMsg('File access requires the Files permission. Enable it in Settings → Permissions.');
+      return;
+    }
+    if (read.error === 'BINARY_FILE') {
+      addSystemMsg(`"${result.split(/[/\\]/).pop()}" is a binary file (image, PDF, etc.). Use the Docs indexer instead.`);
+      return;
+    }
+    if (read.error) { addSystemMsg(`Could not read file: ${read.error}`); return; }
+    const name = result.split(/[/\\]/).pop() ?? result;
+    setAttachedFile({ name, path: result, content: read.content ?? '' });
+  }, []);
+
   const addPhotoMsg = (label: string, photos: PhotoFile[]) =>
     appendMsg({ id: crypto.randomUUID(), role: 'system', content: label, photos, timestamp: new Date() });
 
@@ -436,7 +454,10 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     const contextPrefix = (lastMission && !missionBannerDismissed)
       ? `[FORGE CONTEXT: Strategic mission "${lastMission.objective.slice(0, 80)}" — Council alignment ${lastMission.semanticScore ?? lastMission.confidenceScore}%, Risk ${lastMission.riskLevel}. Summary: ${lastMission.executiveSummary.slice(0, 200)}]\n\n`
       : '';
-    const messageToSend = contextPrefix + text.trim();
+    const fileContext = attachedFile
+      ? `[FILE: ${attachedFile.name}]\n${attachedFile.content}\n[/FILE]\n\n` : '';
+    setAttachedFile(null);
+    const messageToSend = fileContext + contextPrefix + text.trim();
 
     const activeProviders = Object.entries(keyStatus).filter(([, v]) => v);
     const useConsensus = mode === 'consensus' && activeProviders.length > 1;
@@ -993,6 +1014,12 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
             hasOpenAI={keyStatus.openai}
           />
           <div style={cs.inputWrapper}>
+            {attachedFile && (
+              <div style={cs.attachedFileTag}>
+                <span style={cs.attachedFileName}>{attachedFile.name}</span>
+                <button style={cs.attachedFileRemove} onClick={() => setAttachedFile(null)}>✕</button>
+              </div>
+            )}
             <textarea
               ref={inputRef}
               style={cs.textarea}
@@ -1037,6 +1064,13 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
             onClick={() => { setShowWorkflows(s => !s); setShowQuickActions(false); }} title="Workflow templates">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
             <span style={cs.actionLabel}>Flows</span>
+          </button>
+          <button style={{ ...cs.actionBtn, ...(attachedFile ? cs.actionBtnActive : {}) }}
+            onClick={attachFile} title="Attach file" disabled={sending}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+            </svg>
+            <span style={cs.actionLabel}>File</span>
           </button>
         </div>
 
@@ -2068,6 +2102,9 @@ const cs: Record<string, React.CSSProperties> = {
 
   inputArea: { display: 'flex', alignItems: 'flex-end', gap: 10, padding: '10px 16px 12px', background: 'var(--bg-surface)', flexShrink: 0 },
   inputWrapper: { flex: 1 },
+  attachedFileTag: { display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.3)', borderRadius: 5, marginBottom: 4 },
+  attachedFileName: { fontSize: 11, color: 'var(--accent)', fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const },
+  attachedFileRemove: { fontSize: 11, background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '0 2px', lineHeight: 1 },
   textarea: { width: '100%', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)', fontSize: 14, padding: '10px 14px', resize: 'none' as const, outline: 'none', fontFamily: 'var(--font)', lineHeight: 1.5, maxHeight: 120, overflowY: 'auto' as const },
   sendBtn: { width: 40, height: 40, borderRadius: '50%', background: 'linear-gradient(135deg, var(--accent), var(--purple))', border: 'none', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'opacity 0.2s' },
   sendBtnDisabled: { opacity: 0.3, cursor: 'not-allowed' },

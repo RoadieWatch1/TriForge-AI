@@ -97,32 +97,22 @@ export function VoiceButton({ onTranscript, onError, disabled, hasOpenAI }: Prop
     mediaRecorder.current?.stop();
   }, []);
 
-  // ── Unified handlers ───────────────────────────────────────────────────────
+  // ── Unified click-toggle handler (both Whisper and Web Speech) ───────────────
 
-  // OpenAI/Whisper path: real hold-to-speak (mousedown/mouseup)
-  const handleMouseDown = () => {
-    if (disabled || state !== 'idle') return;
-    startWhisper();
-  };
-
-  const handleMouseUp = () => {
-    if (state === 'recording') stopWhisper();
-  };
-
-  const handleMouseLeave = () => {
-    if (state === 'recording') stopWhisper();
-  };
-
-  // Web Speech path: click-toggle
   const handleClick = () => {
-    if (disabled || hasOpenAI) return;
-    if (state === 'idle') startWebSpeech();
-    else if (state === 'recording') stopWebSpeech();
+    if (disabled) return;
+    if (hasOpenAI) {
+      if (state === 'idle') startWhisper();
+      else if (state === 'recording') stopWhisper();
+    } else {
+      if (state === 'idle') startWebSpeech();
+      else if (state === 'recording') stopWebSpeech();
+    }
   };
 
   const label =
-    state === 'idle'       ? (hasOpenAI ? 'Hold to speak' : 'Click to speak') :
-    state === 'recording'  ? (hasOpenAI ? 'Release to send' : 'Listening…') :
+    state === 'idle'      ? 'Click to speak' :
+    state === 'recording' ? 'Click to stop' :
     'Transcribing…';
 
   const isActive = state === 'recording';
@@ -137,9 +127,6 @@ export function VoiceButton({ onTranscript, onError, disabled, hasOpenAI }: Prop
           ...(isLoading ? styles.btnLoading : {}),
           ...(disabled ? styles.btnDisabled : {}),
         }}
-        onMouseDown={hasOpenAI ? handleMouseDown : undefined}
-        onMouseUp={hasOpenAI ? handleMouseUp : undefined}
-        onMouseLeave={hasOpenAI ? handleMouseLeave : undefined}
         onClick={handleClick}
         title={label}
         disabled={disabled || isLoading}

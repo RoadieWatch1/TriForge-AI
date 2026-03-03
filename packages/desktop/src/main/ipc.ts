@@ -1,4 +1,4 @@
-import { ipcMain, shell, dialog, app, BrowserWindow } from 'electron';
+import { ipcMain, shell, dialog, app, BrowserWindow, clipboard, desktopCapturer } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -18,6 +18,10 @@ import { listPrinters, printFile, printText } from './printer';
 import { CredentialManager } from './credentials';
 import { createNotifyAdapter } from './notifications';
 import { createMailAdapter } from './mailService';
+import { SensorManager } from './sensors/index';
+import { navigate as browserNavigate, screenshot as browserScreenshot, fillForm as browserFillForm, scrape as browserScrape, closeBrowser } from './browser/index';
+import { SocialPoster } from './social/index';
+
 import { ResultStore } from './resultStore';
 import { ValueEngine, CampaignStore, MetricsStore, CompoundEngine } from '@triforge/engine';
 import { GrowthService } from './growthService';
@@ -32,12 +36,16 @@ import {
   Scheduler,
   ThinkTankPlanner,
   ApprovalStore,
+  AutonomyEngine,
+  ProfessionEngine,
+  BUILT_IN_PROFILES,
   createDefaultRegistry,
   eventBus,
   serviceLocator,
   DEFAULT_TRUST_SNAPSHOT,
   validateTrustMode,
   PAPER_TRADING_ONLY,
+  type WorkflowDefinition,
   type TrustModeSnapshot,
   type TaskCategory,
   type TaskStatus,
@@ -61,6 +69,10 @@ let _metricsStore: MetricsStore | null = null;
 let _valueEngine: ValueEngine | null = null;
 let _growthService: GrowthService | null = null;
 let _compoundEngine: CompoundEngine | null = null;
+let _sensorManager: SensorManager | null = null;
+let _autonomyEngine: AutonomyEngine | null = null;
+let _professionEngine: ProfessionEngine | null = null;
+let _itRegistry: import('@triforge/engine').TaskToolRegistry | null = null;
 
 function _getDataDir(): string {
   return app.getPath('userData');
@@ -270,11 +282,34 @@ export function setupIpc(store: Store): void {
     }
   }, 3000);
 
+  // ── Sensor Manager init ───────────────────────────────────────────────────────
+  if (!_sensorManager) _sensorManager = new SensorManager(store);
+  _sensorManager.startGranted();
+
+  // ── Autonomy Engine init ──────────────────────────────────────────────────────
+  if (!_autonomyEngine) {
+    const notifier = createNotifyAdapter();
+    _autonomyEngine = new AutonomyEngine(
+      _getAgentLoop(store),
+      createDefaultRegistry(),
+      _getAuditLedger(),
+      notifier,
+      _getDataDir(),
+    );
+    _autonomyEngine.start();
+  }
+
+  // ── Profession Engine init ────────────────────────────────────────────────────
+  if (!_professionEngine && _sensorManager && _autonomyEngine) {
+    _professionEngine = new ProfessionEngine(_sensorManager, _autonomyEngine);
+  }
+
   // ── Permissions ─────────────────────────────────────────────────────────────
   ipcMain.handle('permissions:get', () => store.getPermissions());
 
   ipcMain.handle('permissions:set', (_e, key: string, granted: boolean, budgetLimit?: number) => {
     store.setPermission(key, granted, budgetLimit);
+    _sensorManager?.onPermissionChange(key, granted);
     return store.getPermissions();
   });
 
@@ -365,7 +400,7 @@ export function setupIpc(store: Store): void {
     }
 
     // Build system prompt with user identity, memories, and tier capabilities
-    const systemPrompt = await buildSystemPrompt(store);
+    const systemPrompt = await buildSystemPrompt(store, _professionEngine?.getSystemPromptAdditions());
 
     try {
       const primary = providers[0];
@@ -451,7 +486,7 @@ export function setupIpc(store: Store): void {
       ? (intensity as Intensity)
       : 'analytical';
 
-    const systemPrompt = await buildSystemPrompt(store);
+    const systemPrompt = await buildSystemPrompt(store, _professionEngine?.getSystemPromptAdditions());
 
     // Notify renderer: forge starting
     event.sender.send('forge:update', { phase: 'querying', total: providers.length });
@@ -1190,6 +1225,36 @@ VERIFY: [1-3 specific things the user should double-check]
     const filesGranted = perms.find(p => p.key === 'files')?.granted;
     if (!filesGranted) return { moved: 0, errors: ['PERMISSION_DENIED:files'] };
     return moveFiles(srcPaths, destDir);
+  });
+
+  ipcMain.handle('files:readFile', async (_e, filePath: string) => {
+    const perms = store.getPermissions();
+    if (!perms.find(p => p.key === 'files')?.granted) return { error: 'PERMISSION_DENIED:files' };
+    try {
+      const stats = fs.statSync(filePath);
+      const MAX_BYTES = 200_000;
+      const sampleLen = Math.min(512, stats.size);
+      if (sampleLen > 0) {
+        const sample = Buffer.alloc(sampleLen);
+        const fd = fs.openSync(filePath, 'r');
+        fs.readSync(fd, sample, 0, sampleLen, 0);
+        fs.closeSync(fd);
+        if (sample.includes(0)) return { error: 'BINARY_FILE', size: stats.size };
+      }
+      const raw = fs.readFileSync(filePath, { encoding: 'utf8', flag: 'r' });
+      const truncated = stats.size > MAX_BYTES;
+      return { content: truncated ? raw.slice(0, MAX_BYTES) : raw, truncated, size: stats.size };
+    } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  });
+
+  ipcMain.handle('files:writeFile', async (_e, filePath: string, content: string) => {
+    if (!store.getPermissions().find(p => p.key === 'files')?.granted)
+      return { error: 'PERMISSION_DENIED:files' };
+    try {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, content, 'utf8');
+      return { ok: true };
+    } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
   });
 
   ipcMain.handle('files:openFile', (_e, filePath: string) => {
@@ -2203,5 +2268,338 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       const result = _getGrowthService().runOptimization();
       return { result };
     } catch (err) { return { error: String(err) }; }
+  });
+
+  // ── Desktop OS Controls ────────────────────────────────────────────────────
+
+  ipcMain.handle('desktop:listWindows', async () => {
+    const perms = store.getPermissions();
+    if (!perms.find(p => p.key === 'browser')?.granted) return { error: 'PERMISSION_DENIED:browser' };
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ['window', 'screen'],
+        thumbnailSize: { width: 160, height: 100 },
+      });
+      return { windows: sources.map(s => ({ id: s.id, name: s.name, appName: (s as { appName?: string }).appName ?? '' })) };
+    } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  });
+
+  ipcMain.handle('desktop:captureScreen', async (_e, sourceId?: string) => {
+    const perms = store.getPermissions();
+    if (!perms.find(p => p.key === 'browser')?.granted) return { error: 'PERMISSION_DENIED:browser' };
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ['screen', 'window'],
+        thumbnailSize: { width: 1920, height: 1080 },
+      });
+      const target = sourceId ? sources.find(s => s.id === sourceId) : sources[0];
+      if (!target) return { error: 'No screen source found' };
+      return { base64: target.thumbnail.toDataURL(), name: target.name };
+    } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  });
+
+  ipcMain.handle('desktop:clipboardRead', () => {
+    return clipboard.readText();
+  });
+
+  ipcMain.handle('desktop:clipboardWrite', (_e, text: string) => {
+    clipboard.writeText(text);
+  });
+
+  ipcMain.handle('desktop:listProcesses', async () => {
+    const perms = store.getPermissions();
+    if (!perms.find(p => p.key === 'terminal')?.granted) return { error: 'PERMISSION_DENIED:terminal' };
+    try {
+      const isWin = process.platform === 'win32';
+      const cmd = isWin ? 'tasklist /fo csv /nh' : 'ps -eo pid,comm';
+      const out = execSync(cmd, { timeout: 5000 }).toString();
+      const processes: Array<{ name: string; pid: string }> = [];
+      if (isWin) {
+        for (const line of out.split('\n').filter(Boolean)) {
+          const parts = line.split('","').map((s: string) => s.replace(/"/g, ''));
+          if (parts[0]) processes.push({ name: parts[0], pid: parts[1] ?? '' });
+        }
+      } else {
+        for (const line of out.split('\n').slice(1).filter(Boolean)) {
+          const cols = line.trim().split(/\s+/);
+          if (cols[1]) processes.push({ pid: cols[0] ?? '', name: cols[1] });
+        }
+      }
+      return { processes };
+    } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  });
+
+  // ── Sensors ────────────────────────────────────────────────────────────────
+
+  ipcMain.handle('sensors:list', () => {
+    return _sensorManager?.listSensors() ?? [];
+  });
+
+  ipcMain.handle('sensors:start', (_e, name: string, config?: Record<string, unknown>) => {
+    return _sensorManager?.startSensor(name, config) ?? { error: 'SensorManager not ready' };
+  });
+
+  ipcMain.handle('sensors:stop', (_e, name: string) => {
+    return _sensorManager?.stopSensor(name) ?? { error: 'SensorManager not ready' };
+  });
+
+  // ── Autonomy Engine — Workflow Registry ────────────────────────────────────
+
+  ipcMain.handle('autonomy:listWorkflows', () => {
+    return _autonomyEngine?.listWorkflows() ?? [];
+  });
+
+  ipcMain.handle('autonomy:registerWorkflow', (_e, wf: WorkflowDefinition) => {
+    if (!_autonomyEngine) return { error: 'AutonomyEngine not ready' };
+    const result = _autonomyEngine.registerWorkflow(wf);
+    return { ok: true, workflow: result };
+  });
+
+  ipcMain.handle('autonomy:updateWorkflow', (_e, id: string, patch: Partial<WorkflowDefinition>) => {
+    if (!_autonomyEngine) return { error: 'AutonomyEngine not ready' };
+    const result = _autonomyEngine.updateWorkflow(id, patch);
+    return result ? { ok: true, workflow: result } : { error: 'Workflow not found' };
+  });
+
+  ipcMain.handle('autonomy:deleteWorkflow', (_e, id: string) => {
+    if (!_autonomyEngine) return { error: 'AutonomyEngine not ready' };
+    const deleted = _autonomyEngine.deleteWorkflow(id);
+    return deleted ? { ok: true } : { error: 'Workflow not found' };
+  });
+
+  ipcMain.handle('autonomy:status', () => {
+    return {
+      running: _autonomyEngine?.isRunning() ?? false,
+      workflowCount: _autonomyEngine?.listWorkflows().length ?? 0,
+    };
+  });
+
+  // ── Browser Automation ──────────────────────────────────────────────────────
+
+  ipcMain.handle('browser:navigate', async (_e, url: string) => {
+    const perms = store.getPermissions();
+    if (!perms.find(p => p.key === 'browser')?.granted) return { error: 'PERMISSION_DENIED:browser' };
+    try {
+      return await browserNavigate(url);
+    } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  });
+
+  ipcMain.handle('browser:screenshot', async (_e, url: string) => {
+    const perms = store.getPermissions();
+    if (!perms.find(p => p.key === 'browser')?.granted) return { error: 'PERMISSION_DENIED:browser' };
+    try {
+      return await browserScreenshot(url);
+    } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  });
+
+  ipcMain.handle('browser:fillForm', async (_e, url: string, fields: Record<string, string>, submitSelector?: string) => {
+    const perms = store.getPermissions();
+    if (!perms.find(p => p.key === 'browser')?.granted) return { error: 'PERMISSION_DENIED:browser' };
+    try {
+      return await browserFillForm(url, fields, submitSelector);
+    } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  });
+
+  ipcMain.handle('browser:scrape', async (_e, url: string, selector: string, attrs?: string[]) => {
+    const perms = store.getPermissions();
+    if (!perms.find(p => p.key === 'browser')?.granted) return { error: 'PERMISSION_DENIED:browser' };
+    try {
+      return await browserScrape(url, selector, attrs);
+    } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  });
+
+  ipcMain.handle('browser:close', async () => {
+    try { await closeBrowser(); return { ok: true }; }
+    catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  });
+
+  // ── Social Media ────────────────────────────────────────────────────────────
+
+  ipcMain.handle('social:post', async (_e, platform: string, content: string, mediaBase64?: string) => {
+    const perms = store.getPermissions();
+    if (!perms.find(p => p.key === 'social')?.granted) return { error: 'PERMISSION_DENIED:social' };
+    try {
+      const poster = new SocialPoster(_getCredentialManager(store));
+      return await poster.post(platform, content, mediaBase64);
+    } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  });
+
+  ipcMain.handle('social:draft', async (_e, platform: string, content: string) => {
+    try {
+      const poster = new SocialPoster(_getCredentialManager(store));
+      return poster.draft(platform, content);
+    } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  });
+
+  // ── IT Tool Pack ─────────────────────────────────────────────────────────────
+
+  function _getItRegistry() {
+    if (!_itRegistry) _itRegistry = createDefaultRegistry();
+    return _itRegistry;
+  }
+
+  const _itCtx = () => ({ taskId: 'ipc-direct', stepId: 'ipc-direct', category: 'general' as const });
+  const _requireTerminal = () => {
+    const p = store.getPermissions();
+    return p.find((x: { key: string; granted: boolean }) => x.key === 'terminal')?.granted
+      ? null : { error: 'PERMISSION_DENIED:terminal' };
+  };
+
+  ipcMain.handle('it:getDiagnostics', async () => {
+    const denied = _requireTerminal(); if (denied) return denied;
+    try { return await _getItRegistry().run('it_diagnostics', {}, _itCtx()); }
+    catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  });
+
+  ipcMain.handle('it:networkDoctor', async (_e, testHosts?: string) => {
+    const denied = _requireTerminal(); if (denied) return denied;
+    try { return await _getItRegistry().run('it_network_doctor', { testHosts }, _itCtx()); }
+    catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  });
+
+  ipcMain.handle('it:getEventLogs', async (_e, opts?: { logName?: string; maxItems?: number; minutesBack?: number; levelFilter?: string }) => {
+    const denied = _requireTerminal(); if (denied) return denied;
+    try { return await _getItRegistry().run('it_event_logs', opts ?? {}, _itCtx()); }
+    catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  });
+
+  ipcMain.handle('it:listServices', async (_e, filter?: string) => {
+    const denied = _requireTerminal(); if (denied) return denied;
+    try { return await _getItRegistry().run('it_services', { action: 'list', filter: filter ?? 'all' }, _itCtx()); }
+    catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  });
+
+  ipcMain.handle('it:restartService', async (_e, serviceName: string) => {
+    const denied = _requireTerminal(); if (denied) return denied;
+    try { return await _getItRegistry().run('it_services', { action: 'restart', serviceName }, _itCtx()); }
+    catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  });
+
+  ipcMain.handle('it:listProcesses', async (_e, topN?: number, sortBy?: string) => {
+    const denied = _requireTerminal(); if (denied) return denied;
+    try { return await _getItRegistry().run('it_processes', { action: 'list', topN: topN ?? 30, sortBy: sortBy ?? 'cpu' }, _itCtx()); }
+    catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  });
+
+  ipcMain.handle('it:killProcess', async (_e, target: string) => {
+    const denied = _requireTerminal(); if (denied) return denied;
+    try { return await _getItRegistry().run('it_processes', { action: 'kill', target }, _itCtx()); }
+    catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  });
+
+  ipcMain.handle('it:listScripts', async () => {
+    try { return await _getItRegistry().run('it_script_runner', { action: 'list' }, _itCtx()); }
+    catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  });
+
+  ipcMain.handle('it:runScript', async (_e, scriptId: string) => {
+    const denied = _requireTerminal(); if (denied) return denied;
+    try { return await _getItRegistry().run('it_script_runner', { action: 'run', scriptId }, _itCtx()); }
+    catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  });
+
+  ipcMain.handle('it:checkPatches', async (_e, scope?: string) => {
+    const denied = _requireTerminal(); if (denied) return denied;
+    try { return await _getItRegistry().run('it_patch_advisor', { scope: scope ?? 'all' }, _itCtx()); }
+    catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  });
+
+  // ── Profession Engine ─────────────────────────────────────────────────────────
+
+  ipcMain.handle('profession:list', () => {
+    return BUILT_IN_PROFILES.map(p => ({
+      id: p.id,
+      name: p.name,
+      activeSensors: p.activeSensors,
+      approvalStrictness: p.approvalStrictness,
+      behaviorModifiers: p.behaviorModifiers,
+    }));
+  });
+
+  ipcMain.handle('profession:getActive', () => {
+    const active = _professionEngine?.getActive();
+    if (!active) return null;
+    return { id: active.id, name: active.name, approvalStrictness: active.approvalStrictness };
+  });
+
+  ipcMain.handle('profession:activate', (_e, profileId: string) => {
+    if (!_professionEngine) return { error: 'ProfessionEngine not ready' };
+    const profile = BUILT_IN_PROFILES.find(p => p.id === profileId);
+    if (!profile) return { error: `Unknown profile: ${profileId}` };
+    _professionEngine.activate(profile);
+    // Apply approval strictness as a hint on the risk policy
+    const strictness = profile.approvalStrictness;
+    if (strictness === 'relaxed' && _autonomyEngine) {
+      _autonomyEngine.setRiskPolicy({
+        allowAutoRunSafeFixes: true,
+        allowScriptRunner: false,
+        allowKillProcess: false,
+        allowRestartService: false,
+        allowWriteFile: true,
+        allowBrowserFillForm: false,
+        allowSocialPost: false,
+      });
+    } else if (strictness === 'balanced' && _autonomyEngine) {
+      _autonomyEngine.setRiskPolicy({
+        allowAutoRunSafeFixes: true,
+        allowScriptRunner: false,
+        allowKillProcess: false,
+        allowRestartService: false,
+        allowWriteFile: true,
+        allowBrowserFillForm: false,
+        allowSocialPost: false,
+      });
+    } else if (_autonomyEngine) {
+      // strict — everything requires approval
+      _autonomyEngine.setRiskPolicy({
+        allowAutoRunSafeFixes: false,
+        allowScriptRunner: false,
+        allowKillProcess: false,
+        allowRestartService: false,
+        allowWriteFile: false,
+        allowBrowserFillForm: false,
+        allowSocialPost: false,
+      });
+    }
+    return { ok: true, name: profile.name };
+  });
+
+  ipcMain.handle('profession:deactivate', () => {
+    if (!_professionEngine) return { error: 'ProfessionEngine not ready' };
+    _professionEngine.deactivate();
+    // Reset risk policy to default on deactivate
+    _autonomyEngine?.setRiskPolicy({});
+    return { ok: true };
+  });
+
+  // Combined status for the Autonomy Status panel in MissionControl
+  ipcMain.handle('profession:getStatus', () => {
+    const active = _professionEngine?.getActive();
+    const autonomy = _autonomyEngine?.getStatus();
+    const sensors = _sensorManager?.listSensors() ?? [];
+    return {
+      professionName:      active?.name ?? null,
+      approvalStrictness:  active?.approvalStrictness ?? null,
+      engineRunning:       autonomy?.running ?? false,
+      runningSensors:      sensors.filter(s => s.running).length,
+      enabledWorkflows:    autonomy?.enabledWorkflowCount ?? 0,
+      pendingActionCount:  autonomy?.pendingActionCount ?? 0,
+      lastFiredWorkflowName: autonomy?.lastFiredWorkflowName ?? null,
+      lastFiredAt:         autonomy?.lastFiredAt ?? null,
+    };
+  });
+
+  // Pending action management (TASK 6)
+  ipcMain.handle('autonomy:listPendingActions', () => {
+    return _autonomyEngine?.listPendingActions() ?? [];
+  });
+
+  ipcMain.handle('autonomy:executeApprovedAction', async (_e, actionId: string) => {
+    if (!_autonomyEngine) return { ok: false, error: 'AutonomyEngine not ready' };
+    return _autonomyEngine.executeApprovedAction(actionId);
+  });
+
+  ipcMain.handle('autonomy:discardPendingAction', (_e, actionId: string) => {
+    return { ok: _autonomyEngine?.discardPendingAction(actionId) ?? false };
   });
 }

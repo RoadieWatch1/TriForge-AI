@@ -369,6 +369,53 @@ const api = {
       ipcRenderer.invoke('task:resume', taskId) as Promise<{ ok?: boolean; error?: string }>,
   },
 
+  // Desktop OS controls (screen capture, clipboard, process list)
+  desktop: {
+    listWindows:    () =>
+      ipcRenderer.invoke('desktop:listWindows') as Promise<{ windows?: Array<{ id: string; name: string; appName: string }>; error?: string }>,
+    captureScreen:  (sourceId?: string) =>
+      ipcRenderer.invoke('desktop:captureScreen', sourceId) as Promise<{ base64?: string; name?: string; error?: string }>,
+    clipboardRead:  () =>
+      ipcRenderer.invoke('desktop:clipboardRead') as Promise<string>,
+    clipboardWrite: (text: string) =>
+      ipcRenderer.invoke('desktop:clipboardWrite', text) as Promise<void>,
+    listProcesses:  () =>
+      ipcRenderer.invoke('desktop:listProcesses') as Promise<{ processes?: Array<{ name: string; pid: string }>; error?: string }>,
+  },
+
+  // OS Sensors (reactive background monitors)
+  sensors: {
+    list:  () =>
+      ipcRenderer.invoke('sensors:list') as Promise<Array<{ name: string; running: boolean; permissionKey: string }>>,
+    start: (name: string, config?: Record<string, unknown>) =>
+      ipcRenderer.invoke('sensors:start', name, config) as Promise<{ ok?: boolean; error?: string }>,
+    stop:  (name: string) =>
+      ipcRenderer.invoke('sensors:stop', name) as Promise<{ ok?: boolean; error?: string }>,
+  },
+
+  // Autonomy Engine — workflow registry + trigger pipeline
+  autonomy: {
+    status: () =>
+      ipcRenderer.invoke('autonomy:status') as Promise<{ running: boolean; workflowCount: number }>,
+    listWorkflows: () =>
+      ipcRenderer.invoke('autonomy:listWorkflows') as Promise<Array<{
+        id: string; name: string; description: string; enabled: boolean;
+        triggers: Array<{ eventType: string; filter?: Record<string, unknown> }>;
+        actions: Array<{ type: string; params: Record<string, unknown>; requiresApproval?: boolean }>;
+        cooldownMs?: number; lastFiredAt?: number; createdAt: number;
+      }>>,
+    registerWorkflow: (wf: {
+      id: string; name: string; description: string; enabled: boolean;
+      triggers: Array<{ eventType: string; filter?: Record<string, unknown> }>;
+      actions: Array<{ type: string; params: Record<string, unknown>; requiresApproval?: boolean }>;
+      cooldownMs?: number; createdAt: number;
+    }) => ipcRenderer.invoke('autonomy:registerWorkflow', wf) as Promise<{ ok?: boolean; workflow?: unknown; error?: string }>,
+    updateWorkflow: (id: string, patch: Record<string, unknown>) =>
+      ipcRenderer.invoke('autonomy:updateWorkflow', id, patch) as Promise<{ ok?: boolean; workflow?: unknown; error?: string }>,
+    deleteWorkflow: (id: string) =>
+      ipcRenderer.invoke('autonomy:deleteWorkflow', id) as Promise<{ ok?: boolean; error?: string }>,
+  },
+
   // System
   system: {
     openExternal: (url: string) => ipcRenderer.invoke('system:openExternal', url),
@@ -411,6 +458,8 @@ const api = {
     showInFolder:  (filePath: string) => ipcRenderer.invoke('files:showInFolder', filePath),
     pickFile:      (filters?: Array<{ name: string; extensions: string[] }>) => ipcRenderer.invoke('files:pickFile', filters) as Promise<string | null>,
     pickDir:       () => ipcRenderer.invoke('files:pickDir') as Promise<string | null>,
+    readFile:      (filePath: string) => ipcRenderer.invoke('files:readFile', filePath) as Promise<{ content?: string; truncated?: boolean; size?: number; error?: string }>,
+    writeFile:     (filePath: string, content: string) => ipcRenderer.invoke('files:writeFile', filePath, content) as Promise<{ ok?: boolean; error?: string }>,
   },
 
   // Document Indexer — local OCR-powered document finder
@@ -614,6 +663,86 @@ const api = {
       ipcRenderer.invoke('growth:updateLead', leadId, patch) as Promise<{ ok?: boolean; error?: string }>,
   },
 
+  // IT Tool Pack (diagnostics, network doctor, event logs, services, processes, scripts, patches)
+  it: {
+    getDiagnostics: () =>
+      ipcRenderer.invoke('it:getDiagnostics') as Promise<{
+        hostname?: string; platform?: string; osRelease?: string; arch?: string; uptimeHours?: number;
+        cpu?: { model: string; cores: number; loadAvg1m: number; usagePercent: number };
+        memory?: { totalGB: number; freeGB: number; usedPercent: number };
+        disks?: Array<{ mount: string; totalGB: number; freeGB: number; usedPercent: number }>;
+        networkAdapters?: Array<{ name: string; address: string; mac: string }>;
+        capturedAt?: number; error?: string;
+      }>,
+    networkDoctor: (testHosts?: string) =>
+      ipcRenderer.invoke('it:networkDoctor', testHosts) as Promise<{
+        online?: boolean; gateway?: string; dnsServers?: string[];
+        adapters?: Array<{ name: string; address: string; mac: string }>;
+        tests?: Array<{ host: string; resolved?: string; latencyMs?: number; reachable: boolean; error?: string }>;
+        routeHints?: string[]; capturedAt?: number; error?: string;
+      }>,
+    getEventLogs: (opts?: { logName?: string; maxItems?: number; minutesBack?: number; levelFilter?: string }) =>
+      ipcRenderer.invoke('it:getEventLogs', opts) as Promise<{
+        entries?: Array<{ eventId: number; level: string; source: string; message: string; ts: number; logName: string }>;
+        logName?: string; platform?: string; minutesBack?: number; capturedAt?: number; error?: string;
+      }>,
+    listServices: (filter?: string) =>
+      ipcRenderer.invoke('it:listServices', filter) as Promise<{
+        action?: string;
+        services?: Array<{ name: string; displayName: string; status: string; startType?: string }>;
+        ok?: boolean; error?: string; capturedAt?: number;
+      }>,
+    restartService: (serviceName: string) =>
+      ipcRenderer.invoke('it:restartService', serviceName) as Promise<{ ok?: boolean; status?: string; error?: string; capturedAt?: number }>,
+    listProcesses: (topN?: number, sortBy?: string) =>
+      ipcRenderer.invoke('it:listProcesses', topN, sortBy) as Promise<{
+        processes?: Array<{ pid: number; name: string; cpu?: number; memMB?: number }>;
+        ok?: boolean; error?: string; capturedAt?: number;
+      }>,
+    killProcess: (target: string) =>
+      ipcRenderer.invoke('it:killProcess', target) as Promise<{ ok?: boolean; killed?: string; error?: string; capturedAt?: number }>,
+    listScripts: () =>
+      ipcRenderer.invoke('it:listScripts') as Promise<{
+        scripts?: Array<{ id: string; name: string; description: string; riskNote: string }>;
+        ok?: boolean; error?: string;
+      }>,
+    runScript: (scriptId: string) =>
+      ipcRenderer.invoke('it:runScript', scriptId) as Promise<{ ok?: boolean; output?: string; error?: string; capturedAt?: number }>,
+    checkPatches: (scope?: string) =>
+      ipcRenderer.invoke('it:checkPatches', scope) as Promise<{
+        pending?: Array<{ name: string; severity: string; category: string; description?: string }>;
+        totalCount?: number; critical?: number; important?: number;
+        recommendation?: string; platform?: string; capturedAt?: number; error?: string;
+      }>,
+  },
+
+
+  // Browser Automation (Playwright headless)
+  browser: {
+    navigate:   (url: string) =>
+      ipcRenderer.invoke('browser:navigate', url) as Promise<{ text?: string; title?: string; url?: string; error?: string }>,
+    screenshot: (url: string) =>
+      ipcRenderer.invoke('browser:screenshot', url) as Promise<{ base64?: string; width?: number; height?: number; error?: string }>,
+    fillForm:   (url: string, fields: Record<string, string>, submitSelector?: string) =>
+      ipcRenderer.invoke('browser:fillForm', url, fields, submitSelector) as Promise<{ ok?: boolean; message?: string; error?: string }>,
+    scrape:     (url: string, selector: string, attrs?: string[]) =>
+      ipcRenderer.invoke('browser:scrape', url, selector, attrs) as Promise<{ items?: Array<Record<string, string>>; error?: string }>,
+    close:      () =>
+      ipcRenderer.invoke('browser:close') as Promise<{ ok?: boolean; error?: string }>,
+  },
+
+  // Social Media Posting (Twitter, LinkedIn, Reddit, Facebook)
+  social: {
+    post:  (platform: string, content: string, mediaBase64?: string) =>
+      ipcRenderer.invoke('social:post', platform, content, mediaBase64) as Promise<{
+        ok?: boolean; platform?: string; postId?: string; url?: string; error?: string;
+      }>,
+    draft: (platform: string, content: string) =>
+      ipcRenderer.invoke('social:draft', platform, content) as Promise<{
+        ok?: boolean; platform?: string; draft?: string; characterCount?: number; characterLimit?: number; error?: string;
+      }>,
+  },
+
   // Phase 7: Compound Engine
   compound: {
     listStrategies: (type?: string) =>
@@ -651,6 +780,44 @@ const api = {
         result?: { scaled: number; optimized: number };
         error?: string;
       }>,
+  },
+
+  // ── Profession Engine ──────────────────────────────────────────────────────
+  profession: {
+    list: () =>
+      ipcRenderer.invoke('profession:list') as Promise<Array<{
+        id: string; name: string; activeSensors: string[];
+        approvalStrictness: string; behaviorModifiers: Record<string, unknown>;
+      }>>,
+    getActive: () =>
+      ipcRenderer.invoke('profession:getActive') as Promise<{ id: string; name: string; approvalStrictness: string } | null>,
+    activate: (profileId: string) =>
+      ipcRenderer.invoke('profession:activate', profileId) as Promise<{ ok?: boolean; name?: string; error?: string }>,
+    deactivate: () =>
+      ipcRenderer.invoke('profession:deactivate') as Promise<{ ok?: boolean; error?: string }>,
+    getStatus: () =>
+      ipcRenderer.invoke('profession:getStatus') as Promise<{
+        professionName: string | null;
+        approvalStrictness: string | null;
+        engineRunning: boolean;
+        runningSensors: number;
+        enabledWorkflows: number;
+        pendingActionCount: number;
+        lastFiredWorkflowName: string | null;
+        lastFiredAt: number | null;
+      }>,
+  },
+
+  // ── Pending Action Approvals (TASK 6) ──────────────────────────────────────
+  pendingActions: {
+    list: () =>
+      ipcRenderer.invoke('autonomy:listPendingActions') as Promise<Array<{
+        id: string; actionType: string; workflowId: string; workflowName: string; queuedAt: number;
+      }>>,
+    approve: (actionId: string) =>
+      ipcRenderer.invoke('autonomy:executeApprovedAction', actionId) as Promise<{ ok: boolean; error?: string }>,
+    discard: (actionId: string) =>
+      ipcRenderer.invoke('autonomy:discardPendingAction', actionId) as Promise<{ ok: boolean }>,
   },
 };
 

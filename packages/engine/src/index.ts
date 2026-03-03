@@ -70,6 +70,13 @@ export { agreementScore, mergePlans, fallbackPlan } from './core/decisionEngine'
 export { ThinkTankPlanner } from './core/thinkTankPlanner';
 export { AgentLoop } from './core/agentLoop';
 export { ApprovalStore } from './core/approvalStore';
+export { AutonomyEngine } from './core/autonomyEngine';
+export type { WorkflowDefinition, WorkflowAction, TriggerCondition, ExternalActionHandler, RiskPolicy, AutonomyStatus } from './core/autonomyEngine';
+export { DEFAULT_RISK_POLICY } from './core/autonomyEngine';
+
+// Profession Engine
+export { ProfessionEngine, BUILT_IN_PROFILES } from './core/professionEngine';
+export type { ProfessionProfile, ISensorManager, IAutonomyEngine } from './core/professionEngine';
 
 // Tools
 export { TaskToolRegistry, createDefaultRegistry } from './tools/taskRegistry';
