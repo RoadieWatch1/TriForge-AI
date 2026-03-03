@@ -1,12 +1,24 @@
 import React, { useState } from 'react';
 import type { MissionResult, MissionConfig, ProviderState } from './ForgeCommand';
+import type { ConsensusAnalysis, StructuredSynthesis, CostEstimate, ConflictZone } from './ConsensusEngine';
+import { InfluencePanel } from './InfluencePanel';
+import { ConflictZonePanel } from './ConflictZonePanel';
+import { CostOptimizer } from './CostOptimizer';
+import { recordBiasPress } from './ForgeContextStore';
 
 interface Props {
   result: MissionResult;
   config: MissionConfig;
   providers: ProviderState[];
-  onRerun: (adjustment: string, intensity: string) => void;
+  onRerun: (adjustment: string, intensity: string, biasType?: 'aggression' | 'stability' | 'cost') => void;
   onProceed: () => void;
+  consensusAnalysis?: ConsensusAnalysis | null;
+  structuredSynthesis?: StructuredSynthesis | null;
+  costEstimate?: CostEstimate | null;
+  influenceMap?: Record<string, number> | null;
+  isRealigning?: boolean;
+  onOpenConflict?: (zone: ConflictZone) => void;
+  onDiscussInChat?: (prompt: string) => void;
 }
 
 // ── Confidence Meter ───────────────────────────────────────────────────────────
@@ -62,6 +74,18 @@ const rb: Record<string, React.CSSProperties> = {
   },
 };
 
+// ── Semantic Alignment Badge ──────────────────────────────────────────────────
+
+function AlignmentBadge({ score }: { score: number }) {
+  const color = score >= 70 ? '#10b981' : score >= 50 ? '#f59e0b' : '#ef4444';
+  const bg    = score >= 70 ? 'rgba(16,185,129,0.1)' : score >= 50 ? 'rgba(245,158,11,0.1)' : 'rgba(239,68,68,0.1)';
+  return (
+    <span style={{ ...rb.badge, color, background: bg, borderColor: `${color}30` }}>
+      Alignment: {score}%
+    </span>
+  );
+}
+
 // ── Provider Accordion ────────────────────────────────────────────────────────
 
 function ProviderAccordion({ provider }: { provider: ProviderState }) {
@@ -112,21 +136,149 @@ const pa: Record<string, React.CSSProperties> = {
   text: { fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6, margin: 0 },
 };
 
+// ── Structured Synthesis View ─────────────────────────────────────────────────
+
+function StructuredSynthesisView({ synthesis }: { synthesis: StructuredSynthesis }) {
+  const { executiveSummary, strategicPillars, riskMap, timeline, costImpact, councilNote } = synthesis;
+  const hasSections = executiveSummary || strategicPillars.length > 0 || riskMap.length > 0;
+  if (!hasSections) return <p style={ss.rawText}>{synthesis.raw}</p>;
+
+  return (
+    <div style={ss.root}>
+      {executiveSummary && (
+        <div style={ss.section}>
+          <div style={ss.sectionTitle}>Executive Summary</div>
+          <p style={ss.summaryText}>{executiveSummary}</p>
+        </div>
+      )}
+      {strategicPillars.length > 0 && (
+        <div style={ss.section}>
+          <div style={ss.sectionTitle}>Strategic Pillars</div>
+          <ul style={ss.list}>
+            {strategicPillars.map((p, i) => <li key={i} style={ss.listItem}>{p}</li>)}
+          </ul>
+        </div>
+      )}
+      {riskMap.length > 0 && (
+        <div style={ss.section}>
+          <div style={ss.sectionTitle}>Risk Map</div>
+          <ul style={ss.list}>
+            {riskMap.map((r, i) => <li key={i} style={{ ...ss.listItem, ...ss.riskItem }}>{r}</li>)}
+          </ul>
+        </div>
+      )}
+      {timeline.length > 0 && (
+        <div style={ss.section}>
+          <div style={ss.sectionTitle}>Timeline</div>
+          <ul style={ss.list}>
+            {timeline.map((t, i) => <li key={i} style={ss.listItem}>{t}</li>)}
+          </ul>
+        </div>
+      )}
+      {costImpact && (
+        <div style={ss.section}>
+          <div style={ss.sectionTitle}>Cost Impact</div>
+          <p style={ss.bodyText}>{costImpact}</p>
+        </div>
+      )}
+      {councilNote && (
+        <div style={ss.section}>
+          <div style={ss.sectionTitle}>Council Compromise</div>
+          <p style={{ ...ss.bodyText, ...ss.councilNote }}>{councilNote}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const ss: Record<string, React.CSSProperties> = {
+  root: { display: 'flex', flexDirection: 'column', gap: 14 },
+  section: { display: 'flex', flexDirection: 'column', gap: 5 },
+  sectionTitle: {
+    fontSize: 9,
+    fontWeight: 600,
+    letterSpacing: '0.1em',
+    textTransform: 'uppercase',
+    color: 'var(--text-muted)',
+  },
+  summaryText: {
+    fontSize: 13,
+    color: 'var(--text-primary)',
+    lineHeight: 1.65,
+    margin: 0,
+    fontWeight: 500,
+  },
+  bodyText: {
+    fontSize: 12,
+    color: 'var(--text-secondary)',
+    lineHeight: 1.6,
+    margin: 0,
+  },
+  councilNote: {
+    color: 'var(--text-muted)',
+    fontStyle: 'italic',
+  },
+  list: {
+    margin: 0,
+    paddingLeft: 16,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 3,
+  },
+  listItem: {
+    fontSize: 12,
+    color: 'var(--text-secondary)',
+    lineHeight: 1.5,
+  },
+  riskItem: {
+    color: 'rgba(245,158,11,0.9)',
+  },
+  rawText: {
+    fontSize: 13,
+    color: 'var(--text-secondary)',
+    lineHeight: 1.65,
+    margin: 0,
+    whiteSpace: 'pre-wrap',
+  },
+};
+
 // ── Strategic Controls ────────────────────────────────────────────────────────
 
-const CONTROLS: Array<{ label: string; adjustment: string; intensity: string }> = [
-  { label: '+Aggression',       adjustment: 'Increase aggression weight significantly. Push for more aggressive recommendations.',    intensity: 'combative' },
-  { label: '+Stability',        adjustment: 'Increase stability weight. Prioritize risk mitigation and conservative planning.',       intensity: 'analytical' },
-  { label: '-Cost',             adjustment: 'Minimize complexity and operational cost. Optimize for lean execution.',                  intensity: 'cooperative' },
-  { label: 'Claude Counter',    adjustment: 'CLAUDE DIRECTIVE: Argue the contrarian position. Challenge the consensus recommendation.', intensity: 'critical' },
-  { label: 'Grok Push',         adjustment: 'GROK DIRECTIVE: Push maximum aggression alternative. No compromise on speed or scale.',   intensity: 'combative' },
+const CONTROLS: Array<{
+  label: string;
+  adjustment: string;
+  intensity: string;
+  biasType?: 'aggression' | 'stability' | 'cost';
+}> = [
+  { label: '+Aggression',    adjustment: 'Increase aggression weight significantly. Push for more aggressive recommendations.',    intensity: 'combative',  biasType: 'aggression' },
+  { label: '+Stability',     adjustment: 'Increase stability weight. Prioritize risk mitigation and conservative planning.',       intensity: 'analytical', biasType: 'stability'  },
+  { label: '-Cost',          adjustment: 'Minimize complexity and operational cost. Optimize for lean execution.',                  intensity: 'cooperative',biasType: 'cost'       },
+  { label: 'Claude Counter', adjustment: 'CLAUDE DIRECTIVE: Argue the contrarian position. Challenge the consensus recommendation.', intensity: 'critical',  biasType: undefined    },
+  { label: 'Grok Push',      adjustment: 'GROK DIRECTIVE: Push maximum aggression alternative. No compromise on speed or scale.',   intensity: 'combative', biasType: undefined    },
 ];
 
 // ── Main Component ─────────────────────────────────────────────────────────────
 
-export function DecisionBoard({ result, config, providers, onRerun, onProceed }: Props) {
+export function DecisionBoard({
+  result,
+  config,
+  providers,
+  onRerun,
+  onProceed,
+  consensusAnalysis,
+  structuredSynthesis,
+  costEstimate,
+  influenceMap,
+  isRealigning,
+  onOpenConflict,
+  onDiscussInChat,
+}: Props) {
   const { synthesis, forgeScore, providerResponses } = result;
   const providersWithResponses = providers.filter(p => p.response);
+
+  const handleRerunConflict = (adjustment: string, intensity: string) => {
+    onRerun(adjustment, intensity);
+  };
 
   return (
     <div style={db.root}>
@@ -137,12 +289,39 @@ export function DecisionBoard({ result, config, providers, onRerun, onProceed }:
           <div style={db.scoreMeta}>
             <span style={db.confidenceLabel}>Confidence</span>
             <ConfidenceMeter value={forgeScore.confidence} />
+            {consensusAnalysis && (
+              <AlignmentBadge score={consensusAnalysis.consensusScore} />
+            )}
             <RiskBadge risk={forgeScore.risk} />
           </div>
         </div>
-        <button style={db.proceedBtn} onClick={onProceed}>
-          Proceed to Execution
-        </button>
+        <div style={db.headerBtns}>
+          {onDiscussInChat && (
+            <button
+              style={db.discussBtn}
+              onClick={() => {
+                const pillars = structuredSynthesis?.strategicPillars ?? [];
+                const score = consensusAnalysis?.consensusScore ?? result.forgeScore.confidence;
+                const prompt = [
+                  `I've just completed a strategic mission: "${result.synthesis.slice(0, 80)}..."`,
+                  '',
+                  `Council alignment: ${score}%  |  Risk: ${result.forgeScore.risk}`,
+                  pillars.length > 0
+                    ? `\nStrategic pillars:\n${pillars.map((p, i) => `${i + 1}. ${p}`).join('\n')}`
+                    : '',
+                  '',
+                  'I want to discuss this further and refine the approach.',
+                ].filter(Boolean).join('\n');
+                onDiscussInChat(prompt);
+              }}
+            >
+              Discuss in TriForge
+            </button>
+          )}
+          <button style={db.proceedBtn} onClick={onProceed}>
+            Proceed to Execution
+          </button>
+        </div>
       </div>
 
       {/* Main split */}
@@ -151,7 +330,10 @@ export function DecisionBoard({ result, config, providers, onRerun, onProceed }:
         <div style={db.synthesisPanel}>
           <div style={db.sectionLabel}>Synthesis</div>
           <div style={db.synthesisScroll}>
-            <p style={db.synthesisText}>{synthesis}</p>
+            {structuredSynthesis && structuredSynthesis.executiveSummary
+              ? <StructuredSynthesisView synthesis={structuredSynthesis} />
+              : <p style={db.synthesisText}>{synthesis}</p>
+            }
           </div>
         </div>
 
@@ -169,6 +351,17 @@ export function DecisionBoard({ result, config, providers, onRerun, onProceed }:
                 ))
             }
           </div>
+
+          {/* Influence Panel */}
+          {influenceMap && Object.keys(influenceMap).length > 0 && (
+            <div style={db.influenceWrapper}>
+              <InfluencePanel
+                influenceMap={influenceMap}
+                providers={providers}
+                isRealigning={isRealigning}
+              />
+            </div>
+          )}
         </div>
       </div>
 
@@ -200,6 +393,26 @@ export function DecisionBoard({ result, config, providers, onRerun, onProceed }:
         )}
       </div>
 
+      {/* Conflict Zones Panel */}
+      {consensusAnalysis && consensusAnalysis.conflictZones.length > 0 && (
+        <div style={db.panelSection}>
+          <ConflictZonePanel
+            zones={consensusAnalysis.conflictZones}
+            providers={providers}
+            onResolveConflict={onOpenConflict ?? (() => {})}
+            onRerunWithBias={handleRerunConflict}
+            divergenceIndex={consensusAnalysis.divergenceIndex}
+          />
+        </div>
+      )}
+
+      {/* Cost Optimizer */}
+      {costEstimate && (
+        <div style={db.panelSection}>
+          <CostOptimizer estimate={costEstimate} />
+        </div>
+      )}
+
       {/* Strategic Controls */}
       <div style={db.controls}>
         <div style={db.controlsLabel}>Strategic Controls</div>
@@ -208,7 +421,10 @@ export function DecisionBoard({ result, config, providers, onRerun, onProceed }:
             <button
               key={c.label}
               style={db.controlBtn}
-              onClick={() => onRerun(c.adjustment, c.intensity)}
+              onClick={() => {
+                if (c.biasType) recordBiasPress(c.biasType);
+                onRerun(c.adjustment, c.intensity, c.biasType);
+              }}
             >
               {c.label}
             </button>
@@ -246,8 +462,26 @@ const db: Record<string, React.CSSProperties> = {
     textTransform: 'uppercase',
     color: 'var(--text-muted)',
   },
-  scoreMeta: { display: 'flex', alignItems: 'center', gap: 14 },
+  scoreMeta: { display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' },
   confidenceLabel: { fontSize: 11, color: 'var(--text-muted)' },
+  headerBtns: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+  },
+  discussBtn: {
+    padding: '9px 16px',
+    borderRadius: 7,
+    background: 'rgba(139,92,246,0.08)',
+    border: '1px solid rgba(139,92,246,0.25)',
+    borderLeft: '2px solid #8b5cf6',
+    color: '#8b5cf6',
+    fontSize: 12,
+    fontWeight: 500,
+    cursor: 'pointer',
+    letterSpacing: '0.02em',
+    whiteSpace: 'nowrap',
+  },
   proceedBtn: {
     padding: '9px 20px',
     borderRadius: 7,
@@ -292,7 +526,7 @@ const db: Record<string, React.CSSProperties> = {
   synthesisScroll: {
     flex: 1,
     overflow: 'auto',
-    maxHeight: 280,
+    maxHeight: 320,
   },
   synthesisText: {
     fontSize: 13,
@@ -302,6 +536,7 @@ const db: Record<string, React.CSSProperties> = {
     whiteSpace: 'pre-wrap',
   },
   accordionList: { display: 'flex', flexDirection: 'column', gap: 5 },
+  influenceWrapper: { marginTop: 4 },
   rawResponse: { padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' },
   rawProvider: { fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: 4 },
   rawText: { fontSize: 11, color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 },
@@ -329,6 +564,11 @@ const db: Record<string, React.CSSProperties> = {
     background: 'rgba(251,191,36,0.07)',
     padding: '2px 8px',
     borderRadius: 4,
+  },
+  panelSection: {
+    border: '1px solid rgba(255,255,255,0.08)',
+    borderTop: 'none',
+    padding: '14px 16px',
   },
   controls: {
     border: '1px solid rgba(255,255,255,0.08)',

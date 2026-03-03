@@ -5,6 +5,7 @@ import { UpgradeGate } from './UpgradeGate';
 import { ExecutionPlanView, type ExecutionPlan } from './ExecutionPlanView';
 import { ForgeChamber } from './ForgeChamber';
 import { CouncilChamber } from './forge/CouncilChamber';
+import { loadLastMission, type LastMissionSummary } from '../forge/ForgeContextStore';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -259,8 +260,21 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   const streamBuf   = useRef('');
   const streamTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Mission awareness (Phase 3 — ForgeCommand integration)
+  const [lastMission, setLastMission] = useState<LastMissionSummary | null>(null);
+  const [missionBannerDismissed, setMissionBannerDismissed] = useState(false);
+
   useEffect(() => {
     window.triforge.license.checkoutUrls().then(setCheckoutUrls).catch(() => {});
+  }, []);
+
+  // Load mission context from ForgeCommand (within 24h window)
+  useEffect(() => {
+    const mission = loadLastMission();
+    if (mission && Date.now() - mission.timestamp < 24 * 60 * 60 * 1000) {
+      setLastMission(mission);
+      setMissionBannerDismissed(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -391,13 +405,19 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       .filter(m => m.role !== 'system')
       .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
+    // Prepend compact mission context when banner is active (Phase 3)
+    const contextPrefix = (lastMission && !missionBannerDismissed)
+      ? `[FORGE CONTEXT: Strategic mission "${lastMission.objective.slice(0, 80)}" — Council alignment ${lastMission.semanticScore ?? lastMission.confidenceScore}%, Risk ${lastMission.riskLevel}. Summary: ${lastMission.executiveSummary.slice(0, 200)}]\n\n`
+      : '';
+    const messageToSend = contextPrefix + text.trim();
+
     const activeProviders = Object.entries(keyStatus).filter(([, v]) => v);
     const useConsensus = mode === 'consensus' && activeProviders.length > 1;
 
     try {
       if (useConsensus) {
         setConsensusThinking(true);
-        const result = await window.triforge.chat.consensus(text.trim(), history, intensity);
+        const result = await window.triforge.chat.consensus(messageToSend, history, intensity);
         setConsensusThinking(false);
 
         if (result.error && handleGateError(result.error)) { setSending(false); return; }
@@ -444,7 +464,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           streamBuf.current += chunk;
         });
 
-        const result = await window.triforge.chat.send(text.trim(), history);
+        const result = await window.triforge.chat.send(messageToSend, history);
         unsub();
         clearInterval(streamTimer.current!);
         streamTimer.current = null;
@@ -814,6 +834,38 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           onSwitch={onProfileSwitch ?? (() => {})}
           onDeactivate={onProfileDeactivate ?? (() => {})}
         />
+      )}
+
+      {/* Mission awareness banner — visible when a recent ForgeCommand mission exists */}
+      {lastMission && !missionBannerDismissed && messages.length < 3 && (
+        <div style={cs.missionBanner}>
+          <div style={cs.missionBannerLeft}>
+            <span style={cs.missionBannerLabel}>MISSION ACTIVE</span>
+            <span style={cs.missionBannerObjective}>
+              {lastMission.objective.length > 60
+                ? lastMission.objective.slice(0, 60) + '…'
+                : lastMission.objective}
+            </span>
+            <span style={cs.missionBannerMeta}>
+              Alignment: {lastMission.semanticScore ?? lastMission.confidenceScore}%
+              &nbsp;&nbsp;|&nbsp;&nbsp;Risk: {lastMission.riskLevel}
+            </span>
+          </div>
+          <div style={cs.missionBannerActions}>
+            <button
+              style={cs.missionBannerAsk}
+              onClick={() => {
+                setInput(`Based on our last strategic mission regarding: "${lastMission.objective}", can you help me refine the approach?`);
+                inputRef.current?.focus();
+              }}
+            >
+              Ask about this
+            </button>
+            <button style={cs.missionBannerDismiss} onClick={() => setMissionBannerDismissed(true)}>
+              ✕
+            </button>
+          </div>
+        </div>
       )}
 
       {/* TOP BAR */}
@@ -1855,6 +1907,37 @@ function SessionTimeline({ messages, running }: { messages: Message[]; running: 
 
 const cs: Record<string, React.CSSProperties> = {
   container: { display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' },
+
+  missionBanner: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    padding: '8px 14px', gap: 12,
+    background: 'rgba(139,92,246,0.07)',
+    borderLeft: '3px solid #8b5cf6',
+    borderBottom: '1px solid rgba(139,92,246,0.2)',
+    flexShrink: 0,
+  },
+  missionBannerLeft: { display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: 1 },
+  missionBannerLabel: {
+    fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase' as const,
+    color: '#a78bfa', flexShrink: 0,
+  },
+  missionBannerObjective: {
+    fontSize: 11, color: 'var(--text-secondary)', fontWeight: 500,
+    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const, flex: 1,
+  },
+  missionBannerMeta: {
+    fontSize: 10, color: 'var(--text-muted)', flexShrink: 0,
+  },
+  missionBannerActions: { display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 },
+  missionBannerAsk: {
+    fontSize: 10, fontWeight: 600, padding: '3px 10px', borderRadius: 5,
+    background: 'rgba(139,92,246,0.15)', border: '1px solid rgba(139,92,246,0.35)',
+    color: '#a78bfa', cursor: 'pointer',
+  },
+  missionBannerDismiss: {
+    fontSize: 11, background: 'none', border: 'none', color: 'var(--text-muted)',
+    cursor: 'pointer', padding: '2px 5px', lineHeight: 1,
+  },
 
   statusBar: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 16px', borderBottom: '1px solid var(--border)', flexShrink: 0, background: 'var(--bg-surface)' },
   statusDots: { display: 'flex', gap: 5 },

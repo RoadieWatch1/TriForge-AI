@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import type { Permission } from '../main/store';
 import { PermissionWizard } from './components/PermissionWizard';
+import { Chat } from './components/Chat';
 import { ForgeCommand } from './forge/ForgeCommand';
 import { LicensePanel } from './components/LicensePanel';
 import { LockScreen } from './components/LockScreen';
@@ -45,7 +46,8 @@ export class ErrorBoundary extends React.Component<
 type Screen =
   | 'chat' | 'settings' | 'memory' | 'ledger' | 'plan' | 'builder'
   | 'profiles' | 'missioncontrol' | 'agenthq'
-  | 'dashboard' | 'operator' | 'world' | 'files' | 'inbox' | 'automation' | 'hustle';
+  | 'dashboard' | 'operator' | 'world' | 'files' | 'inbox' | 'automation' | 'hustle'
+  | 'forge';
 
 const LOCK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -194,6 +196,11 @@ export function App() {
 
   const handleLock = () => setLocked(true);
 
+  const handleDiscussInChat = useCallback((prompt: string) => {
+    setChatPrefill(prompt);
+    setScreen('chat');
+  }, []);
+
   const handlePinChanged = async () => {
     const status = await window.triforge.auth.status();
     setHasPin(status.hasPin);
@@ -272,6 +279,7 @@ export function App() {
           {/* Agent Modes */}
           <NavBtn icon="◈" label="Home"     active={screen === 'dashboard'}      onClick={() => setScreen('dashboard')} />
           <NavBtn icon="⬡" label="TriForge" active={screen === 'chat'}           onClick={() => setScreen('chat')} />
+          <NavBtn icon="◉" label="Command"  active={screen === 'forge'}          onClick={() => setScreen('forge')} />
           <NavBtn icon="⬡" label="Launch"   active={screen === 'profiles'}       onClick={() => setScreen('profiles')} />
           <NavBtn icon="↗" label="Operate"  active={screen === 'operator'}       onClick={() => setScreen('operator')} />
           <NavBtn icon="○" label="World"    active={screen === 'world'}          onClick={() => setScreen('world')} />
@@ -300,12 +308,29 @@ export function App() {
           {screen === 'automation' && <AutomationMode onNavigate={s => setScreen(s as Screen)} />}
           {screen === 'hustle'     && <HustleMode     onNavigate={s => setScreen(s as Screen)} />}
           {screen === 'chat' && (
+            <Chat
+              mode={mode}
+              keyStatus={keyStatus}
+              tier={tier}
+              messagesThisMonth={messagesThisMonth}
+              onMessageSent={() => setMessagesThisMonth(n => n + 1)}
+              onUpgradeClick={() => setScreen('settings')}
+              onBuildApp={() => setScreen('builder')}
+              activeProfileId={activeProfileId}
+              onProfileSwitch={() => setScreen('profiles')}
+              onProfileDeactivate={() => setActiveProfileId(null)}
+              prefill={chatPrefill}
+              onClearPrefill={() => setChatPrefill(null)}
+            />
+          )}
+          {screen === 'forge' && (
             <ForgeCommand
               keyStatus={keyStatus}
               tier={tier}
               messagesThisMonth={messagesThisMonth}
               onMessageSent={() => setMessagesThisMonth(n => n + 1)}
               onUpgradeClick={() => setScreen('settings')}
+              onDiscussInChat={handleDiscussInChat}
             />
           )}
           {screen === 'builder' && <AppBuilder onBack={() => setScreen('dashboard')} />}

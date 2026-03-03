@@ -1,31 +1,54 @@
 import React from 'react';
 import type { ProviderState } from './ForgeCommand';
+import type { AlignmentMatrix } from './ConsensusEngine';
 
 interface Props {
   providers: ProviderState[];
   phase: string;
   objective: string;
   consensusScore?: number;
+  alignmentMatrix?: AlignmentMatrix;
 }
 
 // ── Provider Panel ─────────────────────────────────────────────────────────────
 
-function ProviderPanel({ provider, index }: { provider: ProviderState; index: number }) {
+function avgAlignment(name: string, matrix?: AlignmentMatrix): number {
+  if (!matrix || !matrix[name]) return 0.5;
+  const scores = Object.values(matrix[name]);
+  if (scores.length === 0) return 0.5;
+  return scores.reduce((a, b) => a + b, 0) / scores.length;
+}
+
+function ProviderPanel({
+  provider,
+  index,
+  matrix,
+}: {
+  provider: ProviderState;
+  index: number;
+  matrix?: AlignmentMatrix;
+}) {
   const isActive = provider.status === 'thinking' || provider.status === 'connecting';
-  const isDone = provider.status === 'complete';
+  const isDone   = provider.status === 'complete';
   const isFailed = provider.status === 'failed';
+
+  const avg = isDone ? avgAlignment(provider.name, matrix) : 0;
+  const hasMatrix = isDone && matrix && Object.keys(matrix).length > 0;
+  const highAlign = hasMatrix && avg >= 0.75;
+  const lowAlign  = hasMatrix && avg < 0.55;
 
   return (
     <div
       style={{
         ...p.panel,
         borderColor: isDone
-          ? `${provider.color}40`
+          ? (lowAlign ? 'rgba(245,158,11,0.4)' : `${provider.color}40`)
           : isFailed
             ? 'rgba(239,68,68,0.3)'
             : isActive
               ? `${provider.color}25`
               : 'rgba(255,255,255,0.07)',
+        boxShadow: highAlign ? `0 0 0 1px ${provider.color}50` : undefined,
         animationDelay: `${index * 80}ms`,
       }}
     >
@@ -111,16 +134,102 @@ function ProviderPanel({ provider, index }: { provider: ProviderState; index: nu
   );
 }
 
+// ── Pairwise Alignment Table ───────────────────────────────────────────────────
+
+function AlignmentMatrixTable({ matrix, providers }: { matrix: AlignmentMatrix; providers: ProviderState[] }) {
+  const names = providers.map(p => p.name).filter(n => matrix[n] !== undefined || Object.keys(matrix).some(k => matrix[k][n] !== undefined));
+
+  if (names.length < 2) return null;
+
+  const cellColor = (val: number | undefined): string => {
+    if (val === undefined) return 'var(--text-muted)';
+    if (val >= 0.75) return '#10b981';
+    if (val >= 0.55) return 'var(--text-secondary)';
+    return '#f59e0b';
+  };
+
+  return (
+    <div style={am.root}>
+      <div style={am.label}>Pairwise Alignment</div>
+      <div style={am.tableWrap}>
+        <table style={am.table}>
+          <thead>
+            <tr>
+              <th style={am.th} />
+              {names.map(n => (
+                <th key={n} style={am.th}>
+                  <span style={am.colHeader}>{n.slice(0, 6)}</span>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {names.map(rowName => {
+              const provColor = providers.find(p => p.name === rowName)?.color ?? 'var(--text-secondary)';
+              return (
+                <tr key={rowName}>
+                  <td style={am.td}>
+                    <span style={{ ...am.rowHeader, color: provColor }}>{rowName.slice(0, 6)}</span>
+                  </td>
+                  {names.map(colName => {
+                    if (rowName === colName) {
+                      return <td key={colName} style={am.td}><span style={am.dash}>—</span></td>;
+                    }
+                    const val = matrix[rowName]?.[colName];
+                    return (
+                      <td key={colName} style={am.td}>
+                        <span style={{ ...am.cell, color: cellColor(val) }}>
+                          {val !== undefined ? val.toFixed(2) : '—'}
+                        </span>
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+const am: Record<string, React.CSSProperties> = {
+  root: {
+    marginTop: 10,
+    padding: '10px 12px',
+    background: 'rgba(255,255,255,0.02)',
+    border: '1px solid rgba(255,255,255,0.06)',
+    borderRadius: 7,
+  },
+  label: {
+    fontSize: 9,
+    fontWeight: 600,
+    letterSpacing: '0.1em',
+    textTransform: 'uppercase',
+    color: 'var(--text-muted)',
+    marginBottom: 8,
+  },
+  tableWrap: { overflowX: 'auto' },
+  table: { borderCollapse: 'collapse', width: '100%' },
+  th: { padding: '2px 8px', textAlign: 'center' },
+  td: { padding: '2px 8px', textAlign: 'center' },
+  colHeader: { fontSize: 9, fontWeight: 600, color: 'var(--text-muted)', letterSpacing: '0.05em' },
+  rowHeader: { fontSize: 9, fontWeight: 600, letterSpacing: '0.05em' },
+  cell: { fontSize: 10, fontVariantNumeric: 'tabular-nums' },
+  dash: { fontSize: 10, color: 'rgba(255,255,255,0.15)' },
+};
+
 // ── Main Component ─────────────────────────────────────────────────────────────
 
-export function CouncilView({ providers, phase, objective, consensusScore }: Props) {
+export function CouncilView({ providers, phase, objective, consensusScore, alignmentMatrix }: Props) {
   const score = consensusScore ?? 0;
   const alignmentAchieved = score >= 70;
 
   const phaseLabel =
-    phase === 'assembling'  ? 'Council Assembling…' :
-    phase === 'debating'    ? 'Council in Session — Analyzing Mission' :
-    phase === 'synthesizing'? 'Synthesizing Strategic Recommendation…' :
+    phase === 'assembling'   ? 'Council Assembling…' :
+    phase === 'debating'     ? 'Council in Session — Analyzing Mission' :
+    phase === 'synthesizing' ? 'Synthesizing Strategic Recommendation…' :
     '';
 
   return (
@@ -136,7 +245,7 @@ export function CouncilView({ providers, phase, objective, consensusScore }: Pro
       {/* Council grid */}
       <div style={cv.grid}>
         {providers.map((prov, i) => (
-          <ProviderPanel key={prov.name} provider={prov} index={i} />
+          <ProviderPanel key={prov.name} provider={prov} index={i} matrix={alignmentMatrix} />
         ))}
       </div>
 
@@ -173,6 +282,11 @@ export function CouncilView({ providers, phase, objective, consensusScore }: Pro
             <span style={cv.phaseLabel}>{phaseLabel}</span>
           )}
         </div>
+
+        {/* Pairwise alignment matrix */}
+        {alignmentMatrix && Object.keys(alignmentMatrix).length >= 2 && (
+          <AlignmentMatrixTable matrix={alignmentMatrix} providers={providers} />
+        )}
       </div>
 
       <style>{`
@@ -209,7 +323,7 @@ const p: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     gap: 10,
     animation: 'panelIn 0.4s ease both',
-    transition: 'border-color 0.3s',
+    transition: 'border-color 0.3s, box-shadow 0.3s',
   },
   panelHeader: { display: 'flex', flexDirection: 'column', gap: 4 },
   nameRow: { display: 'flex', alignItems: 'center', gap: 8 },

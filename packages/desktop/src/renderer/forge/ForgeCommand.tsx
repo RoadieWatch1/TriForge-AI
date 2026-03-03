@@ -3,6 +3,18 @@ import { MissionBriefing } from './MissionBriefing';
 import { CouncilView } from './CouncilView';
 import { DecisionBoard } from './DecisionBoard';
 import { ExecutionGate } from './ExecutionGate';
+import {
+  analyzeConsensus,
+  parseStructuredSynthesis,
+  estimateCosts,
+  projectInfluenceWithBias,
+} from './ConsensusEngine';
+import type { ConsensusAnalysis, StructuredSynthesis, CostEstimate, ConflictZone } from './ConsensusEngine';
+import {
+  saveLastMission,
+  recordMissionComplete,
+  getPersonaAdjustments,
+} from './ForgeContextStore';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -81,6 +93,36 @@ const PROVIDER_PERSONAS: Record<string, Omit<ProviderState, 'status' | 'name'>> 
   },
 };
 
+// Trust key in localStorage
+const TRUST_KEY = 'triforge-trust-v1';
+
+function loadTrustScores(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(TRUST_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch { /* ignore */ }
+  return {};
+}
+
+function saveTrustScores(scores: Record<string, number>) {
+  try { localStorage.setItem(TRUST_KEY, JSON.stringify(scores)); } catch { /* ignore */ }
+}
+
+function incrementTrustScores(names: string[]) {
+  const scores = loadTrustScores();
+  for (const name of names) {
+    const base = PROVIDER_PERSONAS[name]?.trustScore ?? 85;
+    const current = scores[name] ?? base;
+    scores[name] = Math.min(99, Math.max(60, current + 1));
+  }
+  saveTrustScores(scores);
+}
+
+function getEffectiveTrustScore(name: string): number {
+  const scores = loadTrustScores();
+  return scores[name] ?? PROVIDER_PERSONAS[name]?.trustScore ?? 85;
+}
+
 // ── Intensity Mapping ─────────────────────────────────────────────────────────
 
 function configToIntensity(config: MissionConfig): string {
@@ -118,11 +160,34 @@ function buildMissionPrompt(config: MissionConfig, adjustment = ''): string {
     '',
     'Return structured strategic analysis suitable for executive decision-making.',
     'Do not soften recommendations. This is a command decision environment.',
+    '',
+    'SYNTHESIS STRUCTURE (follow this format exactly):',
+    'EXECUTIVE SUMMARY: [2–3 decisive sentences on the recommended path forward]',
+    'STRATEGIC PILLARS: [numbered list of key action areas]',
+    'RISK MAP: [key risks with mitigations, format: Risk: Mitigation]',
+    'TIMELINE: [Immediate / 30-day / 90-day actions]',
+    'COST IMPACT: [budget implications and resource requirements]',
+    'COUNCIL COMPROMISE: [how disagreements between council members were resolved]',
   );
   if (adjustment) {
     lines.push('', `RERUN DIRECTIVE: ${adjustment}`);
   }
   return lines.join('\n');
+}
+
+function buildConflictResolutionPrompt(zone: ConflictZone): string {
+  const [pA, pB] = zone.providers;
+  return [
+    'CONFLICT RESOLUTION MISSION',
+    `Issue: ${zone.issue}`,
+    `${pA} argued: ${zone.stances[pA] ?? ''}`,
+    `${pB} argued: ${zone.stances[pB] ?? ''}`,
+    '',
+    'Evaluate both positions thoroughly.',
+    'Identify the strongest arguments from each side.',
+    'Propose an explicit tradeoff resolution that both parties can accept.',
+    'Return your synthesis using the standard SYNTHESIS STRUCTURE format.',
+  ].join('\n');
 }
 
 // ── Props ─────────────────────────────────────────────────────────────────────
@@ -133,11 +198,12 @@ interface Props {
   messagesThisMonth: number;
   onMessageSent: () => void;
   onUpgradeClick: () => void;
+  onDiscussInChat?: (prompt: string) => void;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function ForgeCommand({ keyStatus, tier, messagesThisMonth, onMessageSent, onUpgradeClick }: Props) {
+export function ForgeCommand({ keyStatus, tier, messagesThisMonth, onMessageSent, onUpgradeClick, onDiscussInChat }: Props) {
   const [phase, setPhase] = useState<ForgePhase>('briefing');
   const [missionConfig, setMissionConfig] = useState<MissionConfig | null>(null);
   const [providers, setProviders] = useState<ProviderState[]>([]);
@@ -146,6 +212,14 @@ export function ForgeCommand({ keyStatus, tier, messagesThisMonth, onMessageSent
   const [missions, setMissions] = useState<SavedMission[]>([]);
   const [executing, setExecuting] = useState(false);
   const [executionResult, setExecutionResult] = useState('');
+
+  // Phase 2 state
+  const [consensusAnalysis, setConsensusAnalysis] = useState<ConsensusAnalysis | null>(null);
+  const [structuredSynthesis, setStructuredSynthesis] = useState<StructuredSynthesis | null>(null);
+  const [costEstimate, setCostEstimate] = useState<CostEstimate | null>(null);
+  const [isRealigning, setIsRealigning] = useState(false);
+  const [projectedInfluence, setProjectedInfluence] = useState<Record<string, number> | null>(null);
+
   const unsubRef = useRef<(() => void) | null>(null);
 
   // Load mission history
@@ -171,16 +245,27 @@ export function ForgeCommand({ keyStatus, tier, messagesThisMonth, onMessageSent
     });
   }, []);
 
-  const buildInitialProviders = (status: ProviderState['status'] = 'idle'): ProviderState[] =>
-    Object.entries(PROVIDER_PERSONAS).map(([name, persona]) => ({
-      name,
-      ...persona,
-      status,
-    }));
+  const buildInitialProviders = (status: ProviderState['status'] = 'idle'): ProviderState[] => {
+    const adjustments = getPersonaAdjustments();
+    return Object.entries(PROVIDER_PERSONAS).map(([name, persona]) => {
+      const adj = adjustments.find(a => a.name === name);
+      return {
+        name,
+        ...persona,
+        trustScore: Math.min(99, Math.max(60, getEffectiveTrustScore(name) + (adj?.trustDelta ?? 0))),
+        aggressionBias: Math.min(5, Math.max(1, persona.aggressionBias + (adj?.aggressionDelta ?? 0))),
+        status,
+      };
+    });
+  };
 
   const launchMission = useCallback(async (config: MissionConfig, adjustment = '', forceIntensity?: string) => {
     setError(null);
     setResult(null);
+    setConsensusAnalysis(null);
+    setStructuredSynthesis(null);
+    setCostEstimate(null);
+    setProjectedInfluence(null);
     setMissionConfig(config);
 
     const initialProviders = buildInitialProviders('connecting');
@@ -237,7 +322,9 @@ export function ForgeCommand({ keyStatus, tier, messagesThisMonth, onMessageSent
       // Map responses back to provider panels
       setProviders(prev => prev.map(p => {
         const match = responses.find(r => r.provider.toLowerCase() === p.name.toLowerCase());
-        return match ? { ...p, status: 'complete', response: match.text } : { ...p, status: p.status === 'thinking' ? 'complete' : p.status };
+        return match
+          ? { ...p, status: 'complete', response: match.text }
+          : { ...p, status: p.status === 'thinking' ? 'complete' : p.status };
       }));
 
       const missionResult: MissionResult = {
@@ -257,6 +344,43 @@ export function ForgeCommand({ keyStatus, tier, messagesThisMonth, onMessageSent
       setPhase('decision');
       onMessageSent();
       saveMission(config.objective, missionResult.forgeScore.confidence, missionResult.forgeScore.risk);
+
+      // Phase 2: run ConsensusEngine
+      const responsesMap: Record<string, string> = {};
+      for (const r of responses) responsesMap[r.provider] = r.text;
+
+      const personaList = Object.entries(PROVIDER_PERSONAS).map(([name, p]) => ({
+        name,
+        trustScore: getEffectiveTrustScore(name),
+        aggressionBias: p.aggressionBias,
+      }));
+
+      const analysis = analyzeConsensus(
+        responsesMap,
+        missionResult.synthesis,
+        personaList,
+        config.aggressionLevel
+      );
+      const structuredSynth = parseStructuredSynthesis(missionResult.synthesis);
+      setConsensusAnalysis(analysis);
+      setStructuredSynthesis(structuredSynth);
+      setCostEstimate(estimateCosts(prompt, responsesMap));
+      setIsRealigning(false);
+      setProjectedInfluence(null);
+
+      // Phase 3: persist mission to shared context store
+      saveLastMission({
+        objective: config.objective,
+        executiveSummary: structuredSynth.executiveSummary || missionResult.synthesis.slice(0, 300),
+        strategicPillars: structuredSynth.strategicPillars,
+        riskLevel: missionResult.forgeScore.risk,
+        confidenceScore: missionResult.forgeScore.confidence,
+        semanticScore: analysis.consensusScore,
+        providerInfluenceMap: analysis.influenceMap,
+        timestamp: Date.now(),
+      });
+      recordMissionComplete();
+
     } catch (err) {
       unsubRef.current?.();
       unsubRef.current = null;
@@ -265,9 +389,37 @@ export function ForgeCommand({ keyStatus, tier, messagesThisMonth, onMessageSent
     }
   }, [onMessageSent, saveMission]);
 
-  const handleRerun = useCallback((adjustment: string, intensity: string) => {
+  const handleRerunWithBias = useCallback((
+    adjustment: string,
+    intensity: string,
+    biasType?: 'aggression' | 'stability' | 'cost'
+  ) => {
     if (!missionConfig) return;
-    launchMission(missionConfig, adjustment, intensity);
+    if (biasType && consensusAnalysis?.influenceMap) {
+      const projected = projectInfluenceWithBias(consensusAnalysis.influenceMap, biasType);
+      setProjectedInfluence(projected);
+      setIsRealigning(true);
+      setTimeout(() => {
+        launchMission(missionConfig, adjustment, intensity);
+      }, 500);
+    } else {
+      launchMission(missionConfig, adjustment, intensity);
+    }
+  }, [missionConfig, consensusAnalysis, launchMission]);
+
+  // Legacy handleRerun for backwards compat
+  const handleRerun = useCallback((adjustment: string, intensity: string) => {
+    handleRerunWithBias(adjustment, intensity);
+  }, [handleRerunWithBias]);
+
+  const handleOpenConflict = useCallback((zone: ConflictZone) => {
+    if (!missionConfig) return;
+    const conflictPrompt = buildConflictResolutionPrompt(zone);
+    const conflictConfig: MissionConfig = {
+      ...missionConfig,
+      objective: conflictPrompt,
+    };
+    launchMission(conflictConfig, '', 'critical');
   }, [missionConfig, launchMission]);
 
   const handleApply = useCallback(async () => {
@@ -281,13 +433,16 @@ export function ForgeCommand({ keyStatus, tier, messagesThisMonth, onMessageSent
         setExecutionResult(`Error: ${taskRes['error']}`);
       } else {
         setExecutionResult('Execution Authorized — Task dispatched to queue.');
+        // Increment trust for all providers that responded
+        const respondedNames = providers.filter(p => p.response).map(p => p.name);
+        incrementTrustScores(respondedNames);
       }
     } catch (e) {
       setExecutionResult('Execution failed: ' + (e instanceof Error ? e.message : String(e)));
     } finally {
       setExecuting(false);
     }
-  }, [result, missionConfig]);
+  }, [result, missionConfig, providers]);
 
   const handleModify = useCallback(async () => {
     if (!result) return;
@@ -362,9 +517,7 @@ export function ForgeCommand({ keyStatus, tier, messagesThisMonth, onMessageSent
             keyStatus={keyStatus}
             tier={tier}
             savedMissions={missions}
-            onLoadMission={(objective) => {
-              // Pre-fill is handled inside MissionBriefing via prop
-            }}
+            onLoadMission={(_objective) => { /* pre-fill handled inside MissionBriefing */ }}
           />
         )}
 
@@ -373,7 +526,8 @@ export function ForgeCommand({ keyStatus, tier, messagesThisMonth, onMessageSent
             providers={providers}
             phase={phase}
             objective={missionConfig?.objective ?? ''}
-            consensusScore={result?.forgeScore.confidence}
+            consensusScore={consensusAnalysis?.consensusScore ?? result?.forgeScore.confidence}
+            alignmentMatrix={consensusAnalysis?.alignmentMatrix}
           />
         )}
 
@@ -383,8 +537,15 @@ export function ForgeCommand({ keyStatus, tier, messagesThisMonth, onMessageSent
               result={result}
               config={missionConfig}
               providers={providers}
-              onRerun={handleRerun}
+              onRerun={handleRerunWithBias}
               onProceed={() => setPhase('authorizing')}
+              consensusAnalysis={consensusAnalysis}
+              structuredSynthesis={structuredSynthesis}
+              costEstimate={costEstimate}
+              influenceMap={projectedInfluence ?? consensusAnalysis?.influenceMap}
+              isRealigning={isRealigning}
+              onOpenConflict={handleOpenConflict}
+              onDiscussInChat={onDiscussInChat}
             />
             {phase === 'authorizing' && (
               <ExecutionGate
@@ -409,6 +570,11 @@ export function ForgeCommand({ keyStatus, tier, messagesThisMonth, onMessageSent
             setResult(null);
             setError(null);
             setExecutionResult('');
+            setConsensusAnalysis(null);
+            setStructuredSynthesis(null);
+            setCostEstimate(null);
+            setProjectedInfluence(null);
+            setIsRealigning(false);
           }}>
             New Mission
           </button>
