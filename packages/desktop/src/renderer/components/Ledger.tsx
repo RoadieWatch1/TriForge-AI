@@ -46,28 +46,30 @@ export function Ledger({ tier, onUpgradeClick }: LedgerProps) {
 
   const isLocked = tier === 'free';
 
+  const safeEntries = (v: unknown): LedgerEntry[] => (Array.isArray(v) ? v : []);
+
   useEffect(() => {
     if (isLocked) return;
     const timer = setTimeout(() => {
-      window.triforge.ledger.get(search || undefined).then(setEntries as (v: unknown) => void);
+      window.triforge.ledger.get(search || undefined).then(v => setEntries(safeEntries(v)));
     }, search ? 300 : 0);
     return () => clearTimeout(timer);
   }, [search, isLocked]);
 
   const reload = async () => {
-    const updated = await window.triforge.ledger.get(search || undefined) as unknown as LedgerEntry[];
-    setEntries(updated);
+    const updated = await window.triforge.ledger.get(search || undefined);
+    setEntries(safeEntries(updated));
   };
 
   const handleStar = async (id: string, starred: boolean) => {
-    const updated = await window.triforge.ledger.star(id, !starred) as unknown as LedgerEntry[];
-    setEntries(updated);
+    const updated = await window.triforge.ledger.star(id, !starred);
+    setEntries(safeEntries(updated));
   };
 
   const handleDelete = async (id: string) => {
     if (!window.confirm('Remove this decision from your ledger?')) return;
-    const updated = await window.triforge.ledger.delete(id) as unknown as LedgerEntry[];
-    setEntries(updated);
+    const updated = await window.triforge.ledger.delete(id);
+    setEntries(safeEntries(updated));
     if (expanded === id) setExpanded(null);
   };
 

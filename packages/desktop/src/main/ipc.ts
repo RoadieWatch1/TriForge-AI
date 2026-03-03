@@ -1024,7 +1024,7 @@ VERIFY: [1-3 specific things the user should double-check]
       return { error: lockedError('FORGE_PROFILES') };
     }
 
-    const apiKey = await store.getSecret('openai');
+    const apiKey = await store.getSecret('triforge.openai.apiKey');
     if (!apiKey) return { error: 'OpenAI API key not configured. Add it in Settings → API Keys.' };
 
     try {
@@ -1652,7 +1652,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   let grokVoiceAgent: GrokVoiceAgent | null = null;
 
   ipcMain.handle('voice:agent:connect', async (event, opts: { voice?: string }) => {
-    const apiKey = await store.getSecret('grok');
+    const apiKey = await store.getSecret('triforge.grok.apiKey');
     if (!apiKey) return { error: 'No Grok API key configured.' };
     grokVoiceAgent?.disconnect();
     grokVoiceAgent = new GrokVoiceAgent(apiKey, opts?.voice ?? 'Ara', (e) => {

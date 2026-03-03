@@ -18,7 +18,7 @@ export async function transcribeAudio(
   audioBuffer: Buffer | Uint8Array,
   store: Store
 ): Promise<TranscribeResult> {
-  const apiKey = await store.getSecret('openai');
+  const apiKey = await store.getSecret('triforge.openai.apiKey');
   if (!apiKey) throw new Error('OpenAI API key not configured. Add it in Settings → API Keys.');
 
   // Electron IPC structured-clone can turn a Buffer into a plain Uint8Array.
@@ -77,7 +77,7 @@ export async function textToSpeech(
   store: Store,
   options: SpeakOptions = {}
 ): Promise<Buffer> {
-  const apiKey = await store.getSecret('openai');
+  const apiKey = await store.getSecret('triforge.openai.apiKey');
   if (!apiKey) throw new Error('OpenAI API key not configured.');
 
   const res = await fetch('https://api.openai.com/v1/audio/speech', {
