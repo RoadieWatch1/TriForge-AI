@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { ForgeEngine, EngineProfileType } from './forge/ForgeEngine';
+import React, { useState, useEffect } from 'react';
+import { ForgeEngine, UIEngineConfig } from './forge/ForgeEngine';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -11,46 +11,39 @@ interface Props {
   onUpgradeClick: () => void;
 }
 
-interface EngineCard {
-  id: EngineProfileType;
-  label: string;
-  icon: string;
-  desc: string;
-  detail: string;
-}
+type EngineCategory = 'Tech & Digital' | 'Financial Services' | 'Local & Service' | 'Retail & Hospitality';
 
-// ── Engine definitions ──────────────────────────────────────────────────────
-
-const ENGINES: EngineCard[] = [
-  {
-    id: 'saas',
-    label: 'SaaS Builder',
-    icon: '💻',
-    desc: 'Build and launch a software product',
-    detail: 'Blueprint · Assets · Screens · API routes · DB schema',
-  },
-  {
-    id: 'realestate',
-    label: 'Real Estate Growth',
-    icon: '🏠',
-    desc: 'Scale your real estate business',
-    detail: 'Blueprint · Outreach assets · Lead funnel · CRM structure',
-  },
-  {
-    id: 'restaurant',
-    label: 'Restaurant Growth',
-    icon: '🍽',
-    desc: 'Optimize and grow your restaurant',
-    detail: 'Blueprint · Marketing assets · Menu · Pricing · Landing page',
-  },
+const CATEGORY_ORDER: EngineCategory[] = [
+  'Tech & Digital',
+  'Financial Services',
+  'Local & Service',
+  'Retail & Hospitality',
 ];
+
+const CATEGORY_ACCENT: Record<EngineCategory, string> = {
+  'Tech & Digital':       '#818cf8',
+  'Financial Services':   '#34d399',
+  'Local & Service':      '#fbbf24',
+  'Retail & Hospitality': '#f87171',
+};
 
 // ── Component ───────────────────────────────────────────────────────────────
 
 export function ForgeProfiles({ tier, onUpgradeClick }: Props) {
-  const [selectedEngine, setSelectedEngine] = useState<EngineProfileType | null>(null);
+  const [engines, setEngines] = useState<UIEngineConfig[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedEngine, setSelectedEngine] = useState<UIEngineConfig | null>(null);
 
-  // Free tier — upgrade gate
+  useEffect(() => {
+    (window as any).triforge.forgeEngine.listEngines()
+      .then((list: UIEngineConfig[]) => {
+        setEngines(list);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, []);
+
+  // Free tier gate
   if (tier === 'free') {
     return (
       <div style={styles.root}>
@@ -73,14 +66,19 @@ export function ForgeProfiles({ tier, onUpgradeClick }: Props) {
     return (
       <div style={styles.root}>
         <ForgeEngine
-          profileType={selectedEngine}
+          engineConfig={selectedEngine}
           onBack={() => setSelectedEngine(null)}
         />
       </div>
     );
   }
 
-  // Engine selection
+  // Group engines by category
+  const byCategory = CATEGORY_ORDER.reduce<Record<string, UIEngineConfig[]>>((acc, cat) => {
+    acc[cat] = engines.filter(e => e.category === cat);
+    return acc;
+  }, {});
+
   return (
     <div style={styles.root}>
       <div style={styles.pageHeader}>
@@ -90,21 +88,43 @@ export function ForgeProfiles({ tier, onUpgradeClick }: Props) {
         </p>
       </div>
 
-      <div style={styles.engineGrid}>
-        {ENGINES.map(engine => (
-          <button
-            key={engine.id}
-            style={styles.engineCard}
-            onClick={() => setSelectedEngine(engine.id)}
-          >
-            <span style={styles.engineIcon}>{engine.icon}</span>
-            <p style={styles.engineLabel}>{engine.label}</p>
-            <p style={styles.engineDesc}>{engine.desc}</p>
-            <p style={styles.engineDetail}>{engine.detail}</p>
-            <span style={styles.engineArrow}>→</span>
-          </button>
-        ))}
-      </div>
+      {loading ? (
+        <div style={styles.loadingRow}>
+          <div style={styles.loadingSpinner} />
+          <p style={styles.loadingText}>Loading engines…</p>
+        </div>
+      ) : (
+        <div style={styles.categoriesRoot}>
+          {CATEGORY_ORDER.map(cat => {
+            const catEngines = byCategory[cat];
+            if (!catEngines || catEngines.length === 0) return null;
+            const accent = CATEGORY_ACCENT[cat];
+            return (
+              <div key={cat} style={styles.categoryBlock}>
+                <div style={styles.categoryHeader}>
+                  <span style={{ ...styles.categoryAccent, background: accent }} />
+                  <p style={styles.categoryLabel}>{cat}</p>
+                </div>
+                <div style={styles.engineGrid}>
+                  {catEngines.map(engine => (
+                    <button
+                      key={engine.id}
+                      style={styles.engineCard}
+                      onClick={() => setSelectedEngine(engine)}
+                    >
+                      <span style={styles.engineIcon}>{engine.icon}</span>
+                      <p style={styles.engineLabel}>{engine.name}</p>
+                      <p style={styles.engineDesc}>{engine.description}</p>
+                      <p style={styles.engineDetail}>{engine.detail}</p>
+                      <span style={styles.engineArrow}>→</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -178,51 +198,99 @@ const styles: Record<string, React.CSSProperties> = {
     margin: 0,
     lineHeight: 1.5,
   },
+  loadingRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    padding: '24px 0',
+  },
+  loadingSpinner: {
+    width: 16,
+    height: 16,
+    borderRadius: '50%',
+    border: '2px solid rgba(99,102,241,0.2)',
+    borderTop: '2px solid #818cf8',
+    animation: 'spin 0.9s linear infinite',
+    flexShrink: 0,
+  },
+  loadingText: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.35)',
+    margin: 0,
+  },
+  categoriesRoot: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 24,
+  },
+  categoryBlock: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 10,
+  },
+  categoryHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+  },
+  categoryAccent: {
+    width: 3,
+    height: 13,
+    borderRadius: 2,
+    flexShrink: 0,
+  },
+  categoryLabel: {
+    fontSize: 10,
+    fontWeight: 700,
+    color: 'rgba(255,255,255,0.4)',
+    letterSpacing: '0.8px',
+    textTransform: 'uppercase',
+    margin: 0,
+  },
   engineGrid: {
     display: 'flex',
     flexDirection: 'column',
-    gap: 12,
+    gap: 8,
   },
   engineCard: {
     position: 'relative',
     background: 'rgba(255,255,255,0.04)',
     border: '1px solid rgba(255,255,255,0.09)',
     borderRadius: 10,
-    padding: '18px 20px 18px 64px',
+    padding: '14px 20px 14px 58px',
     cursor: 'pointer',
     textAlign: 'left',
-    transition: 'border-color 0.15s, background 0.15s',
     width: '100%',
   },
   engineIcon: {
     position: 'absolute',
-    left: 18,
-    top: 18,
-    fontSize: 28,
+    left: 16,
+    top: 14,
+    fontSize: 24,
   },
   engineLabel: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: 700,
     color: 'rgba(255,255,255,0.85)',
-    margin: '0 0 3px',
+    margin: '0 0 2px',
   },
   engineDesc: {
-    fontSize: 12,
-    color: 'rgba(255,255,255,0.5)',
-    margin: '0 0 5px',
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.45)',
+    margin: '0 0 4px',
   },
   engineDetail: {
-    fontSize: 10,
-    color: 'rgba(255,255,255,0.25)',
+    fontSize: 9,
+    color: 'rgba(255,255,255,0.22)',
     margin: 0,
     letterSpacing: '0.3px',
   },
   engineArrow: {
     position: 'absolute',
-    right: 16,
+    right: 14,
     top: '50%',
     transform: 'translateY(-50%)',
     color: 'rgba(255,255,255,0.2)',
-    fontSize: 16,
+    fontSize: 15,
   },
 };

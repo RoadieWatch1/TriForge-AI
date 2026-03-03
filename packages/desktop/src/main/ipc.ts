@@ -10,7 +10,7 @@ import { isAtMessageLimit, hasCapability, lockedError, getMemoryLimit, TIERS } f
 import { hashPin, verifyPin, isValidPin } from './auth';
 import { buildSystemPrompt } from './systemPrompt';
 import { getProfile, listProfiles } from './profiles';
-import { getEngineConfig, EngineProfileType } from './engines';
+import { getEngineConfig, ENGINE_CONFIGS } from './engines';
 import { scanForPhotos, listDirectory, organizeDirectory, organizeDirectoryDeep, searchPhotos, findSimilarPhotos, moveFiles, getCommonDirs } from './filesystem';
 import { scanForDocuments, ocrFile, detectDocTypes, searchIndex, type DocEntry } from './docIndex';
 import { GrokVoiceAgent } from './grokVoice';
@@ -824,16 +824,29 @@ VERIFY: [1-3 specific things the user should double-check]
     return { markdown, providers: providerOutputs, ledgerEntryId };
   });
 
+  // ── Forge Engine — List All Engines ──────────────────────────────────────────
+  ipcMain.handle('forgeEngine:listEngines', async () => {
+    return ENGINE_CONFIGS.map(e => ({
+      id: e.id,
+      name: e.name,
+      category: e.category,
+      description: e.description,
+      icon: e.icon,
+      detail: e.detail,
+      questions: e.questions,
+    }));
+  });
+
   // ── Forge Engine (Engine Mode — Phase 1) ─────────────────────────────────────
-  ipcMain.handle('forgeEngine:run', async (event, { profileType, answers }: { profileType: EngineProfileType; answers: Record<string, string> }) => {
+  ipcMain.handle('forgeEngine:run', async (event, { engineId, answers }: { engineId: string; answers: Record<string, string> }) => {
     const lic = await store.getLicense();
     const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
     if (!hasCapability('FORGE_PROFILES', tier)) {
       return { error: lockedError('FORGE_PROFILES') };
     }
 
-    const engine = getEngineConfig(profileType);
-    if (!engine) return { error: `Unknown engine type: ${profileType}` };
+    const engine = getEngineConfig(engineId);
+    if (!engine) return { error: `Unknown engine type: ${engineId}` };
 
     const { providerManager: pm } = await getEngine();
     const providers = await pm.getActiveProviders();
@@ -929,11 +942,11 @@ VERIFY: [1-3 specific things the user should double-check]
 
   // ── Forge Engine — Execute First Step (Phase 2) ───────────────────────────
   ipcMain.handle('forgeEngine:executeFirstStep', async (_event, {
-    profileType,
+    engineId,
     blueprint,
     buildOutput,
   }: {
-    profileType: EngineProfileType;
+    engineId: string;
     blueprint: Record<string, string>;
     buildOutput: Record<string, string[]>;
   }) => {
@@ -943,8 +956,8 @@ VERIFY: [1-3 specific things the user should double-check]
       return { error: lockedError('FORGE_PROFILES') };
     }
 
-    const engine = getEngineConfig(profileType);
-    if (!engine) return { error: `Unknown engine type: ${profileType}` };
+    const engine = getEngineConfig(engineId);
+    if (!engine) return { error: `Unknown engine type: ${engineId}` };
 
     const { providerManager: pm } = await getEngine();
     const providers = await pm.getActiveProviders();
@@ -981,7 +994,15 @@ VERIFY: [1-3 specific things the user should double-check]
       return d.slice(s, e + 1);
     }
 
-    let parsed: { executionPlan: string[]; firstTask: { title: string; description: string; output?: string } };
+    let parsed: {
+      executionPlan: { immediate: string[]; thisWeek: string[]; nextPhase: string[] };
+      firstTask: { title: string; objective: string; steps: string[]; resources?: string[]; deliverable: string };
+      marketing?: {
+        poster?: { prompt: string; description: string };
+        website?: { prompt: string; description: string };
+        app?: { prompt: string; description: string };
+      };
+    };
     try {
       parsed = JSON.parse(extractExecJson(raw));
     } catch {
@@ -989,9 +1010,46 @@ VERIFY: [1-3 specific things the user should double-check]
     }
 
     return {
-      executionPlan: Array.isArray(parsed.executionPlan) ? parsed.executionPlan : [],
+      executionPlan: parsed.executionPlan ?? { immediate: [], thisWeek: [], nextPhase: [] },
       firstTask: parsed.firstTask ?? null,
+      marketing: parsed.marketing ?? null,
     };
+  });
+
+  // ── Forge Engine — Generate Image (DALL-E 3) ──────────────────────────────
+  ipcMain.handle('forgeEngine:generateImage', async (_event, { prompt }: { prompt: string }) => {
+    const lic = await store.getLicense();
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('FORGE_PROFILES', tier)) {
+      return { error: lockedError('FORGE_PROFILES') };
+    }
+
+    const apiKey = await store.getSecret('openai');
+    if (!apiKey) return { error: 'OpenAI API key not configured. Add it in Settings → API Keys.' };
+
+    try {
+      const resp = await fetch('https://api.openai.com/v1/images/generations', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({ model: 'dall-e-3', prompt, n: 1, size: '1024x1024' }),
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({})) as Record<string, unknown>;
+        const msg = (err as any)?.error?.message ?? `Image generation failed (${resp.status})`;
+        return { error: msg };
+      }
+
+      const data = await resp.json() as { data: Array<{ url: string }> };
+      const url = data.data?.[0]?.url;
+      if (!url) return { error: 'No image URL returned from DALL-E.' };
+      return { url };
+    } catch {
+      return { error: 'Image generation failed. Check your OpenAI API key and try again.' };
+    }
   });
 
   // ── Decision Ledger ─────────────────────────────────────────────────────────

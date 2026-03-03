@@ -2,17 +2,45 @@ import React, { useState, useEffect, useCallback } from 'react';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
-export type EngineProfileType = 'saas' | 'realestate' | 'restaurant';
+interface Question {
+  key: string;
+  label: string;
+  type: 'text' | 'select';
+  options?: string[];
+}
+
+export interface UIEngineConfig {
+  id: string;
+  name: string;
+  icon: string;
+  category: string;
+  description: string;
+  detail: string;
+  questions: Question[];
+}
 
 type AssetItem = { type: string; body: string };
 
+type MarketingVisual = { prompt: string; description: string };
+
 type ExecutionData = {
-  executionPlan: string[];
-  firstTask: { title: string; description: string; output?: string };
+  executionPlan: { immediate: string[]; thisWeek: string[]; nextPhase: string[] };
+  firstTask: {
+    title: string;
+    objective: string;
+    steps: string[];
+    resources?: string[];
+    deliverable: string;
+  };
+  marketing?: {
+    poster?: MarketingVisual;
+    website?: MarketingVisual;
+    app?: MarketingVisual;
+  };
 };
 
 type ForgeSession = {
-  profileType: EngineProfileType;
+  engineId: string;
   answers: Record<string, string>;
   blueprint: Record<string, string>;
   assets: AssetItem[];
@@ -21,56 +49,22 @@ type ForgeSession = {
   status: 'idle' | 'onboarding' | 'generating' | 'ready' | 'activating' | 'launched' | 'executing';
 };
 
-interface Question {
-  key: string;
-  label: string;
-  type: 'text' | 'select';
-  options?: string[];
-}
-
 interface Props {
-  profileType: EngineProfileType;
+  engineConfig: UIEngineConfig;
   onBack: () => void;
 }
 
-// ── Question definitions ────────────────────────────────────────────────────
-
-const QUESTIONS: Record<EngineProfileType, Question[]> = {
-  saas: [
-    { key: 'problem',  label: 'What problem does your SaaS solve?',   type: 'text' },
-    { key: 'audience', label: 'Who is your target audience?',          type: 'text' },
-    { key: 'appType',  label: 'App type',    type: 'select', options: ['web', 'mobile'] },
-    { key: 'pricing',  label: 'Pricing model', type: 'select', options: ['free', 'paid'] },
-  ],
-  realestate: [
-    { key: 'city',       label: 'City / market?',        type: 'text' },
-    { key: 'focus',      label: 'Focus area',            type: 'select', options: ['buyer', 'seller'] },
-    { key: 'priceRange', label: 'Target price range?',   type: 'text' },
-  ],
-  restaurant: [
-    { key: 'cuisine',     label: 'Cuisine type?',   type: 'text' },
-    { key: 'location',    label: 'Location / city?', type: 'text' },
-    { key: 'serviceType', label: 'Service type',    type: 'select', options: ['dine-in', 'takeout'] },
-  ],
-};
-
-const ENGINE_META: Record<EngineProfileType, { label: string; icon: string }> = {
-  saas:       { label: 'SaaS Builder',       icon: '💻' },
-  realestate: { label: 'Real Estate Growth', icon: '🏠' },
-  restaurant: { label: 'Restaurant Growth',  icon: '🍽' },
-};
-
-// Bump key to clear sessions from old assets: string[] schema
-const STORAGE_KEY = 'triforge-forge-session-v2';
+// Bump key to clear sessions from previous schemas
+const STORAGE_KEY = 'triforge-forge-session-v4';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-function loadSession(profileType: EngineProfileType): ForgeSession | null {
+function loadSession(engineId: string): ForgeSession | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const parsed: ForgeSession = JSON.parse(raw);
-    if (parsed.profileType !== profileType) return null;
+    if (parsed.engineId !== engineId) return null;
     return parsed;
   } catch {
     return null;
@@ -85,8 +79,8 @@ function clearSession(): void {
   try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
 }
 
-function buildInitialAnswers(profileType: EngineProfileType): Record<string, string> {
-  return Object.fromEntries(QUESTIONS[profileType].map(q => [q.key, '']));
+function buildInitialAnswers(questions: Question[]): Record<string, string> {
+  return Object.fromEntries(questions.map(q => [q.key, '']));
 }
 
 function formatKey(key: string): string {
@@ -98,16 +92,15 @@ function formatKey(key: string): string {
 
 // ── Component ───────────────────────────────────────────────────────────────
 
-export function ForgeEngine({ profileType, onBack }: Props) {
-  const meta = ENGINE_META[profileType];
-  const questions = QUESTIONS[profileType];
+export function ForgeEngine({ engineConfig, onBack }: Props) {
+  const { id: engineId, name: engineName, icon: engineIcon, questions } = engineConfig;
 
   const [session, setSession] = useState<ForgeSession>(() => {
-    const saved = loadSession(profileType);
+    const saved = loadSession(engineId);
     if (saved && saved.status !== 'idle') return saved;
     return {
-      profileType,
-      answers: buildInitialAnswers(profileType),
+      engineId,
+      answers: buildInitialAnswers(questions),
       blueprint: {},
       assets: [],
       buildOutput: {},
@@ -125,7 +118,7 @@ export function ForgeEngine({ profileType, onBack }: Props) {
     if (session.status !== 'generating') return;
     const unsub = (window as any).triforge.forge.onUpdate(
       (data: { phase: string; provider?: string; completedCount?: number; total?: number }) => {
-        if (data.phase === 'querying')              setPhaseText('Analyzing your inputs…');
+        if (data.phase === 'querying')               setPhaseText('Analyzing your inputs…');
         else if (data.phase === 'provider:responding') setPhaseText('Querying AI systems…');
         else if (data.phase === 'provider:complete')   setPhaseText('Cross-referencing responses…');
         else if (data.phase === 'synthesis:start')     setPhaseText('Synthesizing final output…');
@@ -152,7 +145,7 @@ export function ForgeEngine({ profileType, onBack }: Props) {
     setPhaseText('Initializing engine…');
 
     try {
-      const result = await (window as any).triforge.forgeEngine.run(profileType, session.answers);
+      const result = await (window as any).triforge.forgeEngine.run(engineId, session.answers);
       if (result.error) {
         setError(result.error);
         setSession(s => { const u = { ...s, status: 'onboarding' as const }; saveSession(u); return u; });
@@ -171,24 +164,22 @@ export function ForgeEngine({ profileType, onBack }: Props) {
       setError('Engine failed. Please try again.');
       setSession(s => { const u = { ...s, status: 'onboarding' as const }; saveSession(u); return u; });
     }
-  }, [profileType, session, questions]);
+  }, [engineId, session, questions]);
 
   const handleLaunch = useCallback(() => {
     const { blueprint, buildOutput } = session;
     setSession(s => { const u = { ...s, status: 'activating' as const }; saveSession(u); return u; });
     setTimeout(async () => {
-      // Transition to launched
       setSession(s => {
         if (s.status !== 'activating') return s;
         const u = { ...s, status: 'launched' as const };
         saveSession(u);
         return u;
       });
-      // Start first-step execution in parallel
       setExecutionLoading(true);
       try {
         const result = await (window as any).triforge.forgeEngine.executeFirstStep(
-          profileType, blueprint, buildOutput,
+          engineId, blueprint, buildOutput,
         );
         if (!result.error && result.firstTask) {
           setSession(s => {
@@ -197,32 +188,33 @@ export function ForgeEngine({ profileType, onBack }: Props) {
               ...s,
               status: 'executing',
               execution: {
-                executionPlan: result.executionPlan ?? [],
+                executionPlan: result.executionPlan ?? { immediate: [], thisWeek: [], nextPhase: [] },
                 firstTask: result.firstTask,
+                marketing: result.marketing,
               },
             };
             saveSession(u);
             return u;
           });
         }
-      } catch { /* silently fail — execution section stays in loading state */ }
+      } catch { /* execution section stays in loading state */ }
       finally { setExecutionLoading(false); }
     }, 1800);
-  }, [session, profileType]);
+  }, [session, engineId]);
 
   const handleReset = useCallback(() => {
     clearSession();
     setError(null);
     setCopiedIdx(null);
     setSession({
-      profileType,
-      answers: buildInitialAnswers(profileType),
+      engineId,
+      answers: buildInitialAnswers(questions),
       blueprint: {},
       assets: [],
       buildOutput: {},
       status: 'onboarding',
     });
-  }, [profileType]);
+  }, [engineId, questions]);
 
   const handleCopyAsset = useCallback((body: string, idx: number) => {
     navigator.clipboard.writeText(body).then(() => {
@@ -236,7 +228,7 @@ export function ForgeEngine({ profileType, onBack }: Props) {
       {/* Header */}
       <div style={styles.header}>
         <button style={styles.backBtn} onClick={onBack}>← Back</button>
-        <span style={styles.engineLabel}>{meta.icon} {meta.label}</span>
+        <span style={styles.engineLabel}>{engineIcon} {engineName}</span>
         {session.status !== 'generating' && (
           <button style={styles.resetBtn} onClick={handleReset}>Reset</button>
         )}
@@ -381,7 +373,7 @@ export function ForgeEngine({ profileType, onBack }: Props) {
           <div style={styles.launchedCard}>
             <div style={styles.launchedInner}>
               <div style={styles.launchedCheckmark}>✓</div>
-              <p style={styles.launchedTitle}>{meta.label} — Active</p>
+              <p style={styles.launchedTitle}>{engineName} — Active</p>
               <p style={styles.launchedSub}>
                 Your blueprint, assets, and technical foundation are ready to execute.
                 Everything above is built for your specific market — copy, deploy, and launch.
@@ -406,11 +398,11 @@ export function ForgeEngine({ profileType, onBack }: Props) {
             </div>
           </div>
 
-          {/* Execution Started */}
+          {/* Execution Section */}
           <div style={styles.executionSection}>
             <div style={styles.executionHeader}>
               <span style={styles.executionAccent}>⚡</span>
-              <p style={styles.executionTitle}>Execution Started</p>
+              <p style={styles.executionTitle}>Business Activated</p>
             </div>
 
             {executionLoading && !session.execution && (
@@ -422,29 +414,63 @@ export function ForgeEngine({ profileType, onBack }: Props) {
 
             {session.execution && (
               <>
+                <p style={styles.execConfirmLine}>Action plan ready. Execute in order.</p>
+
                 {/* First Task */}
                 <div style={styles.firstTaskCard}>
                   <p style={styles.firstTaskLabel}>First Step</p>
                   <p style={styles.firstTaskTitle}>{session.execution.firstTask.title}</p>
-                  <p style={styles.firstTaskDesc}>{session.execution.firstTask.description}</p>
-                  {session.execution.firstTask.output && (
-                    <pre style={styles.firstTaskOutput}>{session.execution.firstTask.output}</pre>
-                  )}
-                </div>
-
-                {/* Execution Plan */}
-                {session.execution.executionPlan.length > 0 && (
-                  <div style={styles.planSection}>
-                    <p style={styles.planLabel}>Your Path to Launch</p>
-                    <div style={styles.planSteps}>
-                      {session.execution.executionPlan.map((step, i) => (
-                        <div key={i} style={styles.planStep}>
-                          <span style={styles.planStepNum}>{i + 1}</span>
-                          <span style={styles.planStepText}>{step}</span>
+                  <p style={styles.firstTaskObjective}>{session.execution.firstTask.objective}</p>
+                  {session.execution.firstTask.steps.length > 0 && (
+                    <div style={styles.firstTaskSteps}>
+                      {session.execution.firstTask.steps.map((step, i) => (
+                        <div key={i} style={styles.firstTaskStep}>
+                          <span style={styles.firstTaskStepNum}>{i + 1}</span>
+                          <span style={styles.firstTaskStepText}>{step}</span>
                         </div>
                       ))}
                     </div>
-                  </div>
+                  )}
+                  {session.execution.firstTask.resources && session.execution.firstTask.resources.length > 0 && (
+                    <p style={styles.firstTaskResources}>
+                      <span style={styles.firstTaskResourcesLabel}>Resources: </span>
+                      {session.execution.firstTask.resources.join(' · ')}
+                    </p>
+                  )}
+                  <p style={styles.firstTaskDeliverable}>
+                    <span style={styles.firstTaskDeliverableLabel}>Deliverable: </span>
+                    {session.execution.firstTask.deliverable}
+                  </p>
+                </div>
+
+                {/* Execution Plan */}
+                {(() => {
+                  const plan = session.execution.executionPlan;
+                  const allSteps: Array<{ badge: React.CSSProperties; label: string; text: string }> = [
+                    ...(plan.immediate ?? []).map(s => ({ badge: styles.badgeImmediate, label: 'IMMEDIATE', text: s })),
+                    ...(plan.thisWeek ?? []).map(s => ({ badge: styles.badgeThisWeek, label: 'THIS WEEK', text: s })),
+                    ...(plan.nextPhase ?? []).map(s => ({ badge: styles.badgeNextPhase, label: 'NEXT PHASE', text: s })),
+                  ];
+                  if (allSteps.length === 0) return null;
+                  return (
+                    <div style={styles.planSection}>
+                      <p style={styles.planLabel}>Your Path to Launch</p>
+                      <div style={styles.planSteps}>
+                        {allSteps.map((step, i) => (
+                          <div key={i} style={styles.planStep}>
+                            <span style={styles.planStepNum}>{i + 1}</span>
+                            <span style={step.badge}>{step.label}</span>
+                            <span style={styles.planStepText}>{step.text}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Marketing Visuals */}
+                {session.execution.marketing && (
+                  <MarketingSection marketing={session.execution.marketing} />
                 )}
               </>
             )}
@@ -465,6 +491,77 @@ function Section({ title, accent, children }: { title: string; accent: string; c
         <p style={styles.sectionTitle}>{title}</p>
       </div>
       {children}
+    </div>
+  );
+}
+
+type ImageState = { url: string | null; loading: boolean; error: string | null };
+
+function MarketingSection({ marketing }: { marketing: NonNullable<ExecutionData['marketing']> }) {
+  const [images, setImages] = useState<Record<string, ImageState>>({});
+
+  const visuals = (
+    [
+      marketing.poster  ? { key: 'poster',  label: 'Marketing Poster',   data: marketing.poster  } : null,
+      marketing.website ? { key: 'website', label: 'Website Hero Image', data: marketing.website } : null,
+      marketing.app     ? { key: 'app',     label: 'App UI Mockup',      data: marketing.app     } : null,
+    ] as Array<{ key: string; label: string; data: MarketingVisual } | null>
+  ).filter((v): v is { key: string; label: string; data: MarketingVisual } => v !== null);
+
+  if (visuals.length === 0) return null;
+
+  const handleGenerate = async (key: string, prompt: string) => {
+    setImages(prev => ({ ...prev, [key]: { url: null, loading: true, error: null } }));
+    try {
+      const result = await (window as any).triforge.forgeEngine.generateImage(prompt);
+      if (result.error) {
+        setImages(prev => ({ ...prev, [key]: { url: null, loading: false, error: result.error } }));
+      } else {
+        setImages(prev => ({ ...prev, [key]: { url: result.url, loading: false, error: null } }));
+      }
+    } catch {
+      setImages(prev => ({ ...prev, [key]: { url: null, loading: false, error: 'Generation failed. Please try again.' } }));
+    }
+  };
+
+  return (
+    <div style={styles.marketingSection}>
+      <p style={styles.planLabel}>Marketing Visuals</p>
+      <div style={styles.marketingGrid}>
+        {visuals.map(({ key, label, data }) => {
+          const state = images[key];
+          return (
+            <div key={key} style={styles.marketingCard}>
+              <div style={styles.marketingCardHeader}>
+                <p style={styles.marketingCardLabel}>{label}</p>
+                <p style={styles.marketingCardDesc}>{data.description}</p>
+              </div>
+              {!state && (
+                <button style={styles.generateBtn} onClick={() => handleGenerate(key, data.prompt)}>
+                  Generate Image
+                </button>
+              )}
+              {state?.loading && (
+                <div style={styles.executionLoading}>
+                  <div style={styles.execSpinner} />
+                  <p style={styles.execLoadingText}>Generating with DALL-E 3…</p>
+                </div>
+              )}
+              {state?.error && (
+                <p style={styles.marketingError}>{state.error}</p>
+              )}
+              {state?.url && (
+                <img src={state.url} style={styles.marketingImage} alt={label} />
+              )}
+              {state?.url && (
+                <button style={styles.regenerateBtn} onClick={() => handleGenerate(key, data.prompt)}>
+                  Regenerate
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -671,7 +768,6 @@ const styles: Record<string, React.CSSProperties> = {
     margin: 0,
     lineHeight: 1.55,
   },
-  // Asset cards
   assetStack: {
     display: 'flex',
     flexDirection: 'column',
@@ -708,7 +804,6 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '3px 9px',
     cursor: 'pointer',
     letterSpacing: '0.3px',
-    transition: 'background 0.1s',
   },
   copyBtnDone: {
     background: 'rgba(52,211,153,0.15)',
@@ -733,7 +828,6 @@ const styles: Record<string, React.CSSProperties> = {
     maxHeight: 220,
     overflowY: 'auto',
   },
-  // Build output
   buildGrid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
@@ -770,7 +864,6 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1.4,
     fontWeight: 700,
   },
-  // Launch row
   launchRow: {
     display: 'flex',
     justifyContent: 'center',
@@ -787,7 +880,6 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     letterSpacing: '0.4px',
   },
-  // Launched state
   launchedCard: {
     background: 'rgba(52,211,153,0.06)',
     border: '1px solid rgba(52,211,153,0.2)',
@@ -895,7 +987,6 @@ const styles: Record<string, React.CSSProperties> = {
     margin: 0,
     letterSpacing: '0.2px',
   },
-  // Execution section
   executionSection: {
     background: 'rgba(255,255,255,0.03)',
     border: '1px solid rgba(255,255,255,0.08)',
@@ -941,7 +1032,14 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'rgba(255,255,255,0.4)',
     margin: 0,
   },
-  // First task card
+  execConfirmLine: {
+    fontSize: 11,
+    fontWeight: 600,
+    color: '#34d399',
+    margin: 0,
+    letterSpacing: '0.2px',
+  },
+  // First Task — new structure
   firstTaskCard: {
     background: 'rgba(99,102,241,0.06)',
     border: '1px solid rgba(99,102,241,0.18)',
@@ -949,7 +1047,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '14px 14px 16px',
     display: 'flex',
     flexDirection: 'column',
-    gap: 6,
+    gap: 8,
   } as React.CSSProperties,
   firstTaskLabel: {
     fontSize: 9,
@@ -966,26 +1064,76 @@ const styles: Record<string, React.CSSProperties> = {
     margin: 0,
     letterSpacing: '0.1px',
   },
-  firstTaskDesc: {
+  firstTaskObjective: {
     fontSize: 12,
-    color: 'rgba(255,255,255,0.6)',
-    margin: 0,
-    lineHeight: 1.6,
-  },
-  firstTaskOutput: {
-    fontSize: 11,
     color: 'rgba(255,255,255,0.55)',
-    background: 'rgba(0,0,0,0.25)',
-    border: '1px solid rgba(255,255,255,0.07)',
-    borderRadius: 6,
-    padding: '10px 12px',
-    margin: '4px 0 0',
-    whiteSpace: 'pre-wrap',
-    wordBreak: 'break-word',
-    fontFamily: 'monospace',
+    margin: 0,
     lineHeight: 1.55,
+    fontStyle: 'italic',
   },
-  // Plan steps
+  firstTaskSteps: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+    marginTop: 2,
+  } as React.CSSProperties,
+  firstTaskStep: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  firstTaskStepNum: {
+    width: 18,
+    height: 18,
+    borderRadius: '50%',
+    background: 'rgba(99,102,241,0.2)',
+    border: '1px solid rgba(99,102,241,0.35)',
+    fontSize: 9,
+    fontWeight: 700,
+    color: '#818cf8',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    lineHeight: 1,
+    marginTop: 1,
+  } as React.CSSProperties,
+  firstTaskStepText: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.7)',
+    lineHeight: 1.5,
+  },
+  firstTaskResources: {
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.4)',
+    margin: '2px 0 0',
+    lineHeight: 1.5,
+  },
+  firstTaskResourcesLabel: {
+    fontWeight: 700,
+    color: 'rgba(255,255,255,0.5)',
+    textTransform: 'uppercase',
+    fontSize: 9,
+    letterSpacing: '0.5px',
+  },
+  firstTaskDeliverable: {
+    fontSize: 11,
+    color: '#34d399',
+    margin: '2px 0 0',
+    lineHeight: 1.5,
+    background: 'rgba(52,211,153,0.07)',
+    border: '1px solid rgba(52,211,153,0.15)',
+    borderRadius: 5,
+    padding: '6px 10px',
+  },
+  firstTaskDeliverableLabel: {
+    fontWeight: 700,
+    fontSize: 9,
+    textTransform: 'uppercase',
+    letterSpacing: '0.5px',
+    marginRight: 2,
+  },
+  // Execution Plan
   planSection: {
     display: 'flex',
     flexDirection: 'column',
@@ -1007,7 +1155,7 @@ const styles: Record<string, React.CSSProperties> = {
   planStep: {
     display: 'flex',
     alignItems: 'flex-start',
-    gap: 10,
+    gap: 8,
   },
   planStepNum: {
     width: 20,
@@ -1024,10 +1172,126 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
     lineHeight: 1,
   } as React.CSSProperties,
+  badgeImmediate: {
+    fontSize: 8,
+    fontWeight: 700,
+    letterSpacing: '0.6px',
+    textTransform: 'uppercase',
+    color: '#34d399',
+    background: 'rgba(52,211,153,0.12)',
+    border: '1px solid rgba(52,211,153,0.25)',
+    borderRadius: 3,
+    padding: '2px 6px',
+    whiteSpace: 'nowrap',
+    flexShrink: 0,
+    alignSelf: 'flex-start',
+    marginTop: 3,
+  } as React.CSSProperties,
+  badgeThisWeek: {
+    fontSize: 8,
+    fontWeight: 700,
+    letterSpacing: '0.6px',
+    textTransform: 'uppercase',
+    color: '#fbbf24',
+    background: 'rgba(251,191,36,0.1)',
+    border: '1px solid rgba(251,191,36,0.22)',
+    borderRadius: 3,
+    padding: '2px 6px',
+    whiteSpace: 'nowrap',
+    flexShrink: 0,
+    alignSelf: 'flex-start',
+    marginTop: 3,
+  } as React.CSSProperties,
+  badgeNextPhase: {
+    fontSize: 8,
+    fontWeight: 700,
+    letterSpacing: '0.6px',
+    textTransform: 'uppercase',
+    color: 'rgba(255,255,255,0.35)',
+    background: 'rgba(255,255,255,0.05)',
+    border: '1px solid rgba(255,255,255,0.1)',
+    borderRadius: 3,
+    padding: '2px 6px',
+    whiteSpace: 'nowrap',
+    flexShrink: 0,
+    alignSelf: 'flex-start',
+    marginTop: 3,
+  } as React.CSSProperties,
   planStepText: {
     fontSize: 12,
     color: 'rgba(255,255,255,0.6)',
     lineHeight: 1.5,
     paddingTop: 2,
+  },
+  // Marketing Visuals
+  marketingSection: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 10,
+  } as React.CSSProperties,
+  marketingGrid: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 10,
+  } as React.CSSProperties,
+  marketingCard: {
+    background: 'rgba(255,255,255,0.03)',
+    border: '1px solid rgba(255,255,255,0.08)',
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  marketingCardHeader: {
+    padding: '10px 12px 8px',
+    borderBottom: '1px solid rgba(255,255,255,0.06)',
+  },
+  marketingCardLabel: {
+    fontSize: 10,
+    fontWeight: 700,
+    color: '#818cf8',
+    textTransform: 'uppercase',
+    letterSpacing: '0.7px',
+    margin: '0 0 2px',
+  },
+  marketingCardDesc: {
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.35)',
+    margin: 0,
+  },
+  generateBtn: {
+    display: 'block',
+    width: 'calc(100% - 24px)',
+    margin: '10px 12px',
+    background: 'rgba(99,102,241,0.12)',
+    border: '1px solid rgba(99,102,241,0.3)',
+    borderRadius: 6,
+    color: '#818cf8',
+    fontSize: 12,
+    fontWeight: 600,
+    padding: '8px 0',
+    cursor: 'pointer',
+    letterSpacing: '0.2px',
+  },
+  marketingError: {
+    fontSize: 11,
+    color: '#f87171',
+    margin: '8px 12px',
+  },
+  marketingImage: {
+    display: 'block',
+    width: '100%',
+    maxHeight: 280,
+    objectFit: 'cover',
+  } as React.CSSProperties,
+  regenerateBtn: {
+    display: 'block',
+    width: 'calc(100% - 24px)',
+    margin: '8px 12px',
+    background: 'none',
+    border: '1px solid rgba(255,255,255,0.1)',
+    borderRadius: 5,
+    color: 'rgba(255,255,255,0.3)',
+    fontSize: 10,
+    padding: '5px 0',
+    cursor: 'pointer',
   },
 };

@@ -233,21 +233,41 @@ const api = {
 
   // Forge Engine (Business Engine Mode — Phase 1 + 2)
   forgeEngine: {
-    run: (profileType: string, answers: Record<string, string>) =>
-      ipcRenderer.invoke('forgeEngine:run', { profileType, answers }) as Promise<{
+    listEngines: () =>
+      ipcRenderer.invoke('forgeEngine:listEngines') as Promise<Array<{
+        id: string;
+        name: string;
+        category: string;
+        description: string;
+        icon: string;
+        detail: string;
+        questions: Array<{ key: string; label: string; type: 'text' | 'select'; options?: string[] }>;
+      }>>,
+    run: (engineId: string, answers: Record<string, string>) =>
+      ipcRenderer.invoke('forgeEngine:run', { engineId, answers }) as Promise<{
         blueprint?: Record<string, string>;
         assets?: Array<{ type: string; body: string }>;
         buildOutput?: Record<string, string[]>;
         error?: string;
       }>,
     executeFirstStep: (
-      profileType: string,
+      engineId: string,
       blueprint: Record<string, string>,
       buildOutput: Record<string, string[]>,
     ) =>
-      ipcRenderer.invoke('forgeEngine:executeFirstStep', { profileType, blueprint, buildOutput }) as Promise<{
-        executionPlan?: string[];
-        firstTask?: { title: string; description: string; output?: string };
+      ipcRenderer.invoke('forgeEngine:executeFirstStep', { engineId, blueprint, buildOutput }) as Promise<{
+        executionPlan?: { immediate: string[]; thisWeek: string[]; nextPhase: string[] };
+        firstTask?: { title: string; objective: string; steps: string[]; resources?: string[]; deliverable: string };
+        marketing?: {
+          poster?: { prompt: string; description: string };
+          website?: { prompt: string; description: string };
+          app?: { prompt: string; description: string };
+        };
+        error?: string;
+      }>,
+    generateImage: (prompt: string) =>
+      ipcRenderer.invoke('forgeEngine:generateImage', { prompt }) as Promise<{
+        url?: string;
         error?: string;
       }>,
   },

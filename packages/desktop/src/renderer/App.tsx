@@ -9,6 +9,13 @@ import { Ledger } from './components/Ledger';
 import { ForgeProfiles } from './components/ForgeProfiles';
 import { MissionControl } from './components/MissionControl';
 import { AgentHQ } from './components/AgentHQ';
+import { Dashboard } from './ui/Dashboard';
+import { OperatorMode } from './modes/OperatorMode';
+import { WorldMode } from './modes/WorldMode';
+import { FileMode } from './modes/FileMode';
+import { InboxMode } from './modes/InboxMode';
+import { AutomationMode } from './modes/AutomationMode';
+import { HustleMode } from './modes/HustleMode';
 
 // ── Error Boundary ───────────────────────────────────────────────────────────
 export class ErrorBoundary extends React.Component<
@@ -35,7 +42,10 @@ export class ErrorBoundary extends React.Component<
   }
 }
 
-type Screen = 'chat' | 'settings' | 'memory' | 'ledger' | 'plan' | 'builder' | 'profiles' | 'missioncontrol' | 'agenthq';
+type Screen =
+  | 'chat' | 'settings' | 'memory' | 'ledger' | 'plan' | 'builder'
+  | 'profiles' | 'missioncontrol' | 'agenthq'
+  | 'dashboard' | 'operator' | 'world' | 'files' | 'inbox' | 'automation' | 'hustle';
 
 const LOCK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -45,7 +55,7 @@ export function App() {
   const [permissions, setPermissions] = useState<Permission[]>([]);
   const [keyStatus, setKeyStatus] = useState<Record<string, boolean>>({ openai: false, claude: false, grok: false });
   const [mode, setMode] = useState('none');
-  const [screen, setScreen] = useState<Screen>('chat');
+  const [screen, setScreen] = useState<Screen>('dashboard');
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({ openai: '', claude: '', grok: '' });
   const [saving, setSaving] = useState<string | null>(null);
   const [tier, setTier] = useState<string>('free');
@@ -259,20 +269,36 @@ export function App() {
       <div style={styles.body}>
         {/* Sidebar */}
         <nav style={styles.sidebar}>
-          <NavBtn icon="⬡" label="Forge"    active={screen === 'chat'}          onClick={() => setScreen('chat')} />
-          <NavBtn icon="⚡" label="Hustle"   active={screen === 'agenthq'}        onClick={() => setScreen('agenthq')} />
-          <NavBtn icon="⊟" label="Control"  active={screen === 'missioncontrol'} onClick={() => setScreen('missioncontrol')} />
+          {/* Agent Modes */}
+          <NavBtn icon="◈" label="Home"     active={screen === 'dashboard'}      onClick={() => setScreen('dashboard')} />
+          <NavBtn icon="⬡" label="Launch"   active={screen === 'profiles'}       onClick={() => setScreen('profiles')} />
+          <NavBtn icon="↗" label="Operate"  active={screen === 'operator'}       onClick={() => setScreen('operator')} />
+          <NavBtn icon="○" label="World"    active={screen === 'world'}          onClick={() => setScreen('world')} />
+          <NavBtn icon="⊡" label="Files"    active={screen === 'files'}          onClick={() => setScreen('files')} />
+          <NavBtn icon="⊟" label="Inbox"    active={screen === 'inbox'}          onClick={() => setScreen('inbox')} />
+          <NavBtn icon="∞" label="Automate" active={screen === 'automation'}     onClick={() => setScreen('automation')} />
+          <NavBtn icon="◇" label="Hustle"   active={screen === 'hustle'}         onClick={() => setScreen('hustle')} />
+          {/* Divider */}
+          <div style={styles.navDivider} />
+          {/* Tools */}
           <NavBtn icon="⊞" label="Builder"  active={screen === 'builder'}        onClick={() => setScreen('builder')} />
           <NavBtn icon="◎" label="Memory"   active={screen === 'memory'}         onClick={() => setScreen('memory')} />
           <NavBtn icon="≡" label="Ledger"   active={screen === 'ledger'}         onClick={() => setScreen('ledger')} />
-          <NavBtn icon="⊡" label="Profiles" active={screen === 'profiles'}       onClick={() => setScreen('profiles')} />
-          <NavBtn icon="⊕" label="Settings" active={screen === 'settings'}       onClick={() => setScreen('settings')} />
+          <NavBtn icon="⊕" label="Control"  active={screen === 'missioncontrol'} onClick={() => setScreen('missioncontrol')} />
+          <NavBtn icon="⚙" label="Settings" active={screen === 'settings'}       onClick={() => setScreen('settings')} />
           <div style={{ flex: 1 }} />
           <NavBtn icon="▷" label="Plan"     active={screen === 'plan'}           onClick={() => setScreen('plan')} />
         </nav>
 
         {/* Main content */}
         <main style={styles.main}>
+          {screen === 'dashboard'  && <Dashboard      onNavigate={s => setScreen(s as Screen)} tier={tier} />}
+          {screen === 'operator'   && <OperatorMode   onNavigate={s => setScreen(s as Screen)} />}
+          {screen === 'world'      && <WorldMode      onNavigate={s => setScreen(s as Screen)} />}
+          {screen === 'files'      && <FileMode       onNavigate={s => setScreen(s as Screen)} />}
+          {screen === 'inbox'      && <InboxMode      onNavigate={s => setScreen(s as Screen)} />}
+          {screen === 'automation' && <AutomationMode onNavigate={s => setScreen(s as Screen)} />}
+          {screen === 'hustle'     && <HustleMode     onNavigate={s => setScreen(s as Screen)} />}
           {screen === 'chat' && (
             <Chat
               mode={mode}
@@ -292,17 +318,7 @@ export function App() {
               onClearPrefill={() => setChatPrefill(null)}
             />
           )}
-          {screen === 'builder' && (
-            <AppBuilder
-              onBack={() => setScreen('chat')}
-              activeProfileId={activeProfileId}
-              onProfileSwitch={() => setScreen('profiles')}
-              onProfileDeactivate={async () => {
-                await window.triforge.forgeProfiles.deactivate();
-                setActiveProfileId(null);
-              }}
-            />
-          )}
+          {screen === 'builder' && <AppBuilder onBack={() => setScreen('dashboard')} />}
           {screen === 'profiles' && (
             <ForgeProfiles
               tier={tier}
@@ -733,6 +749,10 @@ const styles: Record<string, React.CSSProperties & { WebkitAppRegion?: string }>
     width: 64, background: 'var(--bg-surface)', borderRight: '1px solid var(--border)',
     display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '12px 0', gap: 4,
     flexShrink: 0,
+  },
+  navDivider: {
+    width: 36, height: 1, background: 'rgba(255,255,255,0.06)',
+    flexShrink: 0, margin: '4px 0',
   },
   navBtn: {
     width: 50, height: 50, borderRadius: 'var(--radius-sm)',
