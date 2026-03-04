@@ -5,6 +5,8 @@ import { setupIpc } from './ipc';
 import { setupTray } from './tray';
 import { setupAutoUpdater } from './updater';
 import { TaskStore, Scheduler, AuditLedger } from '@triforge/engine';
+import { bootLog, bootError } from './bootLogger';
+import { supervisor } from '../core/supervisor';
 
 // Single instance lock
 if (!app.requestSingleInstanceLock()) {
@@ -116,6 +118,7 @@ function createWindow(): void {
 
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 app.whenReady().then(async () => {
+  bootLog('App ready');
   nativeTheme.themeSource = 'dark';
 
   // Build application menu.
@@ -168,10 +171,12 @@ app.whenReady().then(async () => {
   // 1. Show splash immediately — record when it appeared
   splashWindow = createSplash();
   const splashStart = Date.now();
+  bootLog('Splash created');
 
   // 2. Create main window immediately (hidden) — must happen before any async init
   //    so the splash → main transition is always wired regardless of init errors.
   createWindow();
+  bootLog('Main window created');
 
   // Helper: close splash and reveal main window (idempotent)
   function showMain() {
@@ -179,7 +184,7 @@ app.whenReady().then(async () => {
       splashWindow.close();
       splashWindow = null;
     }
-    if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
       mainWindow.show();
       mainWindow.focus();
     }
@@ -187,10 +192,16 @@ app.whenReady().then(async () => {
 
   // Hard fallback: always registered — if ready-to-show never fires for any reason
   // the user will see the main window at 12 s instead of a frozen splash.
-  const splashFallback = setTimeout(showMain, 12_000);
+  const splashFallback = setTimeout(() => {
+    bootLog('Fallback timer fired — forcing main window visible');
+    showMain();
+  }, 12_000);
 
-  // When renderer is ready, enforce minimum splash duration then swap windows
+  // ── Renderer safety listeners ────────────────────────────────────────────────
+
+  // Normal path: renderer is ready — enforce minimum splash duration then swap
   mainWindow?.once('ready-to-show', () => {
+    bootLog('Renderer ready-to-show');
     clearTimeout(splashFallback);
     const minSplashMs = 6500; // voice starts at 1400ms + ~4s single-utterance speech
     const elapsed = Date.now() - splashStart;
@@ -199,35 +210,73 @@ app.whenReady().then(async () => {
     if (mainWindow) setupAutoUpdater(mainWindow);
   });
 
-  // If the renderer HTML file fails to load, escape the splash immediately
-  mainWindow?.webContents.once('did-fail-load', () => {
+  // Renderer HTML / JS bundle failed to load
+  mainWindow?.webContents.on('did-fail-load', (_e, errorCode, errorDescription) => {
+    bootError('Renderer did-fail-load', `${errorCode} ${errorDescription}`);
     clearTimeout(splashFallback);
     showMain();
   });
 
-  // 3. Init store, IPC, and engine services — wrapped so any throw never
-  //    prevents the window from opening (app runs with limited functionality).
+  // Renderer process crashed or was killed
+  mainWindow?.webContents.on('render-process-gone', (_e, details) => {
+    bootError('Renderer process gone', details.reason);
+    clearTimeout(splashFallback);
+    showMain();
+  });
+
+  // Renderer became unresponsive (hung JS, infinite loop, etc.)
+  mainWindow?.webContents.on('unresponsive', () => {
+    bootError('Renderer unresponsive', 'renderer JS is hung');
+    clearTimeout(splashFallback);
+    showMain();
+  });
+
+  // ── 3. Init store + IPC — these must run once before supervised services ─────
   try {
     store = new Store();
     await store.init();
-    setupIpc(store);
+    bootLog('Store initialized');
 
-    const dataDir = app.getPath('userData');
-    new TaskStore(dataDir).loadAll(); // warms cache, marks stale tasks as paused
-    const scheduler = new Scheduler(dataDir);
-    scheduler.onFire = (job) => {
-      const win = BrowserWindow.getAllWindows()[0];
-      if (win && !win.isDestroyed()) {
-        win.webContents.send('scheduler:jobFired', {
-          jobId: job.id, goal: job.taskGoal, category: job.category,
-        });
-      }
-    };
-    scheduler.start();
-    new AuditLedger(dataDir);
+    setupIpc(store);
+    bootLog('IPC initialized');
   } catch (e) {
-    console.error('[startup] init error (app will open with limited functionality):', e);
+    bootError('Store/IPC init failed — app will run with limited functionality', e);
   }
+
+  // ── 4. Register supervised services and start them ───────────────────────────
+  // Each service is monitored and auto-restarted on crash (up to 10 times).
+  const dataDir = app.getPath('userData');
+
+  supervisor.register({
+    name: 'TaskStore',
+    restartDelay: 2000,
+    start: () => {
+      new TaskStore(dataDir).loadAll(); // warms cache, marks stale tasks as paused
+      new AuditLedger(dataDir);
+      bootLog('TaskStore ready');
+    },
+  });
+
+  supervisor.register({
+    name: 'TaskScheduler',
+    restartDelay: 3000,
+    start: () => {
+      const scheduler = new Scheduler(dataDir);
+      scheduler.onFire = (job) => {
+        const win = BrowserWindow.getAllWindows()[0];
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('scheduler:jobFired', {
+            jobId: job.id, goal: job.taskGoal, category: job.category,
+          });
+        }
+      };
+      scheduler.start();
+      bootLog('TaskScheduler running');
+    },
+  });
+
+  await supervisor.startAll();
+  bootLog('Engine services initialized');
 
   setupTray(
     () => { mainWindow?.show(); mainWindow?.focus(); },
