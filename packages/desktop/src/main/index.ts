@@ -7,6 +7,9 @@ import { setupAutoUpdater } from './updater';
 import { TaskStore, Scheduler, AuditLedger } from '@triforge/engine';
 import { bootLog, bootError } from './bootLogger';
 import { supervisor } from '../core/supervisor';
+import { healthMonitor } from '../core/health/healthMonitor';
+import { MemoryStore } from '../core/memory/memoryStore';
+import { getMemoryManager } from '../core/memory/memoryManager';
 
 // Single instance lock
 if (!app.requestSingleInstanceLock()) {
@@ -277,6 +280,34 @@ app.whenReady().then(async () => {
 
   await supervisor.startAll();
   bootLog('Engine services initialized');
+
+  // ── 5. Long-term memory — connect EventBus hooks ─────────────────────────────
+  try {
+    const memoryStore = new MemoryStore(dataDir);
+    const memoryMgr   = getMemoryManager(memoryStore);
+    memoryMgr.connectEventBus();
+    bootLog('Memory manager connected');
+  } catch (e) {
+    bootError('Memory manager init failed', e);
+  }
+
+  // ── 6. Health monitor — register supervisor-level checks + start ─────────────
+  healthMonitor.register({
+    name:  'Supervisor',
+    check: () => {
+      const statuses = supervisor.getStatus();
+      return Object.values(statuses).every(s => s !== 'disabled');
+    },
+  });
+
+  // Self-healing: trigger supervisor restart when a component fails 2+ times
+  healthMonitor.onUnhealthy = (name, _count) => {
+    bootError(`Health check failed for "${name}" — supervisor will attempt restart`, name);
+    // Supervisor auto-restarts crashed services; just log here
+  };
+
+  healthMonitor.start(15_000); // check every 15 seconds
+  bootLog('Health monitor started');
 
   setupTray(
     () => { mainWindow?.show(); mainWindow?.focus(); },

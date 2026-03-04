@@ -27,7 +27,9 @@ export type TaskToolName =
   | 'send_email' | 'post_twitter' | 'run_outreach' | 'analyze_results' | 'web_research'
   // IT Tool Pack
   | 'it_diagnostics' | 'it_network_doctor' | 'it_event_logs'
-  | 'it_services' | 'it_processes' | 'it_script_runner' | 'it_patch_advisor';
+  | 'it_services' | 'it_processes' | 'it_script_runner' | 'it_patch_advisor'
+  // Autonomous Tool Execution Layer
+  | 'read_file' | 'write_file' | 'append_file' | 'run_command' | 'fetch_url' | 'search_workspace';
 
 export type AuditEventType =
   | 'TASK_CREATED' | 'TASK_STARTED' | 'TASK_COMPLETED' | 'TASK_FAILED'
@@ -52,7 +54,11 @@ export type AuditEventType =
   | 'WORKFLOW_FIRED' | 'WORKFLOW_FAILED'
   // Profession + sensor lifecycle
   | 'PROFESSION_ACTIVATED' | 'PROFESSION_DEACTIVATED'
-  | 'SENSOR_STARTED' | 'SENSOR_STOPPED';
+  | 'SENSOR_STARTED' | 'SENSOR_STOPPED'
+  // Persistent Mission System
+  | 'MISSION_REGISTERED' | 'MISSION_FIRED' | 'MISSION_COMPLETED' | 'MISSION_FAILED'
+  // Tool Execution Layer
+  | 'TOOL_EXECUTE_REQUESTED' | 'TOOL_EXECUTE_APPROVED' | 'TOOL_EXECUTE_COMPLETED' | 'TOOL_EXECUTE_FAILED';
 
 // ── Execution Result (Phase 4) ─────────────────────────────────────────────────
 
@@ -259,4 +265,14 @@ export type EngineEvent =
   | { type: 'PROFESSION_DEACTIVATED'; profileId: string; profileName: string }
   // Sensor lifecycle
   | { type: 'SENSOR_STARTED'; name: string }
-  | { type: 'SENSOR_STOPPED'; name: string };
+  | { type: 'SENSOR_STOPPED'; name: string }
+  // Persistent Mission System
+  | { type: 'MISSION_REGISTERED';    missionId: string; name: string; schedule?: string }
+  | { type: 'MISSION_FIRED';         missionId: string; name: string }
+  | { type: 'MISSION_COMPLETED';     missionId: string; name: string }
+  | { type: 'MISSION_FAILED';        missionId: string; name: string; error: string }
+  // Tool Execution Layer
+  | { type: 'TOOL_EXECUTE_REQUESTED'; requestId: string; tool: string; riskLevel: string }
+  | { type: 'TOOL_EXECUTE_APPROVED';  requestId: string; tool: string }
+  | { type: 'TOOL_EXECUTE_COMPLETED'; requestId: string; tool: string; result: unknown }
+  | { type: 'TOOL_EXECUTE_FAILED';    requestId: string; tool: string; error: string };

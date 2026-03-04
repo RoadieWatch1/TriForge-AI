@@ -77,5 +77,20 @@ export function createDefaultRegistry(): TaskToolRegistry {
   registry.register(itScriptRunnerDef,  runItScriptRunner);
   registry.register(itPatchAdvisorDef,  runItPatchAdvisor);
 
+  // Autonomous Tool Execution Layer
+  const { runReadFile,          readFileDef }          = require('./readFile');
+  const { runWriteFile,         writeFileDef }         = require('./writeFile');
+  const { runAppendFile,        appendFileDef }        = require('./appendFile');
+  const { runRunCommand,        runCommandDef }        = require('./runCommand');
+  const { runFetchUrl,          fetchUrlDef }          = require('./fetchUrl');
+  const { runSearchWorkspace,   searchWorkspaceDef }   = require('./searchWorkspace');
+
+  registry.register(readFileDef,        runReadFile);
+  registry.register(writeFileDef,       runWriteFile);
+  registry.register(appendFileDef,      runAppendFile);
+  registry.register(runCommandDef,      runRunCommand);
+  registry.register(fetchUrlDef,        runFetchUrl);
+  registry.register(searchWorkspaceDef, runSearchWorkspace);
+
   return registry;
 }

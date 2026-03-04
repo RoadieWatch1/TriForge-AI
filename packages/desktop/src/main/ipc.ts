@@ -22,6 +22,12 @@ import { SensorManager } from './sensors/index';
 import { navigate as browserNavigate, screenshot as browserScreenshot, fillForm as browserFillForm, scrape as browserScrape, closeBrowser } from './browser/index';
 import { SocialPoster } from './social/index';
 import { ApprovalServer } from './approvalServer';
+import { MissionManager } from '../core/missions/missionManager';
+import { MissionStore } from '../core/missions/missionStore';
+import { getToolExecutor, newRequestId } from '../core/tools/toolExecutor';
+import { healthMonitor } from '../core/health/healthMonitor';
+import { MemoryStore } from '../core/memory/memoryStore';
+import { getMemoryManager } from '../core/memory/memoryManager';
 
 import { ResultStore } from './resultStore';
 import { ValueEngine, CampaignStore, MetricsStore, CompoundEngine } from '@triforge/engine';
@@ -75,6 +81,10 @@ let _autonomyEngine: AutonomyEngine | null = null;
 let _professionEngine: ProfessionEngine | null = null;
 let _itRegistry: import('@triforge/engine').TaskToolRegistry | null = null;
 let _approvalServer: ApprovalServer | null = null;
+let _registry: import('@triforge/engine').TaskToolRegistry | null = null;
+let _missionStore: MissionStore | null = null;
+let _missionManager: MissionManager | null = null;
+let _memoryStore: MemoryStore | null = null;
 
 function _getDataDir(): string {
   return app.getPath('userData');
@@ -150,21 +160,46 @@ function _getApprovalStore(): ApprovalStore {
   return _approvalStore;
 }
 
+function _getRegistry(): import('@triforge/engine').TaskToolRegistry {
+  if (!_registry) _registry = createDefaultRegistry();
+  return _registry;
+}
+
 function _getAgentLoop(store: Store): AgentLoop {
   if (!_agentLoop) {
     if (!providerManager) throw new Error('ProviderManager not ready');
     const planner = new ThinkTankPlanner(providerManager);
-    const registry = createDefaultRegistry();
     _agentLoop = new AgentLoop(
       _getTaskStore(),
       planner,
-      registry,
+      _getRegistry(),
       _getWalletEngine(store),
       _getAuditLedger(),
       _getApprovalStore(),
     );
   }
   return _agentLoop;
+}
+
+function _getMissionStore(): MissionStore {
+  if (!_missionStore) _missionStore = new MissionStore(_getDataDir());
+  return _missionStore;
+}
+
+function _getMissionManager(store: Store): MissionManager {
+  if (!_missionManager) {
+    _missionManager = new MissionManager(_getMissionStore(), _getAgentLoop(store));
+  }
+  return _missionManager;
+}
+
+function _getMemoryStore(): MemoryStore {
+  if (!_memoryStore) _memoryStore = new MemoryStore(_getDataDir());
+  return _memoryStore;
+}
+
+function _getMemoryManagerInstance(): ReturnType<typeof getMemoryManager> {
+  return getMemoryManager(_getMemoryStore());
 }
 
 // Trust config stored in KV store
@@ -2631,5 +2666,129 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('approvalServer:status', () => {
     return _approvalServer?.status() ?? { running: false, port: 7337, url: 'http://localhost:7337' };
+  });
+
+  // ── Persistent Mission System ───────────────────────────────────────────────
+
+  ipcMain.handle('missions:list', () => {
+    return _getMissionStore().load();
+  });
+
+  ipcMain.handle('missions:register', async (_e, def: {
+    id: string; name: string; goal: string; category: string;
+    schedule?: string; description?: string;
+  }) => {
+    try {
+      const mgr = _getMissionManager(store);
+      const { id, name, goal, category, schedule, description } = def;
+      const agentLoop = _getAgentLoop(store);
+      mgr.register({
+        id, name, goal,
+        category: category as import('@triforge/engine').TaskCategory,
+        schedule,
+        description,
+        enabled: true,
+        createdAt: Date.now(),
+        task: async () => {
+          const task = agentLoop.createTask(goal, category as import('@triforge/engine').TaskCategory);
+          await agentLoop.runTask(task.id);
+        },
+      });
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('missions:run', async (_e, id: string) => {
+    try {
+      await _getMissionManager(store).runMission(id);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('missions:delete', (_e, id: string) => {
+    return { ok: _getMissionStore().delete(id) };
+  });
+
+  ipcMain.handle('missions:restore', () => {
+    try {
+      _getMissionManager(store).restoreFromStore();
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // ── Autonomous Tool Execution Layer ────────────────────────────────────────
+
+  ipcMain.handle('tools:list', () => {
+    return _getRegistry().listAll();
+  });
+
+  ipcMain.handle('tools:execute', async (_e, req: { tool: string; params: Record<string, unknown>; category?: string }) => {
+    try {
+      const executor = getToolExecutor(_getRegistry(), _getAuditLedger(), _getApprovalStore());
+      const result = await executor.execute({
+        id:       newRequestId(),
+        tool:     req.tool,
+        params:   req.params,
+        category: req.category as import('@triforge/engine').TaskCategory | undefined,
+      });
+      return result;
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('tools:resolveApproval', (_e, approvalId: string, approved: boolean) => {
+    const executor = getToolExecutor(_getRegistry(), _getAuditLedger(), _getApprovalStore());
+    executor.resolveApproval(approvalId, approved);
+    return { ok: true };
+  });
+
+  ipcMain.handle('tools:pendingApprovals', () => {
+    const executor = getToolExecutor(_getRegistry(), _getAuditLedger(), _getApprovalStore());
+    return executor.listPendingApprovals();
+  });
+
+  // ── System Health Monitor ──────────────────────────────────────────────────
+
+  // Register IPC-accessible health checks for subsystems managed in ipc.ts
+  healthMonitor.register({
+    name:  'EventBus',
+    check: () => {
+      const { eventBus: bus } = require('@triforge/engine');
+      return bus.listenerCount() > 0 || bus.pendingQueueSize() < 5000;
+    },
+  });
+
+  healthMonitor.register({
+    name:  'ToolRegistry',
+    check: () => _getRegistry().listAll().length > 0,
+  });
+
+  ipcMain.handle('health:status', async () => {
+    return healthMonitor.getStatus();
+  });
+
+  ipcMain.handle('health:run', async () => {
+    return healthMonitor.runChecks();
+  });
+
+  // ── Long-Term Memory ───────────────────────────────────────────────────────
+
+  ipcMain.handle('memory:search', (_e, query: string) => {
+    return _getMemoryManagerInstance().search(query);
+  });
+
+  ipcMain.handle('memory:recent', (_e, n: number = 20) => {
+    return _getMemoryManagerInstance().getRecent(n);
+  });
+
+  ipcMain.handle('memory:graph', () => {
+    return _getMemoryManagerInstance().getGraph().toJSON();
   });
 }
