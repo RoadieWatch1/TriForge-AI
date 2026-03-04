@@ -28,6 +28,7 @@ import { getToolExecutor, newRequestId } from '../core/tools/toolExecutor';
 import { healthMonitor } from '../core/health/healthMonitor';
 import { MemoryStore } from '../core/memory/memoryStore';
 import { getMemoryManager } from '../core/memory/memoryManager';
+import { ImageService, getImageHistoryStore } from '@triforge/engine';
 
 import { ResultStore } from './resultStore';
 import { ValueEngine, CampaignStore, MetricsStore, CompoundEngine } from '@triforge/engine';
@@ -52,6 +53,8 @@ import {
   DEFAULT_TRUST_SNAPSHOT,
   validateTrustMode,
   PAPER_TRADING_ONLY,
+  CouncilExecutor,
+  ProviderSelector,
   type WorkflowDefinition,
   type TrustModeSnapshot,
   type TaskCategory,
@@ -85,9 +88,54 @@ let _registry: import('@triforge/engine').TaskToolRegistry | null = null;
 let _missionStore: MissionStore | null = null;
 let _missionManager: MissionManager | null = null;
 let _memoryStore: MemoryStore | null = null;
+let _imageService: ImageService | null = null;
+let _councilExecutor: InstanceType<typeof CouncilExecutor> | null = null;
+let _providerSelector: InstanceType<typeof ProviderSelector> | null = null;
+
+async function _getImageService(store: Store): Promise<ImageService> {
+  if (_imageService) return _imageService;
+  const openAiKey  = (await store.getSecret('triforge.openai.apiKey'))  ?? undefined;
+  const grokKey    = (await store.getSecret('triforge.grok.apiKey'))    ?? undefined;
+  const claudeKey  = (await store.getSecret('triforge.claude.apiKey'))  ?? undefined;
+  const histStore  = getImageHistoryStore(_getDataDir());
+
+  // Build refine / critique providers (text-only, no image generation)
+  let refineProvider:   import('@triforge/engine').AIProvider | null = null;
+  let critiqueProvider: import('@triforge/engine').AIProvider | null = null;
+  if (claudeKey) {
+    const { ClaudeProvider } = await import('@triforge/engine');
+    refineProvider   = new ClaudeProvider({ apiKey: claudeKey });
+    critiqueProvider = refineProvider;
+  } else if (openAiKey) {
+    const { OpenAIProvider } = await import('@triforge/engine');
+    refineProvider   = new OpenAIProvider({ apiKey: openAiKey });
+    critiqueProvider = refineProvider;
+  }
+
+  _imageService = new ImageService(refineProvider, critiqueProvider, openAiKey, grokKey, histStore);
+  return _imageService;
+}
 
 function _getDataDir(): string {
   return app.getPath('userData');
+}
+
+function _getProviderSelector(): InstanceType<typeof ProviderSelector> {
+  if (!_providerSelector) {
+    if (!providerManager) throw new Error('ProviderManager not initialized');
+    _providerSelector = new ProviderSelector(providerManager);
+  }
+  return _providerSelector;
+}
+
+async function _getCouncilExecutor(): Promise<InstanceType<typeof CouncilExecutor>> {
+  if (_councilExecutor) return _councilExecutor;
+  if (!providerManager) throw new Error('ProviderManager not ready');
+  const sel    = _getProviderSelector();
+  const { analyzer, critic } = await sel.selectCouncil();
+  const planner = new ThinkTankPlanner(providerManager);
+  _councilExecutor = new CouncilExecutor(analyzer, critic, planner);
+  return _councilExecutor;
 }
 
 function _getCredentialManager(store: Store): CredentialManager {
@@ -342,6 +390,22 @@ export function setupIpc(store: Store): void {
   if (!_professionEngine && _sensorManager && _autonomyEngine) {
     _professionEngine = new ProfessionEngine(_sensorManager, _autonomyEngine);
   }
+
+  // ── AI Mind — background reasoning agent ─────────────────────────────────────
+  // Start after ProviderManager is guaranteed initialized (line above sets it).
+  // Defer slightly so all EventBus subscribers are wired before Mind listens.
+  setTimeout(async () => {
+    try {
+      if (!providerManager) return;
+      const { getAIMind } = await import('@triforge/engine');
+      const sel    = new ProviderSelector(providerManager);
+      const { analyzer, critic } = await sel.selectCouncil();
+      const mind   = getAIMind(analyzer, critic);
+      mind.start();
+    } catch (e) {
+      console.warn('[AIMind] Could not start background reasoning:', e instanceof Error ? e.message : String(e));
+    }
+  }, 2000);
 
   // ── Permissions ─────────────────────────────────────────────────────────────
   ipcMain.handle('permissions:get', () => store.getPermissions());
@@ -1123,6 +1187,77 @@ VERIFY: [1-3 specific things the user should double-check]
       return { url };
     } catch {
       return { error: 'Image generation failed. Check your OpenAI API key and try again.' };
+    }
+  });
+
+  // ── Pro Image Generator ──────────────────────────────────────────────────────
+  ipcMain.handle('image:generate', async (_event, req: import('@triforge/engine').ImageGenerationRequest) => {
+    const lic  = await store.getLicense();
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('FORGE_PROFILES', tier)) {
+      return { error: lockedError('FORGE_PROFILES') };
+    }
+    try {
+      const svc    = await _getImageService(store);
+      if (!svc.canGenerate()) {
+        return { error: 'No image generation API key configured. Add an OpenAI or Grok API key in Settings → API Keys.' };
+      }
+      const result = await svc.generate(req);
+      return result;
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('image:history', async (_event, n?: number) => {
+    const lic  = await store.getLicense();
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('FORGE_PROFILES', tier)) return { error: lockedError('FORGE_PROFILES') };
+    const histStore = getImageHistoryStore(_getDataDir());
+    return histStore.getRecent(n ?? 50);
+  });
+
+  ipcMain.handle('image:delete', async (_event, id: string) => {
+    const histStore = getImageHistoryStore(_getDataDir());
+    histStore.delete(id);
+    return { ok: true };
+  });
+
+  ipcMain.handle('image:styles', () => {
+    const { STYLE_PRESETS } = require('@triforge/engine');
+    return Object.keys(STYLE_PRESETS as Record<string, string>);
+  });
+
+  // ── Council Executor ─────────────────────────────────────────────────────────
+  ipcMain.handle('council:execute', async (_event, request: string, category?: string) => {
+    const lic  = await store.getLicense();
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('THINK_TANK', tier)) {
+      return { error: lockedError('THINK_TANK') };
+    }
+    try {
+      const executor = await _getCouncilExecutor();
+      const result   = await executor.execute({
+        request,
+        category: (category ?? 'general') as import('@triforge/engine').TaskCategory,
+      });
+      return {
+        expanded:   result.expanded,
+        plan:       result.plan,
+        critique:   result.critique,
+        durationMs: result.durationMs,
+      };
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('council:providers', async () => {
+    try {
+      const sel = _getProviderSelector();
+      return await sel.availableProviders();
+    } catch {
+      return [];
     }
   });
 

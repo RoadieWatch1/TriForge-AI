@@ -117,3 +117,39 @@ export { CompoundEngine } from './compound/compoundEngine';
 export { computeScore, categorize, evaluate } from './compound/evaluator';
 export { getScalingDecision, applyScaling } from './compound/scaler';
 export type { StrategyProfile, CompoundStats } from './compound/compoundTypes';
+
+// Tool Execution Bus
+export { ToolExecutionBus, getToolExecutionBus } from './execution/ToolExecutionBus';
+export type { BusTask, BusResult }               from './execution/ToolExecutionBus';
+
+// Agent Safety Guard
+export { AgentSafetyGuard, getAgentSafetyGuard } from './safety/AgentSafetyGuard';
+
+// Event Intelligence (AI observability layer)
+export { EventIntelligence, getEventIntelligence } from './mind/EventIntelligence';
+export type { IntelligenceInsight }                 from './mind/EventIntelligence';
+
+// Council Executor
+export { CouncilExecutor }       from './council/CouncilExecutor';
+export type { CouncilRequest, CouncilResult } from './council/CouncilExecutor';
+
+// AI Mind (Persistent Background Reasoning)
+export { AIMind, getAIMind }     from './mind/AIMind';
+export type { MindSuggestion }   from './mind/AIMind';
+
+// Provider Selector (Dynamic AI Routing)
+export { ProviderSelector }      from './providers/providerSelector';
+export type { ProviderTaskType } from './providers/providerSelector';
+
+// Image Generation
+export { ImageService }          from './image/imageService';
+export { ImageHistoryStore, getImageHistoryStore } from './image/imageHistoryStore';
+export { createGeneratorRouter } from './image/generatorRouter';
+export { refinePrompt }          from './image/promptRefiner';
+export { critiqueImages }        from './image/imageCritique';
+export { STYLE_PRESETS, getStyleSuffix } from './image/styles';
+export type { ImageGenerationRequest, ImageGenerationResult } from './image/imageService';
+export type { ImageHistoryEntry }  from './image/imageHistoryStore';
+export type { GenerateImageOptions, GeneratedImage } from './image/generatorRouter';
+export type { CritiqueResult, ImageCritiqueScore } from './image/imageCritique';
+export type { StylePresetKey }     from './image/styles';

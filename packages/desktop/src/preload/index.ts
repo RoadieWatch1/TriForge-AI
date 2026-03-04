@@ -272,6 +272,53 @@ const api = {
       }>,
   },
 
+  // Pro Image Generator
+  image: {
+    generate: (req: {
+      userPrompt: string;
+      style?: string;
+      negativePrompt?: string;
+      seed?: number;
+      count?: number;
+      width?: number;
+      height?: number;
+      quality?: 'standard' | 'hd';
+      imageStyle?: 'vivid' | 'natural';
+      enableCritique?: boolean;
+      enableRefine?: boolean;
+    }) => ipcRenderer.invoke('image:generate', req) as Promise<{
+      id?: string;
+      userPrompt?: string;
+      refinedPrompt?: string;
+      images?: Array<{ base64: string; mimeType: string; seed?: number; generator: string }>;
+      bestIndex?: number;
+      critique?: unknown;
+      durationMs?: number;
+      generator?: string;
+      error?: string;
+    }>,
+    history: (n?: number) =>
+      ipcRenderer.invoke('image:history', n) as Promise<unknown[]>,
+    delete: (id: string) =>
+      ipcRenderer.invoke('image:delete', id) as Promise<{ ok: boolean }>,
+    styles: () =>
+      ipcRenderer.invoke('image:styles') as Promise<string[]>,
+  },
+
+  // Council Executor + Provider Selector
+  council: {
+    execute: (request: string, category?: string) =>
+      ipcRenderer.invoke('council:execute', request, category) as Promise<{
+        expanded?: string;
+        plan?: unknown;
+        critique?: string;
+        durationMs?: number;
+        error?: string;
+      }>,
+    providers: () =>
+      ipcRenderer.invoke('council:providers') as Promise<string[]>,
+  },
+
   // Task Engine (Phase 3 + 3.5 — autonomous execution)
   taskEngine: {
     createTask: (goal: string, category: string) =>

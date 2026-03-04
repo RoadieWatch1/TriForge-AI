@@ -58,7 +58,19 @@ export type AuditEventType =
   // Persistent Mission System
   | 'MISSION_REGISTERED' | 'MISSION_FIRED' | 'MISSION_COMPLETED' | 'MISSION_FAILED'
   // Tool Execution Layer
-  | 'TOOL_EXECUTE_REQUESTED' | 'TOOL_EXECUTE_APPROVED' | 'TOOL_EXECUTE_COMPLETED' | 'TOOL_EXECUTE_FAILED';
+  | 'TOOL_EXECUTE_REQUESTED' | 'TOOL_EXECUTE_APPROVED' | 'TOOL_EXECUTE_COMPLETED' | 'TOOL_EXECUTE_FAILED'
+  // Pro Image Generator
+  | 'IMAGE_REQUESTED' | 'IMAGE_GENERATED' | 'IMAGE_CRITIQUE' | 'IMAGE_FAILED'
+  // Council Executor
+  | 'COUNCIL_STARTED' | 'COUNCIL_ANALYSIS' | 'COUNCIL_RESULT' | 'COUNCIL_CRITIQUE'
+  // AI Mind
+  | 'MIND_SUGGESTION'
+  // Tool Execution Bus
+  | 'TOOL_BUS_START' | 'TOOL_BUS_COMPLETE' | 'TOOL_BUS_ERROR'
+  // Agent Safety Guard
+  | 'AGENT_BLOCKED'
+  // Event Intelligence
+  | 'INTELLIGENCE_INSIGHT';
 
 // ── Execution Result (Phase 4) ─────────────────────────────────────────────────
 
@@ -275,4 +287,24 @@ export type EngineEvent =
   | { type: 'TOOL_EXECUTE_REQUESTED'; requestId: string; tool: string; riskLevel: string }
   | { type: 'TOOL_EXECUTE_APPROVED';  requestId: string; tool: string }
   | { type: 'TOOL_EXECUTE_COMPLETED'; requestId: string; tool: string; result: unknown }
-  | { type: 'TOOL_EXECUTE_FAILED';    requestId: string; tool: string; error: string };
+  | { type: 'TOOL_EXECUTE_FAILED';    requestId: string; tool: string; error: string }
+  // Pro Image Generator
+  | { type: 'IMAGE_REQUESTED';  requestId: string; userPrompt: string }
+  | { type: 'IMAGE_GENERATED';  requestId: string; count: number; generator: string }
+  | { type: 'IMAGE_CRITIQUE';   requestId: string; bestIndex: number; summary: string }
+  | { type: 'IMAGE_FAILED';     requestId: string; error: string }
+  // Council Executor
+  | { type: 'COUNCIL_STARTED';  request: string; category: string }
+  | { type: 'COUNCIL_ANALYSIS'; expanded: string; category: string }
+  | { type: 'COUNCIL_RESULT';   planId: string; stepCount: number; category: string }
+  | { type: 'COUNCIL_CRITIQUE'; planId: string; critique: string }
+  // AI Mind
+  | { type: 'MIND_SUGGESTION';  eventType: string; analysis: string; critique: string; suggestion: string }
+  // Tool Execution Bus
+  | { type: 'TOOL_BUS_START';    tool: string; input: Record<string, unknown> }
+  | { type: 'TOOL_BUS_COMPLETE'; tool: string; durationMs: number }
+  | { type: 'TOOL_BUS_ERROR';    tool: string; error: string }
+  // Agent Safety Guard
+  | { type: 'AGENT_BLOCKED'; taskId: string; reason: string; count: number }
+  // Event Intelligence
+  | { type: 'INTELLIGENCE_INSIGHT'; eventType: string; analysis: string; critique: string };
