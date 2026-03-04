@@ -181,56 +181,77 @@ app.whenReady().then(async () => {
   createWindow();
   bootLog('Main window created');
 
-  // Helper: close splash and reveal main window (idempotent)
+  // ── Two-condition gate: main window shows when BOTH renderer AND voice are done ─
+  // Condition A: renderer ready-to-show
+  // Condition B: splash voice finished (or splash closed for any reason)
+  // Fallback: 12 s hard timer sets both conditions
+  let _rendererReady  = false;
+  let _splashVoiceDone = false;
+
   function showMain() {
     if (splashWindow && !splashWindow.isDestroyed()) {
       splashWindow.close();
       splashWindow = null;
     }
     if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      bootLog('Main window shown');
       mainWindow.show();
       mainWindow.focus();
     }
   }
 
-  // Hard fallback: always registered — if ready-to-show never fires for any reason
-  // the user will see the main window at 12 s instead of a frozen splash.
+  function _checkReady() {
+    if (_rendererReady && _splashVoiceDone) showMain();
+  }
+
+  // Splash closes itself when voice ends (u.onend → window.close in splash.html).
+  // We listen here so we know when it's safe to display.
+  splashWindow?.on('closed', () => {
+    bootLog('Splash closed (voice ended or window dismissed)');
+    _splashVoiceDone = true;
+    _checkReady();
+  });
+
+  // Hard fallback: if EITHER condition never fires, force show at 12 s.
   const splashFallback = setTimeout(() => {
     bootLog('Fallback timer fired — forcing main window visible');
+    _rendererReady   = true;
+    _splashVoiceDone = true;
     showMain();
   }, 12_000);
 
   // ── Renderer safety listeners ────────────────────────────────────────────────
 
-  // Normal path: renderer is ready — enforce minimum splash duration then swap
+  // Normal path: renderer is ready — gate clears condition A
   mainWindow?.once('ready-to-show', () => {
     bootLog('Renderer ready-to-show');
     clearTimeout(splashFallback);
-    const minSplashMs = 6500; // voice starts at 1400ms + ~4s single-utterance speech
-    const elapsed = Date.now() - splashStart;
-    const delay = Math.max(0, minSplashMs - elapsed);
-    setTimeout(showMain, delay);
+    _rendererReady = true;
     if (mainWindow) setupAutoUpdater(mainWindow);
+    _checkReady();
   });
 
-  // Renderer HTML / JS bundle failed to load
+  // Renderer HTML / JS bundle failed to load — bypass gate, show immediately
   mainWindow?.webContents.on('did-fail-load', (_e, errorCode, errorDescription) => {
     bootError('Renderer did-fail-load', `${errorCode} ${errorDescription}`);
     clearTimeout(splashFallback);
+    _rendererReady = _splashVoiceDone = true;
     showMain();
   });
 
-  // Renderer process crashed or was killed
+  // Renderer process crashed or was killed — bypass gate, show immediately
   mainWindow?.webContents.on('render-process-gone', (_e, details) => {
     bootError('Renderer process gone', details.reason);
     clearTimeout(splashFallback);
+    _rendererReady = _splashVoiceDone = true;
     showMain();
   });
 
-  // Renderer became unresponsive (hung JS, infinite loop, etc.)
+  // Renderer became unresponsive (hung JS, infinite loop, etc.) — bypass gate
   mainWindow?.webContents.on('unresponsive', () => {
     bootError('Renderer unresponsive', 'renderer JS is hung');
     clearTimeout(splashFallback);
+    _rendererReady = _splashVoiceDone = true;
     showMain();
   });
 

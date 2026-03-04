@@ -297,6 +297,13 @@
         u.pitch  = 1.05;  // slight warmth; never go below 1.0 or it sounds robotic
         u.volume = 1.0;
         if (preferred) u.voice = preferred;
+
+        // When speech finishes, close the splash window.
+        // Main process listens for the 'closed' event and only then shows the
+        // main window (two-condition gate: renderer ready AND voice done).
+        u.onend  = function () { window.close(); };
+        u.onerror = function () { window.close(); }; // also close on TTS error
+
         speechSynthesis.speak(u);
       }
 
