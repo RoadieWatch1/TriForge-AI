@@ -150,6 +150,13 @@ jobs:
         with:
           files: dist/*
           token: ${{ secrets.GITHUB_TOKEN }}
-          generate_release_notes: true
-          make_latest: "true"
           fail_on_unmatched_files: false
+
+      - name: Finalize release (generate notes + mark latest)
+        run: |
+          gh release edit "${{ github.ref_name }}" \
+            --generate-notes \
+            --latest \
+            --repo "${{ github.repository }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
