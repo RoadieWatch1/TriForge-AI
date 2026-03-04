@@ -154,9 +154,9 @@ jobs:
 
       - name: Finalize release (generate notes + mark latest)
         run: |
-          gh release edit "${{ github.ref_name }}" \
-            --generate-notes \
-            --latest \
-            --repo "${{ github.repository }}"
+          RELEASE_ID=$(gh api repos/${{ github.repository }}/releases/tags/${{ github.ref_name }} --jq '.id')
+          gh api --method PATCH repos/${{ github.repository }}/releases/$RELEASE_ID \
+            -F generate_release_notes=true \
+            -f make_latest=true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
