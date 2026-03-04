@@ -169,31 +169,8 @@ app.whenReady().then(async () => {
   splashWindow = createSplash();
   const splashStart = Date.now();
 
-  // 2. Init store and IPC (runs while splash is visible)
-  store = new Store();
-  await store.init();
-  setupIpc(store);
-
-  // 3a. Pre-load task engine data stores + start scheduler
-  const dataDir = app.getPath('userData');
-  new TaskStore(dataDir).loadAll(); // warms cache, marks stale 'running' tasks as 'paused'
-  const scheduler = new Scheduler(dataDir);
-  scheduler.onFire = (job) => {
-    // When a scheduled job fires, create + run a task via the main window
-    // (agentLoop is initialized lazily inside ipc.ts on first use)
-    const win = BrowserWindow.getAllWindows()[0];
-    if (win && !win.isDestroyed()) {
-      win.webContents.send('scheduler:jobFired', {
-        jobId: job.id, goal: job.taskGoal, category: job.category,
-      });
-    }
-  };
-  scheduler.start();
-
-  // Ensure audit ledger directory is writable (creates file on first append)
-  new AuditLedger(dataDir); // constructor only stores path, no file I/O yet
-
-  // 3. Create main window (hidden) and start loading the renderer
+  // 2. Create main window immediately (hidden) — must happen before any async init
+  //    so the splash → main transition is always wired regardless of init errors.
   createWindow();
 
   // Helper: close splash and reveal main window (idempotent)
@@ -208,26 +185,49 @@ app.whenReady().then(async () => {
     }
   }
 
-  // Hard fallback: if ready-to-show never fires (renderer crash / slow load),
-  // force the main window visible after 12 s so the user is never stuck on splash.
+  // Hard fallback: always registered — if ready-to-show never fires for any reason
+  // the user will see the main window at 12 s instead of a frozen splash.
   const splashFallback = setTimeout(showMain, 12_000);
 
-  // 4. When renderer is ready, enforce a minimum splash duration then swap windows
+  // When renderer is ready, enforce minimum splash duration then swap windows
   mainWindow?.once('ready-to-show', () => {
     clearTimeout(splashFallback);
     const minSplashMs = 6500; // voice starts at 1400ms + ~4s single-utterance speech
     const elapsed = Date.now() - splashStart;
     const delay = Math.max(0, minSplashMs - elapsed);
     setTimeout(showMain, delay);
-    // Wire auto-updater now that we have a live window reference
     if (mainWindow) setupAutoUpdater(mainWindow);
   });
 
-  // If the renderer file fails to load entirely, bail out of splash immediately
+  // If the renderer HTML file fails to load, escape the splash immediately
   mainWindow?.webContents.once('did-fail-load', () => {
     clearTimeout(splashFallback);
     showMain();
   });
+
+  // 3. Init store, IPC, and engine services — wrapped so any throw never
+  //    prevents the window from opening (app runs with limited functionality).
+  try {
+    store = new Store();
+    await store.init();
+    setupIpc(store);
+
+    const dataDir = app.getPath('userData');
+    new TaskStore(dataDir).loadAll(); // warms cache, marks stale tasks as paused
+    const scheduler = new Scheduler(dataDir);
+    scheduler.onFire = (job) => {
+      const win = BrowserWindow.getAllWindows()[0];
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('scheduler:jobFired', {
+          jobId: job.id, goal: job.taskGoal, category: job.category,
+        });
+      }
+    };
+    scheduler.start();
+    new AuditLedger(dataDir);
+  } catch (e) {
+    console.error('[startup] init error (app will open with limited functionality):', e);
+  }
 
   setupTray(
     () => { mainWindow?.show(); mainWindow?.focus(); },
