@@ -1,11 +1,13 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { VoiceButton } from './VoiceButton';
 import { VoiceConversation } from './VoiceConversation';
+import { HandsFreeVoice } from './HandsFreeVoice';
 import { UpgradeGate } from './UpgradeGate';
 import { ExecutionPlanView, type ExecutionPlan } from './ExecutionPlanView';
 import { ForgeChamber } from './ForgeChamber';
 import { CouncilChamber } from './forge/CouncilChamber';
 import { loadLastMission, type LastMissionSummary } from '../forge/ForgeContextStore';
+import { WakeWordListener } from '../voice/WakeWordListener';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -259,6 +261,18 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     onVoiceModeChange?.(next);
   };
   const [voiceChatActive, setVoiceChatActive] = useState(false);
+  const [handsFreeMode, setHandsFreeMode] = useState(false);
+  const [councilListening, setCouncilListening] = useState(false);
+  // Council Deliberation Mode — 3-phase cross-reaction before full response
+  const [deliberateMode, setDeliberateMode] = useState(() =>
+    localStorage.getItem('triforge-deliberate-mode') === 'on'
+  );
+  const [deliberationPhase, setDeliberationPhase] = useState<string | null>(null);
+  // Live streaming state for Council consensus
+  const [liveProviderTokens, setLiveProviderTokens] = useState<Record<string, string>>({});
+  const [liveSynthesisText, setLiveSynthesisText]   = useState('');
+  // Council Awareness — thinking messages per provider before tokens arrive
+  const [providerThinkingMessages, setProviderThinkingMessages] = useState<Record<string, string>>({});
   const [gate, setGate] = useState<{ feature: string; neededTier: 'pro' | 'business' } | null>(null);
   const [checkoutUrls, setCheckoutUrls] = useState<{ pro: string; business: string; portal: string }>({ pro: '', business: '', portal: '' });
   const [showQuickActions, setShowQuickActions] = useState(false);
@@ -274,6 +288,15 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   // Streaming batch buffer — accumulates chunks between 50ms render ticks
   const streamBuf   = useRef('');
   const streamTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // MediaSource for streaming TTS playback
+  const mediaSourceRef  = useRef<MediaSource | null>(null);
+  const sourceBufferRef = useRef<SourceBuffer | null>(null);
+  const ttsChunkQueue   = useRef<Uint8Array[]>([]);
+  const ttsAppending    = useRef(false);
+  // Wake word listener instance
+  const wakeListenerRef = useRef<WakeWordListener | null>(null);
+  // Interrupt voice detection — active while TTS is speaking
+  const interruptRecRef = useRef<SpeechRecognition | null>(null);
 
   // Mission awareness (Phase 3 — ForgeCommand integration)
   const [lastMission, setLastMission] = useState<LastMissionSummary | null>(null);
@@ -309,6 +332,14 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, sending]);
+
+  // Proactive Council suggestions — persistent subscription for fire-and-forget events
+  useEffect(() => {
+    const unsub = window.triforge.forge.onSuggestion((data) => {
+      appendMsg({ id: crypto.randomUUID(), role: 'system', content: `Council: ${data.text}`, timestamp: new Date() });
+    });
+    return unsub;
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Persist chat history (debounced)
   useEffect(() => {
@@ -351,31 +382,115 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     if (STRATEGIC_KEYWORDS.some(kw => combined.includes(kw))) setEscalationSuggested(true);
   }, [messages]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── Wake Word listener — starts/stops with voiceMode or handsFreeMode ─────────
+
+  useEffect(() => {
+    if (!voiceMode && !handsFreeMode) {
+      wakeListenerRef.current?.stop();
+      wakeListenerRef.current = null;
+      return;
+    }
+    if (!wakeListenerRef.current) {
+      wakeListenerRef.current = new WakeWordListener(() => {
+        setHandsFreeMode(true);
+        setCouncilListening(true);
+        setTimeout(() => setCouncilListening(false), 500);
+        window.triforge.voice.notifyWake();
+      });
+      wakeListenerRef.current.start();
+    }
+    return () => {
+      wakeListenerRef.current?.stop();
+      wakeListenerRef.current = null;
+    };
+  }, [voiceMode, handsFreeMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Pause / resume wake listener while speaking to prevent self-triggering
+  useEffect(() => {
+    if (speaking) {
+      wakeListenerRef.current?.pause();
+    } else {
+      wakeListenerRef.current?.resume();
+    }
+  }, [speaking]);
+
   // ── TTS ───────────────────────────────────────────────────────────────────────
 
   const speakMessage = useCallback(async (msgId: string, text: string) => {
     // Stop anything currently playing
     if (audioRef.current) { audioRef.current.pause(); audioRef.current.src = ''; }
     window.speechSynthesis?.cancel();
+    // Tear down any prior MediaSource
+    if (mediaSourceRef.current && mediaSourceRef.current.readyState === 'open') {
+      try { mediaSourceRef.current.endOfStream(); } catch { /* ignore */ }
+    }
+    mediaSourceRef.current = null;
+    sourceBufferRef.current = null;
+    ttsChunkQueue.current = [];
+    ttsAppending.current = false;
 
     setSpeaking(msgId);
     const truncated = text.slice(0, 4096);
 
-    // Priority 1: OpenAI TTS — Pro/Business users with an OpenAI key (higher quality)
+    // Priority 1: OpenAI TTS streaming — Pro/Business users with an OpenAI key
     if (keyStatus.openai && (tier === 'pro' || tier === 'business')) {
       try {
-        const result = await window.triforge.voice.speak(truncated);
-        if (result.audio) {
-          const bytes = Uint8Array.from(atob(result.audio), c => c.charCodeAt(0));
-          const blob = new Blob([bytes], { type: 'audio/mpeg' });
-          const url = URL.createObjectURL(blob);
+        await new Promise<void>((resolve, reject) => {
+          const ms  = new MediaSource();
+          mediaSourceRef.current = ms;
+
+          const appendNext = () => {
+            if (!sourceBufferRef.current || sourceBufferRef.current.updating) return;
+            if (ttsChunkQueue.current.length > 0) {
+              ttsAppending.current = true;
+              const chunk = ttsChunkQueue.current.shift()!;
+              try { sourceBufferRef.current.appendBuffer(chunk); } catch { /* ignore abort */ }
+            } else {
+              ttsAppending.current = false;
+            }
+          };
+
+          ms.onsourceopen = () => {
+            const sb = ms.addSourceBuffer('audio/mpeg');
+            sourceBufferRef.current = sb;
+            sb.onupdateend = appendNext;
+          };
+
+          // Set up IPC streaming listeners
+          const unsubChunk = window.triforge.voice.onSpeakChunk((b64: string) => {
+            const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+            ttsChunkQueue.current.push(bytes);
+            appendNext();
+          });
+
+          const unsubDone = window.triforge.voice.onSpeakDone(() => {
+            unsubChunk();
+            unsubDone();
+            // Wait for all buffered chunks to be appended before ending stream
+            const finish = () => {
+              if (ttsChunkQueue.current.length > 0 || (sourceBufferRef.current?.updating)) {
+                setTimeout(finish, 50);
+                return;
+              }
+              if (ms.readyState === 'open') {
+                try { ms.endOfStream(); } catch { /* ignore */ }
+              }
+            };
+            finish();
+          });
+
+          const blobUrl = URL.createObjectURL(ms);
           if (audioRef.current) {
-            audioRef.current.src = url;
-            await audioRef.current.play();
-            audioRef.current.onended = () => { URL.revokeObjectURL(url); setSpeaking(null); };
-            return;
+            audioRef.current.src = blobUrl;
+            audioRef.current.play().catch(reject);
+            audioRef.current.onended = () => { URL.revokeObjectURL(blobUrl); setSpeaking(null); resolve(); };
+            audioRef.current.onerror = () => { URL.revokeObjectURL(blobUrl); setSpeaking(null); resolve(); };
           }
-        }
+
+          // Kick off the IPC streaming request
+          window.triforge.voice.speak(truncated).catch(reject);
+        });
+        return;
       } catch { /* fall through to Web Speech */ }
     }
 
@@ -402,6 +517,55 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
 
     setSpeaking(null);
   }, [keyStatus, tier]);
+
+  // ── Interrupt current TTS speech immediately ───────────────────────────────────
+
+  const interruptSpeech = useCallback(() => {
+    // Stop audio playback
+    if (audioRef.current) { audioRef.current.pause(); audioRef.current.src = ''; }
+    window.speechSynthesis?.cancel();
+    if (mediaSourceRef.current?.readyState === 'open') {
+      try { mediaSourceRef.current.endOfStream(); } catch { /* ignore */ }
+    }
+    mediaSourceRef.current = null;
+    sourceBufferRef.current = null;
+    ttsChunkQueue.current = [];
+    // Signal main process to abort its streaming fetch
+    window.triforge.voice.interrupt();
+    setSpeaking(null);
+  }, []);
+
+  // Voice interrupt detection — lightweight SpeechRecognition active only while TTS is playing
+  useEffect(() => {
+    if (!speaking) {
+      interruptRecRef.current?.stop();
+      interruptRecRef.current = null;
+      return;
+    }
+    const SR = (window as Window & typeof globalThis).SpeechRecognition
+            ?? (window as Window & typeof globalThis).webkitSpeechRecognition;
+    if (!SR) return;
+    const rec = new SR();
+    rec.continuous = true;
+    rec.interimResults = false;
+    rec.lang = 'en-US';
+    interruptRecRef.current = rec;
+    const INTERRUPT_WORDS = ['stop', 'cancel', 'council stop', 'stop council', 'quiet', 'silence', 'enough'];
+    rec.onresult = (e: SpeechRecognitionEvent) => {
+      const lastIdx = e.results.length - 1;
+      const t = e.results[lastIdx][0].transcript.toLowerCase().trim();
+      if (INTERRUPT_WORDS.some(w => t === w || t.startsWith(w + ' ') || t.endsWith(' ' + w))) {
+        interruptSpeech();
+      }
+    };
+    rec.onerror = () => { interruptRecRef.current = null; };
+    rec.onend   = () => { interruptRecRef.current = null; };
+    try { rec.start(); } catch { interruptRecRef.current = null; }
+    return () => {
+      rec.stop();
+      interruptRecRef.current = null;
+    };
+  }, [speaking, interruptSpeech]);
 
   // ── Send helpers ──────────────────────────────────────────────────────────────
 
@@ -477,8 +641,77 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     try {
       if (useConsensus) {
         setConsensusThinking(true);
-        const result = await window.triforge.chat.consensus(messageToSend, history, intensity);
+        setLiveProviderTokens({});
+        setLiveSynthesisText('');
+        setProviderThinkingMessages({});
+
+        // Subscribe to streaming council events so CouncilSeat cards type live
+        const unsubForge = window.triforge.forge.onUpdate((data) => {
+          // Council Awareness — role-specific thinking message before tokens arrive
+          if (data.phase === 'provider:thinking' && data.provider && data.thinkingText) {
+            setProviderThinkingMessages(prev => ({ ...prev, [data.provider!.toLowerCase()]: data.thinkingText! }));
+          // Clear thinking message once real tokens start arriving
+          } else if (data.phase === 'provider:token' && data.provider) {
+            setProviderThinkingMessages(prev => {
+              if (!prev[data.provider!.toLowerCase()]) return prev;
+              const next = { ...prev };
+              delete next[data.provider!.toLowerCase()];
+              return next;
+            });
+            if (data.token) {
+              setLiveProviderTokens(prev => ({
+                ...prev,
+                [data.provider!.toLowerCase()]: (prev[data.provider!.toLowerCase()] ?? '') + data.token,
+              }));
+            }
+          // Deliberation Phase 1 — initial positions
+          } else if (data.phase === 'deliberation:phase1:start') {
+            setDeliberationPhase('Round 1 — Initial positions');
+            setLiveProviderTokens({});
+            setProviderThinkingMessages({});
+          } else if (data.phase === 'deliberation:phase1:token' && data.provider && data.token) {
+            setLiveProviderTokens(prev => ({
+              ...prev,
+              [data.provider!.toLowerCase()]: (prev[data.provider!.toLowerCase()] ?? '') + data.token,
+            }));
+          // Deliberation Phase 2 — cross-reactions
+          } else if (data.phase === 'deliberation:phase2:start') {
+            setDeliberationPhase('Round 2 — Cross-reactions');
+            setLiveProviderTokens({});
+            setProviderThinkingMessages({});
+          } else if (data.phase === 'deliberation:phase2:token' && data.provider && data.token) {
+            setLiveProviderTokens(prev => ({
+              ...prev,
+              [data.provider!.toLowerCase()]: (prev[data.provider!.toLowerCase()] ?? '') + data.token,
+            }));
+          } else if (data.phase === 'deliberation:complete') {
+            setDeliberationPhase('Round 3 — Full response');
+            setLiveProviderTokens({});
+            setProviderThinkingMessages({});
+          } else if (data.phase === 'synthesis:token' && data.token) {
+            setLiveSynthesisText(prev => prev + data.token);
+          }
+        });
+
+        // Fast-First: show draft immediately when first provider finishes
+        const unsubDraft = window.triforge.forge.onDraft((_data) => {
+          // draft already visible via liveProviderTokens; no extra state needed
+        });
+
+        // Council Update: interim refinement from second provider pair
+        const unsubUpdate = window.triforge.forge.onCouncilUpdate((data) => {
+          setLiveSynthesisText(data.text);
+        });
+
+        const result = await window.triforge.chat.consensus(messageToSend, history, intensity, deliberateMode);
+        unsubForge();
+        unsubDraft();
+        unsubUpdate();
         setConsensusThinking(false);
+        setLiveProviderTokens({});
+        setLiveSynthesisText('');
+        setProviderThinkingMessages({});
+        setDeliberationPhase(null);
 
         if (result.error && handleGateError(result.error)) { setSending(false); return; }
 
@@ -1002,6 +1235,31 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
                   Suggested: {INTENSITY_LABELS[intensitySuggestion]} ↵
                 </button>
               )}
+              {/* Deliberation Mode toggle — 3-phase cross-reaction before full response */}
+              <button
+                title={deliberateMode ? 'Deliberation Mode ON — Council debates in 3 rounds. Click to disable.' : 'Enable Deliberation Mode — Council deliberates in 3 rounds before responding.'}
+                style={{
+                  marginLeft: 8, fontSize: 10, padding: '2px 8px', borderRadius: 10,
+                  background: deliberateMode ? 'rgba(99,102,241,0.15)' : 'transparent',
+                  color: deliberateMode ? '#6366f1' : 'var(--text-muted)',
+                  border: deliberateMode ? '1px solid rgba(99,102,241,0.4)' : '1px dashed rgba(255,255,255,0.12)',
+                  cursor: 'pointer', fontWeight: deliberateMode ? 700 : 500,
+                  transition: 'all 0.2s',
+                }}
+                onClick={() => {
+                  const next = !deliberateMode;
+                  setDeliberateMode(next);
+                  localStorage.setItem('triforge-deliberate-mode', next ? 'on' : 'off');
+                }}
+              >
+                ⬡ {deliberateMode ? 'Deliberate ON' : 'Deliberate'}
+              </button>
+            </div>
+          )}
+          {/* Deliberation phase indicator — shown while Council is deliberating */}
+          {deliberationPhase && (
+            <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', color: '#6366f1', textTransform: 'uppercase', padding: '4px 12px 2px', opacity: 0.85 }}>
+              Council Deliberation · {deliberationPhase}
             </div>
           )}
           <div style={{ flex: 1 }} />
@@ -1218,6 +1476,10 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
               onProposeAlternative={proposeAlternative}
               onSelectOutput={setSelectedProvider}
               onMergeProviders={mergeProviders}
+              liveProviderTokens={liveProviderTokens}
+              liveSynthesisText={liveSynthesisText || undefined}
+              providerThinkingMessages={providerThinkingMessages}
+              listening={councilListening}
             />
           ) : (
             <>
@@ -1372,6 +1634,14 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       </div>
 
       <audio ref={audioRef} style={{ display: 'none' }} />
+
+      {/* HandsFreeVoice — headless, renders nothing, manages the Siri-style voice loop */}
+      <HandsFreeVoice
+        active={handsFreeMode}
+        isSpeaking={!!speaking}
+        onTranscript={(t) => { setHandsFreeMode(false); setTimeout(() => setHandsFreeMode(true), 100); sendMessage(t); }}
+        onStop={() => setHandsFreeMode(false)}
+      />
     </div>
   );
 }

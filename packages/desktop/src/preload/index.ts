@@ -32,8 +32,8 @@ const api = {
       ipcRenderer.on('chat:chunk', handler);
       return () => ipcRenderer.removeListener('chat:chunk', handler);
     },
-    consensus: (message: string, history: Array<{ role: string; content: string }>, intensity?: string) =>
-      ipcRenderer.invoke('chat:consensus', message, history, intensity) as Promise<{
+    consensus: (message: string, history: Array<{ role: string; content: string }>, intensity?: string, deliberate?: boolean) =>
+      ipcRenderer.invoke('chat:consensus', message, history, intensity, deliberate) as Promise<{
         responses?: Array<{ provider: string; text: string; role?: string }>;
         synthesis?: string;
         forgeScore?: {
@@ -42,6 +42,14 @@ const api = {
           initialConfidence?: number; intensity?: string; escalatedFrom?: string;
         };
         failedProviders?: Array<{ provider: string; error: string }>;
+        error?: string;
+        tier?: string;
+      }>,
+    conversation: (message: string, history: Array<{ role: string; content: string }>) =>
+      ipcRenderer.invoke('chat:conversation', message, history) as Promise<{
+        responses?: Array<{ provider: string; text: string }>;
+        synthesis?: string;
+        durationMs?: number;
         error?: string;
         tier?: string;
       }>,
@@ -78,7 +86,18 @@ const api = {
     transcribe: (audioBuffer: Uint8Array | Buffer) =>
       ipcRenderer.invoke('voice:transcribe', Buffer.from(audioBuffer)) as Promise<{ text?: string; error?: string }>,
     speak: (text: string) =>
-      ipcRenderer.invoke('voice:speak', text) as Promise<{ audio?: string; error?: string }>,
+      ipcRenderer.invoke('voice:speak', text) as Promise<{ ok?: boolean; error?: string }>,
+    onSpeakChunk: (cb: (b64: string) => void): (() => void) => {
+      const h = (_: Electron.IpcRendererEvent, b: string) => cb(b);
+      ipcRenderer.on('voice:speak:chunk', h);
+      return () => ipcRenderer.removeListener('voice:speak:chunk', h);
+    },
+    onSpeakDone: (cb: () => void): (() => void) => {
+      const h = () => cb();
+      ipcRenderer.on('voice:speak:done', h);
+      return () => ipcRenderer.removeListener('voice:speak:done', h);
+    },
+    interrupt: () => ipcRenderer.invoke('voice:interrupt') as Promise<{ ok?: boolean }>,
     agent: {
       connect:    (opts: { voice?: string }) => ipcRenderer.invoke('voice:agent:connect', opts) as Promise<{ ok?: boolean; error?: string }>,
       send:       (pcm16b64: string)         => ipcRenderer.invoke('voice:agent:send', pcm16b64),
@@ -90,6 +109,8 @@ const api = {
         return () => ipcRenderer.removeListener('voice:agent:event', handler);
       },
     },
+    /** Notify main process that the wake word was detected (relays to voiceBus + councilBus). */
+    notifyWake: (): void => ipcRenderer.send('voice:wake-detected'),
   },
 
   // Window controls
@@ -531,12 +552,58 @@ const api = {
     },
   },
 
+  // Phone Link — remote Council access from any device on the local network (port 4587)
+  phoneLink: {
+    start:  () => ipcRenderer.invoke('phoneLink:start')  as Promise<{ ok?: boolean; url?: string; pairToken?: string; error?: string }>,
+    stop:   () => ipcRenderer.invoke('phoneLink:stop')   as Promise<{ ok?: boolean; error?: string }>,
+    status: () => ipcRenderer.invoke('phoneLink:status') as Promise<{ running: boolean; port: number; url: string; pairedDevices?: number }>,
+    pair:   () => ipcRenderer.invoke('phoneLink:pair')   as Promise<{ pairUrl?: string; pairToken?: string; error?: string }>,
+  },
+
   // Forge Chamber — real-time consensus telemetry
   forge: {
-    onUpdate: (cb: (data: { phase: string; provider?: string; completedCount?: number; total?: number; from?: string; to?: string; reason?: string }) => void): (() => void) => {
-      const handler = (_: Electron.IpcRendererEvent, data: { phase: string; provider?: string; completedCount?: number; total?: number; from?: string; to?: string; reason?: string }) => cb(data);
+    onUpdate: (cb: (data: { phase: string; provider?: string; token?: string; thinkingText?: string; completedCount?: number; total?: number; from?: string; to?: string; reason?: string }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, data: { phase: string; provider?: string; token?: string; thinkingText?: string; completedCount?: number; total?: number; from?: string; to?: string; reason?: string }) => cb(data);
       ipcRenderer.on('forge:update', handler);
       return () => ipcRenderer.removeListener('forge:update', handler);
+    },
+    onDraft: (cb: (data: { provider: string; text: string }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, data: { provider: string; text: string }) => cb(data);
+      ipcRenderer.on('council:draft', handler);
+      return () => ipcRenderer.removeListener('council:draft', handler);
+    },
+    onCouncilUpdate: (cb: (data: { text: string }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, data: { text: string }) => cb(data);
+      ipcRenderer.on('council:update', handler);
+      return () => ipcRenderer.removeListener('council:update', handler);
+    },
+    onSuggestion: (cb: (data: { text: string }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, data: { text: string }) => cb(data);
+      ipcRenderer.on('council:suggestion', handler);
+      return () => ipcRenderer.removeListener('council:suggestion', handler);
+    },
+    onPlan: (cb: (data: { plan: unknown }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, data: { plan: unknown }) => cb(data);
+      ipcRenderer.on('council:plan', handler);
+      return () => ipcRenderer.removeListener('council:plan', handler);
+    },
+    /** Ambient insight from InsightEngine (type, message, confidence). */
+    onInsight: (cb: (data: { type: string; message: string; confidence: number }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, data: { type: string; message: string; confidence: number }) => cb(data);
+      ipcRenderer.on('council:insight', handler);
+      return () => ipcRenderer.removeListener('council:insight', handler);
+    },
+    /** Council demo sequence events (phase: demo:thinking | demo:challenge | demo:synthesis | demo:consensus | demo:end). */
+    onDemo: (cb: (data: { phase: string }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, data: { phase: string }) => cb(data);
+      ipcRenderer.on('council:demo', handler);
+      return () => ipcRenderer.removeListener('council:demo', handler);
+    },
+    /** Partial reasoning broadcast from DebateStreamCoordinator. */
+    onPartialReasoning: (cb: (data: { provider: string; reasoning: string }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, data: { provider: string; reasoning: string }) => cb(data);
+      ipcRenderer.on('council:partial-reasoning', handler);
+      return () => ipcRenderer.removeListener('council:partial-reasoning', handler);
     },
   },
 
@@ -874,6 +941,43 @@ const api = {
     start:  () => ipcRenderer.invoke('approvalServer:start')  as Promise<{ ok: boolean; url?: string; error?: string }>,
     stop:   () => ipcRenderer.invoke('approvalServer:stop')   as Promise<{ ok: boolean }>,
     status: () => ipcRenderer.invoke('approvalServer:status') as Promise<{ running: boolean; port: number; url: string }>,
+  },
+
+  // ── Council Mission Context ────────────────────────────────────────────────────
+  mission: {
+    getContext:    () =>
+      ipcRenderer.invoke('mission:ctx:get') as Promise<{
+        mission: string; objectives: string[]; decisions: string[];
+        openQuestions: string[]; project?: string; updatedAt: number;
+      } | null>,
+    setContext:    (ctx: { mission: string; objectives: string[]; decisions: string[]; openQuestions: string[]; project?: string }) =>
+      ipcRenderer.invoke('mission:ctx:set', ctx) as Promise<{ ok: boolean }>,
+    updateContext: (patch: Partial<{ mission: string; objectives: string[]; decisions: string[]; openQuestions: string[]; project: string }>) =>
+      ipcRenderer.invoke('mission:ctx:update', patch) as Promise<{ mission: string; updatedAt: number } | null>,
+    clearContext:  () =>
+      ipcRenderer.invoke('mission:ctx:clear') as Promise<{ ok: boolean }>,
+  },
+
+  // ── Council Memory Graph ───────────────────────────────────────────────────────
+  memoryGraph: {
+    add: (node: { id: string; type: 'decision'|'strategy'|'idea'|'insight'|'fact'; project: string; content: string; related: string[] }) =>
+      ipcRenderer.invoke('memory:graph:add', node) as Promise<{ ok: boolean }>,
+    search: (project: string) =>
+      ipcRenderer.invoke('memory:graph:search', project) as Promise<Array<{ id: string; type: string; project: string; content: string; related: string[]; createdAt: number }>>,
+    related: (nodeId: string) =>
+      ipcRenderer.invoke('memory:graph:related', nodeId) as Promise<Array<{ id: string; type: string; project: string; content: string; related: string[]; createdAt: number }>>,
+    all: () =>
+      ipcRenderer.invoke('memory:graph:all') as Promise<Array<{ id: string; type: string; project: string; content: string; related: string[]; createdAt: number }>>,
+  },
+
+  // ── Local AI Providers (Ollama / LM Studio) ───────────────────────────────────
+  localProvider: {
+    test:    (baseUrl: string, model: string) =>
+      ipcRenderer.invoke('local:provider:test', baseUrl, model) as Promise<{ ok: boolean; latencyMs?: number; error?: string }>,
+    chat:    (baseUrl: string, model: string, messages: Array<{ role: string; content: string }>) =>
+      ipcRenderer.invoke('local:provider:chat', baseUrl, model, messages) as Promise<{ text?: string; error?: string }>,
+    models:  (baseUrl: string) =>
+      ipcRenderer.invoke('local:provider:models', baseUrl) as Promise<{ models?: string[]; error?: string }>,
   },
 };
 

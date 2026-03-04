@@ -24,16 +24,24 @@ interface Props {
 const SAMPLE_RATE   = 16000;
 const CHUNK_INTERVAL_MS = 100; // send audio every 100ms
 
-// ── Helper: Float32 → Int16 PCM ───────────────────────────────────────────────
+// ── AudioWorklet processor source (inline — avoids Electron file path issues) ──
 
-function float32ToPcm16(buffer: Float32Array): Buffer {
-  const out = Buffer.allocUnsafe(buffer.length * 2);
-  for (let i = 0; i < buffer.length; i++) {
-    const s = Math.max(-1, Math.min(1, buffer[i]));
-    out.writeInt16LE(s < 0 ? s * 0x8000 : s * 0x7fff, i * 2);
+const MIC_WORKLET_CODE = `
+class MicProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const input = inputs[0][0];
+    if (input) {
+      const pcm16 = new Int16Array(input.length);
+      for (let i = 0; i < input.length; i++) {
+        pcm16[i] = Math.max(-32768, Math.min(32767, input[i] * 32767));
+      }
+      this.port.postMessage(pcm16.buffer, [pcm16.buffer]);
+    }
+    return true;
   }
-  return out;
 }
+registerProcessor('mic-processor', MicProcessor);
+`;
 
 // ── Helper: Base64 PCM16 → AudioBuffer ────────────────────────────────────────
 
@@ -65,7 +73,7 @@ export function VoiceConversation({ hasGrok, hasOpenAI, sending, onTranscript, o
 
   // Audio refs
   const audioCtxRef     = useRef<AudioContext | null>(null);
-  const processorRef    = useRef<ScriptProcessorNode | null>(null);
+  const processorRef    = useRef<AudioWorkletNode | null>(null);
   const streamRef       = useRef<MediaStream | null>(null);
   const unsubAgentRef   = useRef<(() => void) | null>(null);
   const pendingAudioRef = useRef<Float32Array[]>([]);
@@ -177,18 +185,24 @@ export function VoiceConversation({ hasGrok, hasOpenAI, sending, onTranscript, o
       const ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
       audioCtxRef.current = ctx;
 
-      const source    = ctx.createMediaStreamSource(stream);
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
-      processorRef.current = processor;
+      // Load the AudioWorklet from an inline Blob URL — avoids Electron file path issues
+      // and moves audio processing off the main thread (unlike the deprecated ScriptProcessorNode)
+      const blob = new Blob([MIC_WORKLET_CODE], { type: 'application/javascript' });
+      const workletUrl = URL.createObjectURL(blob);
+      await ctx.audioWorklet.addModule(workletUrl);
+      URL.revokeObjectURL(workletUrl);
 
-      processor.onaudioprocess = (ev) => {
-        const pcm16 = float32ToPcm16(ev.inputBuffer.getChannelData(0));
-        const b64   = pcm16.toString('base64');
+      const source      = ctx.createMediaStreamSource(stream);
+      const workletNode = new AudioWorkletNode(ctx, 'mic-processor');
+      processorRef.current = workletNode;
+
+      workletNode.port.onmessage = (ev: MessageEvent<ArrayBuffer>) => {
+        const b64 = Buffer.from(ev.data).toString('base64');
         window.triforge.voice.agent.send(b64);
       };
 
-      source.connect(processor);
-      processor.connect(ctx.destination);
+      source.connect(workletNode);
+      workletNode.connect(ctx.destination);
     } catch {
       setErrMsg('Microphone access denied.');
       setStatus('error');

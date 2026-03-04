@@ -4,7 +4,7 @@ import path from 'path';
 import os from 'os';
 import { execSync } from 'child_process';
 import { Store, LedgerEntry, ForgeScore } from './store';
-import { transcribeAudio, textToSpeech } from './voice';
+import { transcribeAudio, textToSpeechStream } from './voice';
 import { validateLicense, loadLicense, deactivateLicense, LEMONSQUEEZY } from './license';
 import { isAtMessageLimit, hasCapability, lockedError, getMemoryLimit, TIERS } from './subscription';
 import { hashPin, verifyPin, isValidPin } from './auth';
@@ -22,6 +22,9 @@ import { SensorManager } from './sensors/index';
 import { navigate as browserNavigate, screenshot as browserScreenshot, fillForm as browserFillForm, scrape as browserScrape, closeBrowser } from './browser/index';
 import { SocialPoster } from './social/index';
 import { ApprovalServer } from './approvalServer';
+import { PhoneLinkServer } from './phoneLink';
+import { initCouncilNotify, sendRemoteUpdate } from './councilNotify';
+import { evaluateProactiveOpportunity, resetProactiveCooldown } from './proactiveCouncil';
 import { MissionManager } from '../core/missions/missionManager';
 import { MissionStore } from '../core/missions/missionStore';
 import { getToolExecutor, newRequestId } from '../core/tools/toolExecutor';
@@ -55,6 +58,21 @@ import {
   PAPER_TRADING_ONLY,
   CouncilExecutor,
   ProviderSelector,
+  CouncilConversationEngine,
+  buildTaskContextAddendum,
+  getTaskContext,
+  routeCouncil,
+  MissionContextManager,
+  CouncilMemoryGraph,
+  CouncilRuntime,
+  DebateStreamCoordinator,
+  OllamaProvider,
+  startCouncilDemo,
+  InsightEngine,
+  type CouncilMemoryNode,
+  type MissionContext,
+  type CouncilInsight,
+  type InsightSignal,
   type WorkflowDefinition,
   type TrustModeSnapshot,
   type TaskCategory,
@@ -91,6 +109,20 @@ let _memoryStore: MemoryStore | null = null;
 let _imageService: ImageService | null = null;
 let _councilExecutor: InstanceType<typeof CouncilExecutor> | null = null;
 let _providerSelector: InstanceType<typeof ProviderSelector> | null = null;
+let _missionCtxMgr: MissionContextManager | null = null;
+let _memGraph: CouncilMemoryGraph | null = null;
+let _councilRuntime: CouncilRuntime | null = null;
+let _insightEngine: InsightEngine | null = null;
+
+function _getMissionCtxMgr(store: Store): MissionContextManager {
+  if (!_missionCtxMgr) _missionCtxMgr = new MissionContextManager(store);
+  return _missionCtxMgr;
+}
+
+function _getMemGraph(store: Store): CouncilMemoryGraph {
+  if (!_memGraph) _memGraph = new CouncilMemoryGraph(store);
+  return _memGraph;
+}
 
 async function _getImageService(store: Store): Promise<ImageService> {
   if (_imageService) return _imageService;
@@ -502,6 +534,9 @@ export function setupIpc(store: Store): void {
       return { error: 'MESSAGE_LIMIT_REACHED', tier };
     }
 
+    // Track task context from this message
+    updateTaskContext(message);
+
     // Build system prompt with user identity, memories, and tier capabilities
     const systemPrompt = await buildSystemPrompt(store, _professionEngine?.getSystemPromptAdditions());
 
@@ -522,6 +557,32 @@ export function setupIpc(store: Store): void {
       return { error: err instanceof Error ? err.message : String(err) };
     }
   });
+
+  // ── Task Continuity — active task context persists across messages ───────────
+  let activeTaskContext: string | null = null;
+  const TASK_KEYWORDS = ['build', 'design', 'create', 'develop', 'plan', 'write', 'research', 'make', 'launch', 'improve', 'fix', 'implement', 'generate', 'help me'];
+  const TASK_RESET_COMMANDS = ['new task', 'clear task', 'start over', 'reset task'];
+
+  function updateTaskContext(message: string): void {
+    const lower = message.toLowerCase();
+    if (TASK_RESET_COMMANDS.some(cmd => lower.includes(cmd))) {
+      activeTaskContext = null;
+      resetProactiveCooldown();
+      return;
+    }
+    // Store messages >40 chars containing task-oriented keywords
+    if (message.length > 40 && TASK_KEYWORDS.some(k => lower.includes(k))) {
+      activeTaskContext = message.slice(0, 200);
+      resetProactiveCooldown();
+    }
+  }
+
+  // ── Council Awareness — role-specific thinking messages shown before streaming
+  const ROLE_THINKING_MESSAGES: Record<string, string> = {
+    strategist: 'Analyzing strategic direction…',
+    critic:     'Probing for weaknesses…',
+    executor:   'Planning implementation steps…',
+  };
 
   // ── Debate Intensity — Council role prompts & synthesis directives ────────────
   const ROLES = ['strategist', 'critic', 'executor'] as const;
@@ -564,7 +625,7 @@ export function setupIpc(store: Store): void {
   const ESCALATION_RE = /security.risk|vulnerabilit|breaking.change|data.loss|memory.leak|race.condition|injection/i;
 
   // ── Consensus Chat (all active providers in parallel + synthesis) ─────────────
-  ipcMain.handle('chat:consensus', async (event, message: string, history: Array<{ role: string; content: string }>, intensity: string = 'analytical') => {
+  ipcMain.handle('chat:consensus', async (event, message: string, history: Array<{ role: string; content: string }>, intensity: string = 'analytical', deliberate = false) => {
     const validErr = validateChat(message, history);
     if (validErr) return { error: validErr };
 
@@ -589,29 +650,152 @@ export function setupIpc(store: Store): void {
       ? (intensity as Intensity)
       : 'analytical';
 
-    const systemPrompt = await buildSystemPrompt(store, _professionEngine?.getSystemPromptAdditions());
+    // Task Continuity: detect and update active task from this message
+    updateTaskContext(message);
+
+    const baseSystemPrompt = await buildSystemPrompt(store, _professionEngine?.getSystemPromptAdditions());
+    // Inject active task context into system prompt when available
+    const systemPrompt = activeTaskContext
+      ? baseSystemPrompt + `\n\n--- ACTIVE TASK CONTEXT ---\nThe user is currently working on: "${activeTaskContext}"\nAll responses should help advance this task.`
+      : baseSystemPrompt;
 
     // Notify renderer: forge starting
     event.sender.send('forge:update', { phase: 'querying', total: providers.length });
 
+    // ── Optional deliberation pre-pass (2 rounds before full response) ──────────
+    // Phase 1: quick 1-2 sentence initial position from each provider (parallel)
+    // Phase 2: cross-reaction — each provider reads others' Phase 1 and reacts (parallel)
+    // Phase 3: full response informed by deliberation context (existing flow below)
+    let deliberationContext: { phase1: Record<string, string>; phase2: Record<string, string> } | null = null;
+
+    if (deliberate && providers.length > 1) {
+      event.sender.send('forge:update', { phase: 'deliberation:phase1:start', total: providers.length });
+
+      const phase1: Record<string, string> = {};
+      await Promise.allSettled(providers.map(async (p, i) => {
+        const role = ROLES[Math.min(i, ROLES.length - 1)];
+        const msgs = [
+          { role: 'system', content: `You are the ${role.charAt(0).toUpperCase() + role.slice(1)} on the Council. Give your initial 1-2 sentence position on this topic. Be direct and specific.` },
+          ...history,
+          { role: 'user', content: message },
+        ];
+        let txt = '';
+        await p.chatStream(msgs, (chunk: string) => {
+          txt += chunk;
+          if (!event.sender.isDestroyed())
+            event.sender.send('forge:update', { phase: 'deliberation:phase1:token', provider: p.name, token: chunk });
+        });
+        phase1[p.name] = txt;
+        if (!event.sender.isDestroyed())
+          event.sender.send('forge:update', { phase: 'deliberation:phase1:done', provider: p.name });
+      }));
+
+      event.sender.send('forge:update', { phase: 'deliberation:phase2:start', total: providers.length });
+
+      const phase2: Record<string, string> = {};
+      await Promise.allSettled(providers.map(async (p, i) => {
+        const role = ROLES[Math.min(i, ROLES.length - 1)];
+        const othersStr = providers
+          .filter((_, j) => j !== i)
+          .map((op, j) => {
+            const otherRole = ROLES[Math.min(j >= i ? j + 1 : j, ROLES.length - 1)];
+            return `${otherRole.charAt(0).toUpperCase() + otherRole.slice(1)} (${op.name}): ${(phase1[op.name] ?? '').slice(0, 300)}`;
+          })
+          .join('\n\n');
+        const msgs = [
+          { role: 'system', content: `You are the ${role.charAt(0).toUpperCase() + role.slice(1)} on the Council. Other council members gave these initial positions:\n\n${othersStr}\n\nIn 1-2 sentences: do you agree, partially agree, or disagree? What is the key point of difference?` },
+          { role: 'user', content: message },
+        ];
+        let txt = '';
+        await p.chatStream(msgs, (chunk: string) => {
+          txt += chunk;
+          if (!event.sender.isDestroyed())
+            event.sender.send('forge:update', { phase: 'deliberation:phase2:token', provider: p.name, token: chunk });
+        });
+        phase2[p.name] = txt;
+        if (!event.sender.isDestroyed())
+          event.sender.send('forge:update', { phase: 'deliberation:phase2:done', provider: p.name });
+      }));
+
+      deliberationContext = { phase1, phase2 };
+      event.sender.send('forge:update', { phase: 'deliberation:complete' });
+    }
+
     // Run all providers in parallel with distinct council roles
     let completedCount = 0;
+    // Fast-First: accumulate completions to emit draft/update before full synthesis
+    const fastFirstResults: Array<{ provider: string; text: string; role: Role }> = [];
+
     const settled = await Promise.allSettled(
       providers.map(async (p, i) => {
         const role: Role = ROLES[Math.min(i, ROLES.length - 1)];
         const roleInstruction = ROLE_PROMPTS[role][activeIntensity];
+        const deliberationAddendum = deliberationContext
+          ? `\n\n--- DELIBERATION CONTEXT ---\nYour initial position: ${(deliberationContext.phase1[p.name] ?? '').slice(0, 400)}\nYour cross-reaction: ${(deliberationContext.phase2[p.name] ?? '').slice(0, 400)}\nNow provide your full, comprehensive response informed by this deliberation.`
+          : '';
         const roleMsgs = [
           {
             role: 'system',
-            content: `${systemPrompt}\n\n--- COUNCIL ROLE ---\n${roleInstruction}\nAt the end of your response, append exactly: [[CONFIDENCE: X%]] where X is your self-assessed confidence (0-100 integer).`,
+            content: `${systemPrompt}\n\n--- COUNCIL ROLE ---\n${roleInstruction}${deliberationAddendum}\nAt the end of your response, append exactly: [[CONFIDENCE: X%]] where X is your self-assessed confidence (0-100 integer).`,
           },
           ...history,
           { role: 'user', content: message },
         ];
-        event.sender.send('forge:update', { phase: 'provider:responding', provider: p.name });
-        const text = await p.chat(roleMsgs);
+        // Council Awareness: emit role-specific thinking message before streaming begins
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('forge:update', { phase: 'provider:responding', provider: p.name });
+          event.sender.send('forge:update', {
+            phase: 'provider:thinking', provider: p.name,
+            thinkingText: ROLE_THINKING_MESSAGES[role] ?? 'Thinking…',
+          });
+        }
+        let text = '';
+        await p.chatStream(roleMsgs, (chunk: string) => {
+          text += chunk;
+          if (!event.sender.isDestroyed())
+            event.sender.send('forge:update', { phase: 'provider:token', provider: p.name, token: chunk });
+        });
         completedCount++;
         event.sender.send('forge:update', { phase: 'provider:complete', provider: p.name, completedCount, total: providers.length });
+
+        // Fast-First: strip confidence tag for clean draft display
+        const displayText = text.replace(/\[\[CONFIDENCE:\s*\d+%?\]\]/i, '').trim();
+        fastFirstResults.push({ provider: p.name as string, text: displayText, role });
+
+        if (fastFirstResults.length === 1) {
+          // First responder — emit draft immediately so renderer can show something
+          if (!event.sender.isDestroyed())
+            event.sender.send('council:draft', { provider: p.name as string, text: displayText });
+        } else if (fastFirstResults.length === 2) {
+          // Two results available — run a quick async interim refinement (non-blocking)
+          const snap = fastFirstResults.slice();
+          ;(async () => {
+            try {
+              const oKey = await store.getSecret('triforge.openai.apiKey');
+              if (!oKey || event.sender.isDestroyed()) return;
+              const snippets = snap.map(r => `${r.role.toUpperCase()}: ${r.text.slice(0, 500)}`).join('\n\n---\n\n');
+              const rRes = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${oKey}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  model: 'gpt-4o-mini',
+                  messages: [
+                    { role: 'system', content: 'You are synthesizing AI council responses. Merge the strongest ideas into one clear, concise answer. 3 sentences max.' },
+                    { role: 'user', content: `Question: ${message.slice(0, 300)}\n\n${snippets}\n\nRefined answer:` },
+                  ],
+                  max_tokens: 250,
+                  temperature: 0.3,
+                }),
+              });
+              if (!rRes.ok) return;
+              const rData = await rRes.json() as { choices: Array<{ message: { content: string } }> };
+              const refined = rData.choices?.[0]?.message?.content?.trim() ?? '';
+              if (refined && !event.sender.isDestroyed())
+                event.sender.send('council:update', { text: refined });
+            } catch { /* ignore — full synthesis will follow */ }
+          })();
+        }
+
         return { provider: p.name as string, text, role };
       })
     );
@@ -668,6 +852,8 @@ export function setupIpc(store: Store): void {
     if (responses.length > 1) {
       try {
         const synthDirective = SYNTHESIS_DIRECTIVES[effectiveIntensity];
+        // Truncate each provider response to 1500 chars to reduce token overhead
+        const truncatedInputs = responses.map(r => `${r.role.toUpperCase()} (${r.provider}):\n${r.text.slice(0, 1500)}`).join('\n\n---\n\n');
         const synthMsgs = [
           {
             role: 'system',
@@ -685,10 +871,57 @@ VERIFY: [1-3 specific things the user should double-check]
           },
           {
             role: 'user',
-            content: `User asked: "${message}"\n\n${responses.map(r => `${r.role.toUpperCase()} (${r.provider}):\n${r.text}`).join('\n\n---\n\n')}\n\nSynthesize into one final, comprehensive answer, then add the FORGE_SCORE block.`,
+            content: `User asked: "${message}"\n\n${truncatedInputs}\n\nSynthesize into one final, comprehensive answer, then add the FORGE_SCORE block.`,
           },
         ];
-        synthesis = await providers[0].chat(synthMsgs);
+
+        // Try fast synthesis: gpt-4o-mini via OpenAI key (cheaper + faster than primary model)
+        // Falls back to primary provider if no OpenAI key is available
+        const openaiKey = await store.getSecret('triforge.openai.apiKey');
+        let synthesisAccum = '';
+
+        if (openaiKey) {
+          // Stream synthesis tokens directly via gpt-4o-mini
+          const synthRes = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${openaiKey}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: 'gpt-4o-mini', messages: synthMsgs, stream: true, temperature: 0.3 }),
+          });
+          if (synthRes.ok && synthRes.body) {
+            const reader = synthRes.body.getReader();
+            const dec = new TextDecoder();
+            let buf = '';
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buf += dec.decode(value, { stream: true });
+              const lines = buf.split('\n');
+              buf = lines.pop() ?? '';
+              for (const line of lines) {
+                const trimmed = line.replace(/^data: /, '').trim();
+                if (!trimmed || trimmed === '[DONE]') continue;
+                try {
+                  const parsed = JSON.parse(trimmed) as { choices?: Array<{ delta?: { content?: string } }> };
+                  const token = parsed.choices?.[0]?.delta?.content ?? '';
+                  if (token) {
+                    synthesisAccum += token;
+                    if (!event.sender.isDestroyed())
+                      event.sender.send('forge:update', { phase: 'synthesis:token', token });
+                  }
+                } catch { /* skip malformed SSE line */ }
+              }
+            }
+            synthesis = synthesisAccum;
+          }
+        } else {
+          // Fallback: stream synthesis via primary provider
+          await providers[0].chatStream(synthMsgs, (chunk: string) => {
+            synthesisAccum += chunk;
+            if (!event.sender.isDestroyed())
+              event.sender.send('forge:update', { phase: 'synthesis:token', token: chunk });
+          });
+          synthesis = synthesisAccum;
+        }
       } catch { /* use primary response as fallback */ }
     }
 
@@ -724,7 +957,181 @@ VERIFY: [1-3 specific things the user should double-check]
 
     store.incrementMessageCount();
     event.sender.send('forge:update', { phase: 'complete' });
+
+    // Proactive Council: fire-and-forget suggestion evaluation after each response
+    ;(async () => {
+      try {
+        const oKey = await store.getSecret('triforge.openai.apiKey');
+        if (!oKey || !activeTaskContext) return;
+        const recentMsgs = history.slice(-4).concat([
+          { role: 'assistant', content: synthesis.slice(0, 300) },
+        ]);
+        await evaluateProactiveOpportunity(activeTaskContext, recentMsgs, oKey, (suggestion) => {
+          if (!event.sender.isDestroyed())
+            event.sender.send('council:suggestion', { text: suggestion });
+          sendRemoteUpdate(`Council: ${suggestion}`, 'suggestion');
+        });
+      } catch { /* ignore */ }
+    })();
+
     return { responses, synthesis, forgeScore, failedProviders: failedProviders.length > 0 ? failedProviders : undefined };
+  });
+
+  // ── Council Conversation (fast-first parallel streaming above ThinkTank) ────────
+  ipcMain.handle('chat:conversation', async (event, message: string, history: Array<{ role: string; content: string }>) => {
+    const validErr = validateChat(message, history);
+    if (validErr) return { error: validErr };
+
+    const { providerManager: pm } = await getEngine();
+    const providers = await pm.getActiveProviders();
+    if (providers.length === 0) return { error: 'No API keys configured.' };
+
+    const license = await store.getLicense();
+    const tier = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const used = store.getMonthlyMessageCount();
+    if (isAtMessageLimit(used, tier)) return { error: 'MESSAGE_LIMIT_REACHED', tier };
+
+    updateTaskContext(message);
+    routeCouncil(message, pm);  // intent-based provider order (CouncilRouter)
+    const basePrompt = await buildSystemPrompt(store, _professionEngine?.getSystemPromptAdditions());
+    const systemPrompt = basePrompt
+      + buildTaskContextAddendum()
+      + _getMissionCtxMgr(store).buildAddendum()
+      + _getMemGraph(store).buildContextAddendum(message);
+
+    const planner = new ThinkTankPlanner(pm);
+    const engine = new CouncilConversationEngine(pm, planner);
+
+    // Progressive debate coordinator — broadcasts partial reasoning every 200 tokens
+    const coordinator = new DebateStreamCoordinator((provider, reasoning) => {
+      if (!event.sender.isDestroyed())
+        event.sender.send('council:partial-reasoning', { provider, reasoning });
+    });
+
+    try {
+      const result = await engine.handleMessage(message, systemPrompt, history, {
+        onThinking: (provider, thinkingText) => {
+          if (!event.sender.isDestroyed())
+            event.sender.send('forge:update', { phase: 'provider:thinking', provider, thinkingText });
+        },
+        onStream: (provider, token) => {
+          coordinator.handleToken(provider, token);
+          if (!event.sender.isDestroyed())
+            event.sender.send('forge:update', { phase: 'provider:token', provider, token });
+        },
+        onDraft: (provider, text) => {
+          if (!event.sender.isDestroyed())
+            event.sender.send('council:draft', { provider, text });
+        },
+        onSynthesisToken: (token) => {
+          if (!event.sender.isDestroyed())
+            event.sender.send('forge:update', { phase: 'synthesis:token', token });
+        },
+        onUpdate: (text) => {
+          if (!event.sender.isDestroyed())
+            event.sender.send('council:update', { text });
+        },
+        onPlan: (plan) => {
+          if (!event.sender.isDestroyed())
+            event.sender.send('council:plan', { plan });
+        },
+        onSuggestion: (text) => {
+          if (!event.sender.isDestroyed())
+            event.sender.send('council:suggestion', { text });
+        },
+      });
+
+      store.incrementMessageCount();
+
+      // Auto-save synthesis as a knowledge graph insight for future context injection
+      if (result.synthesis && result.synthesis.length > 80) {
+        _getMemGraph(store).addNode({
+          id:      `conv_${Date.now()}`,
+          type:    'insight',
+          project: getTaskContext() ?? 'general',
+          content: result.synthesis.slice(0, 300),
+          related: [],
+        });
+      }
+
+      return { responses: result.responses, synthesis: result.synthesis, durationMs: result.durationMs };
+    } catch (err: unknown) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ── Mission Context (council project awareness) ───────────────────────────────
+  ipcMain.handle('mission:ctx:get', (_e) => {
+    return _getMissionCtxMgr(store).get();
+  });
+
+  ipcMain.handle('mission:ctx:set', (_e, ctx: Omit<MissionContext, 'updatedAt'>) => {
+    _getMissionCtxMgr(store).set(ctx);
+    return { ok: true };
+  });
+
+  ipcMain.handle('mission:ctx:update', (_e, patch: Partial<Omit<MissionContext, 'updatedAt'>>) => {
+    return _getMissionCtxMgr(store).update(patch);
+  });
+
+  ipcMain.handle('mission:ctx:clear', (_e) => {
+    _getMissionCtxMgr(store).clear();
+    return { ok: true };
+  });
+
+  // ── Council Memory Graph ──────────────────────────────────────────────────────
+  ipcMain.handle('memory:graph:add', (_e, node: Omit<CouncilMemoryNode, 'createdAt'>) => {
+    _getMemGraph(store).addNode(node);
+    return { ok: true };
+  });
+
+  ipcMain.handle('memory:graph:search', (_e, project: string) => {
+    return _getMemGraph(store).searchProject(project);
+  });
+
+  ipcMain.handle('memory:graph:related', (_e, nodeId: string) => {
+    return _getMemGraph(store).findRelated(nodeId);
+  });
+
+  ipcMain.handle('memory:graph:all', (_e) => {
+    return _getMemGraph(store).getAll();
+  });
+
+  // ── Local AI Providers (Ollama / LM Studio) ───────────────────────────────────
+  ipcMain.handle('local:provider:test', async (_e, baseUrl: string, model: string) => {
+    const p = new OllamaProvider({ baseUrl, model });
+    return p.testConnection();
+  });
+
+  ipcMain.handle('local:provider:chat', async (_e, baseUrl: string, model: string, messages: Array<{ role: string; content: string }>) => {
+    try {
+      const p = new OllamaProvider({ baseUrl, model });
+      const text = await p.chat(messages);
+      return { text };
+    } catch (err: unknown) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('local:provider:models', async (_e, baseUrl: string) => {
+    try {
+      const p = new OllamaProvider({ baseUrl, model: '' });
+      const models = await p.listModels();
+      return { models };
+    } catch (err: unknown) {
+      return { models: [], error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ── Insight Engine — ambient council insights ─────────────────────────────────
+  ipcMain.handle('insight:analyze', async (_e, signal: InsightSignal) => {
+    if (!_insightEngine) return { insight: null };
+    const insight = await _insightEngine.analyze(signal);
+    return { insight };
+  });
+
+  ipcMain.on('insight:reset-cooldown', () => {
+    _insightEngine?.resetCooldown();
   });
 
   // ── Think Tank (full consensus for complex goals) ─────────────────────────────
@@ -753,20 +1160,35 @@ VERIFY: [1-3 specific things the user should double-check]
     }
   });
 
-  // ── Voice: Text-to-Speech ─────────────────────────────────────────────────────
-  ipcMain.handle('voice:speak', async (_e, text: string) => {
+  // ── Voice: Text-to-Speech (streaming — first audio chunk ~300ms) ──────────────
+  ipcMain.handle('voice:speak', async (event, text: string) => {
     const licSpeak = await store.getLicense();
     const tierSpeak = (licSpeak.tier ?? 'free') as 'free' | 'pro' | 'business';
     if (!hasCapability('VOICE', tierSpeak)) {
       return { error: lockedError('VOICE') };
     }
+    const abortCtrl = new AbortController();
+    ttsAbortControllers.set(event.sender, abortCtrl);
     try {
-      const audioBuffer = await textToSpeech(text, store);
-      // Return as base64 for the renderer to play
-      return { audio: audioBuffer.toString('base64') };
+      await textToSpeechStream(text, store, (chunk) => {
+        if (!event.sender.isDestroyed())
+          event.sender.send('voice:speak:chunk', chunk.toString('base64'));
+      }, { signal: abortCtrl.signal });
+      if (!abortCtrl.signal.aborted && !event.sender.isDestroyed())
+        event.sender.send('voice:speak:done');
+      return { ok: true };
     } catch (err: unknown) {
+      if ((err as Error)?.name === 'AbortError') return { ok: true };
       return { error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      ttsAbortControllers.delete(event.sender);
     }
+  });
+
+  // ── Voice: Interrupt — abort current TTS stream immediately ──────────────────
+  ipcMain.handle('voice:interrupt', (event) => {
+    ttsAbortControllers.get(event.sender)?.abort();
+    return { ok: true };
   });
 
   // ── Memory ───────────────────────────────────────────────────────────────────
@@ -1886,32 +2308,46 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     return BrowserWindow.fromWebContents(event.sender)?.isFullScreen() ?? false;
   });
 
-  // ── Grok Voice Agent ─────────────────────────────────────────────────────────
+  // ── Per-window TTS abort controllers (for voice:interrupt support) ────────────
 
-  let grokVoiceAgent: GrokVoiceAgent | null = null;
+  const ttsAbortControllers = new Map<Electron.WebContents, AbortController>();
+
+  // ── Grok Voice Agent (per-window — each WebContents gets its own agent) ────────
+
+  const grokAgents = new Map<Electron.WebContents, GrokVoiceAgent>();
 
   ipcMain.handle('voice:agent:connect', async (event, opts: { voice?: string }) => {
     const apiKey = await store.getSecret('triforge.grok.apiKey');
     if (!apiKey) return { error: 'No Grok API key configured.' };
-    grokVoiceAgent?.disconnect();
-    grokVoiceAgent = new GrokVoiceAgent(apiKey, opts?.voice ?? 'Ara', (e) => {
+    // Disconnect any existing agent for this window
+    grokAgents.get(event.sender)?.disconnect();
+    const agent = new GrokVoiceAgent(apiKey, opts?.voice ?? 'Ara', (e) => {
       if (!event.sender.isDestroyed()) event.sender.send('voice:agent:event', e);
+      // Persist assistant transcripts to memory so voice interactions stay in context
+      if (e.type === 'transcript' && e.role === 'assistant' && e.text)
+        store.addMemory('fact', `[Voice] ${e.text}`);
     });
-    grokVoiceAgent.connect();
+    grokAgents.set(event.sender, agent);
+    agent.connect();
+    // Clean up entry when window is destroyed
+    event.sender.once('destroyed', () => {
+      grokAgents.get(event.sender)?.disconnect();
+      grokAgents.delete(event.sender);
+    });
     return { ok: true };
   });
 
-  ipcMain.handle('voice:agent:send', (_event, pcm16b64: string) => {
-    grokVoiceAgent?.sendAudio(Buffer.from(pcm16b64, 'base64'));
+  ipcMain.handle('voice:agent:send', (event, pcm16b64: string) => {
+    grokAgents.get(event.sender)?.sendAudio(Buffer.from(pcm16b64, 'base64'));
   });
 
-  ipcMain.handle('voice:agent:commit', () => {
-    grokVoiceAgent?.commitAudio();
+  ipcMain.handle('voice:agent:commit', (event) => {
+    grokAgents.get(event.sender)?.commitAudio();
   });
 
-  ipcMain.handle('voice:agent:disconnect', () => {
-    grokVoiceAgent?.disconnect();
-    grokVoiceAgent = null;
+  ipcMain.handle('voice:agent:disconnect', (event) => {
+    grokAgents.get(event.sender)?.disconnect();
+    grokAgents.delete(event.sender);
   });
 
   // ── Task Engine ───────────────────────────────────────────────────────────────
@@ -2801,6 +3237,122 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('approvalServer:status', () => {
     return _approvalServer?.status() ?? { running: false, port: 7337, url: 'http://localhost:7337' };
+  });
+
+  // ── Phone Link — remote Council access on port 4587 ───────────────────────────
+
+  const phoneLinkServer = new PhoneLinkServer();
+
+  // Persist paired devices to userData so they survive app restarts
+  phoneLinkServer.setStorageDir(app.getPath('userData'));
+
+  // Wire councilBus → paired device notifications
+  initCouncilNotify(phoneLinkServer);
+
+  // ── Hot Council Mode — pre-warm providers at startup ─────────────────────────
+  if (providerManager) {
+    _councilRuntime = new CouncilRuntime(providerManager);
+    _councilRuntime.initialize().catch(() => {});
+  }
+
+  // Relay wake-word detection from renderer into the bus system
+  ipcMain.on('voice:wake-detected', () => {
+    _councilRuntime?.onWakeDetected();
+  });
+
+  // ── Council Demo — startup demonstration for new users ───────────────────────
+  // Only runs when no API keys are configured yet (first-run / onboarding scenario)
+  setTimeout(async () => {
+    try {
+      const { providerManager: pm } = await getEngine();
+      const providers = await pm.getActiveProviders();
+      const isFirstRun = providers.length === 0;
+      const demoHandle = startCouncilDemo(isFirstRun);
+
+      // Forward demo events from bus to all open renderer windows
+      const { councilBus: cBus } = await import('@triforge/engine');
+      cBus.on('COUNCIL_DEMO', (data: unknown) => {
+        const d = data as { phase: string; label: string };
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) win.webContents.send('council:demo', { phase: d.phase });
+        }
+      });
+
+      // Auto-cancel demo if user sends a real message
+      ipcMain.once('chat:conversation', () => demoHandle.stop());
+      ipcMain.once('chat:consensus',    () => demoHandle.stop());
+    } catch { /* demo failures are silent */ }
+  }, 1500);
+
+  // ── Insight Engine — ambient council mode ─────────────────────────────────────
+  setTimeout(async () => {
+    try {
+      const { providerManager: pm } = await getEngine();
+      const providers = await pm.getActiveProviders();
+      if (providers.length === 0) return;
+
+      // Use fastest available provider for low-cost insight evaluation
+      const insightProvider = providers[0];
+      _insightEngine = new InsightEngine(insightProvider);
+
+      // Forward COUNCIL_INSIGHT bus events to all open renderer windows
+      const { councilBus: cBus } = await import('@triforge/engine');
+      cBus.on('COUNCIL_INSIGHT', (data: unknown) => {
+        const insight = data as CouncilInsight;
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) win.webContents.send('council:insight', insight);
+        }
+      });
+    } catch { /* non-fatal — insight engine starts when providers are ready */ }
+  }, 4000);
+
+  // ── Forward COUNCIL_PARTIAL_REASONING bus events to all renderers ─────────────
+  // This allows any window (not just the one that triggered the conversation)
+  // to receive partial reasoning updates from the DebateStreamCoordinator.
+  setTimeout(async () => {
+    const { councilBus: cBus } = await import('@triforge/engine');
+    cBus.on('COUNCIL_PARTIAL_REASONING', (data: unknown) => {
+      const d = data as { provider: string; reasoning: string };
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send('council:partial-reasoning', d);
+      }
+    });
+  }, 500);
+
+  // Wire task handler: uses first available provider (no IPC round-trip needed)
+  phoneLinkServer.setTaskHandler(async (message) => {
+    try {
+      const { providerManager: pm } = await getEngine();
+      const providers = await pm.getActiveProviders();
+      if (providers.length === 0) return 'No AI providers configured in TriForge.';
+      const systemPromptText = await buildSystemPrompt(store, _professionEngine?.getSystemPromptAdditions());
+      return await providers[0].chat([
+        { role: 'system', content: systemPromptText },
+        { role: 'user', content: message },
+      ]);
+    } catch (err) {
+      return `Error: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  });
+
+  ipcMain.handle('phoneLink:start', async () => {
+    return phoneLinkServer.start();
+  });
+
+  ipcMain.handle('phoneLink:stop', () => {
+    phoneLinkServer.stop();
+    return { ok: true };
+  });
+
+  ipcMain.handle('phoneLink:status', () => {
+    return phoneLinkServer.status();
+  });
+
+  ipcMain.handle('phoneLink:pair', () => {
+    if (!phoneLinkServer.status().running) {
+      return { error: 'Start the Phone Link server first.' };
+    }
+    return phoneLinkServer.generateNewPairToken();
   });
 
   // ── Persistent Mission System ───────────────────────────────────────────────

@@ -2,6 +2,7 @@ import * as crypto from 'crypto';
 import type { ProviderManager } from './providerManager';
 import type { Plan, Step, TaskCategory } from './taskTypes';
 import { agreementScore, mergePlans, fallbackPlan } from './decisionEngine';
+import { plannerBus } from '../events/buses';
 
 // ── ThinkTankPlanner ──────────────────────────────────────────────────────────
 // Sends the goal to all active AI providers in parallel, parses the JSON plans
@@ -40,6 +41,8 @@ export class ThinkTankPlanner {
     const merged = mergePlans(rawPlans, category);
     merged.agreementScore = agreementScore(rawPlans);
     merged.goalStatement = merged.goalStatement || goal;
+
+    plannerBus.emit('PLAN_READY', { planId: merged.id, stepCount: merged.steps.length, category });
     return merged;
   }
 }

@@ -18,6 +18,11 @@ export class GrokVoiceAgent {
   private readonly voice: string;
   private readonly onEvent: (e: VoiceAgentEvent) => void;
 
+  // Reconnect state
+  private shouldReconnect = false;
+  private reconnectAttempt = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
   constructor(apiKey: string, voice: string, onEvent: (e: VoiceAgentEvent) => void) {
     this.apiKey  = apiKey;
     this.voice   = voice;
@@ -25,6 +30,11 @@ export class GrokVoiceAgent {
   }
 
   connect(): void {
+    this.shouldReconnect = true;
+    this._open();
+  }
+
+  private _open(): void {
     if (this.ws) return;
 
     const ws = new WebSocket('wss://api.x.ai/v1/realtime', {
@@ -33,7 +43,9 @@ export class GrokVoiceAgent {
     this.ws = ws;
 
     ws.on('open', () => {
+      this.reconnectAttempt = 0; // successful connection resets backoff
       // Configure the session: model, voice personality, audio format
+      // VAD silence raised to 1400ms to prevent cutting off mid-sentence
       ws.send(JSON.stringify({
         type: 'session.update',
         session: {
@@ -41,7 +53,7 @@ export class GrokVoiceAgent {
           voice:          this.voice,
           input_audio_format:  'pcm16',
           output_audio_format: 'pcm16',
-          turn_detection: { type: 'server_vad', silence_duration_ms: 600 },
+          turn_detection: { type: 'server_vad', silence_duration_ms: 1400 },
           input_audio_transcription: { model: 'whisper-1' },
         },
       }));
@@ -80,12 +92,23 @@ export class GrokVoiceAgent {
     });
 
     ws.on('error', (err) => {
+      // Emit error but do NOT null out ws here — let the close event handle reconnect
       this.onEvent({ type: 'error', message: err.message });
     });
 
     ws.on('close', () => {
       this.ws = null;
       this.onEvent({ type: 'disconnected' });
+
+      if (this.shouldReconnect) {
+        // Exponential backoff: 1s, 2s, 4s, 8s … capped at 30s
+        const delay = Math.min(Math.pow(2, this.reconnectAttempt) * 1000, 30000);
+        this.reconnectAttempt++;
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = null;
+          if (this.shouldReconnect) this._open();
+        }, delay);
+      }
     });
   }
 
@@ -109,6 +132,11 @@ export class GrokVoiceAgent {
   }
 
   disconnect(): void {
+    this.shouldReconnect = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.ws?.close();
     this.ws = null;
   }

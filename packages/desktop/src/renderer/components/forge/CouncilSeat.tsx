@@ -16,6 +16,10 @@ if (typeof document !== 'undefined' && !document.getElementById('council-seat-cs
       40%  { transform: scale(1.03); }
       100% { transform: scale(1);    }
     }
+    @keyframes cs-listen-pulse {
+      0%, 100% { box-shadow: 0 0 0 0px rgba(99,179,237,0.55); }
+      50%       { box-shadow: 0 0 0 7px rgba(99,179,237,0);    }
+    }
   `;
   document.head.appendChild(s);
 }
@@ -33,6 +37,10 @@ interface Props {
   color: string;
   role?: string;                // e.g. "Analyst", "Strategist", "Disruptor"
   response: string | null;
+  /** Live streaming tokens during the thinking phase — shown before final response arrives */
+  liveText?: string;
+  /** Council Awareness message shown while thinking but before tokens arrive */
+  thinkingMsg?: string;
   status: 'idle' | 'thinking' | 'responded';
   agreeing: boolean | null;     // null = neutral, true = agrees, false = disagrees
   thinking: boolean;
@@ -42,11 +50,14 @@ interface Props {
   onDisagree: () => void;
   onProposeAlternative: () => void;
   onSelect: () => void;
+  /** When true, plays a brief blue pulse ring — council is in wake-word listening mode. */
+  listening?: boolean;
 }
 
 export function CouncilSeat({
-  label, color, role, response, status, agreeing, thinking,
-  isSelected, reviewingLabel, onAgree, onDisagree, onProposeAlternative, onSelect,
+  label, color, role, response, liveText, thinkingMsg, status, agreeing, thinking,
+  isSelected, reviewingLabel, listening,
+  onAgree, onDisagree, onProposeAlternative, onSelect,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [hovered, setHovered] = useState(false);
@@ -94,7 +105,9 @@ export function CouncilSeat({
         boxShadow: hoverShadow,
         minHeight: 160,
         transform: hovered ? 'translateY(-3px)' : 'translateY(0)',
-        animation: agreeing === true && hasResponse ? 'cs-agree-pop 0.3s ease-out' : 'none',
+        animation: listening
+          ? 'cs-listen-pulse 0.5s ease-out 1'
+          : agreeing === true && hasResponse ? 'cs-agree-pop 0.3s ease-out' : 'none',
       }}
     >
       {/* Header */}
@@ -184,7 +197,7 @@ export function CouncilSeat({
 
       {/* Response body */}
       <div style={{ flex: 1, padding: '10px 12px', overflowY: 'auto', minHeight: 80 }}>
-        {thinking && (
+        {thinking && !liveText && (
           <div>
             <div style={{ display: 'flex', gap: 5, alignItems: 'center', padding: '10px 0 6px' }}>
               {[0, 0.18, 0.36].map((delay, i) => (
@@ -194,6 +207,17 @@ export function CouncilSeat({
                 }} />
               ))}
             </div>
+            {/* Council Awareness — role-specific thinking message */}
+            {thinkingMsg && !reviewingLabel && (
+              <div style={{
+                fontSize: 9, fontStyle: 'italic',
+                color: `${color}99`,
+                letterSpacing: '0.02em',
+                animation: 'cs-review-blink 2s ease-in-out infinite',
+              }}>
+                {thinkingMsg}
+              </div>
+            )}
             {/* Cross-review text — shown when another AI has already responded */}
             {reviewingLabel && (
               <div style={{
@@ -205,6 +229,22 @@ export function CouncilSeat({
                 Reviewing {reviewingLabel}'s position…
               </div>
             )}
+          </div>
+        )}
+
+        {/* Live streaming tokens — shown while thinking and tokens are arriving */}
+        {thinking && liveText && (
+          <div style={{
+            fontSize: 12, lineHeight: 1.65, color: `${color}cc`,
+            whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          }}>
+            {liveText}
+            <span style={{
+              display: 'inline-block', width: 7, height: 13, marginLeft: 2,
+              background: color, opacity: 0.7,
+              animation: 'cs-review-blink 0.8s ease-in-out infinite',
+              verticalAlign: 'text-bottom', borderRadius: 1,
+            }} />
           </div>
         )}
 

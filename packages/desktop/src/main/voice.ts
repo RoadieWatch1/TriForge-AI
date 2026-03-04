@@ -71,6 +71,7 @@ export async function transcribeAudio(
 /**
  * Convert text to speech using OpenAI TTS API.
  * Returns an MP3 buffer to be played in the renderer.
+ * @deprecated Use textToSpeechStream for lower latency (~300ms first audio).
  */
 export async function textToSpeech(
   text: string,
@@ -89,7 +90,7 @@ export async function textToSpeech(
     body: JSON.stringify({
       model: 'tts-1',
       input: text,
-      voice: options.voice ?? 'onyx',  // Deep, confident voice
+      voice: options.voice ?? 'onyx',
       speed: options.speed ?? 1.0,
     }),
   });
@@ -101,4 +102,49 @@ export async function textToSpeech(
 
   const arrayBuffer = await res.arrayBuffer();
   return Buffer.from(arrayBuffer);
+}
+
+/**
+ * Stream text to speech via OpenAI TTS API.
+ * Calls onChunk with each MP3 data chunk as it arrives from the network.
+ * First chunk arrives in ~300ms, enabling near-instant audio playback.
+ */
+export async function textToSpeechStream(
+  text: string,
+  store: Store,
+  onChunk: (chunk: Buffer) => void,
+  options: SpeakOptions & { signal?: AbortSignal } = {}
+): Promise<void> {
+  const apiKey = await store.getSecret('triforge.openai.apiKey');
+  if (!apiKey) throw new Error('OpenAI API key not configured.');
+
+  const res = await fetch('https://api.openai.com/v1/audio/speech', {
+    method: 'POST',
+    signal: options.signal,
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'tts-1',
+      input: text,
+      voice: options.voice ?? 'onyx',
+      speed: options.speed ?? 1.0,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`TTS API error ${res.status}: ${err}`);
+  }
+
+  if (!res.body) throw new Error('TTS response has no body');
+
+  const reader = res.body.getReader();
+  while (true) {
+    if (options.signal?.aborted) { reader.cancel(); break; }
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) onChunk(Buffer.from(value));
+  }
 }

@@ -129,9 +129,57 @@ export { AgentSafetyGuard, getAgentSafetyGuard } from './safety/AgentSafetyGuard
 export { EventIntelligence, getEventIntelligence } from './mind/EventIntelligence';
 export type { IntelligenceInsight }                 from './mind/EventIntelligence';
 
-// Council Executor
+// Council Executor (planning pipeline — unchanged)
 export { CouncilExecutor }       from './council/CouncilExecutor';
 export type { CouncilRequest, CouncilResult } from './council/CouncilExecutor';
+
+// Specialized event buses (per-subsystem signal channels)
+export { createBus }                            from './events/createBus';
+export type { SubBus }                          from './events/createBus';
+export { councilBus, voiceBus, plannerBus, systemBus } from './events/buses';
+
+// Council Conversation Engine (fast conversational layer above the planner)
+export { CouncilConversationEngine, isPlanningTask } from './council/CouncilConversationEngine';
+export type { CouncilConversationCallbacks, CouncilConversationResult } from './council/CouncilConversationEngine';
+export { synthesizeCouncil, synthesizeCouncilStream } from './council/synthesizeCouncil';
+export { registerAbortController, interrupt, clearAbortControllers } from './council/interruptController';
+
+// Task Context (session-scoped active task tracking)
+export {
+  updateTaskContext, getTaskContext, setTaskContext,
+  clearTaskContext, buildTaskContextAddendum,
+} from './context/taskContext';
+
+// Council Router (intent-based dynamic provider selection)
+export { detectIntentType, selectCouncil, routeCouncil } from './council/CouncilRouter';
+export type { IntentType } from './council/CouncilRouter';
+
+// Mission Context Manager (council project awareness — distinct from MissionManager)
+export type { MissionContext } from './context/missionStore';
+export { MissionContextManager } from './context/missionContextManager';
+
+// Council Memory Graph (project knowledge — distinct from KnowledgeGraph)
+export { CouncilMemoryGraph } from './memory/councilMemoryGraph';
+export type { MemoryNode as CouncilMemoryNode } from './memory/councilMemoryGraph';
+
+// Council Runtime (hot council mode + wake event relay)
+export { CouncilRuntime } from './runtime/councilRuntime';
+
+// Debate Stream Coordinator (progressive debate — partial reasoning broadcasts)
+export { DebateStreamCoordinator } from './council/DebateStreamCoordinator';
+export type { PartialReasoningCallback } from './council/DebateStreamCoordinator';
+
+// Local AI Provider (Ollama / LM Studio / local inference)
+export { OllamaProvider } from './core/providers/ollamaProvider';
+export type { LocalProviderConfig } from './core/providers/ollamaProvider';
+
+// Council Demo (startup demonstration sequence)
+export { startCouncilDemo } from './demo/councilDemo';
+export type { DemoHandle } from './demo/councilDemo';
+
+// Insight Engine (ambient council mode)
+export { InsightEngine } from './insights/InsightEngine';
+export type { CouncilInsight, InsightSignal, SignalType } from './insights/InsightEngine';
 
 // AI Mind (Persistent Background Reasoning)
 export { AIMind, getAIMind }     from './mind/AIMind';

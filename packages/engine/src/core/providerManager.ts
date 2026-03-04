@@ -6,6 +6,7 @@ import { ClaudeProvider } from './providers/claude';
 import { ProviderName, OperatingMode, ProviderStatus, ModeInfo, SessionRecord } from '../protocol';
 import { DecisionLog } from './decisionLog';
 import { Memory } from './memory';
+import { councilBus } from '../events/buses';
 
 const SECRET_KEYS: Record<ProviderName, string> = {
   openai: 'triforge.openai.apiKey',
@@ -101,6 +102,62 @@ export class ProviderManager {
 
   getPreferredProviders(): ProviderName[] {
     return [...this._preferredProviders];
+  }
+
+  /**
+   * Fast-First Council Streaming — runs all active providers in parallel.
+   *
+   * - Each provider starts streaming immediately (no waiting for others).
+   * - Tokens are forwarded via the optional `onToken` callback AND via
+   *   `councilBus.emit('STREAM_TOKEN', { provider, token })` for any listener.
+   * - When a provider finishes, `councilBus.emit('PROVIDER_COMPLETE', { provider, result })`
+   *   is emitted so the UI can update each seat independently.
+   * - Resolves once ALL providers have finished (or been aborted).
+   *
+   * Typical first-token latency: ~400ms (vs. 3–6s waiting for all providers).
+   *
+   * @param messages - Full messages array (system + history + user turn).
+   * @param onToken  - Optional per-token callback (provider name + token string).
+   * @param signal   - Optional AbortSignal to cancel all in-flight streams.
+   * @returns Array of { provider, text } for every provider that completed.
+   */
+  async streamAll(
+    messages: Array<{ role: string; content: string }>,
+    onToken?: (provider: string, token: string) => void,
+    signal?: AbortSignal,
+  ): Promise<Array<{ provider: string; text: string }>> {
+    const providers = await this.getActiveProviders();
+    const results: Array<{ provider: string; text: string }> = [];
+
+    await Promise.all(providers.map(async (p: AIProvider) => {
+      const name = p.name as string;
+      let accumulated = '';
+
+      try {
+        await p.chatStream(
+          messages,
+          (token: string) => {
+            accumulated += token;
+            onToken?.(name, token);
+            councilBus.emit('STREAM_TOKEN', { provider: name, token });
+          },
+          signal,
+        );
+      } catch (err: unknown) {
+        // Silently absorb aborts — intentional cancellation
+        if (err instanceof Error && (err.name === 'AbortError' || err.message.includes('aborted'))) {
+          return;
+        }
+        // For network / API errors, include partial response if any tokens arrived
+      }
+
+      if (accumulated) {
+        results.push({ provider: name, text: accumulated });
+        councilBus.emit('PROVIDER_COMPLETE', { provider: name, result: accumulated });
+      }
+    }));
+
+    return results;
   }
 
   async getActiveProviders(): Promise<AIProvider[]> {

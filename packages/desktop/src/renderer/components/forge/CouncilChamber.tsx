@@ -35,6 +35,14 @@ interface Props {
   onProposeAlternative: (provider: string) => void;
   onSelectOutput: (key: string) => void;
   onMergeProviders: (p1: string, p2: string) => void;
+  /** Live streaming tokens per provider during the thinking phase */
+  liveProviderTokens?: Record<string, string>;
+  /** Live streaming tokens for synthesis — shown in MergeZone before final synthesis arrives */
+  liveSynthesisText?: string;
+  /** Council Awareness thinking messages per provider (before tokens arrive) */
+  providerThinkingMessages?: Record<string, string>;
+  /** When true, all seats pulse blue — council is in wake-word listening mode */
+  listening?: boolean;
 }
 
 // ── Provider config ───────────────────────────────────────────────────────────
@@ -59,6 +67,7 @@ const TIMELINE_STAGES: { id: TimelineStage; label: string; color: string }[] = [
 export function CouncilChamber({
   latestMsg, thinking, keyStatus, agreementMap,
   selectedProvider, onAgreementChange, onProposeAlternative, onSelectOutput, onMergeProviders,
+  liveProviderTokens, liveSynthesisText, providerThinkingMessages, listening,
 }: Props) {
   const [mergeSelection, setMergeSelection] = useState<string[]>([]);
 
@@ -118,6 +127,7 @@ export function CouncilChamber({
           totalProviders={respondedProviders.length || PROVIDERS.filter(p => keyStatus[p.id]).length}
           thinking={thinking}
           forgeScore={latestMsg?.forgeScore}
+          liveText={liveSynthesisText}
         />
 
         {/* Top 2 Options — shown when council is divided */}
@@ -194,11 +204,14 @@ export function CouncilChamber({
                 color={color}
                 role={role}
                 response={resp?.text ?? null}
+                liveText={liveProviderTokens?.[id]}
+                thinkingMsg={providerThinkingMessages?.[id]}
                 status={status}
                 agreeing={agreementMap[id] ?? null}
                 thinking={!!(thinking && isActive)}
                 isSelected={selectedProvider === id}
                 reviewingLabel={reviewingLabel}
+                listening={listening}
                 onAgree={() => onAgreementChange(id, true)}
                 onDisagree={() => onAgreementChange(id, false)}
                 onProposeAlternative={() => onProposeAlternative(id)}

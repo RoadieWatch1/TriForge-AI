@@ -56,6 +56,8 @@ interface Props {
   totalProviders: number;
   thinking: boolean;
   forgeScore?: ForgeScore;
+  /** Live synthesis tokens — shown progressively before final synthesis arrives */
+  liveText?: string;
 }
 
 const RISK_COLORS: Record<string, string> = {
@@ -70,7 +72,7 @@ const LAYER_MESSAGES = (count: number, total: number): string[] => [
   'Validated by multi-model agreement',
 ];
 
-export function MergeZone({ synthesis, agreementCount, totalProviders, thinking, forgeScore }: Props) {
+export function MergeZone({ synthesis, agreementCount, totalProviders, thinking, forgeScore, liveText }: Props) {
   const [showLayers, setShowLayers] = useState(false);
   const [displayedConsensus, setDisplayedConsensus] = useState(false);
   const [layerIdx, setLayerIdx] = useState(0);
@@ -127,11 +129,11 @@ export function MergeZone({ synthesis, agreementCount, totalProviders, thinking,
     );
   }
 
-  // Thinking state
+  // Thinking state — show live synthesis tokens if streaming has started, otherwise spinner
   if (thinking) {
     return (
       <div style={{ ...mz.base, ...mz.deliberating }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: liveText ? 8 : 0 }}>
           <div style={{ display: 'flex', gap: 4 }}>
             {[0, 0.2, 0.4].map((d, i) => (
               <div key={i} style={{
@@ -142,12 +144,28 @@ export function MergeZone({ synthesis, agreementCount, totalProviders, thinking,
             ))}
           </div>
           <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--accent)', letterSpacing: '0.08em' }}>
-            COUNCIL DELIBERATING
+            {liveText ? 'SYNTHESIZING…' : 'COUNCIL DELIBERATING'}
           </span>
-          <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 'auto' }}>
-            Waiting for {totalProviders} AIs…
-          </span>
+          {!liveText && (
+            <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 'auto' }}>
+              Waiting for {totalProviders} AIs…
+            </span>
+          )}
         </div>
+        {liveText && (
+          <div style={{
+            fontSize: 12, lineHeight: 1.65, color: 'rgba(99,102,241,0.85)',
+            whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          }}>
+            {liveText}
+            <span style={{
+              display: 'inline-block', width: 7, height: 13, marginLeft: 2,
+              background: 'var(--accent)', opacity: 0.7,
+              animation: 'mz-idle-pulse 0.8s ease-in-out infinite',
+              verticalAlign: 'text-bottom', borderRadius: 1,
+            }} />
+          </div>
+        )}
       </div>
     );
   }

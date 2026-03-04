@@ -63,6 +63,9 @@ export type AuditEventType =
   | 'IMAGE_REQUESTED' | 'IMAGE_GENERATED' | 'IMAGE_CRITIQUE' | 'IMAGE_FAILED'
   // Council Executor
   | 'COUNCIL_STARTED' | 'COUNCIL_ANALYSIS' | 'COUNCIL_RESULT' | 'COUNCIL_CRITIQUE'
+  // Council Conversation Engine
+  | 'COUNCIL_CONV_DRAFT' | 'COUNCIL_CONV_STREAM' | 'COUNCIL_CONV_UPDATE'
+  | 'COUNCIL_CONV_PLAN' | 'COUNCIL_CONV_SUGGESTION' | 'COUNCIL_CONV_INTERRUPT'
   // AI Mind
   | 'MIND_SUGGESTION'
   // Tool Execution Bus
@@ -298,6 +301,13 @@ export type EngineEvent =
   | { type: 'COUNCIL_ANALYSIS'; expanded: string; category: string }
   | { type: 'COUNCIL_RESULT';   planId: string; stepCount: number; category: string }
   | { type: 'COUNCIL_CRITIQUE'; planId: string; critique: string }
+  // Council Conversation Engine
+  | { type: 'COUNCIL_CONV_DRAFT';       provider: string; text: string }
+  | { type: 'COUNCIL_CONV_STREAM';      provider: string; token: string }
+  | { type: 'COUNCIL_CONV_UPDATE';      text: string }
+  | { type: 'COUNCIL_CONV_PLAN';        plan: Plan }
+  | { type: 'COUNCIL_CONV_SUGGESTION';  text: string }
+  | { type: 'COUNCIL_CONV_INTERRUPT' }
   // AI Mind
   | { type: 'MIND_SUGGESTION';  eventType: string; analysis: string; critique: string; suggestion: string }
   // Tool Execution Bus
