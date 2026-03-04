@@ -66,6 +66,12 @@ export function App() {
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
   // Chat prefill — set by ForgeProfiles "Open in Chat", consumed once by Chat
   const [chatPrefill, setChatPrefill] = useState<string | null>(null);
+  // Voice output mode — lifted so Settings screen can toggle it too
+  const [voiceMode, setVoiceMode] = useState(() => localStorage.getItem('triforge-voice-mode') === 'on');
+  const handleVoiceModeChange = (on: boolean) => {
+    setVoiceMode(on);
+    localStorage.setItem('triforge-voice-mode', on ? 'on' : 'off');
+  };
 
   // Window state
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -322,6 +328,8 @@ export function App() {
               prefill={chatPrefill}
               onClearPrefill={() => setChatPrefill(null)}
               onNavigateToCommand={() => setScreen('forge')}
+              voiceMode={voiceMode}
+              onVoiceModeChange={handleVoiceModeChange}
             />
           )}
           {screen === 'forge' && (
@@ -360,6 +368,8 @@ export function App() {
               onRemoveKey={removeKey}
               onUpdatePermissions={setPermissions}
               onPinChanged={handlePinChanged}
+              voiceMode={voiceMode}
+              onToggleVoice={handleVoiceModeChange}
             />
           )}
           {screen === 'memory' && <MemoryScreen />}
@@ -384,6 +394,8 @@ interface SettingsProps {
   onRemoveKey: (p: string) => void;
   onUpdatePermissions: (perms: Permission[]) => void;
   onPinChanged: () => void;
+  voiceMode: boolean;
+  onToggleVoice: (on: boolean) => void;
 }
 
 const PROVIDERS = [
@@ -392,7 +404,7 @@ const PROVIDERS = [
   { id: 'grok', label: 'xAI Grok', placeholder: 'xai-…', color: '#6366f1', billingUrl: 'https://console.x.ai/', keysUrl: 'https://console.x.ai/' },
 ];
 
-function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, hasPin, lockUsername, onSaveKey, onRemoveKey, onUpdatePermissions, onPinChanged }: SettingsProps) {
+function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, hasPin, lockUsername, onSaveKey, onRemoveKey, onUpdatePermissions, onPinChanged, voiceMode, onToggleVoice }: SettingsProps) {
   const connectedCount = PROVIDERS.filter(p => keyStatus[p.id]).length;
 
   const togglePermission = async (key: string) => {
@@ -543,6 +555,27 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
           </div>
         </div>
       ))}
+
+      <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>Voice</h2>
+      <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
+        Enable spoken AI responses. When active, TriForge reads answers aloud using your system voice or OpenAI TTS (if an OpenAI key is configured). You can also toggle voice from the chat dock.
+      </p>
+      <div style={styles.permRow}>
+        <button
+          style={{ ...styles.toggle, ...(voiceMode ? styles.toggleOn : {}) }}
+          onClick={() => onToggleVoice(!voiceMode)}
+        >
+          <div style={{ ...styles.toggleKnob, ...(voiceMode ? styles.toggleKnobOn : {}) }} />
+        </button>
+        <div>
+          <div style={styles.permLabel}>Voice Output (Text-to-Speech)</div>
+          <div style={styles.permDesc}>
+            {voiceMode
+              ? 'Active — AI responses will be spoken aloud.'
+              : 'Off — AI responses are text only.'}
+          </div>
+        </div>
+      </div>
 
       <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>Updates</h2>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>

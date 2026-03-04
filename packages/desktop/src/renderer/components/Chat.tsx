@@ -80,6 +80,9 @@ interface Props {
   onClearPrefill?: () => void;
   /** Navigate to the Command screen (◉) — used for strategic escalation suggestion. */
   onNavigateToCommand?: () => void;
+  /** Controlled voice-output mode — set by parent (Settings screen). */
+  voiceMode?: boolean;
+  onVoiceModeChange?: (on: boolean) => void;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -217,7 +220,7 @@ Format with actual email copy that can be used directly, not just descriptions.`
 
 // ── Chat Component ─────────────────────────────────────────────────────────────
 
-export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, onUpgradeClick, onBuildApp, activeProfileId, onProfileSwitch, onProfileDeactivate, prefill, onClearPrefill, onNavigateToCommand }: Props) {
+export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, onUpgradeClick, onBuildApp, activeProfileId, onProfileSwitch, onProfileDeactivate, prefill, onClearPrefill, onNavigateToCommand, voiceMode: voiceModeProp, onVoiceModeChange }: Props) {
   const [messages, setMessages] = useState<Message[]>(() => {
     // Load persisted history on first render
     try {
@@ -245,7 +248,16 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   );
   const [intensitySuggestion, setIntensitySuggestion] = useState<string | null>(null);
   const [speaking, setSpeaking] = useState<string | null>(null);
-  const [voiceMode, setVoiceMode] = useState(() => localStorage.getItem('triforge-voice-mode') === 'on');
+  // voiceMode: controlled by parent (Settings) if prop provided, else local localStorage state
+  const [_voiceModeLocal, _setVoiceModeLocal] = useState(
+    () => voiceModeProp !== undefined ? voiceModeProp : localStorage.getItem('triforge-voice-mode') === 'on'
+  );
+  const voiceMode = voiceModeProp !== undefined ? voiceModeProp : _voiceModeLocal;
+  const setVoiceMode = (next: boolean) => {
+    _setVoiceModeLocal(next);
+    localStorage.setItem('triforge-voice-mode', next ? 'on' : 'off');
+    onVoiceModeChange?.(next);
+  };
   const [voiceChatActive, setVoiceChatActive] = useState(false);
   const [gate, setGate] = useState<{ feature: string; neededTier: 'pro' | 'business' } | null>(null);
   const [checkoutUrls, setCheckoutUrls] = useState<{ pro: string; business: string; portal: string }>({ pro: '', business: '', portal: '' });
