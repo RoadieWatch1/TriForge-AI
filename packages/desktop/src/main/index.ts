@@ -63,6 +63,14 @@ function createWindow(): void {
 
   mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
 
+  // ── Microphone permission — required for Web Speech API (wake word + voice) ──
+  // Electron denies media requests by default. We grant mic-only; camera stays denied.
+  mainWindow.webContents.session.setPermissionRequestHandler(
+    (_webContents, permission, callback) => {
+      callback(permission === 'media');
+    },
+  );
+
   // Right-click context menu — spell suggestions + standard edit actions
   mainWindow.webContents.on('context-menu', (_e, params) => {
     const items: Electron.MenuItemConstructorOptions[] = [];
@@ -173,7 +181,7 @@ app.whenReady().then(async () => {
 
   // 1. Show splash immediately — record when it appeared
   splashWindow = createSplash();
-  const splashStart = Date.now();
+  void Date.now(); // splashStart timing (unused — splash closes on ready-to-show)
   bootLog('Splash created');
 
   // 2. Create main window immediately (hidden) — must happen before any async init

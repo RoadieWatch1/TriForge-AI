@@ -16,6 +16,55 @@
 
 import { playCouncilWakeTone } from '../audio/wakeTone';
 
+// ── Web Speech API type declarations (Electron/Chromium) ─────────────────────
+// Declared here because lib.dom.d.ts coverage of SpeechRecognition varies
+// across TypeScript versions.
+
+interface ISpeechRecognitionAlternative {
+  readonly transcript: string;
+  readonly confidence: number;
+}
+interface ISpeechRecognitionResult {
+  readonly length: number;
+  item(index: number): ISpeechRecognitionAlternative;
+  readonly isFinal: boolean;
+  [index: number]: ISpeechRecognitionAlternative;
+}
+interface ISpeechRecognitionResultList {
+  readonly length: number;
+  item(index: number): ISpeechRecognitionResult;
+  [index: number]: ISpeechRecognitionResult;
+}
+interface ISpeechRecognitionEvent extends Event {
+  readonly results: ISpeechRecognitionResultList;
+  readonly resultIndex: number;
+}
+interface ISpeechRecognitionErrorEvent extends Event {
+  readonly error: string;
+  readonly message: string;
+}
+interface ISpeechRecognition extends EventTarget {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  maxAlternatives: number;
+  onresult: ((e: ISpeechRecognitionEvent) => void) | null;
+  onerror: ((e: ISpeechRecognitionErrorEvent) => void) | null;
+  onend: (() => void) | null;
+  start(): void;
+  stop(): void;
+}
+interface ISpeechRecognitionCtor {
+  new (): ISpeechRecognition;
+}
+
+function getSpeechRecognition(): ISpeechRecognitionCtor | undefined {
+  const w = window as unknown as Record<string, unknown>;
+  return (w['SpeechRecognition'] ?? w['webkitSpeechRecognition']) as ISpeechRecognitionCtor | undefined;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 const WAKE_WORDS = [
   'council',
   'hey council',
@@ -38,7 +87,7 @@ function matchesWakeWord(text: string): boolean {
 }
 
 export class WakeWordListener {
-  private rec: SpeechRecognition | null = null;
+  private rec: ISpeechRecognition | null = null;
   private enabled = false;
   private paused  = false;
   private wakeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -80,8 +129,7 @@ export class WakeWordListener {
   private _listen(): void {
     if (!this.enabled || this.paused || this.rec) return;
 
-    const SR = (window as Window & typeof globalThis).SpeechRecognition
-            ?? (window as Window & typeof globalThis).webkitSpeechRecognition;
+    const SR = getSpeechRecognition();
     if (!SR) return; // Web Speech not available in this context
 
     const rec = new SR();
@@ -91,7 +139,7 @@ export class WakeWordListener {
     rec.maxAlternatives = 1;
     this.rec = rec;
 
-    rec.onresult = (e: SpeechRecognitionEvent) => {
+    rec.onresult = (e: ISpeechRecognitionEvent) => {
       if (this.paused) return;
       const lastIdx = e.results.length - 1;
       const transcript = e.results[lastIdx][0].transcript;
@@ -100,8 +148,14 @@ export class WakeWordListener {
       }
     };
 
-    rec.onerror = () => {
+    rec.onerror = (e: ISpeechRecognitionErrorEvent) => {
+      // 'not-allowed' = microphone denied; 'no-speech' = silence timeout (normal)
+      if (e.error !== 'no-speech') {
+        console.warn('[WakeWordListener] SpeechRecognition error:', e.error);
+      }
       this.rec = null;
+      // Don't retry on permission errors — it won't recover without user action
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') return;
       if (this.enabled && !this.paused) {
         setTimeout(() => this._listen(), 1000);
       }
@@ -137,13 +191,5 @@ export class WakeWordListener {
 
   private _clearWakeTimer(): void {
     if (this.wakeTimer) { clearTimeout(this.wakeTimer); this.wakeTimer = null; }
-  }
-}
-
-// Type declarations for Web Speech API (Electron/Chromium)
-declare global {
-  interface Window {
-    SpeechRecognition?: new () => SpeechRecognition;
-    webkitSpeechRecognition?: new () => SpeechRecognition;
   }
 }
