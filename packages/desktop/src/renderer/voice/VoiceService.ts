@@ -15,6 +15,8 @@
 
 import { VoiceCommandBridge } from './VoiceCommandBridge';
 import { onCouncilCommand } from '../command/CommandDispatcher';
+import { councilPresence } from '../state/CouncilPresence';
+import { playWakeTone } from '../audio/councilSounds';
 
 class VoiceService {
   private bridge:   VoiceCommandBridge | null = null;
@@ -31,6 +33,8 @@ class VoiceService {
     this.unsubCmd = onCouncilCommand((matched) => {
       if (matched.command === 'council_assemble') {
         console.log('[TriForge] Wake word detected: Council');
+        councilPresence.setState('wake');
+        playWakeTone();
         window.dispatchEvent(new CustomEvent('triforge:council-wake'));
       }
     });

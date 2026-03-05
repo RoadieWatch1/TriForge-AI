@@ -9,6 +9,8 @@ import { CouncilChamber } from './forge/CouncilChamber';
 import { loadLastMission, type LastMissionSummary } from '../forge/ForgeContextStore';
 import { voiceService } from '../voice/VoiceService';
 import { onCouncilCommand, dispatchCommand } from '../command/CommandDispatcher';
+import { councilPresence } from '../state/CouncilPresence';
+import { playConsensusTone, playListeningTone } from '../audio/councilSounds';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -417,6 +419,8 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       setCouncilListening(true);
       setTimeout(() => setCouncilListening(false), 500);
       window.triforge.voice.notifyWake();
+      councilPresence.setState('listening');
+      playListeningTone();
     };
     window.addEventListener('triforge:council-authenticated', handler);
     return () => window.removeEventListener('triforge:council-authenticated', handler);
@@ -434,12 +438,14 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     return () => unsub();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Pause wake detection while TTS is speaking or HandsFreeVoice is active
+  // Pause wake detection + sync council presence while TTS or HandsFreeVoice is active
   useEffect(() => {
     if (speaking || handsFreeMode) {
       voiceService.pause();
+      if (handsFreeMode && !speaking) councilPresence.setState('listening');
     } else {
       voiceService.resume();
+      councilPresence.setState('idle');
     }
   }, [speaking, handsFreeMode]);
 
@@ -459,6 +465,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     ttsAppending.current = false;
 
     setSpeaking(msgId);
+    councilPresence.setState('speaking');
     const truncated = text.slice(0, 4096);
 
     // Priority 1: OpenAI TTS streaming — Pro/Business users with an OpenAI key
@@ -512,8 +519,8 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           if (audioRef.current) {
             audioRef.current.src = blobUrl;
             audioRef.current.play().catch(reject);
-            audioRef.current.onended = () => { URL.revokeObjectURL(blobUrl); setSpeaking(null); resolve(); };
-            audioRef.current.onerror = () => { URL.revokeObjectURL(blobUrl); setSpeaking(null); resolve(); };
+            audioRef.current.onended = () => { URL.revokeObjectURL(blobUrl); setSpeaking(null); councilPresence.setState('idle'); resolve(); };
+            audioRef.current.onerror = () => { URL.revokeObjectURL(blobUrl); setSpeaking(null); councilPresence.setState('idle'); resolve(); };
           }
 
           // Kick off the IPC streaming request
@@ -538,13 +545,13 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       if (preferred) utt.voice = preferred;
       utt.rate  = 0.92;
       utt.pitch = 1.0;
-      utt.onend = () => setSpeaking(null);
-      utt.onerror = () => setSpeaking(null);
+      utt.onend = () => setSpeaking(null); councilPresence.setState('idle');
+      utt.onerror = () => setSpeaking(null); councilPresence.setState('idle');
       window.speechSynthesis.speak(utt);
       return;
     }
 
-    setSpeaking(null);
+    setSpeaking(null); councilPresence.setState('idle');
   }, [keyStatus, tier]);
 
   // ── Interrupt current TTS speech immediately ───────────────────────────────────
@@ -561,7 +568,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     ttsChunkQueue.current = [];
     // Signal main process to abort its streaming fetch
     window.triforge.voice.interrupt();
-    setSpeaking(null);
+    setSpeaking(null); councilPresence.setState('idle');
   }, []);
 
   // Voice interrupt detection — lightweight SpeechRecognition active only while TTS is playing
@@ -656,6 +663,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     setInput('');
     setSending(true);
     setShowQuickActions(false);
+    councilPresence.setState('thinking');
 
     // Remove error message being retried
     if (retryId) setMessages(m => m.filter(msg => msg.id !== retryId));
@@ -774,6 +782,9 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         if (!result.error && result.responses) {
           setAgreementMap({});
           setSelectedProvider('merge');
+          // Fire consensus presence state + chime when all council members responded
+          councilPresence.setState('consensus');
+          playConsensusTone();
         }
 
         if (!result.error && result.synthesis && voiceMode) {
@@ -1482,7 +1493,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
                   if (!next) {
                     if (audioRef.current) { audioRef.current.pause(); audioRef.current.src = ''; }
                     window.speechSynthesis?.cancel();
-                    setSpeaking(null);
+                    setSpeaking(null); councilPresence.setState('idle');
                   }
                 }}
               >
