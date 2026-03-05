@@ -7,7 +7,7 @@ import { ExecutionPlanView, type ExecutionPlan } from './ExecutionPlanView';
 import { ForgeChamber } from './ForgeChamber';
 import { CouncilChamber } from './forge/CouncilChamber';
 import { loadLastMission, type LastMissionSummary } from '../forge/ForgeContextStore';
-import { VoiceCommandBridge } from '../voice/VoiceCommandBridge';
+import { voiceService } from '../voice/VoiceService';
 import { onCouncilCommand, dispatchCommand } from '../command/CommandDispatcher';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -296,8 +296,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   const sourceBufferRef = useRef<SourceBuffer | null>(null);
   const ttsChunkQueue   = useRef<Uint8Array[]>([]);
   const ttsAppending    = useRef(false);
-  // Voice command bridge (vosk-browser WASM + IPC trust boundary)
-  const wakeListenerRef = useRef<VoiceCommandBridge | null>(null);
+  // voiceService (singleton) owns the wake bridge — started from index.tsx
   // Interrupt voice detection — active while TTS is speaking
   const interruptRecRef = useRef<SpeechRecognition | null>(null);
   // Panel refs for outside-click dismiss
@@ -410,38 +409,34 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   // 'not-allowed' because Electron never triggers the permission dialog on its own.
 
   useEffect(() => {
-    const bridge = new VoiceCommandBridge();
-    wakeListenerRef.current = bridge;
-    bridge.start(); // async: downloads vosk model first run (~40 MB), then listens
+    const handler = () => {
+      setHandsFreeMode(true);
+      setCouncilListening(true);
+      setTimeout(() => setCouncilListening(false), 500);
+      window.triforge.voice.notifyWake();
+    };
+    window.addEventListener('triforge:council-wake', handler);
+    return () => window.removeEventListener('triforge:council-wake', handler);
+  }, []);
 
+  // ── Voice-triggered mission commands ─────────────────────────────────────────
+  useEffect(() => {
     const unsub = onCouncilCommand((matched, source) => {
-      if (matched.command === 'council_assemble') {
-        setHandsFreeMode(true);
-        setCouncilListening(true);
-        setTimeout(() => setCouncilListening(false), 500);
-        window.triforge.voice.notifyWake();
-      } else if (source === 'voice' && matched.command.startsWith('mission_')) {
-        // Voice mission commands — start mission directly
-        // (typed mission commands are intercepted in sendMessage instead)
+      if (source === 'voice' && matched.command.startsWith('mission_')) {
         const intent = matched.command.replace('mission_', '');
         window.triforge.mission?.start(matched.payload ?? matched.command, intent, 'voice').catch(console.warn);
       }
       // 'council_deliberate', 'claude_advise', 'grok_challenge', 'apply_solution' — future wiring
     });
-
-    return () => {
-      unsub();
-      wakeListenerRef.current?.stop();
-      wakeListenerRef.current = null;
-    };
+    return () => unsub();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Pause while TTS is speaking or HandsFreeVoice is active (avoids SpeechRecognition conflicts)
+  // Pause wake detection while TTS is speaking or HandsFreeVoice is active
   useEffect(() => {
     if (speaking || handsFreeMode) {
-      wakeListenerRef.current?.pause();
+      voiceService.pause();
     } else {
-      wakeListenerRef.current?.resume();
+      voiceService.resume();
     }
   }, [speaking, handsFreeMode]);
 
@@ -1492,7 +1487,12 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
               </button>
               <button
                 style={{ ...cs.dockBtn, ...(voiceChatActive ? { color: 'var(--accent)', borderColor: 'rgba(99,102,241,0.4)' } : {}) }}
-                onClick={() => setVoiceChatActive(v => !v)}
+                onClick={() => {
+                  const next = !voiceChatActive;
+                  setVoiceChatActive(next);
+                  // Live Voice Chat owns the mic — disable wake detection while active
+                  if (next) { voiceService.disable(); } else { voiceService.enable(); }
+                }}
               >
                 {voiceChatActive ? 'Live Voice: On' : 'Voice Chat'}
               </button>
