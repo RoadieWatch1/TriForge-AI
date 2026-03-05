@@ -19,6 +19,7 @@ import { AutomationMode } from './modes/AutomationMode';
 import { HustleMode } from './modes/HustleMode';
 import { PhoneLink } from './components/PhoneLink';
 import { CouncilWakeScreen } from './components/CouncilWakeScreen';
+import { TrianglePresence } from './components/TrianglePresence';
 
 // ── Error Boundary ───────────────────────────────────────────────────────────
 export class ErrorBoundary extends React.Component<
@@ -309,6 +310,8 @@ export function App() {
       <div style={styles.body}>
         {/* Sidebar */}
         <nav style={styles.sidebar}>
+          {/* Council presence indicator — reflects wake/listening/thinking/speaking/consensus */}
+          <TrianglePresence />
           {/* Agent Modes */}
           <NavBtn icon="⬡" label="TriForge"  active={screen === 'chat'}           onClick={() => setScreen('chat')} />
           <NavBtn icon="◉" label="Command"   active={screen === 'forge'}          onClick={() => setScreen('forge')} />
