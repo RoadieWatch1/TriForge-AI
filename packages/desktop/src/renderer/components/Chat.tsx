@@ -404,17 +404,34 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   }, [messages]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Wake Word listener — always active, independent of voice output mode ──────
-  // Starts once on mount. Pause/resume handles speaking and hands-free conflicts.
+  // Explicitly requests getUserMedia first so Chromium/Electron actually prompts for
+  // microphone permission. Without this call, SpeechRecognition fails silently with
+  // 'not-allowed' because Electron never triggers the permission dialog on its own.
 
   useEffect(() => {
-    wakeListenerRef.current = new WakeWordListener(() => {
-      setHandsFreeMode(true);
-      setCouncilListening(true);
-      setTimeout(() => setCouncilListening(false), 500);
-      window.triforge.voice.notifyWake();
-    });
-    wakeListenerRef.current.start();
+    let cancelled = false;
+    async function initWakeListener() {
+      try {
+        // Trigger the OS/Electron mic permission dialog. We don't need the stream —
+        // just the granted permission. Release it immediately.
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach(t => t.stop());
+      } catch {
+        // Permission denied — wake word won't work, but don't crash
+        return;
+      }
+      if (cancelled) return;
+      wakeListenerRef.current = new WakeWordListener(() => {
+        setHandsFreeMode(true);
+        setCouncilListening(true);
+        setTimeout(() => setCouncilListening(false), 500);
+        window.triforge.voice.notifyWake();
+      });
+      wakeListenerRef.current.start();
+    }
+    initWakeListener();
     return () => {
+      cancelled = true;
       wakeListenerRef.current?.stop();
       wakeListenerRef.current = null;
     };

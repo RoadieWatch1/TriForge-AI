@@ -11,6 +11,12 @@ import { healthMonitor } from '../core/health/healthMonitor';
 import { MemoryStore } from '../core/memory/memoryStore';
 import { getMemoryManager } from '../core/memory/memoryManager';
 
+// ── Chromium speech recognition flags (must be set before app.whenReady) ────────
+// enable-speech-dispatcher: activates the speech service on Linux
+// enable-features=SpeechRecognition: ensures the Web Speech API is active
+app.commandLine.appendSwitch('enable-speech-dispatcher');
+app.commandLine.appendSwitch('enable-features', 'SpeechRecognition');
+
 // Single instance lock
 if (!app.requestSingleInstanceLock()) {
   app.quit();
