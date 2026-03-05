@@ -64,7 +64,12 @@ function createWindow(): void {
   mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
 
   // ── Microphone permission — required for Web Speech API (wake word + voice) ──
-  // Electron denies media requests by default. We grant mic-only; camera stays denied.
+  // In Electron 22+, BOTH handlers must be set:
+  //   setPermissionCheckHandler  — pre-checks before the API even tries to request
+  //   setPermissionRequestHandler — handles the live prompt when the API requests
+  mainWindow.webContents.session.setPermissionCheckHandler(
+    (_webContents, permission) => permission === 'media',
+  );
   mainWindow.webContents.session.setPermissionRequestHandler(
     (_webContents, permission, callback) => {
       callback(permission === 'media');

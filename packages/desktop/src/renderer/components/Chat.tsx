@@ -403,37 +403,31 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     if (STRATEGIC_KEYWORDS.some(kw => combined.includes(kw))) setEscalationSuggested(true);
   }, [messages]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Wake Word listener — starts/stops with voiceMode or handsFreeMode ─────────
+  // ── Wake Word listener — always active, independent of voice output mode ──────
+  // Starts once on mount. Pause/resume handles speaking and hands-free conflicts.
 
   useEffect(() => {
-    if (!voiceMode && !handsFreeMode) {
-      wakeListenerRef.current?.stop();
-      wakeListenerRef.current = null;
-      return;
-    }
-    if (!wakeListenerRef.current) {
-      wakeListenerRef.current = new WakeWordListener(() => {
-        setHandsFreeMode(true);
-        setCouncilListening(true);
-        setTimeout(() => setCouncilListening(false), 500);
-        window.triforge.voice.notifyWake();
-      });
-      wakeListenerRef.current.start();
-    }
+    wakeListenerRef.current = new WakeWordListener(() => {
+      setHandsFreeMode(true);
+      setCouncilListening(true);
+      setTimeout(() => setCouncilListening(false), 500);
+      window.triforge.voice.notifyWake();
+    });
+    wakeListenerRef.current.start();
     return () => {
       wakeListenerRef.current?.stop();
       wakeListenerRef.current = null;
     };
-  }, [voiceMode, handsFreeMode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Pause / resume wake listener while speaking to prevent self-triggering
+  // Pause while TTS is speaking or HandsFreeVoice is active (avoids SpeechRecognition conflicts)
   useEffect(() => {
-    if (speaking) {
+    if (speaking || handsFreeMode) {
       wakeListenerRef.current?.pause();
     } else {
       wakeListenerRef.current?.resume();
     }
-  }, [speaking]);
+  }, [speaking, handsFreeMode]);
 
   // ── TTS ───────────────────────────────────────────────────────────────────────
 
