@@ -11,6 +11,7 @@ import { voiceService } from '../voice/VoiceService';
 import { onCouncilCommand, dispatchCommand } from '../command/CommandDispatcher';
 import { councilPresence } from '../state/CouncilPresence';
 import { playConsensusTone, playListeningTone } from '../audio/councilSounds';
+import { voiceIntentRouter } from '../controllers/VoiceIntentRouter';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -1706,6 +1707,8 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
             setHandsFreeMode(false);
             return;
           }
+          // Route to autonomy mission if a known intent is matched
+          if (voiceIntentRouter.route(t)) return;
           setHandsFreeMode(false);
           setTimeout(() => setHandsFreeMode(true), 100);
           sendMessage(t);
