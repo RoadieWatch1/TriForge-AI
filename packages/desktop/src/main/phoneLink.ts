@@ -21,6 +21,7 @@ import crypto from 'crypto';
 import os from 'os';
 import fs from 'fs';
 import path from 'path';
+import QRCode from 'qrcode';
 
 const PORT = 4587;
 const DEVICES_FILE_NAME = 'paired_devices.json';
@@ -66,10 +67,10 @@ export class PhoneLinkServer {
 
   setTaskHandler(fn: TaskHandler) { this.onTask = fn; }
 
-  start(): Promise<{ ok: boolean; url?: string; pairToken?: string; pairUrl?: string; qrData?: string; error?: string }> {
+  async start(): Promise<{ ok: boolean; url?: string; pairToken?: string; pairUrl?: string; qrData?: string; error?: string }> {
     if (this.server?.listening) {
       const { pairToken, pairUrl } = this._pairInfo();
-      return Promise.resolve({ ok: true, url: this._baseUrl(), pairToken, pairUrl, qrData: this._qrData(pairUrl) });
+      return { ok: true, url: this._baseUrl(), pairToken, pairUrl, qrData: await this._qrData(pairUrl) };
     }
     this.pairToken = crypto.randomBytes(12).toString('hex'); // 24-char hex
     this.server = http.createServer((req, res) => {
@@ -85,9 +86,9 @@ export class PhoneLinkServer {
         this.server = null;
         resolve({ ok: false, error: err.message });
       });
-      this.server!.listen(PORT, '0.0.0.0', () => {
+      this.server!.listen(PORT, '0.0.0.0', async () => {
         const { pairToken, pairUrl } = this._pairInfo();
-        resolve({ ok: true, url: this._baseUrl(), pairToken, pairUrl, qrData: this._qrData(pairUrl) });
+        resolve({ ok: true, url: this._baseUrl(), pairToken, pairUrl, qrData: await this._qrData(pairUrl) });
       });
     });
   }
@@ -120,10 +121,10 @@ export class PhoneLinkServer {
     return this.pairedDevices.length < before;
   }
 
-  generateNewPairToken(): { pairToken: string; pairUrl: string; qrData: string } {
+  async generateNewPairToken(): Promise<{ pairToken: string; pairUrl: string; qrData: string }> {
     this.pairToken = crypto.randomBytes(12).toString('hex');
     const { pairUrl } = this._pairInfo();
-    return { pairToken: this.pairToken, pairUrl, qrData: this._qrData(pairUrl) };
+    return { pairToken: this.pairToken, pairUrl, qrData: await this._qrData(pairUrl) };
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────────
@@ -150,14 +151,13 @@ export class PhoneLinkServer {
     };
   }
 
-  /**
-   * Returns a QR-API URL that renders the pairing URL as a QR code image.
-   * The phone can scan this to open the pair URL without typing.
-   * Falls back to a `triforge://link?...` deep-link format for custom app handling.
-   */
-  private _qrData(pairUrl: string): string {
-    const encoded = encodeURIComponent(pairUrl);
-    return `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encoded}`;
+  /** Generates a QR code as a PNG data URL using the local qrcode package. No external requests. */
+  private async _qrData(pairUrl: string): Promise<string> {
+    try {
+      return await QRCode.toDataURL(pairUrl, { width: 200, margin: 1 });
+    } catch {
+      return '';
+    }
   }
 
   // ── Persistence helpers ───────────────────────────────────────────────────────

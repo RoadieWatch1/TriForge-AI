@@ -29,7 +29,20 @@ export function PhoneLink() {
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [status?.running, refreshStatus]);
 
-  useEffect(() => { refreshStatus().finally(() => setLoading(false)); }, [refreshStatus]);
+  useEffect(() => {
+    refreshStatus().finally(async () => {
+      setLoading(false);
+      // Auto-generate a pairing code if the server is already running
+      try {
+        const s = await window.triforge.phoneLink.status() as ServerStatus;
+        if (s?.running) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const p: any = await window.triforge.phoneLink.pair();
+          if (p?.pairUrl) setPairInfo({ pairUrl: p.pairUrl, pairToken: p.pairToken, qrData: p.qrData });
+        }
+      } catch { /* non-fatal */ }
+    });
+  }, [refreshStatus]);
 
   const handleStart = async () => {
     setStarting(true); setError(null); setQrError(false);
