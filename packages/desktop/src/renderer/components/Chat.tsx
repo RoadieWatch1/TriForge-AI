@@ -82,6 +82,8 @@ interface Props {
   onClearPrefill?: () => void;
   /** Navigate to the Command screen (◉) — used for strategic escalation suggestion. */
   onNavigateToCommand?: () => void;
+  /** Navigate to the Files screen (⊡) — used when a binary file is attached. */
+  onNavigateToFiles?: () => void;
   /** Controlled voice-output mode — set by parent (Settings screen). */
   voiceMode?: boolean;
   onVoiceModeChange?: (on: boolean) => void;
@@ -222,7 +224,7 @@ Format with actual email copy that can be used directly, not just descriptions.`
 
 // ── Chat Component ─────────────────────────────────────────────────────────────
 
-export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, onUpgradeClick, onBuildApp, activeProfileId, onProfileSwitch, onProfileDeactivate, prefill, onClearPrefill, onNavigateToCommand, voiceMode: voiceModeProp, onVoiceModeChange }: Props) {
+export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, onUpgradeClick, onBuildApp, activeProfileId, onProfileSwitch, onProfileDeactivate, prefill, onClearPrefill, onNavigateToCommand, onNavigateToFiles, voiceMode: voiceModeProp, onVoiceModeChange }: Props) {
   const [messages, setMessages] = useState<Message[]>(() => {
     // Load persisted history on first render
     try {
@@ -277,7 +279,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   const [checkoutUrls, setCheckoutUrls] = useState<{ pro: string; business: string; portal: string }>({ pro: '', business: '', portal: '' });
   const [showQuickActions, setShowQuickActions] = useState(false);
   const [showWorkflows, setShowWorkflows] = useState(false);
-  const [attachedFile, setAttachedFile] = useState<{ name: string; path: string; content: string } | null>(null);
+  const [attachedFiles, setAttachedFiles] = useState<{ name: string; path: string; content: string }[]>([]);
   // Council system state
   const [agreementMap, setAgreementMap] = useState<Record<string, boolean | null>>({});
   const [selectedProvider, setSelectedProvider] = useState<string>('merge');
@@ -297,6 +299,9 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   const wakeListenerRef = useRef<WakeWordListener | null>(null);
   // Interrupt voice detection — active while TTS is speaking
   const interruptRecRef = useRef<SpeechRecognition | null>(null);
+  // Panel refs for outside-click dismiss
+  const quickPanelRef    = useRef<HTMLDivElement>(null);
+  const workflowPanelRef = useRef<HTMLDivElement>(null);
 
   // Mission awareness (Phase 3 — ForgeCommand integration)
   const [lastMission, setLastMission] = useState<LastMissionSummary | null>(null);
@@ -360,6 +365,22 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       inputRef.current?.focus();
     }
   }, [prefill]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Close Quick / Flows panels on outside click
+  useEffect(() => {
+    if (!showQuickActions && !showWorkflows) return;
+    const handler = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (showQuickActions && quickPanelRef.current && !quickPanelRef.current.contains(t)) {
+        setShowQuickActions(false);
+      }
+      if (showWorkflows && workflowPanelRef.current && !workflowPanelRef.current.contains(t)) {
+        setShowWorkflows(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showQuickActions, showWorkflows]);
 
   // Auto-detect intensity from message content (debounced 400ms) — only in thinktank mode
   useEffect(() => {
@@ -582,12 +603,14 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       return;
     }
     if (read.error === 'BINARY_FILE') {
-      addSystemMsg(`"${result.split(/[/\\]/).pop()}" is a binary file (image, PDF, etc.). Use the Docs indexer instead.`);
+      const fname = result.split(/[/\\]/).pop() ?? result;
+      addSystemMsg(`"${fname}" is a binary file. Opening ⊡ Files to index it.`);
+      onNavigateToFiles?.();
       return;
     }
     if (read.error) { addSystemMsg(`Could not read file: ${read.error}`); return; }
     const name = result.split(/[/\\]/).pop() ?? result;
-    setAttachedFile({ name, path: result, content: read.content ?? '' });
+    setAttachedFiles(prev => prev.length < 5 ? [...prev, { name, path: result, content: read.content ?? '' }] : prev);
   }, []);
 
   const addPhotoMsg = (label: string, photos: PhotoFile[]) =>
@@ -630,10 +653,10 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     const contextPrefix = (lastMission && !missionBannerDismissed)
       ? `[FORGE CONTEXT: Strategic mission "${lastMission.objective.slice(0, 80)}" — Council alignment ${lastMission.semanticScore ?? lastMission.confidenceScore}%, Risk ${lastMission.riskLevel}. Summary: ${lastMission.executiveSummary.slice(0, 200)}]\n\n`
       : '';
-    const fileContext = attachedFile
-      ? `[FILE: ${attachedFile.name}]\n${attachedFile.content}\n[/FILE]\n\n` : '';
-    setAttachedFile(null);
-    const messageToSend = fileContext + contextPrefix + text.trim();
+    const fileContext = attachedFiles.map(f => `[FILE: ${f.name}]\n${f.content}\n[/FILE]`).join('\n\n');
+    const fileContextStr = fileContext ? fileContext + '\n\n' : '';
+    setAttachedFiles([]);
+    const messageToSend = fileContextStr + contextPrefix + text.trim();
 
     const activeProviders = Object.entries(keyStatus).filter(([, v]) => v);
     const useConsensus = mode === 'consensus' && activeProviders.length > 1;
@@ -1278,18 +1301,18 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         {/* Row 2 — input */}
         <div style={cs.topBarInput}>
           <VoiceButton
-            onTranscript={(text) => sendMessage(text)}
+            onTranscript={(text) => { setInput(text); inputRef.current?.focus(); }}
             onError={(err) => addSystemMsg(`Voice input: ${err}`)}
             disabled={sending}
             hasOpenAI={keyStatus.openai}
           />
           <div style={cs.inputWrapper}>
-            {attachedFile && (
-              <div style={cs.attachedFileTag}>
-                <span style={cs.attachedFileName}>{attachedFile.name}</span>
-                <button style={cs.attachedFileRemove} onClick={() => setAttachedFile(null)}>✕</button>
+            {attachedFiles.map(f => (
+              <div key={f.path} style={cs.attachedFileTag}>
+                <span style={cs.attachedFileName}>{f.name}</span>
+                <button style={cs.attachedFileRemove} onClick={() => setAttachedFiles(prev => prev.filter(x => x.path !== f.path))}>✕</button>
               </div>
-            )}
+            ))}
             <textarea
               ref={inputRef}
               style={cs.textarea}
@@ -1335,7 +1358,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
             <span style={cs.actionLabel}>Flows</span>
           </button>
-          <button style={{ ...cs.actionBtn, ...(attachedFile ? cs.actionBtnActive : {}) }}
+          <button style={{ ...cs.actionBtn, ...(attachedFiles.length > 0 ? cs.actionBtnActive : {}) }}
             onClick={attachFile} title="Attach file" disabled={sending}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
@@ -1346,13 +1369,16 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
 
         {/* Collapsible panels */}
         {showWorkflows && (
-          <div style={cs.workflowPanel}>
+          <div ref={workflowPanelRef} style={cs.workflowPanel}>
             <div style={cs.workflowPanelTitle}>Think Tank Workflows</div>
             <div style={cs.workflowGrid}>
               {WORKFLOWS.map(w => (
-                <button key={w.id} style={cs.workflowCard} onClick={() => fireWorkflow(w.id)}>
+                <button key={w.id} style={{ ...cs.workflowCard, ...(tier === 'free' ? cs.workflowCardLocked : {}) }} onClick={() => fireWorkflow(w.id)}>
                   <div>
-                    <div style={cs.workflowLabel}>{w.label}</div>
+                    <div style={cs.workflowLabel}>
+                      {w.label}
+                      {tier === 'free' && <span style={cs.workflowProBadge}>PRO</span>}
+                    </div>
                     <div style={cs.workflowDesc}>{w.desc}</div>
                   </div>
                 </button>
@@ -1361,7 +1387,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           </div>
         )}
         {showQuickActions && (
-          <div style={cs.quickActionsPanel}>
+          <div ref={quickPanelRef} style={cs.quickActionsPanel}>
             {QUICK_ACTIONS.map(a => (
               <button key={a.label} style={cs.quickBtn} onClick={() => handleQuickAction(a)}>
                 {a.label}
@@ -2398,7 +2424,9 @@ const cs: Record<string, React.CSSProperties> = {
   workflowCard: { display: 'flex', alignItems: 'center', gap: 12, background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, padding: '9px 14px', cursor: 'pointer', textAlign: 'left' as const, width: '100%' },
   workflowIcon: { fontSize: 22, flexShrink: 0 },
   workflowLabel: { fontSize: 13, fontWeight: 600 as const, color: 'var(--text-primary)', marginBottom: 2 },
-  workflowDesc: { fontSize: 11, color: 'var(--text-secondary)' },
+  workflowDesc:       { fontSize: 11, color: 'var(--text-secondary)' },
+  workflowCardLocked: { opacity: 0.75 },
+  workflowProBadge:   { marginLeft: 6, fontSize: 9, fontWeight: 700 as const, color: 'var(--accent)', background: 'rgba(99,179,237,0.12)', border: '1px solid rgba(99,179,237,0.3)', borderRadius: 3, padding: '1px 4px', letterSpacing: '0.05em', verticalAlign: 'middle' },
 
   // Forge Score panel
   forgePanel: { borderTop: '1px solid var(--border)', padding: '10px 14px', display: 'flex', flexDirection: 'column' as const, gap: 6, background: '#0d0d0f55' },

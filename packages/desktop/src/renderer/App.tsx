@@ -330,6 +330,7 @@ export function App() {
               prefill={chatPrefill}
               onClearPrefill={() => setChatPrefill(null)}
               onNavigateToCommand={() => setScreen('forge')}
+              onNavigateToFiles={() => setScreen('files')}
               voiceMode={voiceMode}
               onVoiceModeChange={handleVoiceModeChange}
             />
