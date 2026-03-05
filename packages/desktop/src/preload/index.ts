@@ -554,10 +554,10 @@ const api = {
 
   // Phone Link — remote Council access from any device on the local network (port 4587)
   phoneLink: {
-    start:  () => ipcRenderer.invoke('phoneLink:start')  as Promise<{ ok?: boolean; url?: string; pairToken?: string; error?: string }>,
+    start:  () => ipcRenderer.invoke('phoneLink:start')  as Promise<{ ok?: boolean; url?: string; pairUrl?: string; pairToken?: string; qrData?: string; error?: string }>,
     stop:   () => ipcRenderer.invoke('phoneLink:stop')   as Promise<{ ok?: boolean; error?: string }>,
     status: () => ipcRenderer.invoke('phoneLink:status') as Promise<{ running: boolean; port: number; url: string; pairedDevices?: number }>,
-    pair:   () => ipcRenderer.invoke('phoneLink:pair')   as Promise<{ pairUrl?: string; pairToken?: string; error?: string }>,
+    pair:   () => ipcRenderer.invoke('phoneLink:pair')   as Promise<{ pairUrl?: string; pairToken?: string; qrData?: string; error?: string }>,
   },
 
   // Forge Chamber — real-time consensus telemetry

@@ -17,6 +17,7 @@ import { FileMode } from './modes/FileMode';
 import { InboxMode } from './modes/InboxMode';
 import { AutomationMode } from './modes/AutomationMode';
 import { HustleMode } from './modes/HustleMode';
+import { PhoneLink } from './components/PhoneLink';
 
 // ── Error Boundary ───────────────────────────────────────────────────────────
 export class ErrorBoundary extends React.Component<
@@ -47,7 +48,7 @@ type Screen =
   | 'chat' | 'settings' | 'memory' | 'ledger' | 'plan' | 'builder'
   | 'profiles' | 'missioncontrol' | 'agenthq'
   | 'dashboard' | 'operator' | 'world' | 'files' | 'inbox' | 'automation' | 'hustle'
-  | 'forge';
+  | 'forge' | 'phonelink';
 
 const LOCK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -300,6 +301,7 @@ export function App() {
           <NavBtn icon="≡" label="Ledger"   active={screen === 'ledger'}         onClick={() => setScreen('ledger')} />
           <NavBtn icon="⊕" label="Control"  active={screen === 'missioncontrol'} onClick={() => setScreen('missioncontrol')} />
           <NavBtn icon="⚙" label="Settings" active={screen === 'settings'}       onClick={() => setScreen('settings')} />
+          <NavBtn icon="⊛" label="Phone"    active={screen === 'phonelink'}      onClick={() => setScreen('phonelink')} />
           <div style={{ flex: 1 }} />
           <NavBtn icon="▷" label="Plan"     active={screen === 'plan'}           onClick={() => setScreen('plan')} />
         </nav>
@@ -374,6 +376,7 @@ export function App() {
           )}
           {screen === 'memory' && <MemoryScreen />}
           {screen === 'plan' && <LicensePanel onTierChange={setTier} />}
+          {screen === 'phonelink' && <PhoneLink />}
         </main>
       </div>
     </div>
