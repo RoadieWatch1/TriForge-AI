@@ -20,5 +20,8 @@
   "devDependencies": {
     "typescript": "^5.9.3"
   },
-  "version": "0.0.3"
+  "version": "0.0.3",
+  "dependencies": {
+    "vosk-browser": "^0.0.8"
+  }
 }

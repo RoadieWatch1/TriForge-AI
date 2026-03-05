@@ -111,6 +111,17 @@ const api = {
     },
     /** Notify main process that the wake word was detected (relays to voiceBus + councilBus). */
     notifyWake: (): void => ipcRenderer.send('voice:wake-detected'),
+    /** Report a raw detected phrase to main for validation. Main sends back 'voice-command'. */
+    reportWakePhrase: (phrase: string): void => ipcRenderer.send('voice:wake:phrase', phrase),
+    /** Subscribe to sanitized voice commands from main (trust boundary). */
+    onVoiceCommand: (cb: (cmd: string) => void): (() => void) => {
+      const h = (_: Electron.IpcRendererEvent, cmd: string) => cb(cmd);
+      ipcRenderer.on('voice-command', h);
+      return () => ipcRenderer.removeListener('voice-command', h);
+    },
+    /** Download Vosk model (first run ~40 MB, cached in userData). Returns zip ArrayBuffer. */
+    getWakeModelData: (): Promise<ArrayBuffer> =>
+      ipcRenderer.invoke('voice:wake:model-data') as Promise<ArrayBuffer>,
   },
 
   // Window controls
@@ -338,6 +349,16 @@ const api = {
       }>,
     providers: () =>
       ipcRenderer.invoke('council:providers') as Promise<string[]>,
+    onConsensus: (cb: (e: { missionId: string; winnerId: string; score: number; candidateCount: number; ts: number }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, e: unknown) => cb(e as Parameters<typeof cb>[0]);
+      ipcRenderer.on('council:consensus', handler);
+      return () => ipcRenderer.removeListener('council:consensus', handler);
+    },
+    onConsensusMeta: (cb: (e: { missionId: string; winnerApproach: string; score: number; risks?: string[]; reason?: string; ts: number }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, e: unknown) => cb(e as Parameters<typeof cb>[0]);
+      ipcRenderer.on('council:consensus_meta', handler);
+      return () => ipcRenderer.removeListener('council:consensus_meta', handler);
+    },
   },
 
   // Task Engine (Phase 3 + 3.5 — autonomous execution)
@@ -488,6 +509,13 @@ const api = {
   system: {
     openExternal: (url: string) => ipcRenderer.invoke('system:openExternal', url),
     platform: process.platform,
+    health: () => ipcRenderer.invoke('system:health') as Promise<{
+      wakeMode: string;
+      autonomyLoop: boolean;
+      commandSystem: boolean;
+      missionController: boolean;
+      ts: number;
+    }>,
   },
 
   // License & subscription
@@ -943,8 +971,9 @@ const api = {
     status: () => ipcRenderer.invoke('approvalServer:status') as Promise<{ running: boolean; port: number; url: string }>,
   },
 
-  // ── Council Mission Context ────────────────────────────────────────────────────
+  // ── Council Mission Context + Mission Controller ──────────────────────────────
   mission: {
+    // Council mission context (existing)
     getContext:    () =>
       ipcRenderer.invoke('mission:ctx:get') as Promise<{
         mission: string; objectives: string[]; decisions: string[];
@@ -956,6 +985,35 @@ const api = {
       ipcRenderer.invoke('mission:ctx:update', patch) as Promise<{ mission: string; updatedAt: number } | null>,
     clearContext:  () =>
       ipcRenderer.invoke('mission:ctx:clear') as Promise<{ ok: boolean }>,
+    // MissionController (autonomous engineering loop)
+    start:        (raw: string, intent: string, source: string) =>
+      ipcRenderer.invoke('mission:start', raw, intent, source) as Promise<{ missionId?: string; error?: string }>,
+    approvePlan:  (missionId: string, plan: unknown) =>
+      ipcRenderer.invoke('mission:approve_plan', missionId, plan) as Promise<{ ok?: boolean; error?: string }>,
+    approveStep:  (missionId: string, stepId: string, plan: unknown) =>
+      ipcRenderer.invoke('mission:approve_step', missionId, stepId, plan) as Promise<{ ok?: boolean; error?: string }>,
+    rollback:     (missionId: string) =>
+      ipcRenderer.invoke('mission:rollback', missionId) as Promise<{ ok?: boolean; error?: string }>,
+    onPlanReady:  (cb: (data: unknown) => void): (() => void) => {
+      const h = (_: Electron.IpcRendererEvent, d: unknown) => cb(d);
+      ipcRenderer.on('mission:plan_ready', h);
+      return () => ipcRenderer.removeListener('mission:plan_ready', h);
+    },
+    onStepPreview: (cb: (data: unknown) => void): (() => void) => {
+      const h = (_: Electron.IpcRendererEvent, d: unknown) => cb(d);
+      ipcRenderer.on('mission:step_preview_ready', h);
+      return () => ipcRenderer.removeListener('mission:step_preview_ready', h);
+    },
+    onComplete: (cb: (data: unknown) => void): (() => void) => {
+      const h = (_: Electron.IpcRendererEvent, d: unknown) => cb(d);
+      ipcRenderer.on('mission:complete', h);
+      return () => ipcRenderer.removeListener('mission:complete', h);
+    },
+    onFailed: (cb: (data: unknown) => void): (() => void) => {
+      const h = (_: Electron.IpcRendererEvent, d: unknown) => cb(d);
+      ipcRenderer.on('mission:failed', h);
+      return () => ipcRenderer.removeListener('mission:failed', h);
+    },
   },
 
   // ── Council Memory Graph ───────────────────────────────────────────────────────
@@ -978,6 +1036,13 @@ const api = {
       ipcRenderer.invoke('local:provider:chat', baseUrl, model, messages) as Promise<{ text?: string; error?: string }>,
     models:  (baseUrl: string) =>
       ipcRenderer.invoke('local:provider:models', baseUrl) as Promise<{ models?: string[]; error?: string }>,
+  },
+
+  // Command dispatch audit logging
+  command: {
+    /** Fire-and-forget command audit — logs source, matched command name, and raw text. */
+    audit: (source: string, cmd: string, raw: string): void =>
+      ipcRenderer.send('command:audit', source, cmd, raw),
   },
 };
 

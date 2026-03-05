@@ -7,7 +7,8 @@ import { ExecutionPlanView, type ExecutionPlan } from './ExecutionPlanView';
 import { ForgeChamber } from './ForgeChamber';
 import { CouncilChamber } from './forge/CouncilChamber';
 import { loadLastMission, type LastMissionSummary } from '../forge/ForgeContextStore';
-import { WakeWordListener } from '../voice/WakeWordListener';
+import { VoiceCommandBridge } from '../voice/VoiceCommandBridge';
+import { onCouncilCommand, dispatchCommand } from '../command/CommandDispatcher';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -295,8 +296,8 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   const sourceBufferRef = useRef<SourceBuffer | null>(null);
   const ttsChunkQueue   = useRef<Uint8Array[]>([]);
   const ttsAppending    = useRef(false);
-  // Wake word listener instance
-  const wakeListenerRef = useRef<WakeWordListener | null>(null);
+  // Voice command bridge (vosk-browser WASM + IPC trust boundary)
+  const wakeListenerRef = useRef<VoiceCommandBridge | null>(null);
   // Interrupt voice detection — active while TTS is speaking
   const interruptRecRef = useRef<SpeechRecognition | null>(null);
   // Panel refs for outside-click dismiss
@@ -409,29 +410,27 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   // 'not-allowed' because Electron never triggers the permission dialog on its own.
 
   useEffect(() => {
-    let cancelled = false;
-    async function initWakeListener() {
-      try {
-        // Trigger the OS/Electron mic permission dialog. We don't need the stream —
-        // just the granted permission. Release it immediately.
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        stream.getTracks().forEach(t => t.stop());
-      } catch {
-        // Permission denied — wake word won't work, but don't crash
-        return;
-      }
-      if (cancelled) return;
-      wakeListenerRef.current = new WakeWordListener(() => {
+    const bridge = new VoiceCommandBridge();
+    wakeListenerRef.current = bridge;
+    bridge.start(); // async: downloads vosk model first run (~40 MB), then listens
+
+    const unsub = onCouncilCommand((matched, source) => {
+      if (matched.command === 'council_assemble') {
         setHandsFreeMode(true);
         setCouncilListening(true);
         setTimeout(() => setCouncilListening(false), 500);
         window.triforge.voice.notifyWake();
-      });
-      wakeListenerRef.current.start();
-    }
-    initWakeListener();
+      } else if (source === 'voice' && matched.command.startsWith('mission_')) {
+        // Voice mission commands — start mission directly
+        // (typed mission commands are intercepted in sendMessage instead)
+        const intent = matched.command.replace('mission_', '');
+        window.triforge.mission?.start(matched.payload ?? matched.command, intent, 'voice').catch(console.warn);
+      }
+      // 'council_deliberate', 'claude_advise', 'grok_challenge', 'apply_solution' — future wiring
+    });
+
     return () => {
-      cancelled = true;
+      unsub();
       wakeListenerRef.current?.stop();
       wakeListenerRef.current = null;
     };
@@ -646,6 +645,16 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
 
   const sendMessage = useCallback(async (text: string, retryId?: string) => {
     if (!text.trim() || sending) return;
+
+    // Intercept mission commands typed by user (voice is handled in onCouncilCommand)
+    const dispatched = dispatchCommand(text.trim(), 'typed');
+    if (dispatched?.command.startsWith('mission_')) {
+      const intent = dispatched.command.replace('mission_', '');
+      window.triforge.mission?.start(text.trim(), intent, 'typed').catch(console.warn);
+      setInput('');
+      return;
+    }
+
     setInput('');
     setSending(true);
     setShowQuickActions(false);

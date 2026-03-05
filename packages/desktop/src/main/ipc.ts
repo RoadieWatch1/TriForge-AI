@@ -1,5 +1,6 @@
 import { ipcMain, shell, dialog, app, BrowserWindow, clipboard, desktopCapturer } from 'electron';
 import fs from 'fs';
+import https from 'https';
 import path from 'path';
 import os from 'os';
 import { execSync } from 'child_process';
@@ -27,6 +28,10 @@ import { initCouncilNotify, sendRemoteUpdate } from './councilNotify';
 import { evaluateProactiveOpportunity, resetProactiveCooldown } from './proactiveCouncil';
 import { MissionManager } from '../core/missions/missionManager';
 import { MissionStore } from '../core/missions/missionStore';
+import { autonomyController } from '../core/autonomy/AutonomyController';
+import { missionController } from '../core/mission/MissionController';
+import { onConsensus, onConsensusMeta } from '../core/orchestrator/consensus';
+import { AUTONOMY_FLAGS } from '../core/config/autonomyFlags';
 import { getToolExecutor, newRequestId } from '../core/tools/toolExecutor';
 import { healthMonitor } from '../core/health/healthMonitor';
 import { MemoryStore } from '../core/memory/memoryStore';
@@ -403,9 +408,18 @@ export function setupIpc(store: Store): void {
   if (!_sensorManager) _sensorManager = new SensorManager(store);
   _sensorManager.startGranted();
 
-  // ── Autonomy Engine init ──────────────────────────────────────────────────────
+  // ── MissionController init ────────────────────────────────────────────────────
   // ProviderManager must exist before _getAgentLoop() is called — it throws otherwise.
   if (!providerManager) providerManager = new ProviderManager(store);
+  missionController.init({
+    providerManager,
+    agentLoop: _getAgentLoop(store),
+    approvalStore: _getApprovalStore(),
+    workspaceRoot: _getDataDir(),
+  });
+
+  // ── Autonomy Engine init ──────────────────────────────────────────────────────
+  // ProviderManager already initialized above.
   if (!_autonomyEngine) {
     const notifier = createNotifyAdapter();
     _autonomyEngine = new AutonomyEngine(
@@ -3259,6 +3273,181 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   ipcMain.on('voice:wake-detected', () => {
     _councilRuntime?.onWakeDetected();
   });
+
+  // ── Voice command trust boundary ───────────────────────────────────────────────
+  // Renderer detects raw phrase via vosk-browser WASM → reports here.
+  // Main validates against allowed list → broadcasts sanitized 'voice-command' string.
+  // Renderer only acts on commands received from main — never on its own detections.
+  const ALLOWED_VOICE_COMMANDS: Record<string, string> = {
+    'council': 'council_assemble', 'hey council': 'council_assemble',
+    'okay council': 'council_assemble', 'council listen': 'council_assemble',
+    'council help': 'council_assemble', 'council assemble': 'council_assemble',
+    'assemble council': 'council_assemble', 'wake council': 'council_assemble',
+    'council deliberate': 'council_deliberate', 'council debate': 'council_deliberate',
+    'claude advise': 'claude_advise', 'claude opinion': 'claude_advise',
+    'grok challenge': 'grok_challenge', 'grok counter': 'grok_challenge',
+    'apply solution': 'apply_solution', 'apply decision': 'apply_solution',
+    'triforge build': 'mission_build', 'triforge fix': 'mission_fix',
+    'triforge audit': 'mission_audit', 'triforge refactor': 'mission_refactor',
+  };
+
+  ipcMain.on('voice:wake:phrase', (_e, raw: unknown) => {
+    if (typeof raw !== 'string') return;
+    const t = raw.toLowerCase().trim();
+    // Find longest matching command phrase
+    let matched: string | null = null;
+    let longestMatch = 0;
+    for (const [phrase, cmd] of Object.entries(ALLOWED_VOICE_COMMANDS)) {
+      if (t.includes(phrase) && phrase.length > longestMatch) {
+        matched = cmd;
+        longestMatch = phrase.length;
+      }
+    }
+    if (!matched) return;
+    // Relay wake-detected for council_assemble commands
+    if (matched === 'council_assemble') _councilRuntime?.onWakeDetected();
+    // Broadcast sanitized command to all renderer windows
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('voice-command', matched);
+    }
+  });
+
+  // ── Vosk wake-word model download ─────────────────────────────────────────────
+  const VOSK_MODEL_URL  = 'https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip';
+  const VOSK_MODEL_FILE = 'vosk-model-small-en-us-0.15.zip';
+
+  ipcMain.handle('voice:wake:model-data', async () => {
+    const modelsDir = path.join(app.getPath('userData'), 'vosk-models');
+    const zipPath   = path.join(modelsDir, VOSK_MODEL_FILE);
+    if (!fs.existsSync(modelsDir)) fs.mkdirSync(modelsDir, { recursive: true });
+
+    if (!fs.existsSync(zipPath)) {
+      await new Promise<void>((resolve, reject) => {
+        const file = fs.createWriteStream(zipPath);
+        https.get(VOSK_MODEL_URL, (res) => {
+          res.pipe(file);
+          file.on('finish', () => { file.close(); resolve(); });
+          file.on('error', (err) => { fs.unlink(zipPath, () => {}); reject(err); });
+        }).on('error', (err) => {
+          fs.unlink(zipPath, () => {});
+          reject(err);
+        });
+      });
+    }
+
+    return fs.readFileSync(zipPath).buffer as ArrayBuffer;
+  });
+
+  // ── Command audit logging ──────────────────────────────────────────────────────
+  // Fire-and-forget from renderer CommandDispatcher — logs every dispatched command
+  ipcMain.on('command:audit', (_e, source: unknown, cmd: unknown, raw: unknown) => {
+    // Log command dispatch — using console since AuditLedger EventType is task-scoped
+    console.info('[CommandDispatch]', { source, cmd, raw: String(raw).slice(0, 120), ts: Date.now() });
+  });
+
+  // ── Voice wake audio stub (reserved for native Vosk when enableOfflineWake = true) ──
+  ipcMain.on('voice:wake:audio', () => {
+    // no-op — vosk-browser WASM handles detection in renderer
+    // this channel is reserved for future native Vosk integration
+  });
+
+  // ── Autonomy Controller — workspace observer + proposal detection ────────────
+  autonomyController.init({ approvalStore: _getApprovalStore() });
+  autonomyController.start(app.getPath('home'));
+  autonomyController.on('autonomy:proposals_ready', (proposals: unknown) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('autonomy:proposals_ready', proposals);
+    }
+  });
+
+  // ── Mission Controller — forward plan events to renderer ──────────────────────
+  missionController.on('mission:plan_ready', (data: unknown) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('mission:plan_ready', data);
+    }
+  });
+  missionController.on('mission:step_preview_ready', (data: unknown) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('mission:step_preview', data);
+    }
+  });
+  missionController.on('mission:complete', (data: unknown) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('mission:complete', data);
+    }
+  });
+  missionController.on('mission:failed', (data: unknown) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('mission:failed', data);
+    }
+  });
+
+  // ── Council consensus signal — forward to renderer ────────────────────────────
+  onConsensus((e) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('council:consensus', e);
+    }
+  });
+  onConsensusMeta((e) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('council:consensus_meta', e);
+    }
+  });
+
+  // ── Mission Controller IPC handlers ──────────────────────────────────────────
+  ipcMain.handle('mission:start', async (_e, raw: unknown, intent: unknown, source: unknown) => {
+    try {
+      const req = {
+        id: crypto.randomUUID(),
+        raw: String(raw),
+        intent: String(intent) as import('../core/mission/types').MissionIntent,
+        source: (source === 'voice' ? 'voice' : 'typed') as 'typed' | 'voice',
+        goal: String(raw),
+        constraints: { noUiChanges: true, requireApproval: true, safePreviewOnly: true },
+        createdAt: Date.now(),
+      };
+      const missionId = await missionController.startMission(req);
+      return { missionId };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle('mission:approve_plan', async (_e, missionId: unknown, plan: unknown) => {
+    try {
+      await missionController.executeMission(String(missionId), plan as import('../core/mission/types').MissionPlan);
+      return { ok: true };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle('mission:approve_step', async (_e, missionId: unknown, stepId: unknown, plan: unknown) => {
+    try {
+      missionController.stepApplied(String(missionId), String(stepId), plan as import('../core/mission/types').MissionPlan);
+      return { ok: true };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  ipcMain.handle('mission:rollback', async (_e, missionId: unknown) => {
+    try {
+      missionController.rollbackMission(String(missionId));
+      return { ok: true };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  });
+
+  // ── System health ─────────────────────────────────────────────────────────────
+  ipcMain.handle('system:health', async () => ({
+    wakeMode: AUTONOMY_FLAGS.enableOfflineWake ? 'offline' : 'vosk-browser',
+    autonomyLoop: AUTONOMY_FLAGS.enableAutonomyLoop,
+    commandSystem: AUTONOMY_FLAGS.enableCommandSystem,
+    missionController: AUTONOMY_FLAGS.enableMissionController,
+    ts: Date.now(),
+  }));
 
   // ── Council Demo — startup demonstration for new users ───────────────────────
   // Only runs when no API keys are configured yet (first-run / onboarding scenario)
