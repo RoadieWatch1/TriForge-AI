@@ -1,0 +1,95 @@
+{
+  "id": "founder",
+  "name": "Founder / CEO",
+  "description": "Optimized for startup founders and solo operators who need strategic clarity and speed.",
+  "version": "1.0.0",
+
+  "systemPromptAdditions": [
+    "You are operating in Founder mode. Optimize for strategic clarity, high-leverage decisions, and speed of execution.",
+    "When summarizing proposals, documents, or inbound communications — lead with: the ask, the risk, and the ROI.",
+    "Triage all inbound by urgency and strategic importance. Filter noise, escalate signal.",
+    "Think like a chief of staff: protect the founder's time and attention above all else.",
+    "For any decision: state the options, the key trade-off, and your recommended path in the first 3 sentences.",
+    "Approval strictness: RELAXED — routine tasks and summaries auto-execute. Irreversible actions (send email, post, financial) require approval."
+  ],
+
+  "approvalStrictness": "relaxed",
+
+  "activeSensors": ["inboxWatcher", "webMonitor", "fileWatcher"],
+
+  "workflows": [
+    {
+      "id": "founder-new-proposal",
+      "name": "New Proposal File — Executive Summary",
+      "description": "When a new file appears in a proposals folder, auto-summarize it",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_FILE_NEW", "filter": { "dir": "proposals" } }],
+      "actions": [
+        { "type": "notify", "params": { "title": "New Proposal", "body": "A new proposal file was detected. Queuing executive summary." } },
+        { "type": "ai_task", "params": { "goal": "A new proposal file was added. Summarize it in 5 bullets: (1) the ask, (2) the proposing party, (3) key terms, (4) primary risks, (5) recommended response (meet / pass / counter).", "category": "general" } }
+      ],
+      "cooldownMs": 60000
+    },
+    {
+      "id": "founder-site-change",
+      "name": "Monitored Site Changed — Executive Brief",
+      "description": "When a tracked site changes, generate a 3-bullet executive brief",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_WEBSITE_CHANGED" }],
+      "actions": [
+        { "type": "ai_task", "params": { "goal": "A monitored website changed. Generate a 3-bullet executive brief: (1) what changed, (2) what it means for us, (3) recommended action (if any).", "category": "general" } }
+      ],
+      "cooldownMs": 3600000
+    },
+    {
+      "id": "founder-contradiction",
+      "name": "Strategic Contradiction Detected",
+      "description": "Alert when a new decision contradicts a prior strategic commitment",
+      "enabled": true,
+      "triggers": [{ "eventType": "INSIGHT_CONTRADICTION" }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Strategic Contradiction", "body": "A potential conflict with prior decisions was detected." } },
+        { "type": "queue_approval", "params": { "description": "Review the detected strategic contradiction before proceeding." }, "requiresApproval": true }
+      ],
+      "cooldownMs": 300000
+    }
+  ],
+
+  "enabledTools": [
+    "read_file", "web_search", "summarize_document",
+    "draft_email", "calendar_check", "financial_summary"
+  ],
+
+  "missionTemplates": [
+    {
+      "id": "founder-strategy-review",
+      "label": "Review our strategy",
+      "goal": "Analyze our current strategic direction. Identify: (1) what is working, (2) what is at risk, (3) the highest-leverage action we should prioritize this week.",
+      "category": "strategy"
+    },
+    {
+      "id": "founder-investor-update",
+      "label": "Draft investor update",
+      "goal": "Draft a concise investor update covering: progress since last update, current metrics, key challenges, ask or next steps. Professional tone, under 300 words.",
+      "category": "communications"
+    },
+    {
+      "id": "founder-competitive-intel",
+      "label": "Competitive intelligence report",
+      "goal": "Research our top 3 competitors. For each: recent moves, pricing changes, new features, strategic signals. Conclude with recommended response.",
+      "category": "research"
+    },
+    {
+      "id": "founder-decision",
+      "label": "Help me make a decision",
+      "goal": "Analyze the decision at hand. Present: the options, key trade-offs, second-order effects, and your recommended path with justification. Be direct.",
+      "category": "strategy"
+    }
+  ],
+
+  "memoryTags": ["strategy", "decisions", "competitors", "communications"],
+
+  "proactiveInsights": true,
+  "voiceAlerts": true,
+  "responseStyle": "executive"
+}

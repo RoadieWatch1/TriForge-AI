@@ -13,6 +13,13 @@ export interface StrategyProfile {
   /** Human-readable summary, e.g. 'Subject: Quick idea for your leads' */
   description: string;
 
+  /**
+   * A/B test variant label. Set to 'A' or 'B' when this strategy is part of an
+   * A/B test pair. CompoundEngine tracks A vs B performance separately and
+   * uses getScalingDecision() → 'replace' action to retire the loser variant.
+   */
+  variantLabel?: 'A' | 'B' | string;
+
   inputs: {
     subjectLine?: string;
     tone?: string;

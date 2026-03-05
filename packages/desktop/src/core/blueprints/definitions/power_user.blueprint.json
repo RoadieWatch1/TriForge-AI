@@ -1,0 +1,97 @@
+{
+  "id": "power_user",
+  "name": "Power User",
+  "description": "Maximum automation and council capability for advanced users who want full control.",
+  "version": "1.0.0",
+
+  "systemPromptAdditions": [
+    "You are operating in Power User mode. The user has full capability unlocked. Maximize automation, depth, and parallelism.",
+    "Do not simplify or hedge responses. This user wants the full technical picture.",
+    "For complex tasks: propose the most sophisticated solution first, then simpler fallbacks.",
+    "Run multi-step chains without waiting for approval on low-risk steps. Batch approvals for efficiency.",
+    "Surface all relevant context, edge cases, and second-order effects. This user wants depth, not brevity.",
+    "Approval strictness: RELAXED — all low-risk and medium-risk actions execute automatically. Only irreversible high-risk actions require approval."
+  ],
+
+  "approvalStrictness": "relaxed",
+
+  "activeSensors": [
+    "fileWatcher", "processMonitor", "networkMonitor",
+    "diskMonitor", "inboxWatcher", "webMonitor", "clipboardMonitor"
+  ],
+
+  "workflows": [
+    {
+      "id": "power-file-change",
+      "name": "Critical File Changed — Analysis",
+      "description": "When a critical project file changes, run an impact analysis",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_FILE_CHANGED", "filter": { "type": "critical" } }],
+      "actions": [
+        { "type": "ai_task", "params": { "goal": "A critical project file changed. Run impact analysis: what changed, what depends on it, what tests or validations are required, and whether any other files need updating.", "category": "engineering" } }
+      ],
+      "cooldownMs": 30000
+    },
+    {
+      "id": "power-anomaly-auto-diagnose",
+      "name": "System Anomaly — Full Diagnosis",
+      "description": "When any system anomaly is detected, run a full multi-domain diagnosis",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_ANY_ANOMALY" }],
+      "actions": [
+        { "type": "notify", "params": { "title": "System Anomaly", "body": "Anomaly detected. Running full diagnosis..." } },
+        { "type": "ai_task", "params": { "goal": "A system anomaly was detected. Run a comprehensive diagnosis across: processes, network, disk, logs, and recent changes. Identify root cause, affected systems, and produce a prioritized remediation plan.", "category": "operations" } }
+      ],
+      "cooldownMs": 60000
+    },
+    {
+      "id": "power-daily-brief",
+      "name": "Daily Intelligence Brief",
+      "description": "Each morning, produce a comprehensive situation brief",
+      "enabled": true,
+      "triggers": [{ "eventType": "SCHEDULE_DAILY_START" }],
+      "actions": [
+        { "type": "ai_task", "params": { "goal": "Generate a comprehensive daily intelligence brief. Cover: (1) system status, (2) open tasks and priorities, (3) key pending decisions, (4) any anomalies detected overnight, (5) today's recommended focus. Be direct and comprehensive.", "category": "general" } }
+      ],
+      "cooldownMs": 43200000
+    }
+  ],
+
+  "enabledTools": [
+    "read_file", "write_file", "search_code", "run_command",
+    "git_diff", "run_tests", "lint_code", "web_search",
+    "draft_email", "financial_summary", "export_report",
+    "it_diagnostics", "it_network_doctor", "it_processes",
+    "market_data", "summarize_document", "calendar_check"
+  ],
+
+  "missionTemplates": [
+    {
+      "id": "power-full-audit",
+      "label": "Full system audit",
+      "goal": "Perform a comprehensive system audit. Check: code health, security posture, performance metrics, dependency health, test coverage, and configuration drift. Produce a prioritized findings report.",
+      "category": "audit"
+    },
+    {
+      "id": "power-autonomous-mission",
+      "label": "Run an autonomous mission",
+      "goal": "Execute the described mission autonomously. Plan the approach, decompose into steps, execute each step with verification, and report results. Pause only for approval on irreversible actions.",
+      "category": "automation"
+    },
+    {
+      "id": "power-competitive-intelligence",
+      "label": "Deep competitive intelligence",
+      "goal": "Perform deep competitive intelligence. Research all major competitors: product changes, pricing, hiring signals, funding, technical direction, and market positioning. Synthesize into a strategic brief.",
+      "category": "intelligence"
+    }
+  ],
+
+  "memoryTags": [
+    "engineering", "security", "operations", "intelligence",
+    "decisions", "automation", "audit"
+  ],
+
+  "proactiveInsights": true,
+  "voiceAlerts": true,
+  "responseStyle": "technical"
+}

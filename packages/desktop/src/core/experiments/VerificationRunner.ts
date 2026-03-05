@@ -1,7 +1,6 @@
 // ── VerificationRunner.ts — Flexible workspace/sandbox verifier ───────────────
 //
-// Unlike VerificationEngine (which always runs npm run lint + npm run build),
-// VerificationRunner first inspects package.json to discover which scripts exist,
+// Inspects package.json to discover which scripts exist,
 // then runs only available ones. Works on any rootPath — the real workspace or
 // an isolated sandbox copy.
 //

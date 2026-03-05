@@ -16,6 +16,7 @@ import { analyzeWorkspace } from './AnalysisEngine';
 import { Scheduler } from './Scheduler';
 import { AUTONOMY_FLAGS } from '../config/autonomyFlags';
 import { createLogger } from '../logging/log';
+import { analyzeInvoiceFile } from '../analysis/InvoiceAnomalyDetector';
 
 const log = createLogger('AutonomyController');
 
@@ -50,7 +51,18 @@ export class AutonomyController extends EventEmitter {
 
     this.observer.start(root);
     this.observer.on('file_changed', () => this._scheduleScan(root));
-    this.observer.on('file_added',   () => this._scheduleScan(root));
+    this.observer.on('file_added',   (filePath?: string) => {
+      this._scheduleScan(root);
+      // Invoice anomaly detection on new files (non-blocking, read-only)
+      if (filePath) {
+        try {
+          const result = analyzeInvoiceFile(filePath, '');
+          if (result?.isAnomaly) {
+            this.emit('autonomy:cost_anomaly', result);
+          }
+        } catch { /* non-fatal */ }
+      }
+    });
 
     // Periodic scan with jitter
     this.cancelScan = this.scheduler.schedule(() => this._scan(root), PERIODIC_SCAN_MS);

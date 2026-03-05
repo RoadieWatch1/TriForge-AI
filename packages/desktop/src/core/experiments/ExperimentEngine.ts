@@ -20,7 +20,10 @@ import path from 'path';
 import os from 'os';
 import type { PatchCandidate, ExperimentResult } from './types';
 import { VerificationRunner } from './VerificationRunner';
+import { isSacredFile } from '../config/sacredFiles';
+import { AUTONOMY_FLAGS } from '../config/autonomyFlags';
 import { createLogger } from '../logging/log';
+import { engineMemoryGraph } from '../memory/CouncilMemoryGraph';
 
 const log = createLogger('ExperimentEngine');
 
@@ -68,7 +71,25 @@ export class ExperimentEngine {
         });
         log.info(`[${candidate.id}] workspace copied to sandbox`);
 
-        // 2. Apply file patches
+        // 2. Sacred file guardrail — reject candidate if it patches protected files
+        if (!AUTONOMY_FLAGS.enableSelfImprovement) {
+          const sacredViolations = candidate.patches.filter(p => isSacredFile(p.path));
+          if (sacredViolations.length > 0) {
+            const names = sacredViolations.map(p => p.path).join(', ');
+            log.warn(`[${candidate.id}] REJECTED — patches sacred file(s): ${names}`);
+            results.push({
+              candidateId: candidate.id,
+              approach:    candidate.approach,
+              sandboxPath,
+              score:       0,
+              checks:      [{ name: 'sacred_guard', ok: false, details: `Patches sacred file(s): ${names}` }],
+            });
+            try { fs.rmSync(sandboxPath, { recursive: true, force: true }); } catch { /* ignore */ }
+            continue;
+          }
+        }
+
+        // 3. Apply file patches
         for (const patch of candidate.patches) {
           const dest = path.join(sandboxPath, patch.path);
           fs.mkdirSync(path.dirname(dest), { recursive: true });
@@ -78,7 +99,7 @@ export class ExperimentEngine {
           log.info(`[${candidate.id}] applied ${candidate.patches.length} file patch(es)`);
         }
 
-        // 3. Run verification
+        // 4. Run verification
         const runner  = new VerificationRunner(sandboxPath);
         const summary = await runner.run();
         log.info(`[${candidate.id}] score: ${summary.score}`, summary.checks.map(c => `${c.name}:${c.ok ? 'ok' : c.skipped ? 'skip' : 'FAIL'}`).join(' '));
@@ -90,6 +111,20 @@ export class ExperimentEngine {
           score:       summary.score,
           checks:      summary.checks,
         });
+
+        // 5.6 — Tag failed experiments in engineering memory so the council
+        // avoids repeating the same rejected approach in future missions.
+        if (summary.score === 0) {
+          const failedChecks = summary.checks.filter(c => !c.ok && !c.skipped).map(c => c.name);
+          try {
+            engineMemoryGraph.recordBugfix({
+              symptom:      `Experiment failed: ${candidate.approach.slice(0, 120)}`,
+              rootCause:    `Failed checks: ${failedChecks.join(', ') || 'unknown'}`,
+              fix:          'avoided — experiment rejected by VerificationRunner',
+              filesChanged: candidate.patches.map(p => p.path),
+            });
+          } catch { /* non-fatal — memory write failure never blocks execution */ }
+        }
 
       } catch (e) {
         log.warn(`[${candidate.id}] experiment error:`, String(e).slice(0, 200));

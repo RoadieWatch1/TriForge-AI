@@ -1,0 +1,84 @@
+{
+  "id": "real_estate",
+  "name": "Real Estate",
+  "description": "Optimized for real estate agents, brokers, investors, and property managers.",
+  "version": "1.0.0",
+
+  "systemPromptAdditions": [
+    "You are operating in Real Estate mode. Optimize for deal flow, market analysis, and client relationship quality.",
+    "For property analysis: lead with investment fundamentals — price/rent ratio, cap rate, cash-on-cash return, appreciation potential.",
+    "For client communications: be warm, responsive, and specific. Reference the exact property or client situation.",
+    "When analyzing market data: separate trends from noise. State confidence levels.",
+    "For offers and negotiations: quantify the leverage and walk away position before recommending a number.",
+    "Approval strictness: BALANCED — analysis and drafts auto-execute. Offers, contracts, and client communications require approval."
+  ],
+
+  "approvalStrictness": "balanced",
+
+  "activeSensors": ["webMonitor", "inboxWatcher"],
+
+  "workflows": [
+    {
+      "id": "re-new-listing",
+      "name": "New Listing — Opportunity Brief",
+      "description": "When a new matching listing appears, generate an investment brief",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_LISTING_NEW" }],
+      "actions": [
+        { "type": "notify", "params": { "title": "New Listing Match", "body": "A new listing matches your criteria. Generating brief..." } },
+        { "type": "ai_task", "params": { "goal": "A new property listing was detected that matches search criteria. Produce an investment brief: address, price, key metrics (cap rate estimate, price/sqft vs market), pros, cons, and recommended action (view / pass / offer).", "category": "analysis" } }
+      ],
+      "cooldownMs": 300000
+    },
+    {
+      "id": "re-price-drop",
+      "name": "Price Reduction — Alert",
+      "description": "When a tracked property drops in price, alert and recommend action",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_LISTING_PRICE_DROP" }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Price Reduction", "body": "A tracked property dropped in price." } },
+        { "type": "ai_task", "params": { "goal": "A tracked property just reduced its price. Assess whether this creates a better entry point: calculate revised metrics, assess motivation signal, and recommend action.", "category": "analysis" } }
+      ],
+      "cooldownMs": 3600000
+    }
+  ],
+
+  "enabledTools": [
+    "web_search", "read_file", "write_file",
+    "financial_summary", "draft_email", "export_report", "map_search"
+  ],
+
+  "missionTemplates": [
+    {
+      "id": "re-property-analysis",
+      "label": "Property investment analysis",
+      "goal": "Analyze the property as an investment. Calculate: gross yield, cap rate, cash-on-cash return, appreciation potential. Identify risks. Compare to market benchmarks. Recommend buy / hold / pass.",
+      "category": "analysis"
+    },
+    {
+      "id": "re-market-report",
+      "label": "Local market report",
+      "goal": "Generate a local market report for the given area. Cover: recent sales, days on market, price trends, inventory levels, demand signals, and outlook for the next 90 days.",
+      "category": "market_research"
+    },
+    {
+      "id": "re-listing-description",
+      "label": "Write a listing description",
+      "goal": "Write a compelling property listing description. Highlight unique features, neighborhood benefits, lifestyle appeal. 150-200 words. Professional real estate tone.",
+      "category": "marketing"
+    },
+    {
+      "id": "re-offer-strategy",
+      "label": "Offer strategy",
+      "goal": "Develop an offer strategy for the given property. Assess seller motivation, market conditions, comparable sales, and our leverage. Recommend: initial offer price, escalation clause if any, key terms to include.",
+      "category": "negotiation"
+    }
+  ],
+
+  "memoryTags": ["properties", "deals", "market_data", "clients", "offers"],
+
+  "proactiveInsights": true,
+  "voiceAlerts": false,
+  "responseStyle": "executive"
+}

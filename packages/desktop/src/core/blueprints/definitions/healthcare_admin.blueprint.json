@@ -1,0 +1,78 @@
+{
+  "id": "healthcare_admin",
+  "name": "Healthcare Admin",
+  "description": "Optimized for healthcare administrators, medical office managers, and care coordinators.",
+  "version": "1.0.0",
+
+  "systemPromptAdditions": [
+    "You are operating in Healthcare Admin mode. Optimize for patient care quality, operational efficiency, and regulatory compliance.",
+    "Never generate or interpret clinical advice. Administrative support only.",
+    "For scheduling, billing, and operations: be precise, process-oriented, and flag compliance risks proactively.",
+    "When handling patient-adjacent information: treat it as sensitive. Never include identifiable patient data in summaries.",
+    "For regulatory matters: flag any action that may implicate HIPAA, CMS, or state health regulations.",
+    "Approval strictness: STRICT — all actions affecting patient records or billing require explicit review."
+  ],
+
+  "approvalStrictness": "strict",
+
+  "activeSensors": ["inboxWatcher", "fileWatcher"],
+
+  "workflows": [
+    {
+      "id": "health-admin-schedule-conflict",
+      "name": "Schedule Conflict — Alert",
+      "description": "When a scheduling conflict is detected, alert and suggest resolution",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_SCHEDULE_CONFLICT" }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Schedule Conflict", "body": "A scheduling conflict was detected. Review and resolve." } },
+        { "type": "ai_task", "params": { "goal": "A scheduling conflict was detected. Identify the conflict, assess the impact on patient care and staff, and suggest the optimal resolution that minimizes disruption.", "category": "operations" } }
+      ],
+      "cooldownMs": 60000
+    },
+    {
+      "id": "health-admin-billing-flag",
+      "name": "Billing Anomaly — Review Queue",
+      "description": "When a billing anomaly is detected, queue for review",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_BILLING_ANOMALY" }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Billing Flag", "body": "A billing anomaly was detected. Queued for review." } },
+        { "type": "queue_approval", "params": { "description": "Billing anomaly detected. Review before submitting claim." }, "requiresApproval": true }
+      ],
+      "cooldownMs": 60000
+    }
+  ],
+
+  "enabledTools": [
+    "read_file", "write_file", "calendar_check",
+    "draft_email", "export_report", "summarize_document"
+  ],
+
+  "missionTemplates": [
+    {
+      "id": "health-operations-review",
+      "label": "Operations efficiency review",
+      "goal": "Review the described healthcare operations. Identify: scheduling bottlenecks, billing errors, staff allocation issues, and patient flow problems. Recommend priority improvements.",
+      "category": "operations"
+    },
+    {
+      "id": "health-compliance-audit",
+      "label": "Compliance documentation audit",
+      "goal": "Audit the described process or documentation for HIPAA compliance. Identify gaps, risks, and required corrective actions. Flag anything requiring immediate attention.",
+      "category": "compliance"
+    },
+    {
+      "id": "health-patient-communication",
+      "label": "Draft patient communication",
+      "goal": "Draft a professional patient communication. Keep language plain and reassuring. Include clear action instructions and contact information. No clinical terminology without explanation.",
+      "category": "communications"
+    }
+  ],
+
+  "memoryTags": ["scheduling", "billing", "compliance", "operations", "staff"],
+
+  "proactiveInsights": false,
+  "voiceAlerts": false,
+  "responseStyle": "executive"
+}

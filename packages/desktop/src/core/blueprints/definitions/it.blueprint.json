@@ -1,0 +1,103 @@
+{
+  "id": "it",
+  "name": "IT Support",
+  "description": "Optimized for IT support engineers, sysadmins, and infrastructure operations.",
+  "version": "1.0.0",
+
+  "systemPromptAdditions": [
+    "You are operating in IT Support mode. Prioritize diagnosing and resolving system issues above all other requests.",
+    "When reporting sensor alerts (disk low, network down, service stopped), lead with the operational impact and remediation steps.",
+    "For script execution, service restarts, or process termination — always summarize what will happen and why before acting. These require user approval.",
+    "You have access to IT tools: it_diagnostics, it_network_doctor, it_event_logs, it_services, it_processes, it_script_runner, it_patch_advisor.",
+    "When diagnosing: collect data first, hypothesize second, test third. Never skip steps.",
+    "Approval strictness: STRICT — all system mutation actions (restart, kill, run script) require explicit approval before execution."
+  ],
+
+  "approvalStrictness": "strict",
+
+  "activeSensors": ["diskMonitor", "networkMonitor", "processMonitor", "eventLogMonitor", "inboxWatcher"],
+
+  "workflows": [
+    {
+      "id": "it-network-down",
+      "name": "Network Down — Auto-Diagnose",
+      "description": "When the network goes down, run a network diagnostic and notify",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_NETWORK_DOWN" }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Network Down", "body": "Network adapter went offline. Running diagnostics..." } },
+        { "type": "ai_task", "params": { "goal": "Network adapter went offline. Run it_network_doctor to diagnose the issue and provide a prioritized remediation plan.", "category": "general" } }
+      ],
+      "cooldownMs": 120000
+    },
+    {
+      "id": "it-disk-low",
+      "name": "Disk Low — Triage Task",
+      "description": "When disk space drops below threshold, notify and queue a cleanup task",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_DISK_LOW" }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Low Disk Space", "body": "Disk space is critically low. Queuing triage task." } },
+        { "type": "ai_task", "params": { "goal": "Disk space is critically low. Run it_diagnostics to confirm current disk usage, then recommend specific cleanup actions ranked by free space recovered.", "category": "general" } }
+      ],
+      "cooldownMs": 300000
+    },
+    {
+      "id": "it-service-stopped",
+      "name": "Critical Service Stopped — Alert",
+      "description": "When a monitored service stops, alert and queue a recovery approval",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_SERVICE_ALERT", "filter": { "status": "stopped" } }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Service Stopped", "body": "A monitored service has stopped." } },
+        { "type": "queue_approval", "params": { "description": "A monitored service stopped. Approve to attempt restart via it_services." }, "requiresApproval": true }
+      ],
+      "cooldownMs": 60000
+    },
+    {
+      "id": "it-patch-alert",
+      "name": "Critical Patch Available — Advisory",
+      "description": "When a critical CVE patch is available, notify and queue a patch plan",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_PATCH_CRITICAL" }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Critical Patch Available", "body": "A critical security patch is available. Queuing patch advisory." } },
+        { "type": "ai_task", "params": { "goal": "A critical security patch is available. Use it_patch_advisor to assess the CVE severity, affected systems, and produce a patching plan ordered by risk priority.", "category": "general" } }
+      ],
+      "cooldownMs": 3600000
+    }
+  ],
+
+  "enabledTools": [
+    "it_diagnostics", "it_network_doctor", "it_event_logs",
+    "it_services", "it_processes", "it_script_runner", "it_patch_advisor",
+    "read_file", "run_command"
+  ],
+
+  "missionTemplates": [
+    {
+      "id": "it-incident-triage",
+      "label": "Triage an incident",
+      "goal": "A system incident has occurred. Collect diagnostic data, identify the root cause, assess impact scope, and produce a prioritized remediation plan with rollback steps.",
+      "category": "incidents"
+    },
+    {
+      "id": "it-patch-plan",
+      "label": "Build a patch plan",
+      "goal": "Review pending patches and security advisories. Prioritize by CVE severity and system criticality. Produce a patch schedule with maintenance windows and rollback procedures.",
+      "category": "security"
+    },
+    {
+      "id": "it-capacity-check",
+      "label": "Capacity planning check",
+      "goal": "Analyze current system resource utilization (disk, CPU, memory, network). Identify bottlenecks, forecast when limits will be hit, and recommend capacity actions.",
+      "category": "operations"
+    }
+  ],
+
+  "memoryTags": ["incidents", "patches", "services", "diagnostics"],
+
+  "proactiveInsights": true,
+  "voiceAlerts": true,
+  "responseStyle": "technical"
+}

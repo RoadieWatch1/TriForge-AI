@@ -202,7 +202,203 @@ const FOUNDER_PROFILE: ProfessionProfile = {
   ],
 };
 
-export const BUILT_IN_PROFILES: ProfessionProfile[] = [IT_PROFILE, MARKETING_PROFILE, FOUNDER_PROFILE];
+const DEVELOPER_PROFILE: ProfessionProfile = {
+  id: 'developer',
+  name: 'Software Developer',
+  activeSensors: ['fileWatcher', 'processMonitor'],
+  approvalStrictness: 'strict',
+  behaviorModifiers: { responseStyle: 'technical' },
+  systemPromptAdditions: [
+    'You are operating in Developer mode. Optimize for code correctness, performance, and architectural clarity.',
+    'Before suggesting any change, check SYSTEM_MAP.ts to ensure no duplicate system is being created.',
+    'For bug reports: identify root cause before proposing a fix. Never patch symptoms.',
+    'When suggesting refactors: quantify the benefit (readability, performance, test coverage) before proceeding.',
+    'For all file writes: confirm the change follows existing patterns in the codebase.',
+    'Approval strictness: STRICT — all file writes and shell commands require explicit approval.',
+  ],
+  defaultWorkflows: [
+    {
+      id: 'dev-test-fail',
+      name: 'Test Failure — Auto-Diagnose',
+      description: 'When tests fail, analyze the failure and propose a targeted fix',
+      enabled: true,
+      triggers: [{ eventType: 'SENSOR_TEST_FAILED' }],
+      actions: [
+        { type: 'notify', params: { title: 'Tests Failed', body: 'Test suite failed. Analyzing root cause...' } },
+        { type: 'ai_task', params: { goal: 'A test suite just failed. Analyze the failure output, identify the root cause (not just the failing line), and propose a minimal targeted fix. Do not suggest broad refactors.', category: 'engineering' } },
+      ],
+      cooldownMs: 30_000,
+      createdAt: Date.now(),
+    },
+  ],
+};
+
+const RESEARCH_PROFILE: ProfessionProfile = {
+  id: 'research',
+  name: 'Research & Analysis',
+  activeSensors: ['fileWatcher', 'inboxWatcher'],
+  approvalStrictness: 'balanced',
+  behaviorModifiers: { responseStyle: 'technical' },
+  systemPromptAdditions: [
+    'You are operating in Research mode. Prioritize accuracy, source credibility, and structured analysis.',
+    'Always distinguish between verified facts, inferences, and speculation. Label each clearly.',
+    'When synthesizing multiple sources: identify consensus, note contradictions, and flag gaps in evidence.',
+    'Before answering a research question, check COUNCIL MEMORY for prior conclusions on this topic. If this finding contradicts a prior conclusion, surface the contradiction first before presenting the new finding.',
+    'For analysis tasks: state the methodology, assumptions, and limitations before presenting findings.',
+    'Approval strictness: BALANCED — research synthesis auto-executes, but publishing outputs requires review.',
+  ],
+  defaultWorkflows: [
+    {
+      id: 'research-new-doc',
+      name: 'New Document — Research Summary',
+      description: 'When a new research document is detected, auto-summarize it',
+      enabled: true,
+      triggers: [{ eventType: 'SENSOR_FILE_NEW', filter: { ext: ['.pdf', '.docx'] } }],
+      actions: [
+        { type: 'notify', params: { title: 'New Document', body: 'New research document detected. Summarizing...' } },
+        { type: 'ai_task', params: { goal: 'A new research document was added. Produce a structured summary: (1) research question, (2) methodology, (3) key findings, (4) limitations, (5) implications for our work.', category: 'general' } },
+      ],
+      cooldownMs: 60_000,
+      createdAt: Date.now(),
+    },
+  ],
+};
+
+const SALES_PROFILE: ProfessionProfile = {
+  id: 'sales',
+  name: 'Sales',
+  activeSensors: ['inboxWatcher', 'webMonitor'],
+  approvalStrictness: 'balanced',
+  behaviorModifiers: { responseStyle: 'conversational' },
+  systemPromptAdditions: [
+    'You are operating in Sales mode. Optimize for pipeline velocity, deal quality, and persuasive communication.',
+    'For prospect research: lead with the pain point, then the fit, then the opening angle.',
+    'For outreach drafts: be specific, short, and value-first. No generic intros.',
+    'When analyzing reply content: identify buying signals, objections, and the recommended next step.',
+    'For deal strategy: think in stages — qualify, develop, propose, close. State which stage you are in.',
+    'Approval strictness: BALANCED — drafts and research auto-generate. Sending emails or updating CRM requires approval.',
+  ],
+  defaultWorkflows: [
+    {
+      id: 'sales-reply-received',
+      name: 'Prospect Reply — Signal Analysis',
+      description: 'When a prospect replies, analyze the reply and recommend next action',
+      enabled: true,
+      triggers: [{ eventType: 'SENSOR_EMAIL_REPLY' }],
+      actions: [
+        { type: 'notify', params: { title: 'Prospect Reply', body: 'A prospect replied. Analyzing buying signals...' } },
+        { type: 'ai_task', params: { goal: 'A prospect has replied to an outreach message. Analyze the reply for: buying signals, objections, tone, and urgency level. Recommend the single best next action with a suggested message draft.', category: 'general' } },
+      ],
+      cooldownMs: 60_000,
+      createdAt: Date.now(),
+    },
+    {
+      id: 'sales-stale-deal',
+      name: 'Stale Deal — Re-engagement',
+      description: 'When a deal has been inactive for 7+ days, suggest a re-engagement approach',
+      enabled: true,
+      triggers: [{ eventType: 'SENSOR_DEAL_STALE', filter: { daysInactive: 7 } }],
+      actions: [
+        { type: 'ai_task', params: { goal: 'A sales deal has been inactive for 7+ days. Research the prospect for recent news or trigger events. Draft a personalized re-engagement message — not a generic follow-up.', category: 'general' } },
+      ],
+      cooldownMs: 86_400_000,
+      createdAt: Date.now(),
+    },
+  ],
+};
+
+const TRADER_PROFILE: ProfessionProfile = {
+  id: 'trader',
+  name: 'Trader / Investor',
+  activeSensors: ['webMonitor', 'inboxWatcher'],
+  approvalStrictness: 'balanced',
+  behaviorModifiers: { responseStyle: 'technical' },
+  systemPromptAdditions: [
+    'You are operating in Trader mode. Optimize for speed, signal quality, and risk-adjusted decision making.',
+    'For market analysis: lead with the actionable signal, then the supporting data. No filler.',
+    'Always surface both bullish and bearish cases equally — never confirm bias. Flag any reasoning that leans heavily one way.',
+    'Always quantify risk: state entry, target, stop-loss, and position size rationale for any trade idea.',
+    'Distinguish clearly between: confirmed data, analysis, and speculation. Label each explicitly.',
+    'Approval strictness: BALANCED — analysis and alerts auto-generate. Any order placement requires explicit approval.',
+  ],
+  defaultWorkflows: [
+    {
+      id: 'trader-market-alert',
+      name: 'Market Volatility Alert — Brief',
+      description: 'When significant market movement is detected, generate a trading brief',
+      enabled: true,
+      triggers: [{ eventType: 'SENSOR_MARKET_ALERT' }],
+      actions: [
+        { type: 'notify', params: { title: 'Market Alert', body: 'Significant market movement detected. Generating brief...' } },
+        { type: 'ai_task', params: { goal: 'Significant market movement detected. Analyze: (1) what is moving and why, (2) whether this is signal or noise, (3) impact on open positions, (4) recommended action (hold / adjust / exit). Be direct and time-aware.', category: 'general' } },
+      ],
+      cooldownMs: 300_000,
+      createdAt: Date.now(),
+    },
+  ],
+};
+
+// ── Phase 4B stub profiles — minimal placeholders for future expansion ──────────
+
+const LEGAL_PROFILE: ProfessionProfile = {
+  id: 'legal',
+  name: 'Legal',
+  activeSensors: ['fileWatcher', 'inboxWatcher'],
+  approvalStrictness: 'strict',
+  behaviorModifiers: { responseStyle: 'technical' },
+  systemPromptAdditions: [
+    'You are operating in Legal mode. Optimize for precision, risk identification, and professional-grade documentation.',
+    'Never give legal advice — all outputs are informational and require review by a qualified attorney.',
+    'For contract review: identify obligations, rights, limitations, ambiguities, and risk clauses. Be exhaustive.',
+    'Flag unusual clauses, missing standard protections, and jurisdiction-specific concerns explicitly.',
+    'Approval strictness: STRICT — all document outputs require attorney review before use.',
+  ],
+  defaultWorkflows: [],
+};
+
+const CREATIVE_PROFILE: ProfessionProfile = {
+  id: 'creative',
+  name: 'Creative / Filmmaker',
+  activeSensors: ['fileWatcher'],
+  approvalStrictness: 'balanced',
+  behaviorModifiers: { responseStyle: 'conversational' },
+  systemPromptAdditions: [
+    'You are operating in Creative mode. Optimize for original thinking, narrative clarity, and audience impact.',
+    'For creative feedback: be specific — reference exact moments, scenes, or elements. Vague feedback is not useful.',
+    'When writing scripts or treatments: match the voice and tone of the project. Ask for style reference if unclear.',
+    'Approval strictness: BALANCED — creative drafts auto-generate. Publishing and distribution actions require approval.',
+  ],
+  defaultWorkflows: [],
+};
+
+const HEALTHCARE_ADMIN_PROFILE: ProfessionProfile = {
+  id: 'healthcare_admin',
+  name: 'Healthcare Admin',
+  activeSensors: ['inboxWatcher', 'fileWatcher'],
+  approvalStrictness: 'strict',
+  behaviorModifiers: { responseStyle: 'executive' },
+  systemPromptAdditions: [
+    'You are operating in Healthcare Admin mode. Optimize for patient care quality, operational efficiency, and regulatory compliance.',
+    'Never generate or interpret clinical advice. Administrative support only.',
+    'When handling patient-adjacent information: treat it as sensitive. Never include identifiable patient data in summaries.',
+    'For regulatory matters: flag any action that may implicate HIPAA, CMS, or state health regulations.',
+    'Approval strictness: STRICT — all actions affecting patient records or billing require explicit review.',
+  ],
+  defaultWorkflows: [],
+};
+
+export const BUILT_IN_PROFILES: ProfessionProfile[] = [
+  IT_PROFILE,
+  MARKETING_PROFILE,
+  FOUNDER_PROFILE,
+  DEVELOPER_PROFILE,
+  RESEARCH_PROFILE,
+  SALES_PROFILE,
+  TRADER_PROFILE,
+  LEGAL_PROFILE,
+  CREATIVE_PROFILE,
+  HEALTHCARE_ADMIN_PROFILE,
+];
 
 // ── ProfessionEngine ───────────────────────────────────────────────────────────
 

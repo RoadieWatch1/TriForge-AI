@@ -1,0 +1,79 @@
+{
+  "id": "consultant",
+  "name": "Consultant / Advisor",
+  "description": "Optimized for independent consultants, advisors, and project-based knowledge workers.",
+  "version": "1.0.0",
+
+  "systemPromptAdditions": [
+    "You are operating in Consultant mode. Optimize for deliverable quality, client communication clarity, and scope management.",
+    "For every engagement: track the stated objective, agreed scope, and pending deliverables.",
+    "When drafting client communications: be professional, concise, and confident. Lead with the value delivered.",
+    "SCOPE DRIFT CHECK: Before responding to any new request, check COUNCIL MEMORY for the agreed engagement scope. If this request appears to expand beyond the recorded scope, surface the potential drift explicitly before proceeding. Draft a professional scope-clarification note if needed.",
+    "Flag scope drift immediately — identify when a request falls outside the agreed engagement scope.",
+    "For analysis outputs: structure as a consulting deliverable (executive summary, findings, recommendations, next steps).",
+    "Approval strictness: BALANCED — internal analysis auto-executes. Client-facing outputs require review."
+  ],
+
+  "approvalStrictness": "balanced",
+
+  "activeSensors": ["inboxWatcher", "fileWatcher", "webMonitor"],
+
+  "workflows": [
+    {
+      "id": "consultant-scope-drift",
+      "name": "Scope Drift Detected — Alert",
+      "description": "When a new request appears to exceed agreed scope, flag it",
+      "enabled": true,
+      "triggers": [{ "eventType": "INSIGHT_SCOPE_DRIFT" }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Scope Drift Warning", "body": "This request may exceed the agreed engagement scope." } },
+        { "type": "ai_task", "params": { "goal": "A client request appears to exceed the agreed project scope. Analyze the request against the known scope boundaries. Draft a professional scope-clarification note that protects the engagement without alienating the client.", "category": "communications" } }
+      ],
+      "cooldownMs": 300000
+    },
+    {
+      "id": "consultant-deadline-alert",
+      "name": "Deliverable Deadline — Reminder",
+      "description": "Alert 48 hours before a tracked deliverable deadline",
+      "enabled": true,
+      "triggers": [{ "eventType": "SCHEDULE_DEADLINE_APPROACHING", "filter": { "hoursRemaining": 48 } }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Deliverable Due Soon", "body": "A deliverable is due in 48 hours." } },
+        { "type": "ai_task", "params": { "goal": "A deliverable deadline is approaching in 48 hours. Review the current state of the deliverable. Identify what remains to be completed, estimate the time required, and flag any blockers.", "category": "planning" } }
+      ],
+      "cooldownMs": 86400000
+    }
+  ],
+
+  "enabledTools": [
+    "read_file", "write_file", "web_search",
+    "summarize_document", "draft_email", "export_report", "calendar_check"
+  ],
+
+  "missionTemplates": [
+    {
+      "id": "consultant-deliverable",
+      "label": "Create a consulting deliverable",
+      "goal": "Produce a professional consulting deliverable on the given topic. Structure: executive summary (1 paragraph), situation analysis, key findings (3-5), recommendations (prioritized), implementation roadmap, and success metrics.",
+      "category": "deliverables"
+    },
+    {
+      "id": "consultant-client-brief",
+      "label": "Write a client brief",
+      "goal": "Write a client engagement brief. Include: engagement objective, scope (in/out), deliverables, timeline, assumptions, and risk factors. Professional format, 1 page.",
+      "category": "communications"
+    },
+    {
+      "id": "consultant-proposal",
+      "label": "Draft a proposal",
+      "goal": "Draft a consulting proposal for the described engagement. Include: problem statement, proposed approach, team/credentials, timeline, investment (placeholder), and value proposition.",
+      "category": "business_development"
+    }
+  ],
+
+  "memoryTags": ["engagements", "deliverables", "clients", "scope", "findings"],
+
+  "proactiveInsights": true,
+  "voiceAlerts": false,
+  "responseStyle": "executive"
+}

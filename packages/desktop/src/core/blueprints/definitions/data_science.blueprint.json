@@ -1,0 +1,84 @@
+{
+  "id": "data_science",
+  "name": "Data Science / ML",
+  "description": "Optimized for data scientists, ML engineers, BI analysts, and data engineers.",
+  "version": "1.0.0",
+
+  "systemPromptAdditions": [
+    "You are operating in Data Science mode. Optimize for analytical rigor, reproducibility, and actionable insights.",
+    "For analysis: state the hypothesis, methodology, assumptions, and limitations before presenting results.",
+    "For ML models: always discuss: training data quality, feature importance, evaluation metrics, and failure modes.",
+    "Distinguish clearly between correlation and causation. Never overstate predictive confidence.",
+    "For data pipeline issues: trace the issue to the source transform, not just the output anomaly.",
+    "Approval strictness: BALANCED — analysis and code drafts auto-generate. Deploying models or modifying production pipelines requires approval."
+  ],
+
+  "approvalStrictness": "balanced",
+
+  "activeSensors": ["fileWatcher", "processMonitor"],
+
+  "workflows": [
+    {
+      "id": "ds-pipeline-failure",
+      "name": "Data Pipeline Failure — Root Cause",
+      "description": "When a data pipeline fails, analyze the root cause",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_PIPELINE_FAILED" }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Pipeline Failure", "body": "A data pipeline failed. Analyzing root cause..." } },
+        { "type": "ai_task", "params": { "goal": "A data pipeline has failed. Analyze the error: (1) identify the failing transform or step, (2) determine root cause (data quality, schema change, resource limit, or logic error), (3) recommend fix and prevention.", "category": "engineering" } }
+      ],
+      "cooldownMs": 60000
+    },
+    {
+      "id": "ds-model-drift",
+      "name": "Model Drift Alert",
+      "description": "When model performance degrades, trigger a drift analysis",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_MODEL_DRIFT" }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Model Drift Detected", "body": "Model performance has degraded. Drift analysis triggered." } },
+        { "type": "ai_task", "params": { "goal": "Model performance metrics indicate drift. Analyze: which metrics degraded, likely causes (data distribution shift, feature staleness, concept drift), and recommend: retrain, recalibrate, or rollback.", "category": "ml" } }
+      ],
+      "cooldownMs": 3600000
+    }
+  ],
+
+  "enabledTools": [
+    "read_file", "write_file", "run_command",
+    "search_code", "export_report", "web_search"
+  ],
+
+  "missionTemplates": [
+    {
+      "id": "ds-eda",
+      "label": "Exploratory data analysis",
+      "goal": "Perform an exploratory data analysis on the described dataset. Cover: data structure, missing values, distributions, correlations, outliers, and 3-5 initial hypotheses to investigate.",
+      "category": "analysis"
+    },
+    {
+      "id": "ds-model-selection",
+      "label": "Model selection recommendation",
+      "goal": "Recommend the best modeling approach for the given problem. Compare 3 candidate algorithms on: suitability for the data, interpretability, training cost, and expected performance. Recommend with justification.",
+      "category": "ml"
+    },
+    {
+      "id": "ds-insight-report",
+      "label": "Data insights report",
+      "goal": "Generate a data insights report for the given analysis results. Structure: executive summary, key findings, business implications, recommended actions, and caveats.",
+      "category": "reporting"
+    },
+    {
+      "id": "ds-pipeline-design",
+      "label": "Data pipeline design",
+      "goal": "Design a data pipeline for the described use case. Cover: data sources, ingestion method, transformation steps, storage layer, refresh frequency, monitoring, and failure handling.",
+      "category": "engineering"
+    }
+  ],
+
+  "memoryTags": ["models", "pipelines", "datasets", "experiments", "findings"],
+
+  "proactiveInsights": true,
+  "voiceAlerts": false,
+  "responseStyle": "technical"
+}

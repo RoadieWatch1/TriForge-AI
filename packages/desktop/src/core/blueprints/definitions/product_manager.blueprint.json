@@ -1,0 +1,83 @@
+{
+  "id": "product_manager",
+  "name": "Product Manager",
+  "description": "Optimized for PMs, product owners, and roadmap leads managing features and stakeholders.",
+  "version": "1.0.0",
+
+  "systemPromptAdditions": [
+    "You are operating in Product Manager mode. Optimize for customer impact, prioritization clarity, and cross-functional alignment.",
+    "For feature requests: always tie to a user problem and a measurable outcome before recommending build / buy / defer.",
+    "For roadmap decisions: use a consistent prioritization framework (impact vs effort, or RICE). State assumptions.",
+    "When writing PRDs or specs: be precise. Engineering should have no ambiguity about requirements after reading.",
+    "For stakeholder communication: lead with customer impact, then business impact, then technical requirements.",
+    "Approval strictness: BALANCED — specs and analysis auto-generate. Roadmap changes and stakeholder communications require review."
+  ],
+
+  "approvalStrictness": "balanced",
+
+  "activeSensors": ["inboxWatcher", "webMonitor"],
+
+  "workflows": [
+    {
+      "id": "pm-feature-request",
+      "name": "New Feature Request — Quick Triage",
+      "description": "When a new feature request is logged, perform a quick triage",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_FEATURE_REQUEST" }],
+      "actions": [
+        { "type": "ai_task", "params": { "goal": "A new feature request was submitted. Triage it: (1) what user problem does it solve, (2) estimated impact (reach × value), (3) estimated effort (rough), (4) recommendation: include in roadmap / needs more research / decline with rationale.", "category": "product" } }
+      ],
+      "cooldownMs": 60000
+    },
+    {
+      "id": "pm-competitor-feature",
+      "name": "Competitor Feature Launch — Gap Analysis",
+      "description": "When a competitor ships a significant feature, analyze the gap",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_WEBSITE_CHANGED", "filter": { "type": "competitor" } }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Competitor Feature Detected", "body": "A competitor may have shipped a new feature. Running gap analysis." } },
+        { "type": "ai_task", "params": { "goal": "A competitor appears to have shipped a new feature or product update. Analyze: (1) what changed, (2) which user segment it targets, (3) whether this creates a gap in our product, (4) recommended response (match / differentiate / ignore).", "category": "product" } }
+      ],
+      "cooldownMs": 3600000
+    }
+  ],
+
+  "enabledTools": [
+    "read_file", "write_file", "web_search",
+    "draft_email", "export_report", "summarize_document"
+  ],
+
+  "missionTemplates": [
+    {
+      "id": "pm-prd",
+      "label": "Write a PRD",
+      "goal": "Write a Product Requirements Document for the described feature. Include: problem statement, user personas, user stories, acceptance criteria, out of scope, open questions, and success metrics.",
+      "category": "documentation"
+    },
+    {
+      "id": "pm-prioritization",
+      "label": "Prioritize the backlog",
+      "goal": "Prioritize the given set of backlog items using RICE scoring (Reach, Impact, Confidence, Effort). Score each item, rank them, and justify the top 3.",
+      "category": "planning"
+    },
+    {
+      "id": "pm-stakeholder-update",
+      "label": "Stakeholder update",
+      "goal": "Write a stakeholder update on product progress. Cover: what shipped, what's in progress, upcoming milestones, key risks, and decisions needed from stakeholders.",
+      "category": "communications"
+    },
+    {
+      "id": "pm-user-research-synthesis",
+      "label": "Synthesize user research",
+      "goal": "Synthesize the provided user research findings. Identify: common pain points, unmet needs, behavioral patterns, and 3-5 product opportunities ranked by frequency and severity.",
+      "category": "research"
+    }
+  ],
+
+  "memoryTags": ["features", "roadmap", "stakeholders", "user_research", "competitors"],
+
+  "proactiveInsights": true,
+  "voiceAlerts": false,
+  "responseStyle": "executive"
+}

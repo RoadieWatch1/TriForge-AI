@@ -1,0 +1,83 @@
+{
+  "id": "sales",
+  "name": "Sales",
+  "description": "Optimized for sales reps, account executives, BDRs, and closers.",
+  "version": "1.0.0",
+
+  "systemPromptAdditions": [
+    "You are operating in Sales mode. Optimize for pipeline velocity, deal quality, and persuasive communication.",
+    "For prospect research: lead with the pain point, then the fit, then the opening angle.",
+    "For outreach drafts: be specific, short, and value-first. No generic intros.",
+    "When analyzing reply content: identify buying signals, objections, and recommended next step.",
+    "For deal strategy: think in stages — qualify, develop, propose, close. State which stage you are in.",
+    "Approval strictness: BALANCED — drafts and research auto-generate. Sending emails or updating CRM requires approval."
+  ],
+
+  "approvalStrictness": "balanced",
+
+  "activeSensors": ["inboxWatcher", "webMonitor"],
+
+  "workflows": [
+    {
+      "id": "sales-reply-analysis",
+      "name": "Prospect Reply — Signal Analysis",
+      "description": "When a prospect replies, analyze the reply and recommend next action",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_EMAIL_REPLY" }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Prospect Reply", "body": "A prospect replied. Analyzing buying signals..." } },
+        { "type": "ai_task", "params": { "goal": "A prospect has replied to an outreach message. Analyze the reply for: buying signals, objections, tone, and urgency level. Recommend the single best next action (call, follow-up, proposal, etc.) with a suggested message draft.", "category": "sales" } }
+      ],
+      "cooldownMs": 60000
+    },
+    {
+      "id": "sales-stale-deal",
+      "name": "Stale Deal — Re-engagement",
+      "description": "When a deal has been inactive for 7+ days, suggest a re-engagement approach",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_DEAL_STALE", "filter": { "daysInactive": 7 } }],
+      "actions": [
+        { "type": "ai_task", "params": { "goal": "A sales deal has been inactive for 7+ days. Research the prospect for recent news or trigger events. Draft a re-engagement message that references something relevant to them — not a generic follow-up.", "category": "sales" } }
+      ],
+      "cooldownMs": 86400000
+    }
+  ],
+
+  "enabledTools": [
+    "read_file", "web_search", "draft_email",
+    "crm_update", "linkedin_research", "export_report"
+  ],
+
+  "missionTemplates": [
+    {
+      "id": "sales-prospect-research",
+      "label": "Research a prospect",
+      "goal": "Research the given prospect or company. Find: recent news, pain points, initiatives that align with our solution, key decision makers, and the best opening angle for outreach.",
+      "category": "prospecting"
+    },
+    {
+      "id": "sales-cold-outreach",
+      "label": "Write cold outreach",
+      "goal": "Write 3 cold outreach variants for the given prospect. Each should be under 80 words, highly personalized, reference a specific pain or trigger, and have a clear low-friction CTA.",
+      "category": "outreach"
+    },
+    {
+      "id": "sales-objection-handling",
+      "label": "Handle an objection",
+      "goal": "The prospect raised the given objection. Provide: (1) the underlying concern this likely represents, (2) 2-3 ways to reframe it, (3) the best verbal response, (4) any supporting proof points.",
+      "category": "objections"
+    },
+    {
+      "id": "sales-pipeline-review",
+      "label": "Pipeline review",
+      "goal": "Review the current pipeline. For each deal: assess stage accuracy, identify the biggest risk to closing, and recommend the single most important next action.",
+      "category": "pipeline"
+    }
+  ],
+
+  "memoryTags": ["prospects", "deals", "objections", "outreach", "pipeline"],
+
+  "proactiveInsights": true,
+  "voiceAlerts": false,
+  "responseStyle": "conversational"
+}

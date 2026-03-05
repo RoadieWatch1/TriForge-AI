@@ -36,8 +36,12 @@ export class CompoundEngine {
     replies: number;
     conversions: number;
     leads: number;
+    /** Optional A/B variant label — 'A' | 'B' | custom string. Tracked separately per variant. */
+    variantLabel?: string;
   }): StrategyProfile {
-    const desc = `Subject: ${params.subject.slice(0, 80)}`;
+    // Include variantLabel in description key so A/B variants are tracked separately
+    const variantSuffix = params.variantLabel ? ` [${params.variantLabel}]` : '';
+    const desc = `Subject: ${params.subject.slice(0, 80)}${variantSuffix}`;
 
     // Upsert: find existing by description or create new
     const existing = this._store.findByDescription(desc, 'outreach');
@@ -62,14 +66,35 @@ export class CompoundEngine {
     }
 
     return this._store.create({
-      loopId:      params.loopId,
-      type:        'outreach',
-      description: desc,
-      inputs:      { subjectLine: params.subject, tone: params.tone },
+      loopId:       params.loopId,
+      type:         'outreach',
+      description:  desc,
+      variantLabel: params.variantLabel,
+      inputs:       { subjectLine: params.subject, tone: params.tone },
       performance,
       score,
       status,
     });
+  }
+
+  /**
+   * Compares the A and B variants of an active A/B test.
+   * Returns the winner (higher score) and the loser ID for retirement.
+   * Returns null if there are fewer than 2 variants with sufficient data.
+   */
+  evaluateAbTest(loopId: string): { winner: StrategyProfile; loserId: string } | null {
+    const variants = this._store.list('outreach').filter(
+      s => s.loopId === loopId && s.variantLabel && (s.performance.sent ?? 0) >= 10,
+    );
+    if (variants.length < 2) return null;
+
+    // Sort by score — highest first
+    const sorted = [...variants].sort((a, b) => b.score - a.score);
+    const winner = sorted[0];
+    const loser  = sorted[sorted.length - 1];
+
+    if (winner.id === loser.id) return null;  // all tied
+    return { winner, loserId: loser.id };
   }
 
   /**
@@ -233,19 +258,22 @@ export class CompoundEngine {
       const variations = JSON.parse(match[0]) as Array<{ subjectLine?: string; tone?: string }>;
       const created: StrategyProfile[] = [];
 
-      for (const v of variations.slice(0, 2)) {
+      const variantLabels = ['A', 'B'];
+      for (const [idx, v] of variations.slice(0, 2).entries()) {
         if (!v.subjectLine) continue;
-        const desc = `Subject: ${v.subjectLine.slice(0, 80)}`;
+        const variantLabel = variantLabels[idx];
+        const desc = `Subject: ${v.subjectLine.slice(0, 80)} [${variantLabel}]`;
         const existing = this._store.findByDescription(desc, baseStrategy.type);
         if (!existing) {
           created.push(this._store.create({
-            loopId:      baseStrategy.loopId,
-            type:        baseStrategy.type,
-            description: desc,
-            inputs:      { subjectLine: v.subjectLine, tone: v.tone },
-            performance: {},
-            score:       0,
-            status:      'testing',
+            loopId:       baseStrategy.loopId,
+            type:         baseStrategy.type,
+            description:  desc,
+            variantLabel,
+            inputs:       { subjectLine: v.subjectLine, tone: v.tone },
+            performance:  {},
+            score:        0,
+            status:       'testing',
           }));
         }
       }

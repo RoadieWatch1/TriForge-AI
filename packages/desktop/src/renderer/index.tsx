@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { App, ErrorBoundary } from './App';
 import './styles/global.css';
 import { AUTONOMY_FLAGS } from '../core/config/autonomyFlags';
-import { VoskWakeEngine } from './voice/VoskWakeEngine';
+import { VoiceCommandBridge } from './voice/VoiceCommandBridge';
 
 // Declare window.triforge type
 declare global {
@@ -21,8 +21,8 @@ createRoot(root).render(
   </ErrorBoundary>
 );
 
-// Boot offline wake engine if enabled (flag off by default — vosk-browser via VoiceCommandBridge is the default path)
+// Boot wake bridge if offline mode is enabled (flag off by default — Chat.tsx boots it for online mode)
 if (AUTONOMY_FLAGS.enableOfflineWake) {
-  const _offlineWake = new VoskWakeEngine();
-  _offlineWake.start().catch(err => console.warn('[VoskWakeEngine] boot failed:', err));
+  const _offlineBridge = new VoiceCommandBridge();
+  _offlineBridge.start();
 }

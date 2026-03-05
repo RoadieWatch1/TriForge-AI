@@ -1,0 +1,77 @@
+{
+  "id": "business_operator",
+  "name": "Business Operator",
+  "description": "Optimized for business owners managing daily operations, vendors, staff, and finances end-to-end.",
+  "version": "1.0.0",
+
+  "systemPromptAdditions": [
+    "You are operating in Business Operator mode. Optimize for operational efficiency, cost control, and team productivity.",
+    "When analyzing operations: identify bottlenecks, waste, and automation opportunities first.",
+    "For vendor or supplier issues: lead with business impact and resolution options.",
+    "Triage daily tasks by: revenue impact, customer impact, time-sensitivity.",
+    "When drafting communications to staff or vendors: be direct, clear, and action-oriented.",
+    "Approval strictness: BALANCED — analysis and drafts auto-execute. Financial actions and external communications require approval."
+  ],
+
+  "approvalStrictness": "balanced",
+
+  "activeSensors": ["inboxWatcher", "fileWatcher"],
+
+  "workflows": [
+    {
+      "id": "ops-invoice-anomaly",
+      "name": "Invoice Anomaly — Alert",
+      "description": "When an invoice has unusual amounts or patterns, alert and queue review",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_INVOICE_ANOMALY" }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Invoice Anomaly", "body": "An invoice has unusual patterns. Review before payment." } },
+        { "type": "queue_approval", "params": { "description": "Invoice flagged for anomaly. Review and approve or reject payment." }, "requiresApproval": true }
+      ],
+      "cooldownMs": 60000
+    },
+    {
+      "id": "ops-daily-brief",
+      "name": "Morning Operations Brief",
+      "description": "At start of day, produce an operations brief from pending items",
+      "enabled": true,
+      "triggers": [{ "eventType": "SCHEDULE_DAILY_START" }],
+      "actions": [
+        { "type": "ai_task", "params": { "goal": "Generate a morning operations brief. Cover: (1) open action items, (2) pending approvals, (3) staff or vendor issues, (4) today's top 3 priorities. Keep it under 150 words.", "category": "operations" } }
+      ],
+      "cooldownMs": 43200000
+    }
+  ],
+
+  "enabledTools": [
+    "read_file", "write_file", "draft_email",
+    "financial_summary", "calendar_check", "export_report"
+  ],
+
+  "missionTemplates": [
+    {
+      "id": "ops-process-audit",
+      "label": "Audit a business process",
+      "goal": "Analyze the described business process. Identify: steps that add value, steps that waste time or money, automation opportunities, and the top 3 improvements ranked by ROI.",
+      "category": "operations"
+    },
+    {
+      "id": "ops-vendor-review",
+      "label": "Vendor performance review",
+      "goal": "Review the vendor relationship. Assess: delivery reliability, pricing competitiveness, quality, communication. Recommend: keep, renegotiate, or replace. Include specific negotiation leverage points.",
+      "category": "procurement"
+    },
+    {
+      "id": "ops-kpi-dashboard",
+      "label": "Build a KPI dashboard plan",
+      "goal": "Design a KPI dashboard for the business. Identify the 8-10 most important metrics, their data sources, update frequency, and alert thresholds.",
+      "category": "analytics"
+    }
+  ],
+
+  "memoryTags": ["operations", "vendors", "finances", "staff", "kpis"],
+
+  "proactiveInsights": true,
+  "voiceAlerts": true,
+  "responseStyle": "executive"
+}

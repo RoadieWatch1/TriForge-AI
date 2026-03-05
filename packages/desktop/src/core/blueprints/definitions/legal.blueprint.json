@@ -1,0 +1,78 @@
+{
+  "id": "legal",
+  "name": "Legal",
+  "description": "Optimized for lawyers, paralegals, compliance officers, and contract reviewers.",
+  "version": "1.0.0",
+
+  "systemPromptAdditions": [
+    "You are operating in Legal mode. Optimize for precision, risk identification, and professional-grade documentation.",
+    "Never give legal advice — always note that outputs are informational and require review by a qualified attorney.",
+    "For contract review: identify obligations, rights, limitations, ambiguities, and risk clauses. Be exhaustive.",
+    "When summarizing legal documents: preserve the exact meaning. Never paraphrase in ways that change legal effect.",
+    "Flag unusual clauses, missing standard protections, and jurisdiction-specific concerns.",
+    "Approval strictness: STRICT — all document outputs require attorney review before use. No autonomous actions on legal matters."
+  ],
+
+  "approvalStrictness": "strict",
+
+  "activeSensors": ["fileWatcher", "inboxWatcher"],
+
+  "workflows": [
+    {
+      "id": "legal-new-contract",
+      "name": "New Contract — Risk Summary",
+      "description": "When a new contract document is added, generate a risk summary",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_FILE_NEW", "filter": { "keywords": ["contract", "agreement", "terms", "nda", "msa"] } }],
+      "actions": [
+        { "type": "notify", "params": { "title": "New Contract Detected", "body": "A contract document was added. Generating risk summary." } },
+        { "type": "ai_task", "params": { "goal": "A new contract document was added. Produce a risk summary: (1) parties, (2) key obligations for each party, (3) unusual or high-risk clauses, (4) missing standard protections, (5) recommended changes before signing. Note: this is informational only — attorney review required.", "category": "legal" } }
+      ],
+      "cooldownMs": 60000
+    },
+    {
+      "id": "legal-deadline-alert",
+      "name": "Legal Deadline — Alert",
+      "description": "Alert when a tracked legal deadline is approaching",
+      "enabled": true,
+      "triggers": [{ "eventType": "SCHEDULE_DEADLINE_APPROACHING", "filter": { "hoursRemaining": 72, "type": "legal" } }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Legal Deadline Approaching", "body": "A legal deadline is approaching within 72 hours." } },
+        { "type": "queue_approval", "params": { "description": "Legal deadline approaching. Review and confirm required action is complete." }, "requiresApproval": true }
+      ],
+      "cooldownMs": 43200000
+    }
+  ],
+
+  "enabledTools": [
+    "read_file", "write_file", "web_search",
+    "summarize_document", "export_report", "citation_check"
+  ],
+
+  "missionTemplates": [
+    {
+      "id": "legal-contract-review",
+      "label": "Contract review",
+      "goal": "Review the contract. Identify: all obligations, rights, and limitations for each party; unusual or non-standard clauses; missing protections; jurisdiction or governing law issues; and recommended redlines. Output as a structured review memo.",
+      "category": "contracts"
+    },
+    {
+      "id": "legal-compliance-check",
+      "label": "Compliance check",
+      "goal": "Check the described policy, process, or document for compliance with the specified regulatory framework. Identify gaps, required changes, and areas that need legal counsel.",
+      "category": "compliance"
+    },
+    {
+      "id": "legal-legal-brief",
+      "label": "Research memo",
+      "goal": "Produce a research memo on the given legal question. Summarize: applicable law, key cases, current interpretation, and practical implications. Note all limitations of this analysis.",
+      "category": "research"
+    }
+  ],
+
+  "memoryTags": ["contracts", "compliance", "cases", "deadlines", "obligations"],
+
+  "proactiveInsights": false,
+  "voiceAlerts": false,
+  "responseStyle": "technical"
+}

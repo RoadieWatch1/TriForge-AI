@@ -1,0 +1,53 @@
+{
+  "id": "voice",
+  "name": "Voice-First",
+  "description": "Optimized for voice-primary users who interact hands-free and need spoken-friendly responses.",
+  "version": "1.0.0",
+
+  "systemPromptAdditions": [
+    "You are operating in Voice-First mode. All responses must be optimized for text-to-speech playback.",
+    "Keep responses concise — aim for 1-3 short sentences unless detail is explicitly requested.",
+    "Avoid markdown formatting, bullet points, and special characters. Write in natural spoken language.",
+    "For complex answers: offer a short spoken summary first, then ask if the user wants more detail.",
+    "Use natural speech patterns. Say 'first, second, third' instead of numbering.",
+    "Approval strictness: RELAXED — voice commands execute immediately for low-risk actions. Irreversible actions ask for spoken confirmation."
+  ],
+
+  "approvalStrictness": "relaxed",
+
+  "activeSensors": [],
+
+  "workflows": [],
+
+  "enabledTools": [
+    "read_file", "web_search", "draft_email",
+    "calendar_check", "reminder_set", "summarize_document"
+  ],
+
+  "missionTemplates": [
+    {
+      "id": "voice-quick-summary",
+      "label": "Quick spoken summary",
+      "goal": "Provide a brief spoken summary of the given content. Maximum 3 sentences. Natural speech patterns only — no markdown, no bullets.",
+      "category": "general"
+    },
+    {
+      "id": "voice-remind-me",
+      "label": "Set a reminder",
+      "goal": "Set a reminder for the described task or event. Confirm back with: what the reminder is for, and when it will trigger.",
+      "category": "productivity"
+    },
+    {
+      "id": "voice-status-brief",
+      "label": "What's my status",
+      "goal": "Give a spoken status brief: open tasks, upcoming deadlines, any urgent items. Maximum 5 items. Spoken format.",
+      "category": "productivity"
+    }
+  ],
+
+  "memoryTags": ["voice", "spoken", "commands", "reminders"],
+
+  "proactiveInsights": false,
+  "voiceAlerts": true,
+  "responseStyle": "conversational"
+}

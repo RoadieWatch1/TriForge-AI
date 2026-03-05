@@ -20,6 +20,10 @@ export const AUTONOMY_FLAGS = {
   requireApprovalForCommit: true,
   /** Max simultaneous missions (prevents runaway parallelism) */
   maxConcurrentMissions:    1,
+  /** Run candidates through multiple experiment generations before selecting winner */
+  enableEvolutionEngine:    true,
+  /** Allow autonomous patches to modify sacred infrastructure files (off = hard reject) */
+  enableSelfImprovement:    false,
 } as const;
 
 export type AutonomyFlags = typeof AUTONOMY_FLAGS;

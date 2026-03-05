@@ -1,0 +1,64 @@
+{
+  "id": "business",
+  "name": "Business Professional",
+  "description": "Balanced defaults for general business professionals, operations, and strategy.",
+  "version": "1.0.0",
+
+  "systemPromptAdditions": [
+    "You are operating in Business Professional mode. Adapt your style to the task at hand.",
+    "For strategic tasks: lead with the recommendation, then the reasoning.",
+    "For operational tasks: focus on clarity, process, and measurable outcomes.",
+    "Summarize decisions and their rationale. Flag risks and dependencies proactively.",
+    "Approval strictness: BALANCED — routine analysis and drafts auto-execute. Irreversible actions require approval."
+  ],
+
+  "approvalStrictness": "balanced",
+
+  "activeSensors": ["inboxWatcher"],
+
+  "workflows": [
+    {
+      "id": "business-new-document",
+      "name": "New Business Document — Quick Summary",
+      "description": "Summarize new business documents automatically",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_FILE_NEW", "filter": { "ext": [".pdf", ".docx", ".xlsx"] } }],
+      "actions": [
+        { "type": "ai_task", "params": { "goal": "A new business document was detected. Provide a quick summary: type of document, key information, action required (if any), and urgency level.", "category": "general" } }
+      ],
+      "cooldownMs": 60000
+    }
+  ],
+
+  "enabledTools": [
+    "read_file", "write_file", "web_search",
+    "summarize_document", "draft_email", "export_report"
+  ],
+
+  "missionTemplates": [
+    {
+      "id": "business-summarize",
+      "label": "Summarize this document",
+      "goal": "Read the provided document and produce a concise summary: main topic, key points, decisions made, action items, and open questions.",
+      "category": "general"
+    },
+    {
+      "id": "business-action-plan",
+      "label": "Create an action plan",
+      "goal": "Analyze the situation and produce a prioritized action plan. Each action should have: what, why, who owns it, and the success criterion.",
+      "category": "planning"
+    },
+    {
+      "id": "business-report",
+      "label": "Write a business report",
+      "goal": "Write a professional business report on the given topic. Structure: executive summary, background, findings, recommendations, next steps.",
+      "category": "communications"
+    }
+  ],
+
+  "memoryTags": ["decisions", "plans", "reports", "operations"],
+
+  "proactiveInsights": false,
+  "voiceAlerts": false,
+  "responseStyle": "executive"
+}

@@ -1,0 +1,85 @@
+{
+  "id": "research",
+  "name": "Research & Analysis",
+  "description": "Optimized for researchers, analysts, academics, and fact-checkers.",
+  "version": "1.0.0",
+
+  "systemPromptAdditions": [
+    "You are operating in Research mode. Prioritize accuracy, source credibility, and structured analysis.",
+    "Always distinguish between verified facts, inferences, and speculation. Label each clearly.",
+    "When synthesizing multiple sources: identify consensus, note contradictions, and flag gaps in evidence.",
+    "For analysis tasks: state the methodology, assumptions, and limitations before presenting findings.",
+    "Never present a single source as definitive. Cross-reference when possible.",
+    "Approval strictness: BALANCED — research synthesis auto-executes, but publishing or sharing outputs requires review.",
+    "CONTRADICTION CHECK: Before drawing any conclusion, check COUNCIL MEMORY for prior findings on this topic. If new evidence contradicts a recorded conclusion, surface the conflict explicitly and assess both sides before updating the position."
+  ],
+
+  "approvalStrictness": "balanced",
+
+  "activeSensors": ["webMonitor", "fileWatcher"],
+
+  "workflows": [
+    {
+      "id": "research-new-paper",
+      "name": "New Document — Research Summary",
+      "description": "When a new research document is detected, auto-summarize it",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_FILE_NEW", "filter": { "ext": [".pdf", ".docx"] } }],
+      "actions": [
+        { "type": "notify", "params": { "title": "New Document", "body": "New research document detected. Summarizing..." } },
+        { "type": "ai_task", "params": { "goal": "A new research document was added. Produce a structured summary: (1) research question, (2) methodology, (3) key findings, (4) limitations, (5) implications for our work.", "category": "research" } }
+      ],
+      "cooldownMs": 60000
+    },
+    {
+      "id": "research-contradiction",
+      "name": "Source Contradiction Alert",
+      "description": "Alert when a new source contradicts a previously recorded finding",
+      "enabled": true,
+      "triggers": [{ "eventType": "INSIGHT_CONTRADICTION" }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Conflicting Evidence", "body": "A new source contradicts a recorded finding. Review recommended." } },
+        { "type": "ai_task", "params": { "goal": "Two sources are in conflict. Analyze both: assess the credibility of each, identify the specific point of disagreement, and recommend how to resolve or document the conflict.", "category": "research" } }
+      ],
+      "cooldownMs": 300000
+    }
+  ],
+
+  "enabledTools": [
+    "read_file", "web_search", "summarize_document",
+    "citation_check", "fact_verify", "export_report"
+  ],
+
+  "missionTemplates": [
+    {
+      "id": "research-literature-review",
+      "label": "Literature review",
+      "goal": "Conduct a structured literature review on the given topic. Synthesize key findings, note methodological differences across studies, identify consensus and open questions, and recommend the most credible sources.",
+      "category": "research"
+    },
+    {
+      "id": "research-fact-check",
+      "label": "Fact-check this claim",
+      "goal": "Fact-check the provided claim. Find primary sources, assess their credibility, determine the verdict (true / false / misleading / unverifiable), and explain the reasoning.",
+      "category": "verification"
+    },
+    {
+      "id": "research-competitive-analysis",
+      "label": "Structured competitive analysis",
+      "goal": "Perform a structured competitive analysis. For each competitor: capabilities, positioning, recent changes, strengths, weaknesses. Conclude with strategic implications.",
+      "category": "analysis"
+    },
+    {
+      "id": "research-data-synthesis",
+      "label": "Synthesize data into insights",
+      "goal": "Analyze the provided data. Identify key patterns, outliers, and trends. State the confidence level of each finding and list assumptions. Produce a structured insights report.",
+      "category": "analysis"
+    }
+  ],
+
+  "memoryTags": ["findings", "sources", "contradictions", "methodology"],
+
+  "proactiveInsights": true,
+  "voiceAlerts": false,
+  "responseStyle": "technical"
+}

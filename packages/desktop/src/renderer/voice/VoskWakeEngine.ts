@@ -1,27 +1,24 @@
-// ── VoskWakeEngine.ts — Renderer-side offline wake engine (vosk-browser WASM) ──
+// ── VoskWakeEngine.ts — Mic capture + vosk-browser phrase recognition ─────────
 //
-// Alternative to VoiceCommandBridge for offline/air-gapped deployments.
-// Key difference: bypasses the main-process trust boundary — calls dispatchCommand()
-// directly in the renderer without an IPC round-trip.
+// Responsibilities:
+//   1. Download/cache vosk model via main-process IPC (userData/vosk-models/)
+//   2. Capture mic at 16 kHz mono
+//   3. Feed PCM to grammar-limited KaldiRecognizer
+//   4. Call onPhrase(text) when a phrase is recognized
 //
-// Guard: only active when AUTONOMY_FLAGS.enableOfflineWake = true (default: false).
-// Boot point: renderer/index.tsx (after React createRoot).
-//
-// Model: downloaded via window.triforge.voice.getWakeModelData() (same as VoiceCommandBridge).
-// Grammar: same WAKE_PHRASES allowlist — prevents free-form speech activation.
+// This class has NO knowledge of commands, IPC trust boundaries, or dispatch logic.
+// VoiceCommandBridge wraps this and decides what to do with the detected phrase.
 
 import { createModel } from 'vosk-browser';
-import { AUTONOMY_FLAGS } from '../../core/config/autonomyFlags';
-import { dispatchCommand } from '../../core/commands/CommandDispatcher';
 
-const WAKE_PHRASES = [
+export const WAKE_PHRASES = [
   'council', 'hey council', 'okay council', 'council listen', 'council help',
   'council assemble', 'council deliberate', 'claude advise', 'grok challenge',
   'apply solution', 'apply decision', 'triforge build', 'triforge fix',
   'triforge audit', 'triforge refactor',
 ] as const;
 
-const GRAMMAR = JSON.stringify(['[unk]', ...WAKE_PHRASES]);
+export const WAKE_GRAMMAR = JSON.stringify(['[unk]', ...WAKE_PHRASES]);
 
 export class VoskWakeEngine {
   private model:      Awaited<ReturnType<typeof createModel>> | null = null;
@@ -33,20 +30,17 @@ export class VoskWakeEngine {
   private lastText  = '';
   private lastTs    = 0;
 
-  /** Start offline wake detection. Downloads model on first run (~40 MB, cached). */
-  async start(): Promise<void> {
-    if (!AUTONOMY_FLAGS.enableOfflineWake) {
-      console.info('[VoskWakeEngine] offline wake disabled (enableOfflineWake=false) — skipping');
-      return;
-    }
+  constructor(private readonly onPhrase: (text: string) => void) {}
 
+  /** Download model (first run ~40 MB, cached), start mic capture and recognition. */
+  async start(): Promise<void> {
     try {
       const buf: ArrayBuffer = await window.triforge.voice.getWakeModelData();
       const blobUrl = URL.createObjectURL(new Blob([buf], { type: 'application/zip' }));
       this.model = await createModel(blobUrl, -1);
       URL.revokeObjectURL(blobUrl);
 
-      this.recognizer = new this.model.KaldiRecognizer(16000, GRAMMAR);
+      this.recognizer = new this.model.KaldiRecognizer(16000, WAKE_GRAMMAR);
       this.recognizer.setWords(false);
 
       this.recognizer.on('result', (message) => {
@@ -54,15 +48,12 @@ export class VoskWakeEngine {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const text: string = ((message as any).result?.text ?? '').trim();
         if (!text) return;
-
-        // Throttle: ignore duplicate text within 1200 ms (avoids partial-result spam)
+        // Throttle: ignore duplicate within 1200 ms (avoids partial-result spam)
         const now = Date.now();
         if (text === this.lastText && now - this.lastTs < 1200) return;
         this.lastText = text;
         this.lastTs   = now;
-
-        // Directly dispatch — no main-process round-trip (offline mode)
-        dispatchCommand(text, 'voice');
+        this.onPhrase(text);
       });
 
       this.stream = await navigator.mediaDevices.getUserMedia({
@@ -80,14 +71,13 @@ export class VoskWakeEngine {
       source.connect(this.processor);
       this.processor.connect(this.audioCtx.destination);
 
-      console.info('[VoskWakeEngine] vosk-browser offline wake active', { mode: 'vosk-wasm', ok: true });
+      console.info('[VoskWakeEngine] active');
     } catch (err) {
-      console.warn('[VoskWakeEngine] start failed — offline wake inactive', { mode: 'vosk-wasm', ok: false, err: String(err) });
-      // WakeWordListener (Web Speech API) and VoiceCommandBridge remain active as fallbacks
+      console.warn('[VoskWakeEngine] start failed:', err);
     }
   }
 
-  pause(): void  { this.paused = true; }
+  pause():  void { this.paused = true; }
   resume(): void { this.paused = false; }
 
   stop(): void {
@@ -95,9 +85,9 @@ export class VoskWakeEngine {
     this.processor?.disconnect();
     this.audioCtx?.close().catch(() => {});
     this.stream?.getTracks().forEach(t => t.stop());
-    try { this.recognizer?.remove(); }  catch { /* ignore */ }
-    try { this.model?.terminate(); }    catch { /* ignore */ }
-    this.recognizer = null; this.model = null;
-    this.audioCtx = null; this.processor = null; this.stream = null;
+    try { this.recognizer?.remove(); } catch { /* ignore */ }
+    try { this.model?.terminate(); }   catch { /* ignore */ }
+    this.recognizer = null; this.model    = null;
+    this.audioCtx   = null; this.processor = null; this.stream = null;
   }
 }

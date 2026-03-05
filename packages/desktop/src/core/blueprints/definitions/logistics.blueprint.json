@@ -1,0 +1,84 @@
+{
+  "id": "logistics",
+  "name": "Logistics / Operations",
+  "description": "Optimized for supply chain managers, warehouse operators, fleet managers, and dispatchers.",
+  "version": "1.0.0",
+
+  "systemPromptAdditions": [
+    "You are operating in Logistics mode. Optimize for on-time delivery, cost efficiency, and supply chain resilience.",
+    "For disruptions: identify impact scope, alternative routes or suppliers, and escalation thresholds immediately.",
+    "For planning tasks: always include contingency options and lead time buffers.",
+    "Quantify everything where possible: cost, time, capacity, utilization rate.",
+    "When optimizing routes or schedules: state the objective function (minimize time, minimize cost, maximize utilization) before solving.",
+    "Approval strictness: BALANCED — analysis and routing recommendations auto-generate. Vendor changes and large orders require approval."
+  ],
+
+  "approvalStrictness": "balanced",
+
+  "activeSensors": ["inboxWatcher", "webMonitor"],
+
+  "workflows": [
+    {
+      "id": "logistics-delay-alert",
+      "name": "Shipment Delay — Impact Assessment",
+      "description": "When a shipment delay is detected, assess the downstream impact",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_SHIPMENT_DELAY" }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Shipment Delay", "body": "A shipment is delayed. Assessing downstream impact..." } },
+        { "type": "ai_task", "params": { "goal": "A shipment delay has been detected. Assess: (1) which orders or customers are affected, (2) options to mitigate (alternate supplier, expedited shipping, partial fulfillment), (3) customer communication required, (4) recommended action ranked by cost.", "category": "operations" } }
+      ],
+      "cooldownMs": 60000
+    },
+    {
+      "id": "logistics-inventory-low",
+      "name": "Low Inventory — Reorder Alert",
+      "description": "When inventory drops below threshold, recommend reorder action",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_INVENTORY_LOW" }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Low Inventory", "body": "Inventory below threshold. Reorder review needed." } },
+        { "type": "ai_task", "params": { "goal": "Inventory for a tracked item has dropped below the reorder threshold. Calculate: current stock vs lead time, reorder quantity (considering demand forecast and carrying cost), and whether expedited sourcing is needed.", "category": "inventory" } }
+      ],
+      "cooldownMs": 3600000
+    }
+  ],
+
+  "enabledTools": [
+    "read_file", "write_file", "web_search",
+    "financial_summary", "export_report", "map_search", "draft_email"
+  ],
+
+  "missionTemplates": [
+    {
+      "id": "logistics-route-optimization",
+      "label": "Optimize delivery routes",
+      "goal": "Optimize the described delivery routes. State the objective (minimize time / cost / emissions). Compare 2-3 route options with estimated costs and ETAs. Recommend the best option with justification.",
+      "category": "routing"
+    },
+    {
+      "id": "logistics-supplier-evaluation",
+      "label": "Evaluate a supplier",
+      "goal": "Evaluate the described supplier. Assess: lead time reliability, pricing competitiveness, quality track record, financial stability risk, and backup alternatives. Recommend: approve / conditionally approve / reject.",
+      "category": "procurement"
+    },
+    {
+      "id": "logistics-capacity-plan",
+      "label": "Capacity planning",
+      "goal": "Create a capacity plan for the described operation. Cover: current utilization, projected demand for next 90 days, capacity gaps, options to address gaps (hire, shift, outsource, automate), and cost comparison.",
+      "category": "planning"
+    },
+    {
+      "id": "logistics-disruption-plan",
+      "label": "Disruption contingency plan",
+      "goal": "Build a contingency plan for the described supply chain disruption scenario. Cover: trigger conditions, immediate response actions, alternative sourcing, customer communication plan, and recovery timeline.",
+      "category": "risk"
+    }
+  ],
+
+  "memoryTags": ["suppliers", "shipments", "inventory", "routes", "disruptions"],
+
+  "proactiveInsights": true,
+  "voiceAlerts": true,
+  "responseStyle": "technical"
+}

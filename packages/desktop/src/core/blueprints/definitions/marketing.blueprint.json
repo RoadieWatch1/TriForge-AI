@@ -1,0 +1,83 @@
+{
+  "id": "marketing",
+  "name": "Marketing",
+  "description": "Optimized for marketers, growth hackers, and content strategists.",
+  "version": "1.0.0",
+
+  "systemPromptAdditions": [
+    "You are operating in Marketing mode. Optimize for brand voice, audience engagement, and campaign performance.",
+    "When analyzing competitor activity or website changes, lead with the strategic implication and recommended response.",
+    "For social media and email content, maintain a professional, engaging tone aligned with the user's brand.",
+    "Prioritize tasks related to campaigns, content performance, and lead generation.",
+    "When writing copy: always provide 2-3 variants. Include a hook, value proposition, and call to action.",
+    "Approval strictness: BALANCED — content drafts auto-generate, but social posts and email sends require approval."
+  ],
+
+  "approvalStrictness": "balanced",
+
+  "activeSensors": ["clipboardMonitor", "inboxWatcher", "webMonitor"],
+
+  "workflows": [
+    {
+      "id": "marketing-website-changed",
+      "name": "Competitor Site Changed — Strategic Summary",
+      "description": "When a monitored website changes, generate a strategic summary",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_WEBSITE_CHANGED" }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Website Change Detected", "body": "A monitored site changed. Generating strategic summary..." } },
+        { "type": "ai_task", "params": { "goal": "A monitored website has changed. Summarize what changed, its strategic implications for our marketing positioning, and recommend one concrete response action.", "category": "general" } }
+      ],
+      "cooldownMs": 3600000
+    },
+    {
+      "id": "marketing-clipboard-tag",
+      "name": "Clipboard Content — Marketing Tag",
+      "description": "When marketing-relevant content is copied, suggest applications",
+      "enabled": false,
+      "triggers": [{ "eventType": "SENSOR_CLIPBOARD_CHANGED" }],
+      "actions": [
+        { "type": "ai_task", "params": { "goal": "New content was copied to clipboard. If it appears marketing-relevant (competitor copy, ad creative, pricing data, campaign idea), provide a 2-sentence strategic note and one suggested next action. If not marketing-relevant, respond with nothing.", "category": "general" } }
+      ],
+      "cooldownMs": 30000
+    }
+  ],
+
+  "enabledTools": [
+    "read_file", "write_file", "web_search",
+    "draft_email", "social_post", "image_caption"
+  ],
+
+  "missionTemplates": [
+    {
+      "id": "marketing-campaign-brief",
+      "label": "Write a campaign brief",
+      "goal": "Create a campaign brief including: objective, target audience, key message, channels, success metrics, and timeline. Format as a shareable document.",
+      "category": "campaigns"
+    },
+    {
+      "id": "marketing-copy-variants",
+      "label": "Write copy variants",
+      "goal": "Generate 3 copy variants for the described content. Each variant should have a different angle: one emotional, one rational, one social proof. Include a subject line and CTA for each.",
+      "category": "content"
+    },
+    {
+      "id": "marketing-competitive-analysis",
+      "label": "Competitive messaging analysis",
+      "goal": "Analyze the messaging of our top 3 competitors. Identify: positioning angles, tone, key differentiators, gaps we can exploit. Recommend our counter-positioning.",
+      "category": "research"
+    },
+    {
+      "id": "marketing-performance-review",
+      "label": "Campaign performance review",
+      "goal": "Review the campaign metrics provided. Identify what is working, what is underperforming, root causes, and specific optimization actions ranked by expected impact.",
+      "category": "analytics"
+    }
+  ],
+
+  "memoryTags": ["campaigns", "competitors", "content", "performance"],
+
+  "proactiveInsights": true,
+  "voiceAlerts": false,
+  "responseStyle": "executive"
+}

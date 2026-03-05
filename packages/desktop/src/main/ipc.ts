@@ -29,8 +29,14 @@ import { evaluateProactiveOpportunity, resetProactiveCooldown } from './proactiv
 import { MissionManager } from '../core/missions/missionManager';
 import { MissionStore } from '../core/missions/missionStore';
 import { autonomyController } from '../core/autonomy/AutonomyController';
-import { missionController } from '../core/mission/MissionController';
-import { onConsensus, onConsensusMeta } from '../core/orchestrator/consensus';
+import { BlueprintLoader } from '../core/blueprints/BlueprintLoader';
+import { BLUEPRINT_IDS, isValidBlueprintId } from '../core/blueprints/BlueprintRegistry';
+import { applyBlueprint, deactivateBlueprint, getActiveBlueprint } from '../core/blueprints/applyBlueprint';
+import { DEFAULT_BLUEPRINT } from '../core/blueprints/defaultBlueprint';
+import type { BlueprintApplyContext } from '../core/blueprints/BlueprintTypes';
+import { missionController } from '../core/engineering/MissionController';
+import { onConsensus, onConsensusMeta } from '../core/orchestrator/CouncilDecisionBus';
+import { InsightRouter } from '../core/routing/InsightRouter';
 import { AUTONOMY_FLAGS } from '../core/config/autonomyFlags';
 import { getToolExecutor, newRequestId } from '../core/tools/toolExecutor';
 import { healthMonitor } from '../core/health/healthMonitor';
@@ -76,7 +82,6 @@ import {
   InsightEngine,
   type CouncilMemoryNode,
   type MissionContext,
-  type CouncilInsight,
   type InsightSignal,
   type WorkflowDefinition,
   type TrustModeSnapshot,
@@ -118,6 +123,7 @@ let _missionCtxMgr: MissionContextManager | null = null;
 let _memGraph: CouncilMemoryGraph | null = null;
 let _councilRuntime: CouncilRuntime | null = null;
 let _insightEngine: InsightEngine | null = null;
+let _insightRouter: InsightRouter | null = null;
 
 function _getMissionCtxMgr(store: Store): MissionContextManager {
   if (!_missionCtxMgr) _missionCtxMgr = new MissionContextManager(store);
@@ -1146,6 +1152,12 @@ VERIFY: [1-3 specific things the user should double-check]
 
   ipcMain.on('insight:reset-cooldown', () => {
     _insightEngine?.resetCooldown();
+  });
+
+  // insight:stream is a push-only channel — the router sends events automatically.
+  // Expose a manual inject endpoint for renderer-triggered test/replay.
+  ipcMain.on('insight:inject', (_e, insight: { type: string; message: string; confidence: number }) => {
+    _insightRouter?.inject(insight as { type: 'strategy' | 'warning' | 'opportunity' | 'observation'; message: string; confidence: number });
   });
 
   // ── Think Tank (full consensus for complex goals) ─────────────────────────────
@@ -3400,7 +3412,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       const req = {
         id: crypto.randomUUID(),
         raw: String(raw),
-        intent: String(intent) as import('../core/mission/types').MissionIntent,
+        intent: String(intent) as import('../core/engineering/types').MissionIntent,
         source: (source === 'voice' ? 'voice' : 'typed') as 'typed' | 'voice',
         goal: String(raw),
         constraints: { noUiChanges: true, requireApproval: true, safePreviewOnly: true },
@@ -3415,7 +3427,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('mission:approve_plan', async (_e, missionId: unknown, plan: unknown) => {
     try {
-      await missionController.executeMission(String(missionId), plan as import('../core/mission/types').MissionPlan);
+      await missionController.executeMission(String(missionId), plan as import('../core/engineering/types').MissionPlan);
       return { ok: true };
     } catch (err) {
       return { error: String(err) };
@@ -3424,7 +3436,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('mission:approve_step', async (_e, missionId: unknown, stepId: unknown, plan: unknown) => {
     try {
-      missionController.stepApplied(String(missionId), String(stepId), plan as import('../core/mission/types').MissionPlan);
+      missionController.stepApplied(String(missionId), String(stepId), plan as import('../core/engineering/types').MissionPlan);
       return { ok: true };
     } catch (err) {
       return { error: String(err) };
@@ -3484,14 +3496,19 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       const insightProvider = providers[0];
       _insightEngine = new InsightEngine(insightProvider);
 
-      // Forward COUNCIL_INSIGHT bus events to all open renderer windows
-      const { councilBus: cBus } = await import('@triforge/engine');
-      cBus.on('COUNCIL_INSIGHT', (data: unknown) => {
-        const insight = data as CouncilInsight;
-        for (const win of BrowserWindow.getAllWindows()) {
-          if (!win.isDestroyed()) win.webContents.send('council:insight', insight);
-        }
+      // Route COUNCIL_INSIGHT events via InsightRouter (windows + TTS + insight:stream)
+      _insightRouter = new InsightRouter({
+        getWindows:         () => BrowserWindow.getAllWindows(),
+        getActiveBlueprint: getActiveBlueprint,
+        textToSpeech:       (text, onChunk, opts) =>
+          textToSpeechStream(text, store, onChunk, opts ?? {}),
       });
+      await _insightRouter.start();
+
+      // Wire eventBus + missionController into the router
+      const { eventBus: eBus } = await import('@triforge/engine');
+      _insightRouter.subscribeToEventBus(eBus);
+      _insightRouter.subscribeToMissionController(missionController);
     } catch { /* non-fatal — insight engine starts when providers are ready */ }
   }, 4000);
 
@@ -3667,4 +3684,110 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   ipcMain.handle('memory:graph', () => {
     return _getMemoryManagerInstance().getGraph().toJSON();
   });
+
+  // ── Blueprint System ───────────────────────────────────────────────────────
+
+  /** Returns all registered blueprint IDs with their names and descriptions. */
+  ipcMain.handle('blueprint:list', () => {
+    return BLUEPRINT_IDS.map(id => {
+      const bp = BlueprintLoader.load(id);
+      return {
+        id:          bp.id,
+        name:        bp.name,
+        description: bp.description,
+        version:     bp.version,
+      };
+    });
+  });
+
+  /** Returns the currently active blueprint, or null. */
+  ipcMain.handle('blueprint:getActive', () => {
+    const active = getActiveBlueprint();
+    if (!active) return null;
+    return {
+      id:          active.id,
+      name:        active.name,
+      description: active.description,
+      version:     active.version,
+    };
+  });
+
+  /**
+   * Activates a blueprint by ID.
+   * Wires into SensorManager, AutonomyEngine, and MissionController.
+   * Falls back to DEFAULT_BLUEPRINT for unknown IDs.
+   */
+  ipcMain.handle('blueprint:setActive', (_e, blueprintId: unknown) => {
+    try {
+      const id = String(blueprintId ?? '');
+      const blueprint = isValidBlueprintId(id)
+        ? BlueprintLoader.load(id)
+        : DEFAULT_BLUEPRINT;
+
+      if (!_sensorManager || !_autonomyEngine) {
+        return { error: 'SensorManager or AutonomyEngine not initialized' };
+      }
+
+      const ctx: BlueprintApplyContext = {
+        sensorManager:    _sensorManager,
+        autonomyEngine:   _autonomyEngine,
+        missionController: {
+          registerMissionTemplates: (templates) => {
+            missionController.registerMissionTemplates(templates);
+          },
+        },
+      };
+
+      applyBlueprint(blueprint, ctx);
+      store.update('triforge.activeBlueprint', blueprint.id);
+
+      return { ok: true, id: blueprint.id, name: blueprint.name };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  /** Deactivates the current blueprint and resets to no active blueprint. */
+  ipcMain.handle('blueprint:deactivate', () => {
+    try {
+      if (!_sensorManager || !_autonomyEngine) {
+        return { error: 'SensorManager or AutonomyEngine not initialized' };
+      }
+
+      const ctx: BlueprintApplyContext = {
+        sensorManager:    _sensorManager,
+        autonomyEngine:   _autonomyEngine,
+        missionController: {
+          registerMissionTemplates: () => { /* no-op on deactivate */ },
+        },
+      };
+
+      deactivateBlueprint(ctx);
+      store.update('triforge.activeBlueprint', null);
+      return { ok: true };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ── Restore previously active blueprint on startup ─────────────────────────
+  setTimeout(() => {
+    try {
+      const savedId = store.get<string | null>('triforge.activeBlueprint', null);
+      if (!savedId || !isValidBlueprintId(savedId)) return;
+      if (!_sensorManager || !_autonomyEngine) return;
+
+      const blueprint = BlueprintLoader.load(savedId);
+      const ctx: BlueprintApplyContext = {
+        sensorManager:    _sensorManager,
+        autonomyEngine:   _autonomyEngine,
+        missionController: {
+          registerMissionTemplates: (templates) => {
+            missionController.registerMissionTemplates(templates);
+          },
+        },
+      };
+      applyBlueprint(blueprint, ctx);
+    } catch { /* non-fatal — startup blueprint restore failure is silent */ }
+  }, 1000);
 }

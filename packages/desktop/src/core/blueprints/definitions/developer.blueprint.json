@@ -1,0 +1,83 @@
+{
+  "id": "developer",
+  "name": "Software Developer",
+  "description": "Optimized for engineers, full-stack developers, DevOps, and engineering leads.",
+  "version": "1.0.0",
+
+  "systemPromptAdditions": [
+    "You are operating in Developer mode. Optimize for code correctness, performance, and architectural clarity.",
+    "When reviewing or generating code: lead with the approach rationale, then the implementation. Flag trade-offs explicitly.",
+    "For bug reports: identify root cause before proposing a fix. Never patch symptoms.",
+    "When suggesting refactors: quantify the benefit (readability, perf, test coverage) before proceeding.",
+    "Tools available: read_file, write_file, search_code, run_command, git_diff, run_tests.",
+    "Approval strictness: STRICT — all file writes and shell commands require explicit approval before execution."
+  ],
+
+  "approvalStrictness": "strict",
+
+  "activeSensors": ["fileWatcher", "processMonitor"],
+
+  "workflows": [
+    {
+      "id": "dev-test-fail",
+      "name": "Test Failure — Auto-Diagnose",
+      "description": "When tests fail, analyze the failure and propose a targeted fix",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_TEST_FAILED" }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Tests Failed", "body": "Test suite failed. Analyzing root cause..." } },
+        { "type": "ai_task", "params": { "goal": "A test suite just failed. Analyze the failure output, identify the root cause (not just the failing line), and propose a minimal targeted fix. Do not suggest broad refactors.", "category": "engineering" } }
+      ],
+      "cooldownMs": 30000
+    },
+    {
+      "id": "dev-large-file",
+      "name": "Large File Detected — Refactor Suggestion",
+      "description": "When a file exceeds 500 lines, suggest decomposition",
+      "enabled": false,
+      "triggers": [{ "eventType": "SENSOR_FILE_LARGE", "filter": { "minLines": 500 } }],
+      "actions": [
+        { "type": "ai_task", "params": { "goal": "A source file has grown large. Analyze its responsibilities and suggest a decomposition plan that follows single-responsibility principle. List specific extract candidates with estimated line counts.", "category": "engineering" } }
+      ],
+      "cooldownMs": 3600000
+    }
+  ],
+
+  "enabledTools": [
+    "read_file", "write_file", "search_code", "run_command",
+    "git_diff", "run_tests", "lint_code", "format_code"
+  ],
+
+  "missionTemplates": [
+    {
+      "id": "dev-debug",
+      "label": "Debug this issue",
+      "goal": "Analyze the provided error or unexpected behavior. Identify root cause, affected code paths, and produce a minimal fix with a test case to prevent regression.",
+      "category": "engineering"
+    },
+    {
+      "id": "dev-refactor",
+      "label": "Refactor this module",
+      "goal": "Analyze the target module for code smells, duplication, and complexity. Produce a refactor plan with specific changes, estimated risk, and rollback steps for each change.",
+      "category": "engineering"
+    },
+    {
+      "id": "dev-implement",
+      "label": "Implement this feature",
+      "goal": "Implement the described feature. Follow existing patterns in the codebase. Include unit tests. Flag any architectural decisions that should be reviewed.",
+      "category": "engineering"
+    },
+    {
+      "id": "dev-review",
+      "label": "Code review this PR",
+      "goal": "Perform a code review. Check for: correctness, edge cases, performance issues, security vulnerabilities, test coverage, and adherence to existing patterns. Produce a structured review with severity ratings.",
+      "category": "engineering"
+    }
+  ],
+
+  "memoryTags": ["engineering", "debugging", "architecture", "testing"],
+
+  "proactiveInsights": true,
+  "voiceAlerts": false,
+  "responseStyle": "technical"
+}

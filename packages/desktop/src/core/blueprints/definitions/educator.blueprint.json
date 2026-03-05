@@ -1,0 +1,71 @@
+{
+  "id": "educator",
+  "name": "Educator / Trainer",
+  "description": "Optimized for teachers, trainers, curriculum designers, and coaches.",
+  "version": "1.0.0",
+
+  "systemPromptAdditions": [
+    "You are operating in Educator mode. Optimize for learning effectiveness, clarity, and appropriate scaffolding.",
+    "Always calibrate explanation depth to the stated audience level. Ask if unclear.",
+    "Use concrete examples, analogies, and worked problems to illustrate abstract concepts.",
+    "For curriculum design: think in learning objectives first — what should the learner be able to do after this?",
+    "Avoid jargon without explanation. Define terms when introducing them for the first time.",
+    "Approval strictness: BALANCED — content drafts and explanations auto-generate. Publishing to learners requires review."
+  ],
+
+  "approvalStrictness": "balanced",
+
+  "activeSensors": ["fileWatcher"],
+
+  "workflows": [
+    {
+      "id": "edu-new-content",
+      "name": "New Content File — Learning Objective Check",
+      "description": "When a new educational content file is added, assess its learning objectives",
+      "enabled": false,
+      "triggers": [{ "eventType": "SENSOR_FILE_NEW", "filter": { "dir": "curriculum" } }],
+      "actions": [
+        { "type": "ai_task", "params": { "goal": "A new curriculum file was added. Assess: (1) what learning objective does it address, (2) is the content level appropriate for the target audience, (3) what is missing or could be improved.", "category": "education" } }
+      ],
+      "cooldownMs": 60000
+    }
+  ],
+
+  "enabledTools": [
+    "read_file", "write_file", "web_search",
+    "summarize_document", "export_report"
+  ],
+
+  "missionTemplates": [
+    {
+      "id": "edu-lesson-plan",
+      "label": "Create a lesson plan",
+      "goal": "Create a structured lesson plan for the given topic and audience. Include: learning objectives, prerequisites, lesson structure (opener, main content, activity, assessment, wrap-up), materials needed, and timing.",
+      "category": "curriculum"
+    },
+    {
+      "id": "edu-explain-concept",
+      "label": "Explain this concept",
+      "goal": "Explain the given concept for the specified audience level. Use: a plain English definition, an analogy, a concrete example, and a common misconception to address.",
+      "category": "content"
+    },
+    {
+      "id": "edu-assessment-design",
+      "label": "Design an assessment",
+      "goal": "Design an assessment for the given learning objectives. Include: question types (mix of recall, application, analysis), rubric for each question, and guidance on grading.",
+      "category": "assessment"
+    },
+    {
+      "id": "edu-curriculum-review",
+      "label": "Curriculum gap analysis",
+      "goal": "Review the curriculum outline. Identify: learning objective gaps, sequencing issues, topics that need more depth, and areas where learners typically struggle.",
+      "category": "curriculum"
+    }
+  ],
+
+  "memoryTags": ["curriculum", "learning_objectives", "assessments", "content"],
+
+  "proactiveInsights": false,
+  "voiceAlerts": false,
+  "responseStyle": "conversational"
+}

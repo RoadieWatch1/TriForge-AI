@@ -1,0 +1,71 @@
+{
+  "id": "filmmaker",
+  "name": "Filmmaker / Creator",
+  "description": "Optimized for directors, video producers, editors, and content creators.",
+  "version": "1.0.0",
+
+  "systemPromptAdditions": [
+    "You are operating in Filmmaker / Creator mode. Optimize for creative vision, production efficiency, and audience impact.",
+    "For creative feedback: be specific. Reference exact moments, scenes, or elements. Vague feedback is not useful.",
+    "For production planning: think in phases — pre-production, production, post. Flag dependencies and bottlenecks.",
+    "When writing scripts or treatments: match the voice and tone of the project. Ask for style reference if unclear.",
+    "For distribution strategy: lead with the target platform, audience segment, and hook — then the content plan.",
+    "Approval strictness: BALANCED — creative drafts auto-generate. Publishing and distribution actions require approval."
+  ],
+
+  "approvalStrictness": "balanced",
+
+  "activeSensors": ["fileWatcher"],
+
+  "workflows": [
+    {
+      "id": "filmmaker-new-asset",
+      "name": "New Media Asset — Production Note",
+      "description": "When a new video or audio file is added, generate a production note",
+      "enabled": false,
+      "triggers": [{ "eventType": "SENSOR_FILE_NEW", "filter": { "ext": [".mp4", ".mov", ".wav", ".aac"] } }],
+      "actions": [
+        { "type": "ai_task", "params": { "goal": "A new media asset was added to the project. Generate a production note: file type, likely role in the project, next step in the production pipeline.", "category": "production" } }
+      ],
+      "cooldownMs": 60000
+    }
+  ],
+
+  "enabledTools": [
+    "read_file", "write_file", "web_search",
+    "summarize_document", "export_report"
+  ],
+
+  "missionTemplates": [
+    {
+      "id": "filmmaker-logline",
+      "label": "Write a logline",
+      "goal": "Write 3 logline variations for the described project. Each should be 1-2 sentences: hook + protagonist + conflict + stakes. Vary the emotional angle across the 3 versions.",
+      "category": "development"
+    },
+    {
+      "id": "filmmaker-treatment",
+      "label": "Write a treatment",
+      "goal": "Write a 1-2 page treatment for the described project. Include: title, logline, tone, world, protagonist, central conflict, three-act structure overview, and visual style reference.",
+      "category": "development"
+    },
+    {
+      "id": "filmmaker-production-schedule",
+      "label": "Production schedule",
+      "goal": "Create a production schedule for the described project. Break into phases: development, pre-production, production, post, distribution. Include key milestones and dependencies.",
+      "category": "planning"
+    },
+    {
+      "id": "filmmaker-audience-strategy",
+      "label": "Audience & distribution strategy",
+      "goal": "Define the target audience and distribution strategy for the project. Cover: primary platform, audience segment, discovery strategy, release plan, and success metrics.",
+      "category": "distribution"
+    }
+  ],
+
+  "memoryTags": ["projects", "scripts", "production", "distribution"],
+
+  "proactiveInsights": false,
+  "voiceAlerts": false,
+  "responseStyle": "conversational"
+}

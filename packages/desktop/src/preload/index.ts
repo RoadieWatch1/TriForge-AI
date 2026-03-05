@@ -621,6 +621,12 @@ const api = {
       ipcRenderer.on('council:insight', handler);
       return () => ipcRenderer.removeListener('council:insight', handler);
     },
+    /** Streamed insight fields from InsightRouter (type, message, confidence, seq). */
+    onInsightStream: (cb: (data: { type: string; message: string; confidence: number; seq: number }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, data: { type: string; message: string; confidence: number; seq: number }) => cb(data);
+      ipcRenderer.on('insight:stream', handler);
+      return () => ipcRenderer.removeListener('insight:stream', handler);
+    },
     /** Council demo sequence events (phase: demo:thinking | demo:challenge | demo:synthesis | demo:consensus | demo:end). */
     onDemo: (cb: (data: { phase: string }) => void): (() => void) => {
       const handler = (_: Electron.IpcRendererEvent, data: { phase: string }) => cb(data);
@@ -1043,6 +1049,26 @@ const api = {
     /** Fire-and-forget command audit — logs source, matched command name, and raw text. */
     audit: (source: string, cmd: string, raw: string): void =>
       ipcRenderer.send('command:audit', source, cmd, raw),
+  },
+
+  // Blueprint System — profession/use-case configuration layer
+  blueprint: {
+    /** List all available blueprints (id, name, description, version). */
+    list: () =>
+      ipcRenderer.invoke('blueprint:list') as Promise<Array<{
+        id: string; name: string; description: string; version: string;
+      }>>,
+    /** Returns the currently active blueprint summary, or null. */
+    getActive: () =>
+      ipcRenderer.invoke('blueprint:getActive') as Promise<{
+        id: string; name: string; description: string; version: string;
+      } | null>,
+    /** Activates a blueprint by ID. Wires sensors, workflows, and mission templates. */
+    setActive: (id: string) =>
+      ipcRenderer.invoke('blueprint:setActive', id) as Promise<{ ok?: boolean; id?: string; name?: string; error?: string }>,
+    /** Deactivates the current blueprint and resets to no active configuration. */
+    deactivate: () =>
+      ipcRenderer.invoke('blueprint:deactivate') as Promise<{ ok?: boolean; error?: string }>,
   },
 };
 

@@ -1,0 +1,84 @@
+{
+  "id": "cybersecurity",
+  "name": "Cybersecurity",
+  "description": "Optimized for security analysts, incident responders, SOC operators, and security engineers.",
+  "version": "1.0.0",
+
+  "systemPromptAdditions": [
+    "You are operating in Cybersecurity mode. Optimize for threat detection, risk assessment, and defensive posture.",
+    "For threat analysis: classify by MITRE ATT&CK technique where applicable. State confidence level.",
+    "For incident response: follow the IR lifecycle — Detect, Contain, Eradicate, Recover, Post-mortem.",
+    "Never recommend offensive techniques without an explicit authorized penetration testing context.",
+    "For vulnerability analysis: state CVSS score, exploitability, and blast radius before recommending remediation priority.",
+    "Approval strictness: STRICT — all system changes, firewall rules, and incident response actions require explicit approval."
+  ],
+
+  "approvalStrictness": "strict",
+
+  "activeSensors": ["processMonitor", "networkMonitor", "eventLogMonitor", "fileWatcher"],
+
+  "workflows": [
+    {
+      "id": "sec-anomaly-detected",
+      "name": "Security Anomaly — Triage",
+      "description": "When a security anomaly is detected, run a triage analysis",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_SECURITY_ANOMALY" }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Security Anomaly", "body": "A security anomaly was detected. Initiating triage..." } },
+        { "type": "ai_task", "params": { "goal": "A security anomaly was detected. Perform triage: (1) classify the anomaly type, (2) assess whether it is benign or malicious, (3) identify affected systems, (4) recommend immediate containment action if warranted. Reference MITRE ATT&CK if applicable.", "category": "security" } }
+      ],
+      "cooldownMs": 60000
+    },
+    {
+      "id": "sec-cve-alert",
+      "name": "Critical CVE — Patch Priority",
+      "description": "When a critical CVE is published affecting monitored systems, generate a priority assessment",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_CVE_CRITICAL" }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Critical CVE Alert", "body": "A critical CVE was published. Generating priority assessment." } },
+        { "type": "ai_task", "params": { "goal": "A critical CVE was published. Assess: CVSS score, exploitability in the wild, affected systems in our environment, compensating controls available, and recommended patch priority (emergency / urgent / scheduled).", "category": "security" } }
+      ],
+      "cooldownMs": 3600000
+    }
+  ],
+
+  "enabledTools": [
+    "it_diagnostics", "it_event_logs", "it_processes", "it_network_doctor",
+    "read_file", "web_search", "run_command", "export_report"
+  ],
+
+  "missionTemplates": [
+    {
+      "id": "sec-threat-model",
+      "label": "Threat modeling",
+      "goal": "Build a threat model for the described system. Cover: assets, threat actors, attack vectors, top 5 threat scenarios (likelihood × impact), and recommended mitigations for each.",
+      "category": "risk"
+    },
+    {
+      "id": "sec-incident-response",
+      "label": "Incident response plan",
+      "goal": "Create an incident response plan for the described scenario. Cover: detection criteria, initial triage steps, containment actions, eradication procedure, recovery steps, and post-mortem checklist.",
+      "category": "incident_response"
+    },
+    {
+      "id": "sec-vulnerability-assessment",
+      "label": "Vulnerability assessment",
+      "goal": "Assess the described vulnerability or finding. Provide: CVSS score analysis, exploitability assessment, affected scope, recommended remediation, and interim mitigations if immediate patching is not possible.",
+      "category": "vulnerabilities"
+    },
+    {
+      "id": "sec-security-review",
+      "label": "Security architecture review",
+      "goal": "Review the described architecture for security gaps. Assess: authentication, authorization, network segmentation, data protection, logging and monitoring, and compliance alignment. Prioritize findings by risk.",
+      "category": "architecture"
+    }
+  ],
+
+  "memoryTags": ["threats", "incidents", "cves", "vulnerabilities", "architecture"],
+
+  "proactiveInsights": true,
+  "voiceAlerts": true,
+  "responseStyle": "technical"
+}

@@ -1,0 +1,77 @@
+{
+  "id": "trader",
+  "name": "Trader / Investor",
+  "description": "Optimized for day traders, swing traders, and portfolio managers who need fast market intelligence.",
+  "version": "1.0.0",
+
+  "systemPromptAdditions": [
+    "You are operating in Trader mode. Optimize for speed, signal quality, and risk-adjusted decision making.",
+    "For market analysis: lead with the actionable signal, then the supporting data. No filler.",
+    "Always quantify risk: state entry, target, stop-loss, and position size rationale for any trade idea.",
+    "Distinguish clearly between: confirmed data, analysis, and speculation. Label each.",
+    "For news events: state the potential market impact, affected instruments, and recommended action in 3 bullets.",
+    "Approval strictness: BALANCED — analysis and alerts auto-generate. Any order placement requires explicit approval."
+  ],
+
+  "approvalStrictness": "balanced",
+
+  "activeSensors": ["webMonitor", "inboxWatcher"],
+
+  "workflows": [
+    {
+      "id": "trader-market-alert",
+      "name": "Market Volatility Alert — Brief",
+      "description": "When significant market movement is detected, generate a trading brief",
+      "enabled": true,
+      "triggers": [{ "eventType": "SENSOR_MARKET_ALERT" }],
+      "actions": [
+        { "type": "notify", "params": { "title": "Market Alert", "body": "Significant market movement detected. Generating brief..." } },
+        { "type": "ai_task", "params": { "goal": "Significant market movement detected. Analyze: (1) what is moving and why, (2) whether this is signal or noise, (3) impact on open positions, (4) recommended action (hold / adjust / exit). Be direct and time-aware.", "category": "trading" } }
+      ],
+      "cooldownMs": 300000
+    },
+    {
+      "id": "trader-earnings-alert",
+      "name": "Earnings Event — Pre-brief",
+      "description": "Before a tracked earnings release, generate an earnings preview",
+      "enabled": true,
+      "triggers": [{ "eventType": "SCHEDULE_EARNINGS_APPROACHING" }],
+      "actions": [
+        { "type": "ai_task", "params": { "goal": "An earnings release is approaching for a tracked instrument. Produce: consensus estimates vs actuals history, key metrics to watch, potential upside/downside catalysts, and a suggested position management plan.", "category": "trading" } }
+      ],
+      "cooldownMs": 3600000
+    }
+  ],
+
+  "enabledTools": [
+    "web_search", "read_file", "financial_summary",
+    "market_data", "news_fetch", "export_report"
+  ],
+
+  "missionTemplates": [
+    {
+      "id": "trader-trade-thesis",
+      "label": "Build a trade thesis",
+      "goal": "Build a complete trade thesis for the given instrument. Include: investment rationale, entry criteria, price target, stop-loss, position sizing logic, key risks, and catalysts to watch.",
+      "category": "analysis"
+    },
+    {
+      "id": "trader-portfolio-review",
+      "label": "Portfolio health check",
+      "goal": "Review the portfolio. Assess: concentration risk, correlation between positions, unrealized P&L, positions approaching key levels, and suggested rebalancing actions.",
+      "category": "risk"
+    },
+    {
+      "id": "trader-macro-scan",
+      "label": "Macro environment scan",
+      "goal": "Scan the macro environment. Summarize: current monetary policy stance, key economic data releases this week, geopolitical risks, and their directional implications for major asset classes.",
+      "category": "macro"
+    }
+  ],
+
+  "memoryTags": ["trades", "positions", "thesis", "macro", "alerts"],
+
+  "proactiveInsights": true,
+  "voiceAlerts": true,
+  "responseStyle": "technical"
+}
