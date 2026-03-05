@@ -301,7 +301,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   const ttsAppending    = useRef(false);
   // voiceService (singleton) owns the wake bridge — started from index.tsx
   // Interrupt voice detection — active while TTS is speaking
-  const interruptRecRef = useRef<SpeechRecognition | null>(null);
+  const interruptRecRef = useRef<{ stop(): void } | null>(null);
   // Panel refs for outside-click dismiss
   const quickPanelRef    = useRef<HTMLDivElement>(null);
   const workflowPanelRef = useRef<HTMLDivElement>(null);
@@ -481,7 +481,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
             if (ttsChunkQueue.current.length > 0) {
               ttsAppending.current = true;
               const chunk = ttsChunkQueue.current.shift()!;
-              try { sourceBufferRef.current.appendBuffer(chunk); } catch { /* ignore abort */ }
+              try { sourceBufferRef.current.appendBuffer(chunk as Uint8Array<ArrayBuffer>); } catch { /* ignore abort */ }
             } else {
               ttsAppending.current = false;
             }
@@ -588,9 +588,10 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     rec.lang = 'en-US';
     interruptRecRef.current = rec;
     const INTERRUPT_WORDS = ['stop', 'cancel', 'council stop', 'stop council', 'quiet', 'silence', 'enough'];
-    rec.onresult = (e: SpeechRecognitionEvent) => {
-      const lastIdx = e.results.length - 1;
-      const t = e.results[lastIdx][0].transcript.toLowerCase().trim();
+    rec.onresult = (e: Event) => {
+      const sr = e as Event & { results: { length: number; [i: number]: [{ transcript: string }] } };
+      const lastIdx = sr.results.length - 1;
+      const t = sr.results[lastIdx][0].transcript.toLowerCase().trim();
       if (INTERRUPT_WORDS.some(w => t === w || t.startsWith(w + ' ') || t.endsWith(' ' + w))) {
         interruptSpeech();
       }
