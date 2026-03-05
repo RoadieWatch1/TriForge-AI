@@ -264,54 +264,90 @@
   <div class="version">v1.8.0</div>
 
   <script>
-    // ── TriForge vocal greeting via Web Speech API ──────────────────────────────
-    // Short text = finishes in ~1s. Hard 3s fallback closes splash if speech fails.
+    // ── TriForge forge sound via Web Audio API ──────────────────────────────────
+    // Narrative: three AI tones power up → converge → forge strike → resonant hum → close
+    // No external files. Hard 3.4s fallback closes splash if audio fails.
     (function () {
-      // Hard fallback — always close splash within 3 seconds no matter what.
-      var hardClose = setTimeout(function () { window.close(); }, 3000);
+      var hardClose = setTimeout(function () { window.close(); }, 3400);
 
-      function close() {
+      function closeSplash() {
         clearTimeout(hardClose);
         window.close();
       }
 
-      if (!window.speechSynthesis) { close(); return; }
+      try {
+        var AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) { closeSplash(); return; }
+        var ctx = new AudioCtx();
+        var t = ctx.currentTime + 0.08;
 
-      var spoken = false;
-
-      function greet() {
-        if (spoken) return;
-        spoken = true;
-
-        var voices = speechSynthesis.getVoices();
-        var preferred = (
-          voices.find(function(v){ return /Microsoft (Aria|Jenny|Guy|Davis|Tony) Online.*Natural/i.test(v.name); }) ||
-          voices.find(function(v){ return /(Ava|Allison|Samantha).*Enhanced/i.test(v.name); })                      ||
-          voices.find(function(v){ return v.name === 'Samantha'; })                                                  ||
-          voices.find(function(v){ return /^Microsoft Aria$/i.test(v.name); })                                       ||
-          voices.find(function(v){ return v.lang === 'en-US' && v.localService; })
-        );
-
-        var u = new SpeechSynthesisUtterance('TriForge AI');
-        u.rate   = 0.9;
-        u.pitch  = 1.05;
-        u.volume = 1.0;
-        if (preferred) u.voice = preferred;
-
-        u.onend  = function () { close(); };
-        u.onerror = function () { close(); };
-
-        speechSynthesis.speak(u);
-      }
-
-      setTimeout(function () {
-        var voices = speechSynthesis.getVoices();
-        if (voices.length > 0) {
-          greet();
-        } else {
-          speechSynthesis.addEventListener('voiceschanged', greet, { once: true });
+        // ── Helper: oscillator with linear attack/release envelope ──────────────
+        function osc(type, freqStart, freqEnd, startT, dur, peak, attack) {
+          var o = ctx.createOscillator();
+          var g = ctx.createGain();
+          o.type = type;
+          o.frequency.setValueAtTime(freqStart, startT);
+          if (freqEnd !== freqStart) {
+            o.frequency.linearRampToValueAtTime(freqEnd, startT + dur);
+          }
+          g.gain.setValueAtTime(0, startT);
+          g.gain.linearRampToValueAtTime(peak, startT + (attack || 0.25));
+          g.gain.linearRampToValueAtTime(0, startT + dur);
+          o.connect(g);
+          g.connect(ctx.destination);
+          o.start(startT);
+          o.stop(startT + dur + 0.05);
         }
-      }, 300);
+
+        // ── Helper: band-filtered white noise burst (electrical crackle) ────────
+        function crackle(startT, dur, vol, filterHz) {
+          var n    = Math.ceil(ctx.sampleRate * dur);
+          var buf  = ctx.createBuffer(1, n, ctx.sampleRate);
+          var data = buf.getChannelData(0);
+          for (var i = 0; i < n; i++) data[i] = Math.random() * 2 - 1;
+          var src  = ctx.createBufferSource();
+          var filt = ctx.createBiquadFilter();
+          var gain = ctx.createGain();
+          filt.type = 'bandpass';
+          filt.frequency.value = filterHz || 1400;
+          filt.Q.value = 0.6;
+          gain.gain.setValueAtTime(vol, startT);
+          gain.gain.exponentialRampToValueAtTime(0.001, startT + dur);
+          src.buffer = buf;
+          src.connect(filt);
+          filt.connect(gain);
+          gain.connect(ctx.destination);
+          src.start(startT);
+          src.stop(startT + dur + 0.05);
+        }
+
+        // ── Phase 1 (0.0 – 0.9s): Three AI nodes power up, staggered ────────────
+        // Claude  — warm orange  — 440 Hz, converging to 520 Hz
+        osc('sine', 440, 520, t,        0.90, 0.18, 0.30);
+        // GPT     — cool teal   — 528 Hz, converging to 520 Hz
+        osc('sine', 528, 520, t + 0.13, 0.82, 0.18, 0.24);
+        // Grok    — indigo      — 396 Hz, converging to 520 Hz
+        osc('sine', 396, 520, t + 0.27, 0.75, 0.18, 0.20);
+
+        // ── Phase 2 (0.7 – 1.05s): Sub-bass surge — forge charging ───────────────
+        osc('sine', 55, 110, t + 0.70, 0.40, 0.28, 0.18);
+
+        // ── Phase 3 (1.05s): Forge strike — impact bass + electrical crackle ─────
+        osc('sawtooth', 110, 55, t + 1.05, 0.55, 0.22, 0.02);
+        crackle(t + 1.05, 0.38, 0.40, 1600);
+        crackle(t + 1.10, 0.22, 0.22, 800);
+
+        // ── Phase 4 (1.12 – 2.6s): Resonant forge hum — harmonic triad fades ────
+        osc('sine', 240, 240, t + 1.12, 1.40, 0.24, 0.10);
+        osc('sine', 480, 480, t + 1.15, 1.20, 0.13, 0.10);
+        osc('sine', 720, 720, t + 1.18, 0.95, 0.07, 0.12);
+
+        // Close after the hum fades (~2.7s total from start)
+        setTimeout(closeSplash, 2750);
+
+      } catch (e) {
+        closeSplash();
+      }
     })();
   </script>
 </body>
