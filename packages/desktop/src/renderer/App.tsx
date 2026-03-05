@@ -18,6 +18,7 @@ import { InboxMode } from './modes/InboxMode';
 import { AutomationMode } from './modes/AutomationMode';
 import { HustleMode } from './modes/HustleMode';
 import { PhoneLink } from './components/PhoneLink';
+import { CouncilWakeScreen } from './components/CouncilWakeScreen';
 
 // ── Error Boundary ───────────────────────────────────────────────────────────
 export class ErrorBoundary extends React.Component<
@@ -81,6 +82,10 @@ export function App() {
     const next = await window.triforge.appWindow.toggleFullscreen();
     setIsFullscreen(next);
   }, []);
+
+  // Council wake screen state
+  const [wakeActive, setWakeActive]     = useState(false);
+  const [wakeGrantedName, setWakeGrantedName] = useState<string | null>(null);
 
   // Session lock state
   const [hasPin, setHasPin] = useState(false);
@@ -166,6 +171,13 @@ export function App() {
     });
   }, []);
 
+  // Listen for wake word — show council verification screen immediately
+  useEffect(() => {
+    const handler = () => setWakeActive(true);
+    window.addEventListener('triforge:council-wake', handler);
+    return () => window.removeEventListener('triforge:council-wake', handler);
+  }, []);
+
   const refreshKeys = async () => {
     const keys = await window.triforge.keys.status();
     setKeyStatus(keys);
@@ -224,6 +236,20 @@ export function App() {
 
   // Show lock screen if PIN is set and app is locked
   if (locked && hasPin) return <LockScreen username={lockUsername} onUnlock={handleUnlock} />;
+
+  // Show council wake + identity verification overlay
+  if (wakeActive) return (
+    <CouncilWakeScreen
+      onGranted={(name) => {
+        setWakeGrantedName(name);
+        setWakeActive(false);
+        setScreen('chat');
+        // Signal Chat.tsx to activate hands-free voice session
+        window.dispatchEvent(new CustomEvent('triforge:council-authenticated', { detail: { name } }));
+      }}
+      onDismiss={() => setWakeActive(false)}
+    />
+  );
 
   return (
     <div style={styles.shell}>

@@ -408,6 +408,9 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   // microphone permission. Without this call, SpeechRecognition fails silently with
   // 'not-allowed' because Electron never triggers the permission dialog on its own.
 
+  // ── Council authenticated — fired by App.tsx after identity verification passes
+  // triforge:council-wake is intercepted by App.tsx → CouncilWakeScreen → auth
+  // Only start hands-free mode here, AFTER the user is verified.
   useEffect(() => {
     const handler = () => {
       setHandsFreeMode(true);
@@ -415,8 +418,8 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       setTimeout(() => setCouncilListening(false), 500);
       window.triforge.voice.notifyWake();
     };
-    window.addEventListener('triforge:council-wake', handler);
-    return () => window.removeEventListener('triforge:council-wake', handler);
+    window.addEventListener('triforge:council-authenticated', handler);
+    return () => window.removeEventListener('triforge:council-authenticated', handler);
   }, []);
 
   // ── Voice-triggered mission commands ─────────────────────────────────────────
@@ -1685,7 +1688,17 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       <HandsFreeVoice
         active={handsFreeMode}
         isSpeaking={!!speaking}
-        onTranscript={(t) => { setHandsFreeMode(false); setTimeout(() => setHandsFreeMode(true), 100); sendMessage(t); }}
+        onTranscript={(t) => {
+          // "Open up desktop" exits voice session and returns to normal chat
+          const lower = t.toLowerCase();
+          if (lower.includes('open up desktop') || lower.includes('open desktop') || lower.includes('exit council')) {
+            setHandsFreeMode(false);
+            return;
+          }
+          setHandsFreeMode(false);
+          setTimeout(() => setHandsFreeMode(true), 100);
+          sendMessage(t);
+        }}
         onStop={() => setHandsFreeMode(false)}
       />
     </div>
