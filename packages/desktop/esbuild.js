@@ -9,15 +9,17 @@ const production = process.argv.includes('--production');
 const dev = process.argv.includes('--dev');
 const pkgDir = __dirname;
 
+/** @param {...string} parts */
 function out(...parts) {
   return path.join(pkgDir, 'out', ...parts);
 }
 
+/** @param {...string} parts */
 function src(...parts) {
   return path.join(pkgDir, 'src', ...parts);
 }
 
-// Shared base config
+/** @type {import('esbuild').BuildOptions} */
 const base = {
   bundle: true,
   minify: production,
@@ -26,7 +28,7 @@ const base = {
   logLevel: 'info',
 };
 
-// Main process (Node.js, CJS)
+/** @type {import('esbuild').BuildOptions} */
 const mainConfig = {
   ...base,
   entryPoints: [src('main/index.ts')],
@@ -37,7 +39,7 @@ const mainConfig = {
   absWorkingDir: pkgDir,
 };
 
-// Preload script (Node.js, CJS, sandboxed)
+/** @type {import('esbuild').BuildOptions} */
 const preloadConfig = {
   ...base,
   entryPoints: [src('preload/index.ts')],
@@ -48,7 +50,7 @@ const preloadConfig = {
   absWorkingDir: pkgDir,
 };
 
-// Renderer (browser, IIFE)
+/** @type {import('esbuild').BuildOptions} */
 const rendererConfig = {
   ...base,
   entryPoints: [src('renderer/index.tsx')],
