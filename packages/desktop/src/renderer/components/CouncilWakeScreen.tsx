@@ -1,8 +1,8 @@
 // ── CouncilWakeScreen.tsx — Full-screen wake + identity verification overlay ──
 //
 // Shown when the "council" wake word is detected.
-// Displays an animated triangle logo and runs voice identity verification
-// via VoiceAuthService before granting access to the council.
+// Drives the GlobalVoiceController state machine through each auth step:
+//   wakeDetected → verifyingName → verifyingPassword → authGranted | authDenied
 //
 // Props:
 //   onGranted(name)  — called after successful auth; parent navigates to chat
@@ -10,10 +10,11 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { voiceAuth } from '../security/VoiceAuthService';
+import { globalVoiceController } from '../voice/GlobalVoiceController';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type Phase = 'wake' | 'listening' | 'granted' | 'denied';
+type Phase = 'wake' | 'verifyingName' | 'verifyingPassword' | 'granted' | 'denied' | 'setup';
 
 interface Props {
   onGranted: (name: string) => void;
@@ -23,6 +24,8 @@ interface Props {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const delay = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+const MAX_AUTH_RETRIES = 2;
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -35,32 +38,78 @@ export function CouncilWakeScreen({ onGranted, onDismiss }: Props) {
     // Brief animation hold before starting auth
     await delay(900);
 
-    setPhase('listening');
-    setMessage('IDENTITY VERIFICATION');
-    setSubtext('Listening for your name…');
+    // No credentials — show setup prompt and dismiss
+    if (!voiceAuth.isSetup()) {
+      globalVoiceController.transition('verifyingName');
+      setPhase('setup');
+      setMessage('SETUP REQUIRED');
+      setSubtext('Set voice credentials in Settings to enable voice auth.');
+      await voiceAuth.speak('Voice credentials not configured. Please set up in Settings.');
+      await delay(2200);
+      window.dispatchEvent(new CustomEvent('triforge:council-auth-denied'));
+      onDismiss();
+      return;
+    }
 
-    const result = await voiceAuth.requestIdentity();
-
-    if (result.granted) {
-      const displayName = result.name && result.name !== 'Commander'
-        ? result.name.charAt(0).toUpperCase() + result.name.slice(1)
-        : 'Commander';
-
-      setPhase('granted');
-      setMessage('ACCESS GRANTED');
-      setSubtext(`Welcome back, ${displayName}. Council is ready.`);
-
-      await voiceAuth.speak(`Welcome back, ${displayName}. Council is ready.`);
-      onGranted(displayName);
-    } else {
+    // SpeechRecognition unavailable
+    const w  = window as Window & { SpeechRecognition?: unknown; webkitSpeechRecognition?: unknown };
+    const SR = w.SpeechRecognition ?? w.webkitSpeechRecognition;
+    if (!SR) {
       setPhase('denied');
       setMessage('ACCESS DENIED');
-      setSubtext('Identity verification failed.');
-
-      await voiceAuth.speak('Access denied.');
+      setSubtext('Voice recognition unavailable on this device.');
+      window.dispatchEvent(new CustomEvent('triforge:council-auth-denied'));
+      await voiceAuth.speak('Access denied. Voice recognition unavailable.');
       await delay(1400);
       onDismiss();
+      return;
     }
+
+    // Multi-step verification with retry
+    for (let attempt = 0; attempt < MAX_AUTH_RETRIES; attempt++) {
+      const retry = attempt > 0;
+
+      // Step 1: name
+      globalVoiceController.transition('verifyingName', { force: retry });
+      setPhase('verifyingName');
+      setMessage('WHO GOES THERE?');
+      setSubtext(retry ? 'Verification failed. Say your name.' : 'Say your name…');
+      await voiceAuth.speak(retry
+        ? 'Verification failed. Please state your name again.'
+        : 'Identity verification required. Please state your name.'
+      );
+      const name = await voiceAuth.listen();
+      if (!name) break; // silence → deny
+
+      // Step 2: password
+      globalVoiceController.transition('verifyingPassword');
+      setPhase('verifyingPassword');
+      setMessage('PASSPHRASE');
+      setSubtext('Say your password…');
+      await voiceAuth.speak('Please state your password.');
+      const password = await voiceAuth.listen();
+
+      if (voiceAuth.verify(name, password)) {
+        const displayName = name.charAt(0).toUpperCase() + name.slice(1);
+        globalVoiceController.transition('authGranted');
+        setPhase('granted');
+        setMessage('ACCESS GRANTED');
+        setSubtext(`Welcome back, ${displayName}. Council is ready.`);
+        await voiceAuth.speak(`Welcome back, ${displayName}. Council is ready.`);
+        onGranted(displayName);
+        return;
+      }
+    }
+
+    // All attempts exhausted or no input
+    globalVoiceController.transition('authDenied', { force: true });
+    setPhase('denied');
+    setMessage('ACCESS DENIED');
+    setSubtext('Identity verification failed.');
+    window.dispatchEvent(new CustomEvent('triforge:council-auth-denied'));
+    await voiceAuth.speak('Access denied.');
+    await delay(1400);
+    onDismiss();
   }, [onGranted, onDismiss]);
 
   useEffect(() => {
@@ -77,16 +126,18 @@ export function CouncilWakeScreen({ onGranted, onDismiss }: Props) {
 
   // ── Triangle SVG ────────────────────────────────────────────────────────────
 
+  const isListening = phase === 'verifyingName' || phase === 'verifyingPassword';
+
   const glowColor =
-    phase === 'granted' ? '#10b981' :
-    phase === 'denied'  ? '#ef4444' :
-    phase === 'listening' ? '#818cf8' :
+    phase === 'granted'  ? '#10b981' :
+    phase === 'denied'   ? '#ef4444' :
+    isListening          ? '#818cf8' :
     '#6366f1';
 
   const animClass =
-    phase === 'listening' ? 'cws-tri cws-tri--listening' :
-    phase === 'granted'   ? 'cws-tri cws-tri--granted'   :
-    phase === 'denied'    ? 'cws-tri cws-tri--denied'     :
+    isListening        ? 'cws-tri cws-tri--listening' :
+    phase === 'granted' ? 'cws-tri cws-tri--granted'   :
+    phase === 'denied'  ? 'cws-tri cws-tri--denied'     :
     'cws-tri';
 
   return (
@@ -124,7 +175,7 @@ export function CouncilWakeScreen({ onGranted, onDismiss }: Props) {
           {/* Center dot */}
           <circle cx="100" cy="110" r="5" fill={glowColor} opacity="0.9" />
           {/* Beam lines (visible while listening/granted) */}
-          {(phase === 'listening' || phase === 'granted') && (
+          {(isListening || phase === 'granted') && (
             <>
               <line x1="100" y1="50"  x2="100" y2="20"  stroke={glowColor} strokeWidth="1" opacity="0.4" strokeLinecap="round" className="cws-beam" />
               <line x1="158" y1="150" x2="178" y2="168" stroke={glowColor} strokeWidth="1" opacity="0.4" strokeLinecap="round" className="cws-beam" />

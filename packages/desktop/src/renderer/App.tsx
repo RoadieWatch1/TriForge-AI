@@ -20,6 +20,8 @@ import { HustleMode } from './modes/HustleMode';
 import { PhoneLink } from './components/PhoneLink';
 import { CouncilWakeScreen } from './components/CouncilWakeScreen';
 import { TrianglePresence } from './components/TrianglePresence';
+import { voiceService } from './voice/VoiceService';
+import { globalVoiceController } from './voice/GlobalVoiceController';
 
 // ── Error Boundary ───────────────────────────────────────────────────────────
 export class ErrorBoundary extends React.Component<
@@ -85,8 +87,7 @@ export function App() {
   }, []);
 
   // Council wake screen state
-  const [wakeActive, setWakeActive]     = useState(false);
-  const [wakeGrantedName, setWakeGrantedName] = useState<string | null>(null);
+  const [wakeActive, setWakeActive] = useState(false);
 
   // Session lock state
   const [hasPin, setHasPin] = useState(false);
@@ -172,11 +173,32 @@ export function App() {
     });
   }, []);
 
+  // Wake engine lifecycle — owns the mic from App level so it fires on every screen
+  useEffect(() => {
+    voiceService.start();
+    return () => voiceService.stop();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Listen for wake word — show council verification screen immediately
   useEffect(() => {
-    const handler = () => setWakeActive(true);
+    const handler = () => {
+      globalVoiceController.transition('wakeDetected');
+      setWakeActive(true);
+    };
     window.addEventListener('triforge:council-wake', handler);
     return () => window.removeEventListener('triforge:council-wake', handler);
+  }, []);
+
+  // Advance state machine on auth outcome
+  useEffect(() => {
+    const onGranted = () => globalVoiceController.transition('authGranted');
+    const onDenied  = () => globalVoiceController.reset();
+    window.addEventListener('triforge:council-authenticated', onGranted);
+    window.addEventListener('triforge:council-auth-denied',   onDenied);
+    return () => {
+      window.removeEventListener('triforge:council-authenticated', onGranted);
+      window.removeEventListener('triforge:council-auth-denied',   onDenied);
+    };
   }, []);
 
   const refreshKeys = async () => {
@@ -239,7 +261,6 @@ export function App() {
   if (wakeActive) return (
     <CouncilWakeScreen
       onGranted={(name) => {
-        setWakeGrantedName(name);
         setWakeActive(false);
         setScreen('chat');
         // Signal Chat.tsx to activate hands-free voice session

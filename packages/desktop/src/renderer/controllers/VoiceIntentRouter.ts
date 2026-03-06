@@ -1,7 +1,7 @@
 // ── VoiceIntentRouter.ts — Maps spoken transcripts to QueuedMission intents ──
 //
 // Single place where voice phrases are translated into autonomy missions.
-// Called from Chat.tsx HandsFreeVoice.onTranscript AFTER built-in commands
+// Called from Chat.tsx UnifiedVoiceSession.onTranscript AFTER built-in commands
 // (e.g. "open up desktop") have been handled.
 //
 // Returns true if the phrase was routed (caller should skip normal chat send).

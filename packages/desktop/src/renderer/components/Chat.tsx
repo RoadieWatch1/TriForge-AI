@@ -1,13 +1,14 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { VoiceButton } from './VoiceButton';
 import { VoiceConversation } from './VoiceConversation';
-import { HandsFreeVoice } from './HandsFreeVoice';
 import { UpgradeGate } from './UpgradeGate';
 import { ExecutionPlanView, type ExecutionPlan } from './ExecutionPlanView';
 import { ForgeChamber } from './ForgeChamber';
 import { CouncilChamber } from './forge/CouncilChamber';
 import { loadLastMission, type LastMissionSummary } from '../forge/ForgeContextStore';
 import { voiceService, type WakeStatus } from '../voice/VoiceService';
+import { councilSpeech } from '../voice/CouncilSpeechService';
+import { unifiedVoiceSession } from '../voice/UnifiedVoiceSession';
 import { onCouncilCommand, dispatchCommand } from '../command/CommandDispatcher';
 import { councilPresence } from '../state/CouncilPresence';
 import { playConsensusTone, playListeningTone } from '../audio/councilSounds';
@@ -290,17 +291,11 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   const [selectedProvider, setSelectedProvider] = useState<string>('merge');
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Streaming batch buffer — accumulates chunks between 50ms render ticks
   const streamBuf   = useRef('');
   const streamTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-  // MediaSource for streaming TTS playback
-  const mediaSourceRef  = useRef<MediaSource | null>(null);
-  const sourceBufferRef = useRef<SourceBuffer | null>(null);
-  const ttsChunkQueue   = useRef<Uint8Array[]>([]);
-  const ttsAppending    = useRef(false);
-  // voiceService (singleton) owns the wake bridge — started from index.tsx
+  // voiceService (singleton) owns the wake bridge — started from App.tsx
   // Interrupt voice detection — active while TTS is speaking
   const interruptRecRef = useRef<{ stop(): void } | null>(null);
   // Panel refs for outside-click dismiss
@@ -407,13 +402,6 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     if (STRATEGIC_KEYWORDS.some(kw => combined.includes(kw))) setEscalationSuggested(true);
   }, [messages]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Wake engine lifecycle — start on mount, stop on unmount ──────────────────
-  // Deferred from index.tsx so the UI is visible before the mic permission dialog.
-  useEffect(() => {
-    voiceService.start();
-    return () => voiceService.stop();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
   // Track wake engine status (loading → ready | error)
   useEffect(() => {
     const handler = (e: Event) => setWakeStatus((e as CustomEvent<WakeStatus>).detail);
@@ -421,20 +409,47 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     return () => window.removeEventListener('triforge:wake-status', handler);
   }, []);
 
-  // triforge:council-wake is intercepted by App.tsx → CouncilWakeScreen → auth
-  // Only start hands-free mode here, AFTER the user is verified.
+  // Sync speaking state from CouncilSpeechService events
   useEffect(() => {
-    const handler = () => {
+    const handler = (e: Event) => setSpeaking((e as CustomEvent<string | null>).detail);
+    window.addEventListener('triforge:council-speaking', handler);
+    return () => window.removeEventListener('triforge:council-speaking', handler);
+  }, []);
+
+  // Bridge speaking state to UnifiedVoiceSession so it can pause/resume the mic loop
+  useEffect(() => {
+    if (speaking) {
+      unifiedVoiceSession.notifySpeakingStart();
+    } else {
+      unifiedVoiceSession.notifySpeakingEnd();
+    }
+  }, [speaking]);
+
+  // triforge:council-wake is intercepted by App.tsx → CouncilWakeScreen → auth
+  // Start UnifiedVoiceSession AFTER the user is verified.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const name = (e as CustomEvent<{ name: string }>).detail?.name ?? 'Commander';
       setHandsFreeMode(true);
       setCouncilListening(true);
       setTimeout(() => setCouncilListening(false), 500);
       window.triforge.voice.notifyWake();
-      councilPresence.setState('listening');
       playListeningTone();
+      // Start session first — it will wait in speaking-paused state while welcome plays
+      unifiedVoiceSession.start({
+        userName: name,
+        onTranscript: (t) => {
+          if (voiceIntentRouter.route(t)) return;
+          sendMessageRef.current(t);
+        },
+        onEnd: () => setHandsFreeMode(false),
+      });
+      // Welcome message — councilSpeech fires triforge:council-speaking which pauses the mic loop
+      councilSpeech.speak(`session-welcome-${Date.now()}`, `Council session started. Listening, ${name}.`, keyStatusRef.current, tierRef.current);
     };
     window.addEventListener('triforge:council-authenticated', handler);
     return () => window.removeEventListener('triforge:council-authenticated', handler);
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Voice-triggered mission commands ─────────────────────────────────────────
   useEffect(() => {
@@ -451,7 +466,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   // Wake engine control while hands-free or TTS is active
   useEffect(() => {
     if (handsFreeMode) {
-      // HandsFreeVoice owns the mic — fully disable wake engine so Vosk
+      // UnifiedVoiceSession owns the mic — fully disable wake engine so Vosk
       // cannot re-trigger the wake flow while the user is already in session.
       voiceService.disable();
       if (!speaking) councilPresence.setState('listening');
@@ -466,128 +481,18 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
 
   // ── TTS ───────────────────────────────────────────────────────────────────────
 
-  const speakMessage = useCallback(async (msgId: string, text: string) => {
-    // Stop anything currently playing
-    if (audioRef.current) { audioRef.current.pause(); audioRef.current.src = ''; }
-    window.speechSynthesis?.cancel();
-    // Tear down any prior MediaSource
-    if (mediaSourceRef.current && mediaSourceRef.current.readyState === 'open') {
-      try { mediaSourceRef.current.endOfStream(); } catch { /* ignore */ }
-    }
-    mediaSourceRef.current = null;
-    sourceBufferRef.current = null;
-    ttsChunkQueue.current = [];
-    ttsAppending.current = false;
-
-    setSpeaking(msgId);
-    councilPresence.setState('speaking');
-    const truncated = text.slice(0, 4096);
-
-    // Priority 1: OpenAI TTS streaming — Pro/Business users with an OpenAI key
-    if (keyStatus.openai && (tier === 'pro' || tier === 'business')) {
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const ms  = new MediaSource();
-          mediaSourceRef.current = ms;
-
-          const appendNext = () => {
-            if (!sourceBufferRef.current || sourceBufferRef.current.updating) return;
-            if (ttsChunkQueue.current.length > 0) {
-              ttsAppending.current = true;
-              const chunk = ttsChunkQueue.current.shift()!;
-              try { sourceBufferRef.current.appendBuffer(chunk as Uint8Array<ArrayBuffer>); } catch { /* ignore abort */ }
-            } else {
-              ttsAppending.current = false;
-            }
-          };
-
-          ms.onsourceopen = () => {
-            const sb = ms.addSourceBuffer('audio/mpeg');
-            sourceBufferRef.current = sb;
-            sb.onupdateend = appendNext;
-          };
-
-          // Set up IPC streaming listeners
-          const unsubChunk = window.triforge.voice.onSpeakChunk((b64: string) => {
-            const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-            ttsChunkQueue.current.push(bytes);
-            appendNext();
-          });
-
-          const unsubDone = window.triforge.voice.onSpeakDone(() => {
-            unsubChunk();
-            unsubDone();
-            // Wait for all buffered chunks to be appended before ending stream
-            const finish = () => {
-              if (ttsChunkQueue.current.length > 0 || (sourceBufferRef.current?.updating)) {
-                setTimeout(finish, 50);
-                return;
-              }
-              if (ms.readyState === 'open') {
-                try { ms.endOfStream(); } catch { /* ignore */ }
-              }
-            };
-            finish();
-          });
-
-          const blobUrl = URL.createObjectURL(ms);
-          if (audioRef.current) {
-            audioRef.current.src = blobUrl;
-            audioRef.current.play().catch(reject);
-            audioRef.current.onended = () => { URL.revokeObjectURL(blobUrl); setSpeaking(null); councilPresence.setState('idle'); resolve(); };
-            audioRef.current.onerror = () => { URL.revokeObjectURL(blobUrl); setSpeaking(null); councilPresence.setState('idle'); resolve(); };
-          }
-
-          // Kick off the IPC streaming request
-          window.triforge.voice.speak(truncated).catch(reject);
-        });
-        return;
-      } catch { /* fall through to Web Speech */ }
-    }
-
-    // Fallback: Web Speech API — built into Electron/Chromium, works for all users
-    if ('speechSynthesis' in window) {
-      const utt = new SpeechSynthesisUtterance(truncated);
-      // Prefer neural / high-quality voices — same priority order as splash.html
-      const voices = window.speechSynthesis.getVoices();
-      const preferred =
-        voices.find(v => /Microsoft (Aria|Jenny|Guy|Davis|Tony) Online.*Natural/i.test(v.name)) ||
-        voices.find(v => /(Ava|Allison|Samantha).*Enhanced/i.test(v.name))                      ||
-        voices.find(v => v.name === 'Samantha')                                                  ||
-        voices.find(v => /^Microsoft Aria$/i.test(v.name))                                       ||
-        voices.find(v => /Google US English/i.test(v.name))                                      ||
-        voices.find(v => v.lang === 'en-US' && v.localService);
-      if (preferred) utt.voice = preferred;
-      utt.rate  = 0.92;
-      utt.pitch = 1.0;
-      utt.onend   = () => { setSpeaking(null); councilPresence.setState('idle'); };
-      utt.onerror = () => { setSpeaking(null); councilPresence.setState('idle'); };
-      window.speechSynthesis.speak(utt);
-      return;
-    }
-
-    setSpeaking(null); councilPresence.setState('idle');
+  const speakMessage = useCallback((msgId: string, text: string) => {
+    councilSpeech.speak(msgId, text, keyStatus, tier);
   }, [keyStatus, tier]);
 
   // ── Interrupt current TTS speech immediately ───────────────────────────────────
 
   const interruptSpeech = useCallback(() => {
-    // Stop audio playback
-    if (audioRef.current) { audioRef.current.pause(); audioRef.current.src = ''; }
-    window.speechSynthesis?.cancel();
-    if (mediaSourceRef.current?.readyState === 'open') {
-      try { mediaSourceRef.current.endOfStream(); } catch { /* ignore */ }
-    }
-    mediaSourceRef.current = null;
-    sourceBufferRef.current = null;
-    ttsChunkQueue.current = [];
-    // Signal main process to abort its streaming fetch
-    window.triforge.voice.interrupt();
-    setSpeaking(null); councilPresence.setState('idle');
+    councilSpeech.interrupt();
   }, []);
 
   // Voice interrupt detection — lightweight SpeechRecognition active only while TTS is playing
-  // Suppressed during hands-free mode: HandsFreeVoice owns the mic and handles interrupts itself.
+  // Suppressed during hands-free mode: UnifiedVoiceSession owns the mic and handles interrupts itself.
   useEffect(() => {
     if (!speaking || handsFreeMode) {
       interruptRecRef.current?.stop();
@@ -864,6 +769,14 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       inputRef.current?.focus();
     }
   }, [messages, sending, keyStatus, mode, tier, onMessageSent, speakMessage, handsFreeMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Stable refs so event handler closures always see current values
+  const sendMessageRef = useRef(sendMessage);
+  useEffect(() => { sendMessageRef.current = sendMessage; }, [sendMessage]);
+  const keyStatusRef = useRef(keyStatus);
+  useEffect(() => { keyStatusRef.current = keyStatus; }, [keyStatus]);
+  const tierRef = useRef(tier);
+  useEffect(() => { tierRef.current = tier; }, [tier]);
 
   const clearChat = () => {
     const welcome = { id: crypto.randomUUID(), role: 'system' as const, content: getWelcomeMessage(mode, keyStatus), timestamp: new Date() };
@@ -1508,9 +1421,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
                   setVoiceMode(next);
                   localStorage.setItem('triforge-voice-mode', next ? 'on' : 'off');
                   if (!next) {
-                    if (audioRef.current) { audioRef.current.pause(); audioRef.current.src = ''; }
-                    window.speechSynthesis?.cancel();
-                    setSpeaking(null); councilPresence.setState('idle');
+                    councilSpeech.interrupt();
                   }
                 }}
               >
@@ -1519,13 +1430,20 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
               <button
                 style={{ ...cs.dockBtn, ...(handsFreeMode ? { color: '#a78bfa', borderColor: 'rgba(167,139,250,0.5)', background: 'rgba(167,139,250,0.08)' } : {}) }}
                 onClick={() => {
-                  const next = !handsFreeMode;
-                  setHandsFreeMode(next);
-                  if (next) {
-                    councilPresence.setState('listening');
+                  if (!handsFreeMode) {
+                    setHandsFreeMode(true);
                     playListeningTone();
+                    unifiedVoiceSession.start({
+                      userName: 'Commander',
+                      onTranscript: (t) => {
+                        if (voiceIntentRouter.route(t)) return;
+                        sendMessageRef.current(t);
+                      },
+                      onEnd: () => setHandsFreeMode(false),
+                    });
                   } else {
-                    councilPresence.setState('idle');
+                    unifiedVoiceSession.end();
+                    setHandsFreeMode(false);
                   }
                 }}
                 title={handsFreeMode ? 'Click to exit Council Mode' : 'Activate hands-free Council voice session'}
@@ -1736,27 +1654,6 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         <SessionTimeline messages={messages} running={sending || consensusThinking || taskRunning} />
       </div>
 
-      <audio ref={audioRef} style={{ display: 'none' }} />
-
-      {/* HandsFreeVoice — headless, renders nothing, manages the Siri-style voice loop */}
-      <HandsFreeVoice
-        active={handsFreeMode}
-        isSpeaking={!!speaking}
-        onTranscript={(t) => {
-          // Exit phrases — end the hands-free session without sending to the council
-          const lower = t.toLowerCase();
-          const EXIT_PHRASES = ['open up desktop', 'open desktop', 'exit council', 'stop listening', 'stop council', 'goodbye council', 'council goodbye'];
-          if (EXIT_PHRASES.some(p => lower.includes(p))) {
-            setHandsFreeMode(false);
-            return;
-          }
-          // Route to autonomy mission if a known intent is matched
-          if (voiceIntentRouter.route(t)) return;
-          // Send to council — HandsFreeVoice auto-restarts after onend fires
-          sendMessage(t);
-        }}
-        onStop={() => setHandsFreeMode(false)}
-      />
     </div>
   );
 }

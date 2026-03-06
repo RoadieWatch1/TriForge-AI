@@ -22,8 +22,7 @@ createRoot(root).render(
 );
 
 // Boot offline wake bridge — only when flag is explicitly enabled.
-// The online wake engine is started by Chat.tsx on mount so mic is
-// requested after the UI is visible, not on raw app boot.
+// The online wake engine is owned by App.tsx (started after the UI is visible).
 let _offlineBridge: VoiceCommandBridge | null = null;
 if (AUTONOMY_FLAGS.enableOfflineWake) {
   _offlineBridge = new VoiceCommandBridge();

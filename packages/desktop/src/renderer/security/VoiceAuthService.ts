@@ -7,8 +7,8 @@
 //   triforge_auth_name
 //   triforge_auth_pass
 //
-// First-run behaviour: if no credentials are stored, access is granted
-// automatically so the user can set up credentials in Settings.
+// First-run behaviour: if no credentials are configured, access is DENIED
+// with reason 'not_configured' so the UI can prompt the user to set them up.
 //
 // Usage:
 //   const result = await voiceAuth.requestIdentity();
@@ -18,9 +18,17 @@
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+export type AuthDeniedReason =
+  | 'not_configured'   // no credentials stored yet
+  | 'sr_unavailable'   // SpeechRecognition API not present
+  | 'no_input'         // user said nothing (timeout)
+  | 'wrong_credentials'// name/password did not match
+  | 'max_retries';     // exceeded retry limit
+
 export interface AuthResult {
   granted: boolean;
   name:    string;
+  reason?: AuthDeniedReason; // present when granted === false
 }
 
 // ── VoiceAuthService ──────────────────────────────────────────────────────────
@@ -83,7 +91,7 @@ class VoiceAuthService {
         resolve(text.toLowerCase().trim());
       };
 
-      rec.onresult = (e) => finish(((e as Event & { results: { [i: number]: { [j: number]: { transcript: string } } } }).results[0]?.[0]?.transcript) ?? '');
+      rec.onresult = (e: Event) => finish(((e as Event & { results: { [i: number]: { [j: number]: { transcript: string } } } }).results[0]?.[0]?.transcript) ?? '');
       rec.onerror  = ()  => finish('');
       rec.onend    = ()  => finish('');
       rec.start();
@@ -97,31 +105,41 @@ class VoiceAuthService {
    * Returns { granted, name } after the user speaks their name and password.
    * Grants access automatically if no credentials have been configured.
    */
-  async requestIdentity(): Promise<AuthResult> {
-    // First-run / no credentials configured — auto-grant
+  async requestIdentity(maxRetries = 2): Promise<AuthResult> {
+    // No credentials configured — cannot verify; caller should prompt setup
     if (!this.isSetup()) {
-      return { granted: true, name: 'Commander' };
+      return { granted: false, name: '', reason: 'not_configured' };
     }
 
-    // Speech recognition unavailable (Electron without Google speech) — auto-grant
+    // Speech recognition unavailable — cannot verify voice; deny access
     const SR = (window as Window & { SpeechRecognition?: unknown; webkitSpeechRecognition?: unknown }).SpeechRecognition
             ?? (window as Window & { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition;
     if (!SR) {
-      console.warn('[VoiceAuth] SpeechRecognition unavailable — auto-granting council access');
-      return { granted: true, name: 'Commander' };
+      console.warn('[VoiceAuth] SpeechRecognition unavailable — denying council access');
+      return { granted: false, name: '', reason: 'sr_unavailable' };
     }
 
-    // Step 1: name
-    await this.speak('Identity verification required. Please state your name.');
-    const name = await this.listen();
-    if (!name) return { granted: false, name: '' };
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const retry = attempt > 0;
 
-    // Step 2: password
-    await this.speak('Please state your password.');
-    const password = await this.listen();
+      // Step 1: name
+      await this.speak(retry
+        ? 'Verification failed. Please state your name again.'
+        : 'Identity verification required. Please state your name.'
+      );
+      const name = await this.listen();
+      if (!name) return { granted: false, name: '', reason: 'no_input' };
 
-    const granted = this.verify(name, password);
-    return { granted, name };
+      // Step 2: password
+      await this.speak('Please state your password.');
+      const password = await this.listen();
+
+      if (this.verify(name, password)) {
+        return { granted: true, name };
+      }
+    }
+
+    return { granted: false, name: '', reason: 'max_retries' };
   }
 
   // ── Verification ───────────────────────────────────────────────────────────
@@ -144,7 +162,7 @@ class VoiceAuthService {
     localStorage.setItem('triforge_auth_pass', password.toLowerCase().trim());
   }
 
-  /** Remove credentials (resets to auto-grant / first-run mode). */
+  /** Remove credentials (resets to unconfigured / first-run mode). */
   clearCredentials(): void {
     localStorage.removeItem('triforge_auth_name');
     localStorage.removeItem('triforge_auth_pass');
