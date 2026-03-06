@@ -119,6 +119,13 @@ function createWindow(): void {
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   }
 
+  // Forward renderer console output to terminal — helps debug without DevTools
+  mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    const src = sourceId ? sourceId.split('/').pop() : '?';
+    const prefix = level === 3 ? '[RENDERER:ERR]' : level === 2 ? '[RENDERER:WARN]' : '[RENDERER]';
+    console.log(`${prefix} ${message}  (${src}:${line})`);
+  });
+
   // Cmd+Option+I (Mac) / F12 (all) opens DevTools for debugging
   globalShortcut.register('CommandOrControl+Alt+I', () => {
     mainWindow?.webContents.toggleDevTools();
