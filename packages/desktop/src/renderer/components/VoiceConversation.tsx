@@ -1,4 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { unifiedVoiceSession } from '../voice/UnifiedVoiceSession';
+import type { VoiceState } from '../voice/GlobalVoiceController';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -122,7 +124,8 @@ export function VoiceConversation({ hasGrok, hasOpenAI, sending, onTranscript, o
     window.triforge.voice.agent.commit().catch(() => {});
     window.triforge.voice.agent.disconnect();
 
-    // Stop Web Speech
+    // Stop Web Speech / UnifiedVoiceSession
+    unifiedVoiceSession.end();
     recognitionRef.current?.stop();
     recognitionRef.current = null;
     window.speechSynthesis?.cancel();
@@ -257,10 +260,28 @@ export function VoiceConversation({ hasGrok, hasOpenAI, sending, onTranscript, o
       if (hasGrok) {
         startGrokVoice();
       } else {
-        startWebSpeechLoop();
+        unifiedVoiceSession.start({
+          userName: 'Commander',
+          onTranscript: (t) => { setStatus('processing'); onTranscript(t); },
+          onEnd: () => { setActive(false); setStatus('idle'); },
+        });
       }
     }
   }, [active, hasGrok, startGrokVoice, startWebSpeechLoop, stopAll]);
+
+  // Sync status from GlobalVoiceController when using UnifiedVoiceSession (non-Grok path)
+  useEffect(() => {
+    if (hasGrok) return;
+    const handler = (e: Event) => {
+      const state = (e as CustomEvent<VoiceState>).detail;
+      if (state === 'sessionListening') setStatus('listening');
+      else if (state === 'sessionThinking') setStatus('processing');
+      else if (state === 'sessionSpeaking') setStatus('speaking');
+      else if (state === 'sessionEnded' || state === 'idle') setStatus('idle');
+    };
+    window.addEventListener('triforge:voice-state', handler);
+    return () => window.removeEventListener('triforge:voice-state', handler);
+  }, [hasGrok]);
 
   // Cleanup on unmount
   useEffect(() => () => { stopAll(); }, [stopAll]);
