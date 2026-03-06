@@ -123,9 +123,9 @@ export function CouncilWakeScreen({ onGranted, onDismiss, onOpenSettings }: Prop
         return;
       }
 
-      // Credentials heard but didn't match
+      // Credentials heard but didn't match — show what SR captured so user can diagnose
       if (attempt < MAX_AUTH_RETRIES - 1) {
-        setSubtext('That did not match. Please try again.');
+        setSubtext(`That did not match. I heard: "${name}" / "${password}". Try again.`);
         await councilSpeech.speakAuth('That did not match. Please try again.');
         await delay(600);
       }

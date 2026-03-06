@@ -151,11 +151,36 @@ class VoiceAuthService {
 
   // ── Verification ───────────────────────────────────────────────────────────
 
+  /**
+   * Returns true if every token in `stored` appears in `heard`.
+   * Handles SR filler-word insertions and minor word-boundary differences.
+   */
+  private tokenSubsetMatch(stored: string, heard: string): boolean {
+    const storedTokens = stored.split(' ').filter(t => t.length > 0);
+    const heardSet     = new Set(heard.split(' ').filter(t => t.length > 0));
+    return storedTokens.length > 0 && storedTokens.every(t => heardSet.has(t));
+  }
+
   /** Compare spoken credentials against stored values (both normalized). */
   verify(name: string, password: string): boolean {
     const storedName = this.normalizeSpoken(localStorage.getItem('triforge_auth_name') ?? '');
     const storedPass = this.normalizeSpoken(localStorage.getItem('triforge_auth_pass') ?? '');
-    return this.normalizeSpoken(name) === storedName && this.normalizeSpoken(password) === storedPass;
+    const heardName  = this.normalizeSpoken(name);
+    const heardPass  = this.normalizeSpoken(password);
+
+    console.log('[VoiceAuth] verify', { heardName, storedName, heardPass, storedPass });
+
+    // Exact match
+    if (heardName === storedName && heardPass === storedPass) return true;
+
+    // Token-subset fallback: stored tokens must all appear in heard tokens
+    // (handles SR adding filler words or hearing extra tokens around the target)
+    const nameOk = this.tokenSubsetMatch(storedName, heardName);
+    const passOk = this.tokenSubsetMatch(storedPass, heardPass);
+    if (nameOk && passOk) {
+      console.log('[VoiceAuth] granted via token-subset match');
+    }
+    return nameOk && passOk;
   }
 
   /** Returns true if credentials have been configured. */
