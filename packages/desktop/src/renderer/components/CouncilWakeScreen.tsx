@@ -2,7 +2,7 @@
 //
 // Shown when the "council" wake word is detected.
 // Drives the GlobalVoiceController state machine through each auth step:
-//   wakeDetected → verifyingName → verifyingPassword → authGranted | authDenied
+//   wakeDetected → verifyingPassword → authGranted | authDenied
 //
 // Props:
 //   onGranted(name)  — called after successful auth; parent navigates to chat
@@ -15,7 +15,7 @@ import { councilSpeech } from '../voice/CouncilSpeechService';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type Phase = 'wake' | 'verifyingName' | 'verifyingPassword' | 'granted' | 'denied' | 'setup';
+type Phase = 'wake' | 'verifyingPassword' | 'granted' | 'denied' | 'setup';
 
 interface Props {
   onGranted: (name: string) => void;
@@ -44,7 +44,6 @@ export function CouncilWakeScreen({ onGranted, onDismiss, onOpenSettings }: Prop
 
     // No credentials — show setup prompt, let user navigate or dismiss
     if (!voiceAuth.isSetup()) {
-      globalVoiceController.transition('verifyingName');
       setPhase('setup');
       setMessage('WAKE ACCESS NOT SET UP');
       setSubtext('Go to Settings → Wake Word Voice Access and save your access name and passphrase. The Spoken Reply Voice toggle alone does not enable wake access.');
@@ -67,53 +66,36 @@ export function CouncilWakeScreen({ onGranted, onDismiss, onOpenSettings }: Prop
       return;
     }
 
-    // Multi-step verification with retry loop
+    // Passphrase-only verification — name is not challenged, only used for greeting
+    const displayName = (() => {
+      const n = voiceAuth.getConfiguredName() ?? '';
+      return n ? n.charAt(0).toUpperCase() + n.slice(1) : 'Commander';
+    })();
+
     for (let attempt = 0; attempt < MAX_AUTH_RETRIES; attempt++) {
       const isRetry = attempt > 0;
 
-      // ── Step 1: name ────────────────────────────────────────────────────────
-      globalVoiceController.transition('verifyingName', { force: isRetry });
-      setPhase('verifyingName');
-      setMessage('WHO GOES THERE?');
-      setSubtext('Say your access name clearly after the prompt.');
-      await councilSpeech.speakAuth(
-        isRetry ? 'Please state your name again.' : 'Identity verification. Please state your name.'
-      );
-      await delay(POST_PROMPT_DELAY);
-      const name = await voiceAuth.listen(LISTEN_TIMEOUT_MS);
-
-      if (!name) {
-        // No speech captured — give feedback and retry if attempts remain
-        if (attempt < MAX_AUTH_RETRIES - 1) {
-          setSubtext("I didn't catch your name. Let's try again.");
-          await councilSpeech.speakAuth("I didn't catch that. Let's try again.");
-          await delay(600);
-          continue;
-        }
-        break; // retries exhausted
-      }
-
-      // ── Step 2: passphrase ──────────────────────────────────────────────────
-      globalVoiceController.transition('verifyingPassword');
+      globalVoiceController.transition('verifyingPassword', { force: isRetry });
       setPhase('verifyingPassword');
       setMessage('PASSPHRASE');
-      setSubtext('Say your passphrase clearly.');
-      await councilSpeech.speakAuth('Please state your passphrase.');
+      setSubtext('Say your passphrase clearly after the prompt.');
+      await councilSpeech.speakAuth(
+        isRetry ? 'Please state your passphrase again.' : 'Please state your passphrase.'
+      );
       await delay(POST_PROMPT_DELAY);
       const password = await voiceAuth.listen(LISTEN_TIMEOUT_MS);
 
       if (!password) {
         if (attempt < MAX_AUTH_RETRIES - 1) {
-          setSubtext("I didn't catch your passphrase. Let's try again.");
-          await councilSpeech.speakAuth("I didn't catch your passphrase. Let's try again.");
+          setSubtext("I didn't catch that. Let's try again.");
+          await councilSpeech.speakAuth("I didn't catch that. Let's try again.");
           await delay(600);
           continue;
         }
         break;
       }
 
-      if (voiceAuth.verify(name, password)) {
-        const displayName = name.charAt(0).toUpperCase() + name.slice(1);
+      if (voiceAuth.verify(password)) {
         globalVoiceController.transition('authGranted');
         setPhase('granted');
         setMessage('ACCESS GRANTED');
@@ -123,9 +105,9 @@ export function CouncilWakeScreen({ onGranted, onDismiss, onOpenSettings }: Prop
         return;
       }
 
-      // Credentials heard but didn't match — show what SR captured so user can diagnose
+      // Passphrase heard but didn't match — show what SR captured so user can diagnose
       if (attempt < MAX_AUTH_RETRIES - 1) {
-        setSubtext(`That did not match. I heard: "${name}" / "${password}". Try again.`);
+        setSubtext(`That did not match. I heard: "${password}". Try again.`);
         await councilSpeech.speakAuth('That did not match. Please try again.');
         await delay(600);
       }
@@ -156,7 +138,7 @@ export function CouncilWakeScreen({ onGranted, onDismiss, onOpenSettings }: Prop
 
   // ── Triangle SVG ────────────────────────────────────────────────────────────
 
-  const isListening = phase === 'verifyingName' || phase === 'verifyingPassword';
+  const isListening = phase === 'verifyingPassword';
 
   const glowColor =
     phase === 'granted'  ? '#10b981' :

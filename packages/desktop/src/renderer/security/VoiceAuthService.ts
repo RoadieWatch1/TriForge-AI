@@ -1,18 +1,14 @@
 // ── VoiceAuthService.ts — Voice-driven identity verification ─────────────────
 //
-// Presents spoken prompts (Web Speech TTS) and listens for the user's name
-// and password (Web Speech STT) before granting council access.
+// Listens for the user's passphrase (Web Speech STT) before granting council
+// access. The stored display name is used only for the welcome greeting.
 //
 // Credentials are stored in localStorage under:
-//   triforge_auth_name
-//   triforge_auth_pass
+//   triforge_auth_name  — display name only (not verified during auth)
+//   triforge_auth_pass  — the passphrase that must be spoken
 //
 // First-run behaviour: if no credentials are configured, access is DENIED
 // with reason 'not_configured' so the UI can prompt the user to set them up.
-//
-// Usage:
-//   const result = await voiceAuth.requestIdentity();
-//   if (result.granted) startCouncil(result.name);
 //
 // No IPC dependencies — runs entirely in the renderer via browser APIs.
 
@@ -161,31 +157,26 @@ class VoiceAuthService {
     return storedTokens.length > 0 && storedTokens.every(t => heardSet.has(t));
   }
 
-  /** Compare spoken credentials against stored values (both normalized). */
-  verify(name: string, password: string): boolean {
-    const storedName = this.normalizeSpoken(localStorage.getItem('triforge_auth_name') ?? '');
+  /** Compare spoken passphrase against stored value. Name is not verified — display only. */
+  verify(password: string): boolean {
     const storedPass = this.normalizeSpoken(localStorage.getItem('triforge_auth_pass') ?? '');
-    const heardName  = this.normalizeSpoken(name);
     const heardPass  = this.normalizeSpoken(password);
 
-    console.log('[VoiceAuth] verify', { heardName, storedName, heardPass, storedPass });
+    console.log('[VoiceAuth] verify', { heardPass, storedPass });
 
     // Exact match
-    if (heardName === storedName && heardPass === storedPass) return true;
+    if (heardPass === storedPass) return true;
 
     // Token-subset fallback: stored tokens must all appear in heard tokens
     // (handles SR adding filler words or hearing extra tokens around the target)
-    const nameOk = this.tokenSubsetMatch(storedName, heardName);
     const passOk = this.tokenSubsetMatch(storedPass, heardPass);
-    if (nameOk && passOk) {
-      console.log('[VoiceAuth] granted via token-subset match');
-    }
-    return nameOk && passOk;
+    if (passOk) console.log('[VoiceAuth] granted via token-subset match');
+    return passOk;
   }
 
-  /** Returns true if credentials have been configured. */
+  /** Returns true if a passphrase has been configured. */
   isSetup(): boolean {
-    return !!localStorage.getItem('triforge_auth_name');
+    return !!localStorage.getItem('triforge_auth_pass');
   }
 
   /** Returns the stored name (display only) or null if not configured. */

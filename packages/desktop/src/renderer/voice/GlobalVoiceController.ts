@@ -7,8 +7,7 @@
 // States:
 //   idle              — wake engine listening, no active session
 //   wakeDetected      — wake word heard, auth screen about to show
-//   verifyingName     — CouncilWakeScreen step 1: listening for name
-//   verifyingPassword — CouncilWakeScreen step 2: listening for password
+//   verifyingPassword — CouncilWakeScreen: listening for passphrase
 //   authGranted       — auth passed, transitioning into session
 //   authDenied        — auth failed, returning to idle after brief pause
 //   sessionListening  — Siri loop: mic open, waiting for user speech
@@ -24,7 +23,6 @@
 export type VoiceState =
   | 'idle'
   | 'wakeDetected'
-  | 'verifyingName'
   | 'verifyingPassword'
   | 'authGranted'
   | 'authDenied'
@@ -37,8 +35,7 @@ export type VoiceState =
 
 const VALID_TRANSITIONS: Record<VoiceState, VoiceState[]> = {
   idle:               ['wakeDetected'],
-  wakeDetected:       ['verifyingName', 'idle'],
-  verifyingName:      ['verifyingPassword', 'authDenied', 'idle'],
+  wakeDetected:       ['verifyingPassword', 'idle'],
   verifyingPassword:  ['authGranted', 'authDenied', 'idle'],
   authGranted:        ['sessionListening', 'idle'],
   authDenied:         ['idle'],

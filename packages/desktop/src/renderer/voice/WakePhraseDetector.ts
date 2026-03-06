@@ -29,9 +29,11 @@ const WAKE_PHRASES = [
   'apply decision',
 ] as const;
 
-// Phonetic variants: common mis-recognitions of each core wake word
+// Phonetic variants: genuine mis-recognitions of "council" by SR engines.
+// IMPORTANT: do NOT add common English words here (e.g. "cancel", "consult")
+// — they cause false positives any time a user says those words in normal speech.
 const PHONETIC_VARIANTS: Record<string, string[]> = {
-  council: ['consul', 'counsel', 'cancel', 'councils', 'consoled', 'council\'s', 'consult'],
+  council: ['consul', 'counsel', 'councils', "council's"],
 };
 
 // ── Core functions ────────────────────────────────────────────────────────────
