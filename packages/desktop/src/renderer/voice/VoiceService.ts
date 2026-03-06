@@ -20,11 +20,14 @@ import { playWakeTone } from '../audio/councilSounds';
 
 export type WakeStatus = 'idle' | 'loading' | 'ready' | 'error';
 
+const WAKE_COOLDOWN_MS = 3000; // prevent repeated triggers within 3 s
+
 class VoiceService {
-  private bridge:   VoiceCommandBridge | null = null;
-  private unsubCmd: (() => void) | null = null;
-  private _enabled = true;
-  private _status: WakeStatus = 'idle';
+  private bridge:     VoiceCommandBridge | null = null;
+  private unsubCmd:   (() => void) | null = null;
+  private _enabled  = true;
+  private _status:  WakeStatus = 'idle';
+  private _lastWake = 0;
 
   get status(): WakeStatus { return this._status; }
 
@@ -47,7 +50,13 @@ class VoiceService {
 
     this.unsubCmd = onCouncilCommand((matched) => {
       if (matched.command === 'council_assemble') {
-        console.log('[TriForge] Wake word detected: Council');
+        const now = Date.now();
+        if (now - this._lastWake < WAKE_COOLDOWN_MS) {
+          console.log('[VoiceService] Wake cooldown active — ignoring duplicate trigger');
+          return;
+        }
+        this._lastWake = now;
+        console.log('[VoiceService] Wake word confirmed — triggering council');
         councilPresence.setState('wake');
         playWakeTone();
         window.dispatchEvent(new CustomEvent('triforge:council-wake'));

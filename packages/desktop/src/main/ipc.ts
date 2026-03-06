@@ -3347,7 +3347,10 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       });
     }
 
-    return fs.readFileSync(zipPath).buffer as ArrayBuffer;
+    // Use slice to return the exact byte range — raw .buffer can include
+    // pool padding beyond the file's actual bytes on small allocations.
+    const b = fs.readFileSync(zipPath);
+    return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
   });
 
   // ── Command audit logging ──────────────────────────────────────────────────────

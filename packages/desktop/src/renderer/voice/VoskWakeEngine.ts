@@ -1,15 +1,21 @@
-// ── VoskWakeEngine.ts — Mic capture + vosk-browser phrase recognition ─────────
+// ── VoskWakeEngine.ts — Mic capture + Vosk phrase recognition ─────────────────
 //
 // Responsibilities:
-//   1. Download/cache vosk model via main-process IPC (userData/vosk-models/)
-//   2. Capture mic at 16 kHz mono
-//   3. Feed PCM to grammar-limited KaldiRecognizer
-//   4. Call onPhrase(text) when a phrase is recognized
+//   1. Download/cache Vosk model via main-process IPC (userData/vosk-models/)
+//   2. Capture mic at 16 kHz mono via ScriptProcessorNode
+//   3. Feed PCM frames to grammar-limited KaldiRecognizer
+//   4. Run WakePhraseDetector on every partial AND full result
+//   5. Call onPhrase(text) when a wake phrase is detected
 //
-// This class has NO knowledge of commands, IPC trust boundaries, or dispatch logic.
-// VoiceCommandBridge wraps this and decides what to do with the detected phrase.
+// Detection strategy (two-layer):
+//   • Partial results → instant "council" detection before the utterance ends
+//   • Full results    → catches anything the partial handler missed
+//
+// Error handling: start() throws on any failure — callers set error status.
+// No silent swallowing. All failures are logged and propagated.
 
-import { createModel } from 'vosk-browser';
+import { createModel }       from 'vosk-browser';
+import { detectWakePhrase }  from './WakePhraseDetector';
 
 export const WAKE_PHRASES = [
   'council', 'hey council', 'okay council', 'council listen', 'council help',
@@ -20,45 +26,52 @@ export const WAKE_PHRASES = [
 
 export const WAKE_GRAMMAR = JSON.stringify(['[unk]', ...WAKE_PHRASES]);
 
+// ── VoskWakeEngine ────────────────────────────────────────────────────────────
+
 export class VoskWakeEngine {
   private model:      Awaited<ReturnType<typeof createModel>> | null = null;
   private recognizer: ReturnType<Awaited<ReturnType<typeof createModel>>['KaldiRecognizer']['prototype']['constructor']> | null = null;
   private audioCtx:   AudioContext | null = null;
   private processor:  ScriptProcessorNode | null = null;
   private stream:     MediaStream | null = null;
-  private paused    = false;
-  private lastText  = '';
-  private lastTs    = 0;
+  private paused     = false;
+  private _listening = false;
+  private lastTs     = 0;          // timestamp of last emitted phrase
+  private readonly DEDUP_MS = 1200; // suppress duplicate emits within 1.2 s
 
   constructor(private readonly onPhrase: (text: string) => void) {}
 
-  /** Download model (first run ~40 MB, cached), start mic capture and recognition. */
+  isListening(): boolean { return this._listening; }
+
+  /** Download model, open mic, start recognition. Throws on any failure. */
   async start(): Promise<void> {
     try {
+      console.log('[WakeEngine] Starting — fetching Vosk model...');
       const buf: ArrayBuffer = await window.triforge.voice.getWakeModelData();
       const blobUrl = URL.createObjectURL(new Blob([buf], { type: 'application/zip' }));
+
+      console.log('[WakeEngine] Model received — initializing recognizer...');
       this.model = await createModel(blobUrl, -1);
       URL.revokeObjectURL(blobUrl);
 
       this.recognizer = new this.model.KaldiRecognizer(16000, WAKE_GRAMMAR);
       this.recognizer.setWords(false);
 
-      this.recognizer.on('result', (message) => {
-        if (this.paused) return;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const text: string = ((message as any).result?.text ?? '').trim();
-        if (!text) return;
-        // Throttle: ignore duplicate within 1200 ms (avoids partial-result spam)
-        const now = Date.now();
-        if (text === this.lastText && now - this.lastTs < 1200) return;
-        this.lastText = text;
-        this.lastTs   = now;
-        this.onPhrase(text);
-      });
+      // ── Full result handler ────────────────────────────────────────────────
+      // Fires after a pause in speech — catches anything the partial handler missed.
+      this.recognizer.on('result', this._handleResult.bind(this));
 
+      // ── Partial result handler — instant "council" detection ───────────────
+      // Fires while the user is still speaking. WakePhraseDetector checks for
+      // wake phrases before end-of-phrase silence, giving Siri-style response time.
+      this.recognizer.on('partialresult', this._handlePartial.bind(this));
+
+      // ── Mic capture ────────────────────────────────────────────────────────
+      console.log('[WakeEngine] Requesting mic access...');
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true } as MediaTrackConstraints,
       });
+
       this.audioCtx = new AudioContext({ sampleRate: 16000 });
       const source  = this.audioCtx.createMediaStreamSource(this.stream);
       this.processor = this.audioCtx.createScriptProcessor(4096, 1, 1);
@@ -71,9 +84,13 @@ export class VoskWakeEngine {
       source.connect(this.processor);
       this.processor.connect(this.audioCtx.destination);
 
-      console.info('[VoskWakeEngine] active');
+      this._listening = true;
+      console.log('[WakeEngine] Active — listening for "council"');
+
     } catch (err) {
-      console.warn('[VoskWakeEngine] start failed:', err);
+      this._listening = false;
+      console.error('[WakeEngine] Start failed:', err);
+      throw err; // propagate — never swallow
     }
   }
 
@@ -81,13 +98,47 @@ export class VoskWakeEngine {
   resume(): void { this.paused = false; }
 
   stop(): void {
-    this.paused = true;
+    this._listening = false;
+    this.paused     = true;
     this.processor?.disconnect();
     this.audioCtx?.close().catch(() => {});
     this.stream?.getTracks().forEach(t => t.stop());
     try { this.recognizer?.remove(); } catch { /* ignore */ }
-    try { this.model?.terminate(); }   catch { /* ignore */ }
-    this.recognizer = null; this.model    = null;
+    try { this.model?.terminate();   } catch { /* ignore */ }
+    this.recognizer = null; this.model     = null;
     this.audioCtx   = null; this.processor = null; this.stream = null;
+    console.log('[WakeEngine] Stopped.');
+  }
+
+  // ── Private ───────────────────────────────────────────────────────────────
+
+  private _handleResult(message: Record<string, unknown>): void {
+    if (this.paused) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const text = ((message as any)?.result?.text ?? '').trim() as string;
+    if (!text) return;
+    console.log(`[WakeEngine] Full result: "${text}"`);
+    this._tryEmit(text);
+  }
+
+  private _handlePartial(message: Record<string, unknown>): void {
+    if (this.paused) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const partial = ((message as any)?.result?.partial ?? '').trim() as string;
+    if (!partial) return;
+    console.log(`[WakeEngine] Partial: "${partial}"`);
+    this._tryEmit(partial);
+  }
+
+  private _tryEmit(transcript: string): void {
+    const match = detectWakePhrase(transcript);
+    if (!match) return;
+
+    const now = Date.now();
+    if (now - this.lastTs < this.DEDUP_MS) return; // suppress rapid-fire duplicates
+    this.lastTs = now;
+
+    console.log(`[WakeEngine] Wake match: "${match.matched}" → ${match.phrase} (score=${match.score.toFixed(2)}${match.isPhonetic ? ', phonetic' : ''})`);
+    this.onPhrase(match.phrase);
   }
 }
