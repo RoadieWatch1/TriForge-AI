@@ -10,7 +10,7 @@
 import { missionQueue }  from '../../core/autonomy/MissionQueue';
 import { policyGate }    from '../../core/autonomy/PolicyGate';
 import { missionLedger } from '../../core/autonomy/MissionLedger';
-import { QueuedMission, MissionPriority } from '../../core/autonomy/MissionTypes';
+import { QueuedMission, MissionPriority, MissionSource } from '../../core/autonomy/MissionTypes';
 
 // ── Intent map ──────────────────────────────────────────────────────────────
 
@@ -57,7 +57,7 @@ class VoiceIntentRouter {
    * @returns true if matched (caller should not send to normal chat)
    *          false if no match (caller proceeds with normal chat)
    */
-  route(transcript: string, source = 'voice'): boolean {
+  route(transcript: string, source: MissionSource = 'voice'): boolean {
     const lower = transcript.toLowerCase().trim();
     if (!lower) return false;
 
@@ -75,11 +75,10 @@ class VoiceIntentRouter {
       payload:          rule.payload ? rule.payload(lower) : undefined,
     };
 
-    const id = missionQueue.enqueue(mission);
-    if (!id) return true; // deduped — still consumed
+    const queued = missionQueue.enqueue(mission);
 
     missionLedger.record({
-      missionId: id,
+      missionId: queued.id,
       event:     'mission_created',
       intent:    rule.intent,
       source,
@@ -88,7 +87,7 @@ class VoiceIntentRouter {
 
     if (policy.requiresApproval) {
       missionLedger.record({
-        missionId: id,
+        missionId: queued.id,
         event:     'approval_requested',
         intent:    rule.intent,
         source,
@@ -98,7 +97,7 @@ class VoiceIntentRouter {
 
     // Dispatch UI event so approval panel / sidebar can react.
     window.dispatchEvent(new CustomEvent('triforge:mission-queued', {
-      detail: { id, intent: rule.intent, requiresApproval: policy.requiresApproval, raw: transcript },
+      detail: { id: queued.id, intent: rule.intent, requiresApproval: policy.requiresApproval, raw: transcript },
     }));
 
     return true;

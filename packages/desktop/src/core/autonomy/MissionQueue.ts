@@ -4,17 +4,17 @@
 //   • FIFO within same priority tier (urgent > high > normal > low)
 //   • Deduplicates missions with the same intent within DEDUP_WINDOW_MS
 //   • Max queue depth capped at MAX_DEPTH (oldest low-priority items evicted)
-//   • Pausing stops next() from resolving until resumed
+//   • Pausing stops dequeue() from returning items until resumed
+//
+// Runs in the renderer — uses browser globals only (no Node built-ins).
 
-import crypto from 'crypto';
-import { EventEmitter } from 'events';
 import type { QueuedMission, MissionPriority, MissionSource } from './MissionTypes';
 import { PRIORITY_WEIGHT } from './MissionTypes';
 
 const DEDUP_WINDOW_MS = 20_000; // 20 s
 const MAX_DEPTH       = 50;
 
-export class MissionQueue extends EventEmitter {
+export class MissionQueue {
   private _items:  QueuedMission[] = [];
   private _paused = false;
 
@@ -25,14 +25,14 @@ export class MissionQueue extends EventEmitter {
    * Returns the new mission, or the existing duplicate if deduplicated.
    */
   enqueue(opts: {
-    source:           MissionSource;
-    intent:           string;
-    raw:              string;
-    priority?:        MissionPriority;
+    source:            MissionSource;
+    intent:            string;
+    raw:               string;
+    priority?:         MissionPriority;
     requiresApproval?: boolean;
-    payload?:         Record<string, unknown>;
+    payload?:          Record<string, unknown>;
   }): QueuedMission {
-    const now = Date.now();
+    const now      = Date.now();
     const priority = opts.priority ?? 'normal';
 
     // Dedup: same intent within window?
@@ -42,7 +42,7 @@ export class MissionQueue extends EventEmitter {
     if (dup) return dup;
 
     const mission: QueuedMission = {
-      id:               crypto.randomUUID(),
+      id:               globalThis.crypto.randomUUID(),
       createdAt:        now,
       source:           opts.source,
       intent:           opts.intent,
@@ -55,13 +55,15 @@ export class MissionQueue extends EventEmitter {
 
     // Evict excess low-priority items if at cap
     if (this._items.length >= MAX_DEPTH) {
-      const lowIdx = this._items.findLastIndex(m => m.priority === 'low');
+      let lowIdx = -1;
+      for (let i = this._items.length - 1; i >= 0; i--) {
+        if (this._items[i].priority === 'low') { lowIdx = i; break; }
+      }
       if (lowIdx >= 0) this._items.splice(lowIdx, 1);
     }
 
     this._items.push(mission);
     this._sortByPriority();
-    this.emit('mission:queued', mission);
     return mission;
   }
 
@@ -80,8 +82,8 @@ export class MissionQueue extends EventEmitter {
 
   // ── Control ───────────────────────────────────────────────────────────────
 
-  pause():  void { this._paused = true;  this.emit('queue:paused'); }
-  resume(): void { this._paused = false; this.emit('queue:resumed'); }
+  pause():  void { this._paused = true;  }
+  resume(): void { this._paused = false; }
 
   isPaused(): boolean { return this._paused; }
   size():     number  { return this._items.length; }
