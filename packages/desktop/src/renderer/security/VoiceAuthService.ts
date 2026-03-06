@@ -54,9 +54,16 @@ class VoiceAuthService {
    * Resolves with '' on timeout or if speech API is unavailable.
    */
   listen(timeoutMs = 9000): Promise<string> {
+    type SRCtor = new() => {
+      lang: string; interimResults: boolean; maxAlternatives: number;
+      onresult: ((e: Event) => void) | null;
+      onerror:  ((e: Event) => void) | null;
+      onend:    (() => void) | null;
+      start(): void; stop(): void;
+    };
     return new Promise((resolve) => {
-      const SR = (window as Window & { SpeechRecognition?: new() => SpeechRecognition; webkitSpeechRecognition?: new() => SpeechRecognition }).SpeechRecognition
-              ?? (window as Window & { webkitSpeechRecognition?: new() => SpeechRecognition }).webkitSpeechRecognition;
+      const w  = window as Window & { SpeechRecognition?: SRCtor; webkitSpeechRecognition?: SRCtor };
+      const SR = w.SpeechRecognition ?? w.webkitSpeechRecognition;
 
       if (!SR) { resolve(''); return; }
 
@@ -76,7 +83,7 @@ class VoiceAuthService {
         resolve(text.toLowerCase().trim());
       };
 
-      rec.onresult = (e) => finish(e.results[0]?.[0]?.transcript ?? '');
+      rec.onresult = (e) => finish(((e as Event & { results: { [i: number]: { [j: number]: { transcript: string } } } }).results[0]?.[0]?.transcript) ?? '');
       rec.onerror  = ()  => finish('');
       rec.onend    = ()  => finish('');
       rec.start();
@@ -93,6 +100,14 @@ class VoiceAuthService {
   async requestIdentity(): Promise<AuthResult> {
     // First-run / no credentials configured — auto-grant
     if (!this.isSetup()) {
+      return { granted: true, name: 'Commander' };
+    }
+
+    // Speech recognition unavailable (Electron without Google speech) — auto-grant
+    const SR = (window as Window & { SpeechRecognition?: unknown; webkitSpeechRecognition?: unknown }).SpeechRecognition
+            ?? (window as Window & { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition;
+    if (!SR) {
+      console.warn('[VoiceAuth] SpeechRecognition unavailable — auto-granting council access');
       return { granted: true, name: 'Commander' };
     }
 

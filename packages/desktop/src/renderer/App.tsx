@@ -235,10 +235,7 @@ export function App() {
 
   if (firstRun) return <PermissionWizard permissions={permissions} onComplete={handleWizardDone} />;
 
-  // Show lock screen if PIN is set and app is locked
-  if (locked && hasPin) return <LockScreen username={lockUsername} onUnlock={handleUnlock} />;
-
-  // Show council wake + identity verification overlay
+  // Wake word takes priority — CouncilWakeScreen has its own identity check
   if (wakeActive) return (
     <CouncilWakeScreen
       onGranted={(name) => {
@@ -251,6 +248,9 @@ export function App() {
       onDismiss={() => setWakeActive(false)}
     />
   );
+
+  // Show lock screen if PIN is set and app is locked (after wake check above)
+  if (locked && hasPin) return <LockScreen username={lockUsername} onUnlock={handleUnlock} />;
 
   return (
     <div style={styles.shell}>
