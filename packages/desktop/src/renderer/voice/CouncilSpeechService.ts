@@ -142,6 +142,32 @@ class CouncilSpeechService {
 
     this.setId(null);
   }
+
+  /**
+   * Speak an auth/wake prompt via Web Speech only (no keyStatus/tier needed).
+   * Returns when speech ends (or immediately if synthesis unavailable).
+   */
+  speakAuth(text: string): Promise<void> {
+    return new Promise<void>((resolve) => {
+      if (!('speechSynthesis' in window)) { resolve(); return; }
+      window.speechSynthesis.cancel();
+      const utt    = new SpeechSynthesisUtterance(text);
+      const voices = window.speechSynthesis.getVoices();
+      const preferred =
+        voices.find(v => /Microsoft (Aria|Jenny|Guy|Davis|Tony) Online.*Natural/i.test(v.name)) ||
+        voices.find(v => /(Ava|Allison|Samantha).*Enhanced/i.test(v.name))                      ||
+        voices.find(v => v.name === 'Samantha')                                                  ||
+        voices.find(v => /^Microsoft Aria$/i.test(v.name))                                       ||
+        voices.find(v => /Google US English/i.test(v.name))                                      ||
+        voices.find(v => v.lang === 'en-US' && v.localService);
+      if (preferred) utt.voice = preferred;
+      utt.rate  = 0.92;
+      utt.pitch = 1.0;
+      utt.onend   = () => resolve();
+      utt.onerror = () => resolve();
+      window.speechSynthesis.speak(utt);
+    });
+  }
 }
 
 /** Singleton — used by Chat.tsx, CouncilWakeScreen, and future session components. */

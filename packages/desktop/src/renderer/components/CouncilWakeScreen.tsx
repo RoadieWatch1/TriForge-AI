@@ -11,6 +11,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { voiceAuth } from '../security/VoiceAuthService';
 import { globalVoiceController } from '../voice/GlobalVoiceController';
+import { councilSpeech } from '../voice/CouncilSpeechService';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -44,7 +45,7 @@ export function CouncilWakeScreen({ onGranted, onDismiss }: Props) {
       setPhase('setup');
       setMessage('SETUP REQUIRED');
       setSubtext('Set voice credentials in Settings to enable voice auth.');
-      await voiceAuth.speak('Voice credentials not configured. Please set up in Settings.');
+      await councilSpeech.speakAuth('Voice credentials not configured. Please set up in Settings.');
       await delay(2200);
       window.dispatchEvent(new CustomEvent('triforge:council-auth-denied'));
       onDismiss();
@@ -59,7 +60,7 @@ export function CouncilWakeScreen({ onGranted, onDismiss }: Props) {
       setMessage('ACCESS DENIED');
       setSubtext('Voice recognition unavailable on this device.');
       window.dispatchEvent(new CustomEvent('triforge:council-auth-denied'));
-      await voiceAuth.speak('Access denied. Voice recognition unavailable.');
+      await councilSpeech.speakAuth('Access denied. Voice recognition unavailable.');
       await delay(1400);
       onDismiss();
       return;
@@ -74,7 +75,7 @@ export function CouncilWakeScreen({ onGranted, onDismiss }: Props) {
       setPhase('verifyingName');
       setMessage('WHO GOES THERE?');
       setSubtext(retry ? 'Verification failed. Say your name.' : 'Say your name…');
-      await voiceAuth.speak(retry
+      await councilSpeech.speakAuth(retry
         ? 'Verification failed. Please state your name again.'
         : 'Identity verification required. Please state your name.'
       );
@@ -86,7 +87,7 @@ export function CouncilWakeScreen({ onGranted, onDismiss }: Props) {
       setPhase('verifyingPassword');
       setMessage('PASSPHRASE');
       setSubtext('Say your password…');
-      await voiceAuth.speak('Please state your password.');
+      await councilSpeech.speakAuth('Please state your password.');
       const password = await voiceAuth.listen();
 
       if (voiceAuth.verify(name, password)) {
@@ -95,7 +96,7 @@ export function CouncilWakeScreen({ onGranted, onDismiss }: Props) {
         setPhase('granted');
         setMessage('ACCESS GRANTED');
         setSubtext(`Welcome back, ${displayName}. Council is ready.`);
-        await voiceAuth.speak(`Welcome back, ${displayName}. Council is ready.`);
+        await councilSpeech.speakAuth(`Welcome back, ${displayName}. Council is ready.`);
         onGranted(displayName);
         return;
       }
@@ -107,7 +108,7 @@ export function CouncilWakeScreen({ onGranted, onDismiss }: Props) {
     setMessage('ACCESS DENIED');
     setSubtext('Identity verification failed.');
     window.dispatchEvent(new CustomEvent('triforge:council-auth-denied'));
-    await voiceAuth.speak('Access denied.');
+    await councilSpeech.speakAuth('Access denied.');
     await delay(1400);
     onDismiss();
   }, [onGranted, onDismiss]);
