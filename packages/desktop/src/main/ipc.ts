@@ -1,6 +1,7 @@
 import { ipcMain, shell, dialog, app, BrowserWindow, clipboard, desktopCapturer } from 'electron';
 import fs from 'fs';
 import https from 'https';
+import http from 'http';
 import path from 'path';
 import os from 'os';
 import { execSync } from 'child_process';
@@ -3328,23 +3329,67 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   const VOSK_MODEL_URL  = 'https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip';
   const VOSK_MODEL_FILE = 'vosk-model-small-en-us-0.15.zip';
 
+  /** Download `url` to `dest`, following HTTP 301/302 redirects. */
+  function downloadFollowingRedirects(url: string, dest: string, redirectsLeft = 5): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (redirectsLeft === 0) { reject(new Error('Too many redirects downloading Vosk model')); return; }
+      const mod = url.startsWith('https') ? https : http;
+      const file = fs.createWriteStream(dest);
+      (mod as typeof https).get(url, (res) => {
+        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          file.close();
+          fs.unlink(dest, () => {});
+          const location = res.headers.location.startsWith('http')
+            ? res.headers.location
+            : new URL(res.headers.location, url).toString();
+          console.log(`[VoskDownload] Redirect ${res.statusCode} → ${location}`);
+          downloadFollowingRedirects(location, dest, redirectsLeft - 1).then(resolve, reject);
+          return;
+        }
+        if (res.statusCode && res.statusCode !== 200) {
+          file.close();
+          fs.unlink(dest, () => {});
+          reject(new Error(`Vosk model download failed: HTTP ${res.statusCode}`));
+          return;
+        }
+        res.pipe(file);
+        file.on('finish', () => { file.close(); resolve(); });
+        file.on('error', (err) => { fs.unlink(dest, () => {}); reject(err); });
+      }).on('error', (err) => { fs.unlink(dest, () => {}); reject(err); });
+    });
+  }
+
+  /** Return true if file exists AND starts with the PK zip magic bytes. */
+  function isValidZip(filePath: string): boolean {
+    if (!fs.existsSync(filePath)) return false;
+    try {
+      const buf = Buffer.alloc(4);
+      const fd  = fs.openSync(filePath, 'r');
+      fs.readSync(fd, buf, 0, 4, 0);
+      fs.closeSync(fd);
+      return buf[0] === 0x50 && buf[1] === 0x4b; // PK magic
+    } catch { return false; }
+  }
+
   ipcMain.handle('voice:wake:model-data', async () => {
     const modelsDir = path.join(app.getPath('userData'), 'vosk-models');
     const zipPath   = path.join(modelsDir, VOSK_MODEL_FILE);
     if (!fs.existsSync(modelsDir)) fs.mkdirSync(modelsDir, { recursive: true });
 
+    // Invalidate corrupted cache (e.g. previously saved redirect HTML)
+    if (fs.existsSync(zipPath) && !isValidZip(zipPath)) {
+      console.warn('[VoskDownload] Cached file is not a valid zip — deleting and re-downloading');
+      fs.unlinkSync(zipPath);
+    }
+
     if (!fs.existsSync(zipPath)) {
-      await new Promise<void>((resolve, reject) => {
-        const file = fs.createWriteStream(zipPath);
-        https.get(VOSK_MODEL_URL, (res) => {
-          res.pipe(file);
-          file.on('finish', () => { file.close(); resolve(); });
-          file.on('error', (err) => { fs.unlink(zipPath, () => {}); reject(err); });
-        }).on('error', (err) => {
-          fs.unlink(zipPath, () => {});
-          reject(err);
-        });
-      });
+      console.log('[VoskDownload] Downloading Vosk model...');
+      await downloadFollowingRedirects(VOSK_MODEL_URL, zipPath);
+      if (!isValidZip(zipPath)) {
+        fs.unlinkSync(zipPath);
+        throw new Error('Downloaded Vosk model is not a valid zip file. Check network/URL.');
+      }
+      console.log('[VoskDownload] Model downloaded and validated.');
     }
 
     // Use slice to return the exact byte range — raw .buffer can include
