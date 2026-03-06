@@ -27,7 +27,9 @@ interface Props {
 
 const delay = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
-const MAX_AUTH_RETRIES = 2;
+const MAX_AUTH_RETRIES  = 3;
+const LISTEN_TIMEOUT_MS = 10000; // 10 s per prompt
+const POST_PROMPT_DELAY = 350;   // ms between TTS end and STT start
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -65,29 +67,50 @@ export function CouncilWakeScreen({ onGranted, onDismiss, onOpenSettings }: Prop
       return;
     }
 
-    // Multi-step verification with retry
+    // Multi-step verification with retry loop
     for (let attempt = 0; attempt < MAX_AUTH_RETRIES; attempt++) {
-      const retry = attempt > 0;
+      const isRetry = attempt > 0;
 
-      // Step 1: name
-      globalVoiceController.transition('verifyingName', { force: retry });
+      // ── Step 1: name ────────────────────────────────────────────────────────
+      globalVoiceController.transition('verifyingName', { force: isRetry });
       setPhase('verifyingName');
       setMessage('WHO GOES THERE?');
-      setSubtext(retry ? 'Verification failed. Say your name.' : 'Say your name…');
-      await councilSpeech.speakAuth(retry
-        ? 'Verification failed. Please state your name again.'
-        : 'Identity verification required. Please state your name.'
+      setSubtext('Say your access name clearly after the prompt.');
+      await councilSpeech.speakAuth(
+        isRetry ? 'Please state your name again.' : 'Identity verification. Please state your name.'
       );
-      const name = await voiceAuth.listen();
-      if (!name) break; // silence → deny
+      await delay(POST_PROMPT_DELAY);
+      const name = await voiceAuth.listen(LISTEN_TIMEOUT_MS);
 
-      // Step 2: password
+      if (!name) {
+        // No speech captured — give feedback and retry if attempts remain
+        if (attempt < MAX_AUTH_RETRIES - 1) {
+          setSubtext("I didn't catch your name. Let's try again.");
+          await councilSpeech.speakAuth("I didn't catch that. Let's try again.");
+          await delay(600);
+          continue;
+        }
+        break; // retries exhausted
+      }
+
+      // ── Step 2: passphrase ──────────────────────────────────────────────────
       globalVoiceController.transition('verifyingPassword');
       setPhase('verifyingPassword');
       setMessage('PASSPHRASE');
-      setSubtext('Say your password…');
-      await councilSpeech.speakAuth('Please state your password.');
-      const password = await voiceAuth.listen();
+      setSubtext('Say your passphrase clearly.');
+      await councilSpeech.speakAuth('Please state your passphrase.');
+      await delay(POST_PROMPT_DELAY);
+      const password = await voiceAuth.listen(LISTEN_TIMEOUT_MS);
+
+      if (!password) {
+        if (attempt < MAX_AUTH_RETRIES - 1) {
+          setSubtext("I didn't catch your passphrase. Let's try again.");
+          await councilSpeech.speakAuth("I didn't catch your passphrase. Let's try again.");
+          await delay(600);
+          continue;
+        }
+        break;
+      }
 
       if (voiceAuth.verify(name, password)) {
         const displayName = name.charAt(0).toUpperCase() + name.slice(1);
@@ -99,9 +122,16 @@ export function CouncilWakeScreen({ onGranted, onDismiss, onOpenSettings }: Prop
         onGranted(displayName);
         return;
       }
+
+      // Credentials heard but didn't match
+      if (attempt < MAX_AUTH_RETRIES - 1) {
+        setSubtext('That did not match. Please try again.');
+        await councilSpeech.speakAuth('That did not match. Please try again.');
+        await delay(600);
+      }
     }
 
-    // All attempts exhausted or no input
+    // All attempts exhausted
     globalVoiceController.transition('authDenied', { force: true });
     setPhase('denied');
     setMessage('ACCESS DENIED');

@@ -55,100 +55,107 @@ class VoiceAuthService {
     });
   }
 
+  // ── Text normalization ─────────────────────────────────────────────────────
+
+  /**
+   * Normalize spoken text for comparison: lowercase, trim, collapse spaces,
+   * remove punctuation, convert hyphens/underscores to spaces.
+   */
+  private normalizeSpoken(text: string): string {
+    return (text || '')
+      .toLowerCase()
+      .trim()
+      .replace(/[_-]+/g, ' ')
+      .replace(/[^\w\s]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   // ── Speech recognition ─────────────────────────────────────────────────────
 
   /**
-   * Listen for a single utterance. Returns transcript (lowercase, trimmed).
-   * Resolves with '' on timeout or if speech API is unavailable.
+   * Listen for a single utterance. Returns normalized transcript.
+   * Resolves with '' only after real timeout or hard error — early onend
+   * triggers a single restart so brief recognition blips don't cause instant denial.
    */
-  listen(timeoutMs = 9000): Promise<string> {
+  listen(timeoutMs = 10000): Promise<string> {
     type SRCtor = new() => {
-      lang: string; interimResults: boolean; maxAlternatives: number;
+      lang: string; interimResults: boolean; maxAlternatives: number; continuous: boolean;
       onresult: ((e: Event) => void) | null;
       onerror:  ((e: Event) => void) | null;
       onend:    (() => void) | null;
       start(): void; stop(): void;
     };
+
     return new Promise((resolve) => {
       const w  = window as Window & { SpeechRecognition?: SRCtor; webkitSpeechRecognition?: SRCtor };
       const SR = w.SpeechRecognition ?? w.webkitSpeechRecognition;
-
       if (!SR) { resolve(''); return; }
 
       const rec           = new SR();
       rec.lang            = 'en-US';
       rec.interimResults  = false;
       rec.maxAlternatives = 1;
+      rec.continuous      = false;
 
-      let done = false;
-      const timer = setTimeout(() => finish(''), timeoutMs);
+      let finished   = false;
+      let hasResult  = false;
+      let didRestart = false;
+      const startedAt = Date.now();
 
       const finish = (text: string) => {
-        if (done) return;
-        done = true;
+        if (finished) return;
+        finished = true;
         clearTimeout(timer);
         try { rec.stop(); } catch { /* ignore */ }
-        resolve(text.toLowerCase().trim());
+        resolve(this.normalizeSpoken(text));
       };
 
-      rec.onresult = (e: Event) => finish(((e as Event & { results: { [i: number]: { [j: number]: { transcript: string } } } }).results[0]?.[0]?.transcript) ?? '');
-      rec.onerror  = ()  => finish('');
-      rec.onend    = ()  => finish('');
-      rec.start();
-    });
-  }
+      // Hard upper bound — user has timeoutMs total
+      const timer = setTimeout(() => finish(''), timeoutMs);
 
-  // ── Full auth flow ─────────────────────────────────────────────────────────
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      rec.onresult = (e: Event) => {
+        type R = Event & { results: { [i: number]: { [j: number]: { transcript: string } } } };
+        const transcript = (e as R).results[0]?.[0]?.transcript ?? '';
+        hasResult = true;
+        finish(transcript);
+      };
 
-  /**
-   * Run the full two-step voice identity verification.
-   * Returns { granted, name } after the user speaks their name and password.
-   * Grants access automatically if no credentials have been configured.
-   */
-  async requestIdentity(maxRetries = 2): Promise<AuthResult> {
-    // No credentials configured — cannot verify; caller should prompt setup
-    if (!this.isSetup()) {
-      return { granted: false, name: '', reason: 'not_configured' };
-    }
+      rec.onerror = () => {
+        clearTimeout(timer);
+        finish('');
+      };
 
-    // Speech recognition unavailable — cannot verify voice; deny access
-    const SR = (window as Window & { SpeechRecognition?: unknown; webkitSpeechRecognition?: unknown }).SpeechRecognition
-            ?? (window as Window & { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition;
-    if (!SR) {
-      console.warn('[VoiceAuth] SpeechRecognition unavailable — denying council access');
-      return { granted: false, name: '', reason: 'sr_unavailable' };
-    }
+      rec.onend = () => {
+        if (finished || hasResult) return;
 
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
-      const retry = attempt > 0;
+        const elapsed = Date.now() - startedAt;
 
-      // Step 1: name
-      await this.speak(retry
-        ? 'Verification failed. Please state your name again.'
-        : 'Identity verification required. Please state your name.'
-      );
-      const name = await this.listen();
-      if (!name) return { granted: false, name: '', reason: 'no_input' };
+        // If recognition ended very early (< 1.5s) without a result, restart
+        // once — browser SR can fire onend almost immediately on some platforms.
+        if (!didRestart && elapsed < 1500) {
+          didRestart = true;
+          try { rec.start(); return; } catch { /* fall through to timeout */ }
+        }
 
-      // Step 2: password
-      await this.speak('Please state your password.');
-      const password = await this.listen();
+        // Otherwise let the timeout own the final failure — don't deny instantly.
+      };
 
-      if (this.verify(name, password)) {
-        return { granted: true, name };
+      try { rec.start(); } catch {
+        clearTimeout(timer);
+        finish('');
       }
-    }
-
-    return { granted: false, name: '', reason: 'max_retries' };
+    });
   }
 
   // ── Verification ───────────────────────────────────────────────────────────
 
-  /** Compare spoken credentials against localStorage (case-insensitive). */
+  /** Compare spoken credentials against stored values (both normalized). */
   verify(name: string, password: string): boolean {
-    const storedName = (localStorage.getItem('triforge_auth_name') ?? '').toLowerCase().trim();
-    const storedPass = (localStorage.getItem('triforge_auth_pass') ?? '').toLowerCase().trim();
-    return name === storedName && password === storedPass;
+    const storedName = this.normalizeSpoken(localStorage.getItem('triforge_auth_name') ?? '');
+    const storedPass = this.normalizeSpoken(localStorage.getItem('triforge_auth_pass') ?? '');
+    return this.normalizeSpoken(name) === storedName && this.normalizeSpoken(password) === storedPass;
   }
 
   /** Returns true if credentials have been configured. */
@@ -163,8 +170,8 @@ class VoiceAuthService {
 
   /** Save credentials (called from a Settings screen or first-run wizard). */
   setup(name: string, password: string): void {
-    localStorage.setItem('triforge_auth_name', name.toLowerCase().trim());
-    localStorage.setItem('triforge_auth_pass', password.toLowerCase().trim());
+    localStorage.setItem('triforge_auth_name', this.normalizeSpoken(name));
+    localStorage.setItem('triforge_auth_pass', this.normalizeSpoken(password));
   }
 
   /** Remove credentials (resets to unconfigured / first-run mode). */
