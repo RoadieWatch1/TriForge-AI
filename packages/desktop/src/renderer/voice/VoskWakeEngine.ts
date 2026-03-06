@@ -68,14 +68,22 @@ export class VoskWakeEngine {
       this.recognizer.on('partialresult', this._handlePartial.bind(this));
 
       // ── Mic capture ────────────────────────────────────────────────────────
+      // Do NOT hard-constrain sampleRate in getUserMedia — on Windows the
+      // device may not natively support 16 kHz and the call will hang.
+      // We create the AudioContext at 16 kHz which forces the browser to
+      // resample the mic track automatically.
       console.log('[WakeEngine] Requesting mic access...');
       this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true } as MediaTrackConstraints,
+        audio: { channelCount: 1, echoCancellation: true } as MediaTrackConstraints,
       });
+      console.log('[WakeEngine] Mic granted.');
 
+      // AudioContext at 16 kHz — browser resamples mic track to match
       this.audioCtx = new AudioContext({ sampleRate: 16000 });
       const source  = this.audioCtx.createMediaStreamSource(this.stream);
-      this.processor = this.audioCtx.createScriptProcessor(4096, 1, 1);
+      // 8192-sample buffer (512 ms at 16 kHz) — halves WASM call frequency
+      // vs 4096, reducing main-thread blocking from onaudioprocess
+      this.processor = this.audioCtx.createScriptProcessor(8192, 1, 1);
 
       this.processor.onaudioprocess = (e) => {
         if (this.paused || !this.recognizer) return;
