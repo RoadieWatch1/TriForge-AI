@@ -7,7 +7,7 @@ import { ExecutionPlanView, type ExecutionPlan } from './ExecutionPlanView';
 import { ForgeChamber } from './ForgeChamber';
 import { CouncilChamber } from './forge/CouncilChamber';
 import { loadLastMission, type LastMissionSummary } from '../forge/ForgeContextStore';
-import { voiceService } from '../voice/VoiceService';
+import { voiceService, type WakeStatus } from '../voice/VoiceService';
 import { onCouncilCommand, dispatchCommand } from '../command/CommandDispatcher';
 import { councilPresence } from '../state/CouncilPresence';
 import { playConsensusTone, playListeningTone } from '../audio/councilSounds';
@@ -268,6 +268,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   };
   const [voiceChatActive, setVoiceChatActive] = useState(false);
   const [handsFreeMode, setHandsFreeMode] = useState(false);
+  const [wakeStatus, setWakeStatus] = useState(() => voiceService.status);
   const [councilListening, setCouncilListening] = useState(false);
   // Council Deliberation Mode — 3-phase cross-reaction before full response
   const [deliberateMode, setDeliberateMode] = useState(() =>
@@ -412,6 +413,13 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   // 'not-allowed' because Electron never triggers the permission dialog on its own.
 
   // ── Council authenticated — fired by App.tsx after identity verification passes
+  // Track wake engine status (loading → ready | error)
+  useEffect(() => {
+    const handler = (e: Event) => setWakeStatus((e as CustomEvent<WakeStatus>).detail);
+    window.addEventListener('triforge:wake-status', handler);
+    return () => window.removeEventListener('triforge:wake-status', handler);
+  }, []);
+
   // triforge:council-wake is intercepted by App.tsx → CouncilWakeScreen → auth
   // Only start hands-free mode here, AFTER the user is verified.
   useEffect(() => {
@@ -1517,6 +1525,16 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
               >
                 {handsFreeMode ? '◉ Council: Active' : '◎ Council Mode'}
               </button>
+              {wakeStatus !== 'idle' && (
+                <div style={{
+                  fontSize: 9, fontWeight: 700, letterSpacing: '0.07em', textAlign: 'center',
+                  padding: '2px 6px', borderRadius: 3, marginTop: -1,
+                  color: wakeStatus === 'ready' ? '#34d399' : wakeStatus === 'error' ? '#f87171' : '#fbbf24',
+                  background: wakeStatus === 'ready' ? 'rgba(52,211,153,0.08)' : wakeStatus === 'error' ? 'rgba(248,113,113,0.08)' : 'rgba(251,191,36,0.08)',
+                }}>
+                  {wakeStatus === 'loading' ? '⏳ WAKE LOADING…' : wakeStatus === 'ready' ? '● WAKE READY' : '✕ WAKE FAILED'}
+                </div>
+              )}
               <button
                 style={{ ...cs.dockBtn, ...(voiceChatActive ? { color: 'var(--accent)', borderColor: 'rgba(99,102,241,0.4)' } : {}) }}
                 onClick={() => {

@@ -18,17 +18,32 @@ import { onCouncilCommand } from '../command/CommandDispatcher';
 import { councilPresence } from '../state/CouncilPresence';
 import { playWakeTone } from '../audio/councilSounds';
 
+export type WakeStatus = 'idle' | 'loading' | 'ready' | 'error';
+
 class VoiceService {
   private bridge:   VoiceCommandBridge | null = null;
   private unsubCmd: (() => void) | null = null;
   private _enabled = true;
+  private _status: WakeStatus = 'idle';
+
+  get status(): WakeStatus { return this._status; }
+
+  private _setStatus(s: WakeStatus) {
+    this._status = s;
+    window.dispatchEvent(new CustomEvent('triforge:wake-status', { detail: s }));
+  }
 
   /** Start the wake engine. Idempotent — safe to call multiple times. */
   start(): void {
     if (!this._enabled || this.bridge) return;
 
+    this._setStatus('loading');
     this.bridge = new VoiceCommandBridge();
-    this.bridge.start(); // async: downloads vosk model on first run (~40 MB), then listens
+    this.bridge.start().then(() => {
+      this._setStatus('ready');
+    }).catch(() => {
+      this._setStatus('error');
+    });
 
     this.unsubCmd = onCouncilCommand((matched) => {
       if (matched.command === 'council_assemble') {

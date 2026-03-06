@@ -19,8 +19,8 @@ export class VoiceCommandBridge {
   private engine:        VoskWakeEngine | null = null;
   private unsubscribeCmd: (() => void) | null  = null;
 
-  /** Start the wake engine and wire up command routing. */
-  start(): void {
+  /** Start the wake engine and wire up command routing. Returns Promise that resolves when mic is live. */
+  start(): Promise<void> {
     this.engine = new VoskWakeEngine((text) => {
       if (AUTONOMY_FLAGS.enableOfflineWake) {
         // Offline: dispatch directly — no main-process round-trip
@@ -31,7 +31,7 @@ export class VoiceCommandBridge {
       }
     });
 
-    this.engine.start();
+    const ready = this.engine.start();
 
     // Online mode only: listen for sanitized command names from main (trust boundary)
     if (!AUTONOMY_FLAGS.enableOfflineWake) {
@@ -39,6 +39,8 @@ export class VoiceCommandBridge {
         activateCommand(cmd, 'voice');
       });
     }
+
+    return ready;
   }
 
   pause():  void { this.engine?.pause(); }
