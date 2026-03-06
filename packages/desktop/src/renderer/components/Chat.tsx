@@ -560,8 +560,8 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       if (preferred) utt.voice = preferred;
       utt.rate  = 0.92;
       utt.pitch = 1.0;
-      utt.onend = () => setSpeaking(null); councilPresence.setState('idle');
-      utt.onerror = () => setSpeaking(null); councilPresence.setState('idle');
+      utt.onend   = () => { setSpeaking(null); councilPresence.setState('idle'); };
+      utt.onerror = () => { setSpeaking(null); councilPresence.setState('idle'); };
       window.speechSynthesis.speak(utt);
       return;
     }
@@ -587,8 +587,9 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   }, []);
 
   // Voice interrupt detection — lightweight SpeechRecognition active only while TTS is playing
+  // Suppressed during hands-free mode: HandsFreeVoice owns the mic and handles interrupts itself.
   useEffect(() => {
-    if (!speaking) {
+    if (!speaking || handsFreeMode) {
       interruptRecRef.current?.stop();
       interruptRecRef.current = null;
       return;
@@ -617,7 +618,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       rec.stop();
       interruptRecRef.current = null;
     };
-  }, [speaking, interruptSpeech]);
+  }, [speaking, handsFreeMode, interruptSpeech]);
 
   // ── Send helpers ──────────────────────────────────────────────────────────────
 
@@ -803,7 +804,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           playConsensusTone();
         }
 
-        if (!result.error && result.synthesis && voiceMode) {
+        if (!result.error && result.synthesis && (voiceMode || handsFreeMode)) {
           speakMessage(aiMsg.id, result.synthesis);
         }
       } else {
@@ -847,7 +848,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           streaming: false,
         } : msg));
 
-        if (result.text && voiceMode) {
+        if (result.text && (voiceMode || handsFreeMode)) {
           speakMessage(streamId, result.text);
         }
       }
@@ -862,7 +863,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       setSending(false);
       inputRef.current?.focus();
     }
-  }, [messages, sending, keyStatus, mode, tier, onMessageSent, speakMessage]);
+  }, [messages, sending, keyStatus, mode, tier, onMessageSent, speakMessage, handsFreeMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const clearChat = () => {
     const welcome = { id: crypto.randomUUID(), role: 'system' as const, content: getWelcomeMessage(mode, keyStatus), timestamp: new Date() };
@@ -1742,9 +1743,10 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         active={handsFreeMode}
         isSpeaking={!!speaking}
         onTranscript={(t) => {
-          // "Open up desktop" exits voice session and returns to normal chat
+          // Exit phrases — end the hands-free session without sending to the council
           const lower = t.toLowerCase();
-          if (lower.includes('open up desktop') || lower.includes('open desktop') || lower.includes('exit council')) {
+          const EXIT_PHRASES = ['open up desktop', 'open desktop', 'exit council', 'stop listening', 'stop council', 'goodbye council', 'council goodbye'];
+          if (EXIT_PHRASES.some(p => lower.includes(p))) {
             setHandsFreeMode(false);
             return;
           }

@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { WAKE_PHRASES } from '../voice/VoskWakeEngine';
+import { councilPresence } from '../state/CouncilPresence';
+import { playListeningTone, playErrorTone } from '../audio/councilSounds';
 
 // ── HandsFreeVoice ────────────────────────────────────────────────────────────
 //
@@ -64,6 +66,9 @@ export function HandsFreeVoice({ active, isSpeaking, onTranscript, onStop }: Pro
     inactivityTimer.current = setTimeout(() => {
       if (activeRef.current) {
         console.log('[HandsFreeVoice] 10 min inactivity — exiting hands-free mode');
+        // Signal the user audibly before dropping the session
+        playErrorTone();
+        councilPresence.setState('idle');
         onStop();
       }
     }, INACTIVITY_MS);
@@ -101,7 +106,13 @@ export function HandsFreeVoice({ active, isSpeaking, onTranscript, onStop }: Pro
     if (!activeRef.current || speakingRef.current || listeningRef.current) return;
 
     const SR = getSR();
-    if (!SR) { onStop(); return; }
+    if (!SR) {
+      console.warn('[HandsFreeVoice] SpeechRecognition not available — cannot activate hands-free mode');
+      onStop();
+      return;
+    }
+
+    councilPresence.setState('listening'); // UX 3: sync presence on every listen cycle
 
     const rec = new SR();
     rec.continuous      = false;
@@ -120,10 +131,10 @@ export function HandsFreeVoice({ active, isSpeaking, onTranscript, onStop }: Pro
       if (!trimmed) return;
 
       // If user said only a wake phrase (e.g. "council") — already in session,
-      // just keep listening rather than sending it as a message.
+      // play a confirmation tone and keep listening rather than sending it as a message.
       if (WAKE_PHRASE_SET.has(trimmed.toLowerCase())) {
+        playListeningTone(); // UX 4: audible "yes, I hear you, still active"
         stopListening();
-        // restart immediately to keep listening
         restartTimer.current = setTimeout(() => startListening(), 200);
         return;
       }

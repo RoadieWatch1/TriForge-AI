@@ -14,7 +14,8 @@
 
 const FUZZY_THRESHOLD = 0.82;
 
-// All phrases that should wake the council (lowercase)
+// All phrases that should wake the council (lowercase).
+// Must stay in sync with WAKE_PHRASES in VoskWakeEngine.ts.
 const WAKE_PHRASES = [
   'council',
   'hey council',
@@ -22,6 +23,10 @@ const WAKE_PHRASES = [
   'council listen',
   'council help',
   'council assemble',
+  'council deliberate',
+  'claude advise',
+  'apply solution',
+  'apply decision',
 ] as const;
 
 // Phonetic variants: common mis-recognitions of each core wake word

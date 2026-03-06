@@ -3,8 +3,8 @@
 // Singleton that owns the VoiceCommandBridge lifecycle and fires the
 // `triforge:council-wake` custom event when the council wake word is detected.
 //
-// Started from index.tsx on app boot so wake listening is always active,
-// independent of which React component is mounted.
+// Started from Chat.tsx on mount so the mic permission dialog appears after
+// the UI is visible, not on raw app boot.
 //
 // Usage:
 //   voiceService.start()    — boot (called once from index.tsx)
