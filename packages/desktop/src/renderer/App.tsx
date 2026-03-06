@@ -264,6 +264,7 @@ export function App() {
         setPendingSessionName(name);
       }}
       onDismiss={() => setWakeActive(false)}
+      onOpenSettings={() => { setWakeActive(false); setScreen('settings'); }}
     />
   );
 
@@ -609,9 +610,9 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
         </div>
       ))}
 
-      <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>Voice</h2>
+      <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>Spoken Reply Voice</h2>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
-        Enable spoken AI responses. When active, TriForge reads answers aloud using your system voice or OpenAI TTS (if an OpenAI key is configured). You can also toggle voice from the chat dock.
+        Lets TriForge speak its replies out loud. This does <strong>not</strong> enable wake access — it only controls whether AI responses are read aloud.
       </p>
       <div style={styles.permRow}>
         <button
@@ -621,18 +622,18 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
           <div style={{ ...styles.toggleKnob, ...(voiceMode ? styles.toggleKnobOn : {}) }} />
         </button>
         <div>
-          <div style={styles.permLabel}>Voice Output (Text-to-Speech)</div>
+          <div style={styles.permLabel}>Spoken Reply Voice</div>
           <div style={styles.permDesc}>
             {voiceMode
               ? 'Active — AI responses will be spoken aloud.'
-              : 'Off — AI responses are text only.'}
+              : 'Off — AI responses are text only. This is separate from wake word access.'}
           </div>
         </div>
       </div>
 
-      <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>Voice Access Credentials</h2>
+      <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>Wake Word Voice Access</h2>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
-        Set a name and passphrase for wake-word voice authentication. When you say the wake word, TriForge will ask you to speak these credentials before opening a session.
+        Required for saying <strong>"Council"</strong> and unlocking TriForge by voice. TriForge will ask for this name and passphrase after detecting the wake word. This is separate from the Spoken Reply Voice toggle above.
       </p>
       <VoiceCredentialsSection />
 
@@ -786,7 +787,7 @@ function VoiceCredentialsSection() {
     setConfiguredName(name.trim().toLowerCase());
     setName('');
     setPass('');
-    setSuccess('Voice credentials saved.');
+    setSuccess('Wake Word Voice Access saved. You can now say "Council" and sign in by voice.');
     setSaving(false);
   };
 
@@ -796,7 +797,7 @@ function VoiceCredentialsSection() {
     voiceAuth.clearCredentials();
     setConfigured(false);
     setConfiguredName(null);
-    setSuccess('Voice credentials removed.');
+    setSuccess('Wake Word Voice Access credentials removed.');
     setRemoving(false);
   };
 

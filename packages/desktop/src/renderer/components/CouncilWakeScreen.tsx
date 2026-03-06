@@ -19,6 +19,7 @@ type Phase = 'wake' | 'verifyingName' | 'verifyingPassword' | 'granted' | 'denie
 
 interface Props {
   onGranted: (name: string) => void;
+  onOpenSettings?: () => void;
   onDismiss: () => void;
 }
 
@@ -30,7 +31,7 @@ const MAX_AUTH_RETRIES = 2;
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function CouncilWakeScreen({ onGranted, onDismiss }: Props) {
+export function CouncilWakeScreen({ onGranted, onDismiss, onOpenSettings }: Props) {
   const [phase,   setPhase]   = useState<Phase>('wake');
   const [message, setMessage] = useState('COUNCIL ACTIVATED');
   const [subtext, setSubtext] = useState('Standby…');
@@ -39,16 +40,14 @@ export function CouncilWakeScreen({ onGranted, onDismiss }: Props) {
     // Brief animation hold before starting auth
     await delay(900);
 
-    // No credentials — show setup prompt and dismiss
+    // No credentials — show setup prompt, let user navigate or dismiss
     if (!voiceAuth.isSetup()) {
       globalVoiceController.transition('verifyingName');
       setPhase('setup');
-      setMessage('SETUP REQUIRED');
-      setSubtext('Set voice credentials in Settings to enable voice auth.');
-      await councilSpeech.speakAuth('Voice credentials not configured. Please set up in Settings.');
-      await delay(2200);
-      window.dispatchEvent(new CustomEvent('triforge:council-auth-denied'));
-      onDismiss();
+      setMessage('WAKE ACCESS NOT SET UP');
+      setSubtext('Go to Settings → Wake Word Voice Access and save your access name and passphrase. The Spoken Reply Voice toggle alone does not enable wake access.');
+      await councilSpeech.speakAuth('Wake Word Voice Access is not set up yet. Please go to Settings and save your access name and passphrase.');
+      // Don't auto-dismiss — let the user read the message and click Open Settings
       return;
     }
 
@@ -196,8 +195,21 @@ export function CouncilWakeScreen({ onGranted, onDismiss }: Props) {
         <div style={s.sub}>{subtext}</div>
       </div>
 
+      {/* Open Settings shortcut — shown only when credentials are missing */}
+      {phase === 'setup' && onOpenSettings && (
+        <button
+          style={{ ...s.dismiss, background: 'var(--accent)', color: '#fff', border: 'none', fontWeight: 700, marginBottom: 8 }}
+          onClick={() => { window.dispatchEvent(new CustomEvent('triforge:council-auth-denied')); onOpenSettings(); }}
+        >
+          Open Wake Word Voice Access Settings
+        </button>
+      )}
+
       {/* Dismiss button */}
-      <button style={s.dismiss} onClick={onDismiss} title="Dismiss">
+      <button style={s.dismiss} onClick={() => {
+        if (phase === 'setup') window.dispatchEvent(new CustomEvent('triforge:council-auth-denied'));
+        onDismiss();
+      }} title="Dismiss">
         Dismiss
       </button>
 
