@@ -448,13 +448,18 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     return () => unsub();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Pause wake detection + sync council presence while TTS or HandsFreeVoice is active
+  // Wake engine control while hands-free or TTS is active
   useEffect(() => {
-    if (speaking || handsFreeMode) {
-      voiceService.pause();
-      if (handsFreeMode && !speaking) councilPresence.setState('listening');
+    if (handsFreeMode) {
+      // HandsFreeVoice owns the mic — fully disable wake engine so Vosk
+      // cannot re-trigger the wake flow while the user is already in session.
+      voiceService.disable();
+      if (!speaking) councilPresence.setState('listening');
+    } else if (speaking) {
+      voiceService.pause(); // TTS playing — mute wake engine but keep it warm
     } else {
-      voiceService.resume();
+      voiceService.enable();  // re-enable after hands-free ended
+      voiceService.resume();  // un-pause after TTS ended
       councilPresence.setState('idle');
     }
   }, [speaking, handsFreeMode]);
