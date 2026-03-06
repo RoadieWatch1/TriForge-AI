@@ -47,13 +47,14 @@ export class VoskWakeEngine {
   /** Download model, open mic, start recognition. Throws on any failure. */
   async start(): Promise<void> {
     try {
-      console.log('[WakeEngine] Starting — fetching Vosk model...');
-      const buf: ArrayBuffer = await window.triforge.voice.getWakeModelData();
-      const blobUrl = URL.createObjectURL(new Blob([buf], { type: 'application/zip' }));
+      console.log('[WakeEngine] Starting — ensuring Vosk model is cached...');
+      // ensureWakeModel downloads/validates the zip (first run only).
+      // createModel then fetches directly via vosk-model:// custom protocol —
+      // no 40 MB ArrayBuffer over IPC, no manual blob creation.
+      await window.triforge.voice.ensureWakeModel();
 
-      console.log('[WakeEngine] Model received — initializing recognizer...');
-      this.model = await createModel(blobUrl, -1);
-      URL.revokeObjectURL(blobUrl);
+      console.log('[WakeEngine] Model ready — initializing recognizer...');
+      this.model = await createModel('vosk-model://model.zip', -1);
 
       this.recognizer = new this.model.KaldiRecognizer(16000, WAKE_GRAMMAR);
       this.recognizer.setWords(false);

@@ -3371,12 +3371,12 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     } catch { return false; }
   }
 
-  ipcMain.handle('voice:wake:model-data', async () => {
+  /** Shared: ensure the model zip is on disk, return its path. */
+  async function ensureWakeModel(): Promise<void> {
     const modelsDir = path.join(app.getPath('userData'), 'vosk-models');
     const zipPath   = path.join(modelsDir, VOSK_MODEL_FILE);
     if (!fs.existsSync(modelsDir)) fs.mkdirSync(modelsDir, { recursive: true });
 
-    // Invalidate corrupted cache (e.g. previously saved redirect HTML)
     if (fs.existsSync(zipPath) && !isValidZip(zipPath)) {
       console.warn('[VoskDownload] Cached file is not a valid zip — deleting and re-downloading');
       fs.unlinkSync(zipPath);
@@ -3391,9 +3391,18 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       }
       console.log('[VoskDownload] Model downloaded and validated.');
     }
+  }
 
-    // Use slice to return the exact byte range — raw .buffer can include
-    // pool padding beyond the file's actual bytes on small allocations.
+  // New: ensure model is cached, renderer fetches it via vosk-model:// protocol
+  ipcMain.handle('voice:wake:ensure-model', async () => {
+    await ensureWakeModel();
+    // Returns nothing — renderer uses vosk-model://model.zip custom protocol
+  });
+
+  // Legacy: kept for backward compat, returns raw bytes (40 MB IPC transfer)
+  ipcMain.handle('voice:wake:model-data', async () => {
+    await ensureWakeModel();
+    const zipPath = path.join(app.getPath('userData'), 'vosk-models', VOSK_MODEL_FILE);
     const b = fs.readFileSync(zipPath);
     return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
   });

@@ -1,5 +1,6 @@
-import { app, BrowserWindow, nativeTheme, globalShortcut, Menu } from 'electron';
+import { app, BrowserWindow, nativeTheme, globalShortcut, Menu, protocol } from 'electron';
 import path from 'path';
+import fs from 'fs';
 import { Store } from './store';
 import { setupIpc } from './ipc';
 import { setupTray } from './tray';
@@ -146,9 +147,31 @@ function createWindow(): void {
 }
 
 // ── App lifecycle ─────────────────────────────────────────────────────────────
+// ── vosk-model:// custom protocol ────────────────────────────────────────────
+// Serves the cached Vosk zip directly from userData/vosk-models/ so the
+// renderer can call createModel('vosk-model://model.zip') without transferring
+// 40 MB over IPC as an ArrayBuffer on every boot.
+// Must be registered before app.whenReady resolves.
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'vosk-model', privileges: { standard: true, supportFetchAPI: true, bypassCSP: true } },
+]);
+
 app.whenReady().then(async () => {
   bootLog('App ready');
   nativeTheme.themeSource = 'dark';
+
+  // Register vosk-model:// handler — serves cached zip from disk
+  protocol.registerBufferProtocol('vosk-model', (_request, callback) => {
+    const zipPath = path.join(
+      app.getPath('userData'), 'vosk-models', 'vosk-model-small-en-us-0.15.zip',
+    );
+    try {
+      const data = fs.readFileSync(zipPath);
+      callback({ data, mimeType: 'application/zip' });
+    } catch {
+      callback({ error: -6 }); // FILE_NOT_FOUND
+    }
+  });
 
   // Build application menu.
   // - macOS: needs a full menu bar (App + Edit + Window) per HIG; the App menu

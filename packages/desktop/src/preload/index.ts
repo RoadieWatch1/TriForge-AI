@@ -119,7 +119,12 @@ const api = {
       ipcRenderer.on('voice-command', h);
       return () => ipcRenderer.removeListener('voice-command', h);
     },
-    /** Download Vosk model (first run ~40 MB, cached in userData). Returns zip ArrayBuffer. */
+    /** Ensure Vosk model is cached in userData (downloads on first run). Renderer
+     *  then fetches the zip directly via vosk-model://model.zip custom protocol —
+     *  no 40 MB ArrayBuffer over IPC. */
+    ensureWakeModel: (): Promise<void> =>
+      ipcRenderer.invoke('voice:wake:ensure-model') as Promise<void>,
+    /** @deprecated Use ensureWakeModel() + vosk-model://model.zip instead. */
     getWakeModelData: (): Promise<ArrayBuffer> =>
       ipcRenderer.invoke('voice:wake:model-data') as Promise<ArrayBuffer>,
   },
