@@ -88,6 +88,7 @@ export function App() {
 
   // Council wake screen state
   const [wakeActive, setWakeActive] = useState(false);
+  const [pendingSessionName, setPendingSessionName] = useState<string | null>(null);
 
   // Session lock state
   const [hasPin, setHasPin] = useState(false);
@@ -189,16 +190,11 @@ export function App() {
     return () => window.removeEventListener('triforge:council-wake', handler);
   }, []);
 
-  // Advance state machine on auth outcome
+  // Reset state machine on auth denial
   useEffect(() => {
-    const onGranted = () => globalVoiceController.transition('authGranted');
-    const onDenied  = () => globalVoiceController.reset();
-    window.addEventListener('triforge:council-authenticated', onGranted);
-    window.addEventListener('triforge:council-auth-denied',   onDenied);
-    return () => {
-      window.removeEventListener('triforge:council-authenticated', onGranted);
-      window.removeEventListener('triforge:council-auth-denied',   onDenied);
-    };
+    const onDenied = () => globalVoiceController.reset();
+    window.addEventListener('triforge:council-auth-denied', onDenied);
+    return () => window.removeEventListener('triforge:council-auth-denied', onDenied);
   }, []);
 
   const refreshKeys = async () => {
@@ -261,10 +257,10 @@ export function App() {
   if (wakeActive) return (
     <CouncilWakeScreen
       onGranted={(name) => {
+        setLocked(false);
         setWakeActive(false);
         setScreen('chat');
-        // Signal Chat.tsx to activate hands-free voice session
-        window.dispatchEvent(new CustomEvent('triforge:council-authenticated', { detail: { name } }));
+        setPendingSessionName(name);
       }}
       onDismiss={() => setWakeActive(false)}
     />
@@ -383,6 +379,8 @@ export function App() {
               onNavigateToFiles={() => setScreen('files')}
               voiceMode={voiceMode}
               onVoiceModeChange={handleVoiceModeChange}
+              pendingVoiceSession={pendingSessionName}
+              onVoiceSessionClaimed={() => setPendingSessionName(null)}
             />
           )}
           {screen === 'forge' && (

@@ -92,6 +92,9 @@ interface Props {
   /** Controlled voice-output mode — set by parent (Settings screen). */
   voiceMode?: boolean;
   onVoiceModeChange?: (on: boolean) => void;
+  /** Non-null when wake auth just succeeded — Chat claims it and starts the session. */
+  pendingVoiceSession?: string | null;
+  onVoiceSessionClaimed?: () => void;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -229,7 +232,7 @@ Format with actual email copy that can be used directly, not just descriptions.`
 
 // ── Chat Component ─────────────────────────────────────────────────────────────
 
-export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, onUpgradeClick, onBuildApp, activeProfileId, onProfileSwitch, onProfileDeactivate, prefill, onClearPrefill, onNavigateToCommand, onNavigateToFiles, voiceMode: voiceModeProp, onVoiceModeChange }: Props) {
+export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, onUpgradeClick, onBuildApp, activeProfileId, onProfileSwitch, onProfileDeactivate, prefill, onClearPrefill, onNavigateToCommand, onNavigateToFiles, voiceMode: voiceModeProp, onVoiceModeChange, pendingVoiceSession, onVoiceSessionClaimed }: Props) {
   const [messages, setMessages] = useState<Message[]>(() => {
     // Load persisted history on first render
     try {
@@ -425,31 +428,27 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     }
   }, [speaking]);
 
-  // triforge:council-wake is intercepted by App.tsx → CouncilWakeScreen → auth
-  // Start UnifiedVoiceSession AFTER the user is verified.
+  // Start a voice session when App.tsx hands off a newly-authenticated name.
+  // Prop-based handoff avoids the race where the event fires before Chat mounts.
   useEffect(() => {
-    const handler = (e: Event) => {
-      const name = (e as CustomEvent<{ name: string }>).detail?.name ?? 'Commander';
-      setHandsFreeMode(true);
-      setCouncilListening(true);
-      setTimeout(() => setCouncilListening(false), 500);
-      window.triforge.voice.notifyWake();
-      playListeningTone();
-      // Start session first — it will wait in speaking-paused state while welcome plays
-      unifiedVoiceSession.start({
-        userName: name,
-        onTranscript: (t) => {
-          if (voiceIntentRouter.route(t)) return;
-          sendMessageRef.current(t);
-        },
-        onEnd: () => setHandsFreeMode(false),
-      });
-      // Welcome message — councilSpeech fires triforge:council-speaking which pauses the mic loop
-      councilSpeech.speak(`session-welcome-${Date.now()}`, `Council session started. Listening, ${name}.`, keyStatusRef.current, tierRef.current);
-    };
-    window.addEventListener('triforge:council-authenticated', handler);
-    return () => window.removeEventListener('triforge:council-authenticated', handler);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!pendingVoiceSession) return;
+    const name = pendingVoiceSession;
+    onVoiceSessionClaimed?.();
+    setHandsFreeMode(true);
+    setCouncilListening(true);
+    setTimeout(() => setCouncilListening(false), 500);
+    window.triforge.voice.notifyWake();
+    playListeningTone();
+    unifiedVoiceSession.start({
+      userName: name,
+      onTranscript: (t) => {
+        if (voiceIntentRouter.route(t)) return;
+        sendMessageRef.current(t);
+      },
+      onEnd: () => setHandsFreeMode(false),
+    });
+    councilSpeech.speak('session-welcome', `Welcome back, ${name}. How can I help?`, keyStatusRef.current, tierRef.current);
+  }, [pendingVoiceSession]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Voice-triggered mission commands ─────────────────────────────────────────
   useEffect(() => {
