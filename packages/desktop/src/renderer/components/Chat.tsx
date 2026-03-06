@@ -1502,6 +1502,22 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
                 {voiceMode ? 'Voice: On' : 'Voice: Off'}
               </button>
               <button
+                style={{ ...cs.dockBtn, ...(handsFreeMode ? { color: '#a78bfa', borderColor: 'rgba(167,139,250,0.5)', background: 'rgba(167,139,250,0.08)' } : {}) }}
+                onClick={() => {
+                  const next = !handsFreeMode;
+                  setHandsFreeMode(next);
+                  if (next) {
+                    councilPresence.setState('listening');
+                    playListeningTone();
+                  } else {
+                    councilPresence.setState('idle');
+                  }
+                }}
+                title={handsFreeMode ? 'Click to exit Council Mode' : 'Activate hands-free Council voice session'}
+              >
+                {handsFreeMode ? '◉ Council: Active' : '◎ Council Mode'}
+              </button>
+              <button
                 style={{ ...cs.dockBtn, ...(voiceChatActive ? { color: 'var(--accent)', borderColor: 'rgba(99,102,241,0.4)' } : {}) }}
                 onClick={() => {
                   const next = !voiceChatActive;
@@ -1710,8 +1726,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           }
           // Route to autonomy mission if a known intent is matched
           if (voiceIntentRouter.route(t)) return;
-          setHandsFreeMode(false);
-          setTimeout(() => setHandsFreeMode(true), 100);
+          // Send to council — HandsFreeVoice auto-restarts after onend fires
           sendMessage(t);
         }}
         onStop={() => setHandsFreeMode(false)}

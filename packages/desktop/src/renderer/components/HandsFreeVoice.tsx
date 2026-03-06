@@ -23,8 +23,27 @@ interface Props {
   onStop: () => void;
 }
 
+// Local ctor type — avoids dependency on global SpeechRecognition name
+type SRCtor = new() => {
+  continuous:     boolean;
+  interimResults: boolean;
+  lang:           string;
+  onresult:  ((e: Event) => void) | null;
+  onerror:   ((e: Event) => void) | null;
+  onend:     (() => void) | null;
+  start(): void;
+  stop():  void;
+};
+
+type SRResult = { isFinal: boolean; [j: number]: { transcript: string } };
+
+function getSR(): SRCtor | undefined {
+  const w = window as Window & { SpeechRecognition?: SRCtor; webkitSpeechRecognition?: SRCtor };
+  return w.SpeechRecognition ?? w.webkitSpeechRecognition;
+}
+
 export function HandsFreeVoice({ active, isSpeaking, onTranscript, onStop }: Props) {
-  const recRef       = useRef<SpeechRecognition | null>(null);
+  const recRef       = useRef<{ stop(): void } | null>(null);
   const activeRef    = useRef(active);
   const speakingRef  = useRef(isSpeaking);
   const listeningRef = useRef(false);
@@ -59,7 +78,7 @@ export function HandsFreeVoice({ active, isSpeaking, onTranscript, onStop }: Pro
   function startListening() {
     if (!activeRef.current || speakingRef.current || listeningRef.current) return;
 
-    const SR = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    const SR = getSR();
     if (!SR) { onStop(); return; }
 
     const rec = new SR();
@@ -69,11 +88,11 @@ export function HandsFreeVoice({ active, isSpeaking, onTranscript, onStop }: Pro
     recRef.current      = rec;
     listeningRef.current = true;
 
-    rec.onresult = (e: SpeechRecognitionEvent) => {
-      // Collect all results — use the last final transcript
+    rec.onresult = (e: Event) => {
+      const results = (e as Event & { results: SRResult[] }).results;
       let finalText = '';
-      for (let i = 0; i < e.results.length; i++) {
-        if (e.results[i].isFinal) finalText += e.results[i][0].transcript;
+      for (let i = 0; i < results.length; i++) {
+        if (results[i].isFinal) finalText += results[i][0].transcript;
       }
       if (finalText.trim()) {
         onTranscript(finalText.trim());
@@ -115,12 +134,4 @@ export function HandsFreeVoice({ active, isSpeaking, onTranscript, onStop }: Pro
   }
 
   return null; // headless — no visual output
-}
-
-// Web Speech API type declarations (Electron/Chromium supports these)
-declare global {
-  interface Window {
-    SpeechRecognition?: new () => SpeechRecognition;
-    webkitSpeechRecognition?: new () => SpeechRecognition;
-  }
 }
