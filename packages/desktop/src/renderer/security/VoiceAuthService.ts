@@ -156,6 +156,11 @@ class VoiceAuthService {
     return !!localStorage.getItem('triforge_auth_name');
   }
 
+  /** Returns the stored name (display only) or null if not configured. */
+  getConfiguredName(): string | null {
+    return localStorage.getItem('triforge_auth_name') || null;
+  }
+
   /** Save credentials (called from a Settings screen or first-run wizard). */
   setup(name: string, password: string): void {
     localStorage.setItem('triforge_auth_name', name.toLowerCase().trim());

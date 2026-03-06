@@ -22,6 +22,7 @@ import { CouncilWakeScreen } from './components/CouncilWakeScreen';
 import { TrianglePresence } from './components/TrianglePresence';
 import { voiceService } from './voice/VoiceService';
 import { globalVoiceController } from './voice/GlobalVoiceController';
+import { voiceAuth } from './security/VoiceAuthService';
 
 // ── Error Boundary ───────────────────────────────────────────────────────────
 export class ErrorBoundary extends React.Component<
@@ -629,6 +630,12 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
         </div>
       </div>
 
+      <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>Voice Access Credentials</h2>
+      <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
+        Set a name and passphrase for wake-word voice authentication. When you say the wake word, TriForge will ask you to speak these credentials before opening a session.
+      </p>
+      <VoiceCredentialsSection />
+
       <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>Updates</h2>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
         TriForge checks for updates automatically. Use this to check right now.
@@ -752,6 +759,88 @@ function PinSection({ hasPin, lockUsername, onPinChanged }: { hasPin: boolean; l
         </button>
       </div>
       {error && <div style={styles.errorMsg}>{error}</div>}
+      {success && <div style={styles.successMsg}>{success}</div>}
+    </div>
+  );
+}
+
+// ── Voice Credentials Section ────────────────────────────────────────────────
+
+function VoiceCredentialsSection() {
+  const [name,     setName]     = useState('');
+  const [pass,     setPass]     = useState('');
+  const [saving,   setSaving]   = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [error,    setError]    = useState<string | null>(null);
+  const [success,  setSuccess]  = useState<string | null>(null);
+  const [configured, setConfigured] = useState(() => voiceAuth.isSetup());
+  const [configuredName, setConfiguredName] = useState(() => voiceAuth.getConfiguredName());
+
+  const save = () => {
+    if (!name.trim())  { setError('Enter a name.'); return; }
+    if (!pass.trim())  { setError('Enter a passphrase.'); return; }
+    setSaving(true);
+    setError(null);
+    voiceAuth.setup(name.trim(), pass.trim());
+    setConfigured(true);
+    setConfiguredName(name.trim().toLowerCase());
+    setName('');
+    setPass('');
+    setSuccess('Voice credentials saved.');
+    setSaving(false);
+  };
+
+  const clear = () => {
+    setRemoving(true);
+    setError(null);
+    voiceAuth.clearCredentials();
+    setConfigured(false);
+    setConfiguredName(null);
+    setSuccess('Voice credentials removed.');
+    setRemoving(false);
+  };
+
+  if (configured) {
+    return (
+      <div style={styles.pinCard}>
+        <div style={styles.pinActiveRow}>
+          <span style={{ color: '#10a37f', fontWeight: 600, fontSize: 13 }}>Configured</span>
+          <span style={{ color: 'var(--text-secondary)', fontSize: 13 }}>Name: <strong>{configuredName}</strong></span>
+        </div>
+        <button style={styles.removeBtn} onClick={clear} disabled={removing}>
+          {removing ? 'Removing…' : 'Remove credentials'}
+        </button>
+        {success && <div style={styles.successMsg}>{success}</div>}
+      </div>
+    );
+  }
+
+  return (
+    <div style={styles.pinCard}>
+      <div style={styles.pinFields}>
+        <input
+          style={styles.keyField}
+          placeholder="Your name (spoken to wake)"
+          value={name}
+          onChange={e => { setName(e.target.value); setError(null); setSuccess(null); }}
+          autoComplete="off"
+        />
+        <input
+          style={styles.keyField}
+          placeholder="Passphrase (spoken to authenticate)"
+          value={pass}
+          onChange={e => { setPass(e.target.value); setError(null); setSuccess(null); }}
+          autoComplete="off"
+        />
+        <button
+          style={{ ...styles.saveBtn, ...(saving ? styles.saveBtnDisabled : {}) }}
+          onClick={save}
+          disabled={saving}
+        >
+          Save credentials
+        </button>
+      </div>
+      {error   && <div style={styles.errorMsg}>{error}</div>}
       {success && <div style={styles.successMsg}>{success}</div>}
     </div>
   );
