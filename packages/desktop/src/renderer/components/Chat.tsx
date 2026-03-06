@@ -407,12 +407,13 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     if (STRATEGIC_KEYWORDS.some(kw => combined.includes(kw))) setEscalationSuggested(true);
   }, [messages]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Wake Word listener — always active, independent of voice output mode ──────
-  // Explicitly requests getUserMedia first so Chromium/Electron actually prompts for
-  // microphone permission. Without this call, SpeechRecognition fails silently with
-  // 'not-allowed' because Electron never triggers the permission dialog on its own.
+  // ── Wake engine lifecycle — start on mount, stop on unmount ──────────────────
+  // Deferred from index.tsx so the UI is visible before the mic permission dialog.
+  useEffect(() => {
+    voiceService.start();
+    return () => voiceService.stop();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Council authenticated — fired by App.tsx after identity verification passes
   // Track wake engine status (loading → ready | error)
   useEffect(() => {
     const handler = (e: Event) => setWakeStatus((e as CustomEvent<WakeStatus>).detail);

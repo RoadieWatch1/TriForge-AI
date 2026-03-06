@@ -2,7 +2,7 @@
 //
 // Responsibilities:
 //   1. Download/cache Vosk model via main-process IPC (userData/vosk-models/)
-//   2. Capture mic at 16 kHz mono via ScriptProcessorNode
+//   2. Capture mic at 16 kHz mono via AudioWorkletNode
 //   3. Feed PCM frames to grammar-limited KaldiRecognizer
 //   4. Run WakePhraseDetector on every partial AND full result
 //   5. Call onPhrase(text) when a wake phrase is detected
@@ -27,16 +27,29 @@ export const WAKE_PHRASES = [
 
 export const WAKE_GRAMMAR = JSON.stringify(['[unk]', ...WAKE_PHRASES]);
 
+// ── Inline AudioWorklet source — avoids Electron file path issues ─────────────
+const WAKE_WORKLET_CODE = `
+class WakeProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const ch = inputs[0]?.[0];
+    if (ch) this.port.postMessage(ch);
+    return true;
+  }
+}
+registerProcessor('wake-processor', WakeProcessor);
+`;
+
 // ── VoskWakeEngine ────────────────────────────────────────────────────────────
 
 export class VoskWakeEngine {
   private model:      Awaited<ReturnType<typeof createModel>> | null = null;
   private recognizer: ReturnType<Awaited<ReturnType<typeof createModel>>['KaldiRecognizer']['prototype']['constructor']> | null = null;
   private audioCtx:   AudioContext | null = null;
-  private processor:  ScriptProcessorNode | null = null;
+  private processor:  AudioWorkletNode | null = null;
   private stream:     MediaStream | null = null;
   private paused     = false;
   private _listening = false;
+  private _stopped   = false;      // abort flag — set by stop() before getUserMedia resolves
   private lastTs     = 0;          // timestamp of last emitted phrase
   private readonly DEDUP_MS = 1200; // suppress duplicate emits within 1.2 s
 
@@ -74,25 +87,48 @@ export class VoskWakeEngine {
       // We create the AudioContext at 16 kHz which forces the browser to
       // resample the mic track automatically.
       console.log('[WakeEngine] Requesting mic access...');
-      this.stream = await navigator.mediaDevices.getUserMedia({
+      const stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true } as MediaTrackConstraints,
       });
+
+      // Abort if stop() was called while getUserMedia was awaiting
+      if (this._stopped) {
+        stream.getTracks().forEach(t => t.stop());
+        return;
+      }
+
+      this.stream = stream;
       console.log('[WakeEngine] Mic granted.');
 
       // AudioContext at 16 kHz — browser resamples mic track to match
       this.audioCtx = new AudioContext({ sampleRate: 16000 });
       const source  = this.audioCtx.createMediaStreamSource(this.stream);
-      // 8192-sample buffer (512 ms at 16 kHz) — halves WASM call frequency
-      // vs 4096, reducing main-thread blocking from onaudioprocess
-      this.processor = this.audioCtx.createScriptProcessor(8192, 1, 1);
 
-      this.processor.onaudioprocess = (e) => {
+      // AudioWorklet replaces the deprecated ScriptProcessorNode —
+      // processing runs off the main thread, avoiding onaudioprocess blocking.
+      const blob       = new Blob([WAKE_WORKLET_CODE], { type: 'application/javascript' });
+      const workletUrl = URL.createObjectURL(blob);
+      await this.audioCtx.audioWorklet.addModule(workletUrl);
+      URL.revokeObjectURL(workletUrl);
+
+      // Second abort check — addModule is also async
+      if (this._stopped) {
+        this.audioCtx.close().catch(() => {});
+        this.stream.getTracks().forEach(t => t.stop());
+        this.audioCtx = null; this.stream = null;
+        return;
+      }
+
+      const workletNode = new AudioWorkletNode(this.audioCtx, 'wake-processor');
+      this.processor = workletNode;
+
+      workletNode.port.onmessage = (ev: MessageEvent<Float32Array>) => {
         if (this.paused || !this.recognizer) return;
-        this.recognizer.acceptWaveformFloat(e.inputBuffer.getChannelData(0), 16000);
+        this.recognizer.acceptWaveformFloat(ev.data, 16000);
       };
 
-      source.connect(this.processor);
-      this.processor.connect(this.audioCtx.destination);
+      source.connect(workletNode);
+      workletNode.connect(this.audioCtx.destination);
 
       this._listening = true;
       console.log('[WakeEngine] Active — listening for "council"');
@@ -108,6 +144,7 @@ export class VoskWakeEngine {
   resume(): void { this.paused = false; }
 
   stop(): void {
+    this._stopped   = true;   // abort any in-flight getUserMedia / addModule
     this._listening = false;
     this.paused     = true;
     this.processor?.disconnect();

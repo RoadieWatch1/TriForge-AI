@@ -4,7 +4,6 @@ import { App, ErrorBoundary } from './App';
 import './styles/global.css';
 import { AUTONOMY_FLAGS } from '../core/config/autonomyFlags';
 import { VoiceCommandBridge } from './voice/VoiceCommandBridge';
-import { voiceService } from './voice/VoiceService';
 
 // Declare window.triforge type
 declare global {
@@ -22,13 +21,12 @@ createRoot(root).render(
   </ErrorBoundary>
 );
 
-// Start wake listening immediately on app boot — independent of UI interaction.
-// VoiceService owns the VoiceCommandBridge singleton and fires
-// `triforge:council-wake` when the wake word is detected.
-voiceService.start();
-
-// Boot wake bridge if offline mode is enabled (flag off by default — Chat.tsx boots it for online mode)
+// Boot offline wake bridge — only when flag is explicitly enabled.
+// The online wake engine is started by Chat.tsx on mount so mic is
+// requested after the UI is visible, not on raw app boot.
+let _offlineBridge: VoiceCommandBridge | null = null;
 if (AUTONOMY_FLAGS.enableOfflineWake) {
-  const _offlineBridge = new VoiceCommandBridge();
+  _offlineBridge = new VoiceCommandBridge();
   _offlineBridge.start();
+  window.addEventListener('beforeunload', () => _offlineBridge?.stop());
 }
