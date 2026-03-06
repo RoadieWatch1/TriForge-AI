@@ -17,11 +17,12 @@
 import { createModel }       from 'vosk-browser';
 import { detectWakePhrase }  from './WakePhraseDetector';
 
+// Note: only include words present in the small Vosk en-us vocabulary.
+// 'grok', 'triforge', 'refactor' are not in the model — excluded to prevent warnings.
 export const WAKE_PHRASES = [
   'council', 'hey council', 'okay council', 'council listen', 'council help',
-  'council assemble', 'council deliberate', 'claude advise', 'grok challenge',
-  'apply solution', 'apply decision', 'triforge build', 'triforge fix',
-  'triforge audit', 'triforge refactor',
+  'council assemble', 'council deliberate', 'claude advise',
+  'apply solution', 'apply decision',
 ] as const;
 
 export const WAKE_GRAMMAR = JSON.stringify(['[unk]', ...WAKE_PHRASES]);
