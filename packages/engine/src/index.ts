@@ -240,3 +240,14 @@ export {
 
 // Trade scoring helpers (Phase 3)
 export { updateExcursions, computeExcursionR } from './trading/tradeScoring';
+
+// Strategy Refinement (Phase 4) — pure insight functions
+export {
+  computeSessionInsights, computeVolatilityInsights, computeVwapInsights,
+  computeInstrumentInsights, computeCouncilConfidenceInsights, computeWarningInsights,
+  computeRefinementSummary,
+} from './trading/strategyTuning';
+export type {
+  InsightRecommendation, StrategyInsight, StrategyRefinementSummary,
+  ShadowStrategyConfig,
+} from './trading/types';

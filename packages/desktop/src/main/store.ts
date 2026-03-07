@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { app, safeStorage } from 'electron';
-import type { StorageAdapter } from '@triforge/engine';
+import type { StorageAdapter, ShadowStrategyConfig } from '@triforge/engine';
 
 export interface Permission {
   key: string;
@@ -57,6 +57,7 @@ interface StoreData {
   messageUsage: Record<string, number>;
   auth: StoredAuth;
   ledger: LedgerEntry[];
+  shadowStrategyConfig?: ShadowStrategyConfig;
 }
 
 function emptyData(): StoreData {
@@ -111,6 +112,7 @@ function isValidStoreData(d: unknown): d is Partial<StoreData> {
   if (o.license !== undefined && typeof o.license !== 'object') return false;
   if (o.auth !== undefined && typeof o.auth !== 'object') return false;
   if (o.firstRunDone !== undefined && typeof o.firstRunDone !== 'boolean') return false;
+  if (o.shadowStrategyConfig !== undefined && typeof o.shadowStrategyConfig !== 'object') return false;
   return true;
 }
 
@@ -362,6 +364,17 @@ export class Store implements StorageAdapter {
 
   deleteLedger(id: string): void {
     this.data.ledger = (this.data.ledger ?? []).filter(e => e.id !== id);
+    this.save();
+  }
+
+  // ── Shadow Strategy Config (Phase 4) ───────────────────────────────────────
+
+  getShadowStrategyConfig(): ShadowStrategyConfig {
+    return this.data.shadowStrategyConfig ?? {};
+  }
+
+  setShadowStrategyConfig(config: ShadowStrategyConfig): void {
+    this.data.shadowStrategyConfig = config;
     this.save();
   }
 

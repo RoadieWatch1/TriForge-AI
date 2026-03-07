@@ -497,6 +497,13 @@ const api = {
       ipcRenderer.invoke('trading:shadowAnalyticsCouncil') as Promise<{ council?: unknown; error?: string }>,
     shadowAnalyticsClear: () =>
       ipcRenderer.invoke('trading:shadowAnalyticsClear') as Promise<{ ok?: boolean; error?: string }>,
+    // Phase 4: Strategy Refinement
+    shadowRefinementSummary: () =>
+      ipcRenderer.invoke('trading:shadowRefinementSummary') as Promise<{ summary?: unknown; error?: string }>,
+    shadowStrategyConfigGet: () =>
+      ipcRenderer.invoke('trading:shadowStrategyConfig:get') as Promise<{ config?: unknown; error?: string }>,
+    shadowStrategyConfigSet: (cfg: unknown) =>
+      ipcRenderer.invoke('trading:shadowStrategyConfig:set', cfg) as Promise<{ ok?: boolean; error?: string }>,
   },
 
   // Scheduler (recurring + once jobs)

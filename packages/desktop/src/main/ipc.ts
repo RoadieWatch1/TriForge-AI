@@ -2797,6 +2797,36 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     return { ok: true };
   });
 
+  // ── Strategy Refinement (Phase 4) ─────────────────────────────────────────────
+
+  ipcMain.handle('trading:shadowRefinementSummary', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
+    const events = shadowAnalyticsStore.loadAll();
+    const { computeRefinementSummary } = await import('@triforge/engine');
+    const config = shadowTradingController.getStrategyConfig();
+    return { summary: computeRefinementSummary(events, config) };
+  });
+
+  ipcMain.handle('trading:shadowStrategyConfig:get', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
+    return { config: shadowTradingController.getStrategyConfig() };
+  });
+
+  ipcMain.handle('trading:shadowStrategyConfig:set', async (_e, cfg: Record<string, unknown>) => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
+    shadowTradingController.setStrategyConfig(cfg as any);
+    store.setShadowStrategyConfig(cfg as any);
+    return { ok: true };
+  });
+
+  // Load persisted strategy config on startup
+  {
+    const savedConfig = store.getShadowStrategyConfig();
+    if (savedConfig && Object.keys(savedConfig).length > 0) {
+      shadowTradingController.setStrategyConfig(savedConfig);
+    }
+  }
+
   // ── Wire council review into shadow trading controller ────────────────────────
   // Each eval tick that passes rules will call this fn. All 3 active providers
   // vote in parallel. Gate: ≥2 TAKE, Grok does not REJECT, avg confidence ≥ 60.

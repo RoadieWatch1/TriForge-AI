@@ -169,7 +169,9 @@ export type ShadowBlockReason =
   // council_review
   | 'council_not_initialized' | 'council_error' | 'council_rejected'
   | 'insufficient_seats' | 'grok_veto' | 'low_council_confidence'
-  | 'insufficient_take_votes';
+  | 'insufficient_take_votes'
+  // strategy_config (Phase 4 — logged under natural stage, not a new funnel stage)
+  | 'strategy_config_blocked';
 
 export interface ShadowDecisionEvent {
   /** Schema version for forward-compatible JSONL evolution. */
@@ -280,4 +282,47 @@ export interface ShadowAnalyticsSummary {
   eventCount: number;
   oldestEventTs: number;
   newestEventTs: number;
+}
+
+// ── Phase 4: Strategy Refinement ─────────────────────────────────────────────
+
+export type InsightRecommendation = 'promote' | 'keep' | 'watch' | 'demote' | 'block';
+
+export interface StrategyInsight {
+  category: 'session' | 'volatility' | 'vwap' | 'instrument' | 'council_confidence' | 'warnings';
+  bucket: string;
+  trades: number;
+  winRate: number;
+  avgPnlR: number;
+  totalPnlDollars: number;
+  baselineWinRate: number;
+  baselineAvgPnlR: number;
+  /** <10=watch, 10-24=limited, 25+=full */
+  sampleTier: 'watch' | 'limited' | 'full';
+  recommendation: InsightRecommendation;
+  rationale: string;
+}
+
+export interface StrategyRefinementSummary {
+  generatedAt: number;
+  totalClosedTrades: number;
+  baselineWinRate: number;
+  baselineAvgPnlR: number;
+  insights: StrategyInsight[];
+  config: ShadowStrategyConfig;
+}
+
+export interface ShadowStrategyConfig {
+  /** Allowed session windows — empty/undefined = all allowed. */
+  allowedSessions?: SessionLabel[];
+  /** Blocked volatility regimes — trades in these regimes are rejected. */
+  blockedVolatilityRegimes?: VolatilityRegime[];
+  /** Blocked VWAP relations — trades with these VWAP positions are rejected. */
+  blockedVwapRelations?: VwapRelation[];
+  /** Override the tier-default council confidence floor. */
+  minCouncilAvgConfidence?: number;
+  /** Block if rule-engine warnings exceed this count. */
+  maxWarningsAllowed?: number;
+  /** Preferred symbols — empty/undefined = all allowed. */
+  preferredSymbols?: string[];
 }

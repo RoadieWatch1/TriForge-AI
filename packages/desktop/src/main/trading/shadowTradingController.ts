@@ -31,6 +31,7 @@ import type { LiveTradeSnapshot, ProposedTradeSetup } from '@triforge/engine';
 import type {
   ShadowTrade, ShadowAccountState, ShadowAccountSettings, CouncilVote,
   ShadowDecisionEvent, ShadowBlockReason, ShadowDecisionStage,
+  ShadowStrategyConfig,
 } from '@triforge/engine';
 
 // ── Council review callback type ──────────────────────────────────────────────
@@ -93,6 +94,7 @@ class ShadowTradingControllerClass {
   private _councilFn: CouncilReviewFn | null = null;
   private _lastLimitBlockReason: ShadowBlockReason | undefined;
   private _lastEmittedBlock = new Map<string, number>();
+  private _strategyConfig: ShadowStrategyConfig = {};
 
   // ── Public API ──────────────────────────────────────────────────────────────
 
@@ -101,6 +103,12 @@ class ShadowTradingControllerClass {
   setCouncilFn(fn: CouncilReviewFn): void {
     this._councilFn = fn;
   }
+
+  /** Get the current strategy config (Phase 4). Returns a copy. */
+  getStrategyConfig(): ShadowStrategyConfig { return { ...this._strategyConfig }; }
+
+  /** Set strategy config (Phase 4). Default `{}` changes nothing. */
+  setStrategyConfig(cfg: ShadowStrategyConfig): void { this._strategyConfig = { ...cfg }; }
 
   enable(): void {
     this._resetDailyIfNeeded();
@@ -236,6 +244,14 @@ class ShadowTradingControllerClass {
       return;
     }
 
+    // ── Phase 4: strategy config guard 1 (session/volatility/vwap/symbol) ────
+    const cfgBlock = this._checkStrategyConfig(snap, setup);
+    if (cfgBlock) {
+      this._state.blockedReason = cfgBlock;
+      this._emitEvent(this._buildBlockEvent('setup_detection', 'strategy_config_blocked', cfgBlock, snap, { candidateId, setupType: setup.setupType, side: setup.side as 'long' | 'short', entryPrice: setup.entry, stopPrice: setup.stop, targetPrice: setup.target }));
+      return;
+    }
+
     // ── rule_engine ───────────────────────────────────────────────────────────
     const advice = buildLiveTradeAdvice({
       snapshot:    snap,
@@ -264,6 +280,15 @@ class ShadowTradingControllerClass {
       warningCount:   advice.warnings?.length ?? 0,
       violationCount: advice.ruleViolations?.length ?? 0,
     };
+
+    // ── Phase 4: strategy config guard 2 (warning cap) ──────────────────────
+    if (this._strategyConfig.maxWarningsAllowed !== undefined &&
+        (advice.warnings?.length ?? 0) > this._strategyConfig.maxWarningsAllowed) {
+      const msg = `Config: warnings (${advice.warnings?.length ?? 0}) exceed max ${this._strategyConfig.maxWarningsAllowed}`;
+      this._state.blockedReason = msg;
+      this._emitEvent(this._buildBlockEvent('rule_engine', 'strategy_config_blocked', msg, snap, ruleCtx));
+      return;
+    }
 
     if (advice.verdict !== 'buy') {
       this._state.blockedReason = `Rule engine: ${advice.verdict} (${advice.confidence}). ${advice.summary}`;
@@ -316,6 +341,19 @@ class ShadowTradingControllerClass {
     }
 
     this._state.councilBlockedReason = undefined;
+
+    // ── Phase 4: strategy config guard 3 (council confidence floor) ─────────
+    if (this._strategyConfig.minCouncilAvgConfidence !== undefined && review.votes.length > 0) {
+      const avgConf = review.votes.reduce((s, v) => s + (v.confidence ?? 0), 0) / review.votes.length;
+      if (avgConf < this._strategyConfig.minCouncilAvgConfidence) {
+        const msg = `Config: council avg confidence ${avgConf.toFixed(0)} < min ${this._strategyConfig.minCouncilAvgConfidence}`;
+        this._state.blockedReason = msg;
+        this._emitEvent(this._buildCouncilEvent(
+          'strategy_config_blocked', msg, snap, setup, advice, candidateId, review.votes, true,
+        ));
+        return;
+      }
+    }
 
     // ── trade_opened ──────────────────────────────────────────────────────────
     this._openTrade(symbol, setup, advice, snap, review.votes, candidateId);
@@ -682,6 +720,44 @@ class ShadowTradingControllerClass {
   /** Emit an event unconditionally (setup_detection, rule_engine, council, open, close). */
   private _emitEvent(event: ShadowDecisionEvent): void {
     shadowAnalyticsStore.append(event);
+  }
+
+  // ── Phase 4: Strategy config check ──────────────────────────────────────────
+
+  /**
+   * Check strategy config against current snapshot and setup.
+   * Returns a block message string if blocked, or null if allowed.
+   * Each check is no-op when the config field is undefined or empty.
+   */
+  private _checkStrategyConfig(snap: LiveTradeSnapshot, setup: ProposedTradeSetup): string | null {
+    const cfg = this._strategyConfig;
+
+    if (cfg.allowedSessions && cfg.allowedSessions.length > 0 && snap.sessionLabel) {
+      if (!cfg.allowedSessions.includes(snap.sessionLabel)) {
+        return `Config: session ${snap.sessionLabel} not in allowedSessions [${cfg.allowedSessions.join(', ')}]`;
+      }
+    }
+
+    if (cfg.blockedVolatilityRegimes && cfg.blockedVolatilityRegimes.length > 0 && snap.volatilityRegime) {
+      if (cfg.blockedVolatilityRegimes.includes(snap.volatilityRegime)) {
+        return `Config: volatility ${snap.volatilityRegime} blocked by config`;
+      }
+    }
+
+    if (cfg.blockedVwapRelations && cfg.blockedVwapRelations.length > 0 && snap.vwapRelation) {
+      if (cfg.blockedVwapRelations.includes(snap.vwapRelation)) {
+        return `Config: VWAP ${snap.vwapRelation} blocked by config`;
+      }
+    }
+
+    const symbol = snap.symbol?.toUpperCase();
+    if (cfg.preferredSymbols && cfg.preferredSymbols.length > 0 && symbol) {
+      if (!cfg.preferredSymbols.includes(symbol)) {
+        return `Config: symbol ${symbol} not in preferredSymbols [${cfg.preferredSymbols.join(', ')}]`;
+      }
+    }
+
+    return null;
   }
 
   // ── Fresh state ──────────────────────────────────────────────────────────────

@@ -162,6 +162,21 @@ interface ShadowAnalyticsSummary {
   newestEventTs: number;
 }
 
+// ── Phase 4: Refinement type mirrors ────────────────────────────────────────
+
+interface StrategyInsight {
+  category: string; bucket: string; trades: number; winRate: number;
+  avgPnlR: number; totalPnlDollars: number; sampleTier: string;
+  recommendation: string; rationale: string;
+}
+
+interface StrategyRefinementSummary {
+  generatedAt: number; totalClosedTrades: number;
+  baselineWinRate: number; baselineAvgPnlR: number;
+  insights: StrategyInsight[];
+  config: Record<string, unknown>;
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const SUPPORTED_SYMBOLS = ['NQ', 'MNQ', 'ES', 'MES', 'RTY', 'M2K', 'CL', 'GC'];
@@ -217,6 +232,9 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [analyticsSummary, setAnalyticsSummary] = useState<ShadowAnalyticsSummary | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
+
+  // ── Strategy refinement (Phase 4) ──────────────────────────────────────────
+  const [refinementSummary, setRefinementSummary] = useState<StrategyRefinementSummary | null>(null);
 
   // ── Tradovate account + proposed setup ─────────────────────────────────────
   const [accountState, setAccountState]   = useState<TradovateAccountState | null>(null);
@@ -274,13 +292,17 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
     if (isConnected) startPolling(sym);
   };
 
-  // ── Shadow analytics fetch (Phase 3) ─────────────────────────────────────────
+  // ── Shadow analytics fetch (Phase 3 + 4) ─────────────────────────────────────
   const closedCount = shadow?.closedTrades.length ?? 0;
   useEffect(() => {
     if (!showAnalytics || !shadow?.enabled) return;
     setAnalyticsLoading(true);
-    (window.triforge.trading as any).shadowAnalyticsSummary().then((res: any) => {
-      if (res?.summary) setAnalyticsSummary(res.summary as ShadowAnalyticsSummary);
+    Promise.all([
+      (window.triforge.trading as any).shadowAnalyticsSummary(),
+      (window.triforge.trading as any).shadowRefinementSummary(),
+    ]).then(([analyticsRes, refinementRes]: any[]) => {
+      if (analyticsRes?.summary) setAnalyticsSummary(analyticsRes.summary as ShadowAnalyticsSummary);
+      if (refinementRes?.summary) setRefinementSummary(refinementRes.summary as StrategyRefinementSummary);
     }).catch(() => {}).finally(() => setAnalyticsLoading(false));
   }, [showAnalytics, closedCount, shadow?.enabled]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -797,7 +819,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
               analyticsLoading ? (
                 <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', fontStyle: 'italic' }}>Loading analytics...</div>
               ) : analyticsSummary ? (
-                <ShadowAnalyticsPanel summary={analyticsSummary} onClear={handleAnalyticsClear} />
+                <ShadowAnalyticsPanel summary={analyticsSummary} refinement={refinementSummary} onClear={handleAnalyticsClear} />
               ) : (
                 <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>No analytics data available.</div>
               )
@@ -1013,9 +1035,10 @@ function ShadowStat({ label, value, color }: { label: string; value: string; col
 
 // ── Phase 3: Analytics sub-components ─────────────────────────────────────────
 
-function ShadowAnalyticsPanel({ summary, onClear }: { summary: ShadowAnalyticsSummary; onClear: () => void }) {
+function ShadowAnalyticsPanel({ summary, refinement, onClear }: { summary: ShadowAnalyticsSummary; refinement?: StrategyRefinementSummary | null; onClear: () => void }) {
   const o = summary.overall;
   const c = summary.council;
+  const [showRefinement, setShowRefinement] = useState(false);
   const sectionLabel: React.CSSProperties = { fontSize: 10, fontWeight: 700, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 };
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -1072,6 +1095,24 @@ function ShadowAnalyticsPanel({ summary, onClear }: { summary: ShadowAnalyticsSu
         </div>
       )}
 
+      {/* Phase 4: Refinement Insights */}
+      {refinement && refinement.insights.length > 0 && (
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+            <div style={sectionLabel}>Refinement Insights</div>
+            <button
+              style={{ ...s.btn, ...s.btnGhost, fontSize: 9, padding: '2px 6px' }}
+              onClick={() => setShowRefinement(v => !v)}
+            >
+              {showRefinement ? 'Collapse' : 'Show Insights'}
+            </button>
+          </div>
+          {showRefinement && (
+            <RefinementInsightsPanel refinement={refinement} />
+          )}
+        </div>
+      )}
+
       {/* By Session */}
       {summary.bySession.length > 0 && <BucketTable title="By Session" rows={summary.bySession} />}
 
@@ -1102,6 +1143,79 @@ function BucketTable({ title, rows }: { title: string; rows: BucketPerformanceSu
           <span style={{ color: r.totalPnlDollars >= 0 ? '#34d399' : '#f87171' }}>{r.totalPnlDollars >= 0 ? '+' : ''}${r.totalPnlDollars.toFixed(0)}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ── Phase 4: Refinement insights sub-component ──────────────────────────────
+
+const RECOMMENDATION_COLORS: Record<string, string> = {
+  promote: '#22c55e',
+  keep: '#6366f1',
+  watch: '#eab308',
+  demote: '#f97316',
+  block: '#ef4444',
+};
+
+const CATEGORY_LABELS: Record<string, string> = {
+  session: 'Session',
+  volatility: 'Volatility',
+  vwap: 'VWAP',
+  instrument: 'Instrument',
+  council_confidence: 'Council Confidence',
+  warnings: 'Warnings',
+};
+
+function RefinementInsightsPanel({ refinement }: { refinement: StrategyRefinementSummary }) {
+  // Group insights by category
+  const grouped = new Map<string, StrategyInsight[]>();
+  for (const insight of refinement.insights) {
+    let arr = grouped.get(insight.category);
+    if (!arr) { arr = []; grouped.set(insight.category, arr); }
+    arr.push(insight);
+  }
+
+  const sectionLabel: React.CSSProperties = { fontSize: 9, fontWeight: 700, color: 'rgba(255,255,255,0.25)', textTransform: 'uppercase', letterSpacing: '0.05em', marginTop: 8, marginBottom: 4 };
+  const rowStyle: React.CSSProperties = { display: 'grid', gridTemplateColumns: '90px 40px 50px 50px 55px auto', gap: 6, fontSize: 10, color: 'rgba(255,255,255,0.5)', padding: '3px 0', borderBottom: '1px solid rgba(255,255,255,0.04)', fontVariantNumeric: 'tabular-nums', alignItems: 'baseline' };
+  const headerStyle: React.CSSProperties = { ...rowStyle, fontSize: 9, fontWeight: 700, color: 'rgba(255,255,255,0.2)', textTransform: 'uppercase', letterSpacing: '0.04em', borderBottom: '1px solid rgba(255,255,255,0.06)', padding: '0 0 3px' };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      {/* Baseline */}
+      <div style={{ display: 'flex', gap: 16, fontSize: 10, color: 'rgba(255,255,255,0.4)', marginBottom: 4 }}>
+        <span>Baseline: {(refinement.baselineWinRate * 100).toFixed(0)}% win, {refinement.baselineAvgPnlR >= 0 ? '+' : ''}{refinement.baselineAvgPnlR.toFixed(2)}R</span>
+        <span>({refinement.totalClosedTrades} trades)</span>
+      </div>
+
+      {/* Header row */}
+      <div style={headerStyle}>
+        <span>Bucket</span><span>N</span><span>Win%</span><span>Avg R</span><span>Tier</span><span>Rec</span>
+      </div>
+
+      {/* Grouped insights */}
+      {[...grouped.entries()].map(([category, insights]) => (
+        <div key={category}>
+          <div style={sectionLabel}>{CATEGORY_LABELS[category] ?? category}</div>
+          {insights.map((insight, i) => {
+            const recColor = RECOMMENDATION_COLORS[insight.recommendation] ?? 'rgba(255,255,255,0.4)';
+            return (
+              <div key={i} style={rowStyle} title={insight.rationale}>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{insight.bucket.replace(/_/g, ' ')}</span>
+                <span>{insight.trades}</span>
+                <span style={{ color: insight.winRate >= refinement.baselineWinRate ? '#34d399' : '#f87171' }}>{(insight.winRate * 100).toFixed(0)}%</span>
+                <span style={{ color: insight.avgPnlR >= 0 ? '#34d399' : '#f87171' }}>{insight.avgPnlR >= 0 ? '+' : ''}{insight.avgPnlR.toFixed(2)}</span>
+                <span style={{ fontSize: 8, fontWeight: 700, color: insight.sampleTier === 'full' ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.25)', textTransform: 'uppercase' }}>{insight.sampleTier}</span>
+                <span style={{ fontSize: 9, fontWeight: 800, color: recColor, letterSpacing: '0.04em', textTransform: 'uppercase' }}>{insight.recommendation}</span>
+              </div>
+            );
+          })}
+        </div>
+      ))}
+
+      {/* Footer */}
+      <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.2)', marginTop: 6, fontStyle: 'italic' }}>
+        Recommendations are advisory only. They are not auto-applied.
+      </div>
     </div>
   );
 }
