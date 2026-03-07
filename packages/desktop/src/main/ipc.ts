@@ -23,6 +23,7 @@ import { createMailAdapter } from './mailService';
 import { NativeIntentRouter } from './nativeIntentRouter';
 import { tradovateService } from './trading/tradovateService';
 import { shadowTradingController } from './trading/shadowTradingController';
+import type { CouncilReviewResult } from './trading/shadowTradingController';
 import { PaperEngine } from './trading/paperEngine';
 import { SensorManager } from './sensors/index';
 import { navigate as browserNavigate, screenshot as browserScreenshot, fillForm as browserFillForm, scrape as browserScrape, closeBrowser } from './browser/index';
@@ -48,6 +49,7 @@ import { healthMonitor } from '../core/health/healthMonitor';
 import { MemoryStore } from '../core/memory/memoryStore';
 import { getMemoryManager } from '../core/memory/memoryManager';
 import { ImageService, getImageHistoryStore, systemStateService, buildCouncilAwarenessAddendum, buildLiveTradeAdvice, buildTradeLevels } from '@triforge/engine';
+import type { CouncilVote } from '@triforge/engine';
 
 import { ResultStore } from './resultStore';
 import { ValueEngine, CampaignStore, MetricsStore, CompoundEngine } from '@triforge/engine';
@@ -2762,6 +2764,111 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
     shadowTradingController.updateSettings(settings as Parameters<typeof shadowTradingController.updateSettings>[0]);
     return { ok: true };
+  });
+
+  // ── Wire council review into shadow trading controller ────────────────────────
+  // Each eval tick that passes rules will call this fn. All 3 active providers
+  // vote in parallel. Gate: ≥2 TAKE, Grok does not REJECT, avg confidence ≥ 60.
+
+  const COUNCIL_ROLES: Record<string, { role: string; instruction: string }> = {
+    claude: {
+      role: 'Structure Analyst',
+      instruction: 'Evaluate technical setup quality, trend alignment, and structural context.',
+    },
+    openai: {
+      role: 'Execution Planner',
+      instruction: 'Evaluate entry timing, execution risk, and market microstructure.',
+    },
+    grok: {
+      role: 'Adversarial Critic',
+      instruction: 'Challenge this setup aggressively. Find weaknesses, edge cases, and reasons NOT to take the trade.',
+    },
+  };
+
+  function _providerRole(providerName: string): { role: string; instruction: string } {
+    const n = providerName.toLowerCase();
+    if (n.includes('claude'))             return COUNCIL_ROLES.claude;
+    if (n.includes('gpt') || n.includes('openai')) return COUNCIL_ROLES.openai;
+    if (n.includes('grok'))               return COUNCIL_ROLES.grok;
+    return COUNCIL_ROLES.openai; // fallback
+  }
+
+  function _parseCouncilVote(provider: string, text: string): CouncilVote {
+    const voteLine   = text.match(/VOTE:\s*(TAKE|WAIT|REJECT)/i);
+    const confLine   = text.match(/CONFIDENCE:\s*(\d+)/i);
+    const reasonLine = text.match(/REASON:\s*(.+)/i);
+    return {
+      provider,
+      vote:       (voteLine?.[1]?.toUpperCase() as 'TAKE' | 'WAIT' | 'REJECT') ?? 'WAIT',
+      confidence: confLine ? Math.min(100, Math.max(0, parseInt(confLine[1], 10))) : 50,
+      reason:     reasonLine?.[1]?.trim() ?? 'No reason given.',
+    };
+  }
+
+  shadowTradingController.setCouncilFn(async (setup, snap, symbol): Promise<CouncilReviewResult> => {
+    const { providerManager: pm } = await getEngine();
+    const providers = await pm.getActiveProviders();
+
+    if (providers.length < 3) {
+      return {
+        approved: false,
+        votes: [],
+        blockedReason: `Council requires 3 active providers — only ${providers.length} configured.`,
+      };
+    }
+
+    const votePrompt =
+      `You are reviewing a proposed shadow trade (simulation only — no real money at risk).\n\n` +
+      `INSTRUMENT: ${symbol}\n` +
+      `SETUP TYPE: ${setup.setupType}\n` +
+      `SIDE: ${setup.side}\n` +
+      `ENTRY: ${setup.entry}\n` +
+      `STOP: ${setup.stop} (${setup.stopPoints} pts risk)\n` +
+      `TARGET: ${setup.target}\n` +
+      `THESIS: ${setup.thesis}\n` +
+      `SESSION TREND: ${snap.trend ?? 'unknown'}\n` +
+      `LAST PRICE: ${snap.lastPrice ?? 'unknown'}\n\n` +
+      `Respond in this EXACT format — no other text:\n` +
+      `VOTE: TAKE\n` +
+      `CONFIDENCE: 75\n` +
+      `REASON: One sentence explanation.\n\n` +
+      `VOTE must be exactly TAKE, WAIT, or REJECT.\n` +
+      `CONFIDENCE must be a number 0-100.`;
+
+    const settled = await Promise.allSettled(
+      providers.slice(0, 3).map(async (p, i) => {
+        const councilRole = _providerRole(p.name);
+        const msgs = [
+          {
+            role: 'system',
+            content: `You are the ${councilRole.role} on the TriForge Trading Council. ${councilRole.instruction} Respond only in the exact format requested.`,
+          },
+          { role: 'user', content: votePrompt },
+        ];
+        const text = await p.chat(msgs as { role: string; content: string }[]);
+        return { provider: p.name, text, index: i };
+      }),
+    );
+
+    const votes: CouncilVote[] = settled.map((r, i) => {
+      if (r.status === 'rejected') {
+        return { provider: providers[i].name, vote: 'WAIT' as const, confidence: 0, reason: 'Provider failed to respond.' };
+      }
+      return _parseCouncilVote(r.value.provider, r.value.text);
+    });
+
+    const takeCount  = votes.filter(v => v.vote === 'TAKE').length;
+    const grokVote   = votes.find(v => v.provider.toLowerCase().includes('grok'));
+    const avgConf    = votes.reduce((a, v) => a + v.confidence, 0) / votes.length;
+    const grokVetoed = grokVote?.vote === 'REJECT';
+    const approved   = takeCount >= 2 && !grokVetoed && avgConf >= 60;
+
+    const blockedReason = approved ? undefined
+      : grokVetoed      ? `Critic vetoed: ${grokVote!.reason}`
+      : takeCount < 2   ? `Only ${takeCount}/3 voted TAKE — need at least 2.`
+      :                   `Avg confidence ${avgConf.toFixed(0)}/100 below threshold (60).`;
+
+    return { approved, votes, blockedReason };
   });
 
   // ── Scheduler ─────────────────────────────────────────────────────────────────

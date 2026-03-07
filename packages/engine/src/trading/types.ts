@@ -3,6 +3,16 @@
 // Shared types for Shadow Trading Mode.
 // All shadow trades are simulation only — no real orders.
 
+// ── Council vote ──────────────────────────────────────────────────────────────
+
+export interface CouncilVote {
+  provider: string;
+  vote: 'TAKE' | 'WAIT' | 'REJECT';
+  /** 0–100 confidence score parsed from the AI response. */
+  confidence: number;
+  reason: string;
+}
+
 export interface ShadowTrade {
   id: string;
   symbol: string;
@@ -33,6 +43,10 @@ export interface ShadowTrade {
   invalidationRule?: string;
   /** Quality score 0–100: confidence + R:R + trend alignment. */
   qualityScore?: number;
+  /** Individual votes from the 3-AI council before this trade was opened. */
+  councilVotes?: CouncilVote[];
+  /** True when council approved this trade (always true for opened trades). */
+  councilPassed?: boolean;
 }
 
 export interface ShadowAccountSettings {
@@ -65,4 +79,6 @@ export interface ShadowAccountState {
   lastEvalAt?: number;
   /** Why no new trades are being opened (if applicable). */
   blockedReason?: string;
+  /** Set when council voted on a setup but rejected it. */
+  councilBlockedReason?: string;
 }

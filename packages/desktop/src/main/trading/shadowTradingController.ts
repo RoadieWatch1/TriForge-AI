@@ -24,7 +24,22 @@ import crypto from 'crypto';
 import { tradovateService } from './tradovateService';
 import { buildLiveTradeAdvice, buildTradeLevels, INSTRUMENT_META } from '@triforge/engine';
 import type { LiveTradeSnapshot, ProposedTradeSetup } from '@triforge/engine';
-import type { ShadowTrade, ShadowAccountState, ShadowAccountSettings } from '@triforge/engine';
+import type { ShadowTrade, ShadowAccountState, ShadowAccountSettings, CouncilVote } from '@triforge/engine';
+
+// ── Council review callback type ──────────────────────────────────────────────
+// Injected from ipc.ts after engine init. Runs the 3-AI vote in the main process.
+
+export interface CouncilReviewResult {
+  approved: boolean;
+  votes: CouncilVote[];
+  blockedReason?: string;
+}
+
+export type CouncilReviewFn = (
+  setup: ProposedTradeSetup,
+  snap: LiveTradeSnapshot,
+  symbol: string,
+) => Promise<CouncilReviewResult>;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -60,8 +75,15 @@ class ShadowTradingControllerClass {
   private _evalTimer: ReturnType<typeof setInterval> | null = null;
   private _lastTradeOpenedAt = 0;
   private _todayKey = '';   // YYYY-MM-DD, resets on new day
+  private _councilFn: CouncilReviewFn | null = null;
 
   // ── Public API ──────────────────────────────────────────────────────────────
+
+  /** Inject the council review callback from the main process (ipc.ts). Must be
+   *  called once after engine init. Without this, no shadow trades will open. */
+  setCouncilFn(fn: CouncilReviewFn): void {
+    this._councilFn = fn;
+  }
 
   enable(): void {
     this._resetDailyIfNeeded();
@@ -193,8 +215,32 @@ class ShadowTradingControllerClass {
       return;
     }
 
-    // Open the shadow trade (setup is already a ProposedTradeSetup)
-    this._openTrade(symbol, setup, advice);
+    // ── Council gate — required before any shadow trade opens ─────────────────
+    // All 3 AIs must vote. ≥2 TAKE + Grok does not REJECT + avg confidence ≥ 60.
+    if (!this._councilFn) {
+      this._state.blockedReason = 'Council review not initialized — cannot open trade.';
+      return;
+    }
+
+    this._state.blockedReason = 'Council reviewing setup…';
+    let review: CouncilReviewResult;
+    try {
+      review = await this._councilFn(setup, snap, symbol);
+    } catch (err) {
+      this._state.blockedReason = `Council review error: ${err instanceof Error ? err.message : String(err)}`;
+      return;
+    }
+
+    if (!review.approved) {
+      this._state.blockedReason = review.blockedReason ?? 'Council did not approve this setup.';
+      this._state.councilBlockedReason = review.blockedReason;
+      return;
+    }
+
+    this._state.councilBlockedReason = undefined;
+
+    // Open the shadow trade — council approved
+    this._openTrade(symbol, setup, advice, review.votes);
   }
 
   // ── Setup builder (autonomous) ───────────────────────────────────────────────
@@ -213,6 +259,7 @@ class ShadowTradingControllerClass {
     symbol: string,
     setup: ProposedTradeSetup,
     advice: ReturnType<typeof buildLiveTradeAdvice>,
+    councilVotes?: CouncilVote[],
   ): void {
     // Quality score: base 50, +20 for high confidence, +10 for medium,
     //   +20 if R:R ≥ 2.5, +10 if R:R ≥ 1.5, +10 if strengths ≥ 3, -10 per warning
@@ -243,6 +290,8 @@ class ShadowTradingControllerClass {
       setupType:        setup.setupType,
       invalidationRule,
       qualityScore,
+      councilVotes,
+      councilPassed:    true,
     };
     this._state.openTrades.push(trade);
     this._state.tradesToday++;

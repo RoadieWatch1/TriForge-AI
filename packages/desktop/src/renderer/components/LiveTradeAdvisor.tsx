@@ -292,8 +292,17 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
     setCouncilLoading(true); setCouncilReview(null);
     try {
       const prompt = buildCouncilPrompt({ symbol, side, entry, stop, target, thesis, balance, riskPct, snapshot, advice });
-      const res = await (window.triforge as any).chat?.send(prompt);
-      setCouncilReview(typeof res === 'string' ? res : (res as { text?: string })?.text ?? 'No response.');
+      // Real 3-model consensus — all active providers vote in parallel, synthesis combines them.
+      const res = await (window.triforge as any).chat?.consensus(prompt, [], 'analytical');
+      const synthesis = (res as { synthesis?: string; responses?: Array<{ provider: string; text: string }> })?.synthesis;
+      const responses = (res as { responses?: Array<{ provider: string; text: string }> })?.responses ?? [];
+      // Build a combined display: individual seats + synthesis
+      const parts: string[] = [];
+      for (const r of responses) {
+        parts.push(`[${r.provider}]\n${r.text.trim()}`);
+      }
+      if (synthesis) parts.push(`\n— Council Synthesis —\n${synthesis.trim()}`);
+      setCouncilReview(parts.join('\n\n') || 'No response from council.');
     } catch (err) {
       setCouncilReview(`Council review failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally { setCouncilLoading(false); }

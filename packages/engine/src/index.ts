@@ -224,4 +224,4 @@ export { buildTradeLevels } from './trading/buildTradeLevels';
 export type { ProposedTradeSetup, SetupType } from './trading/buildTradeLevels';
 
 // Shadow Trading
-export type { ShadowTrade, ShadowAccountState, ShadowAccountSettings } from './trading/types';
+export type { ShadowTrade, ShadowAccountState, ShadowAccountSettings, CouncilVote } from './trading/types';
