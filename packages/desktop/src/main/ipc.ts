@@ -2567,6 +2567,19 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     return { snapshot };
   });
 
+  ipcMain.handle('wallet:paperBalance:get', () => {
+    const balance = store.get<number>('paper_balance', 10_000);
+    return { balance };
+  });
+
+  ipcMain.handle('wallet:paperBalance:set', (_e, amount: number) => {
+    if (typeof amount !== 'number' || amount < 0 || !isFinite(amount)) {
+      return { error: 'Invalid balance amount.' };
+    }
+    store.update('paper_balance', amount);
+    return { ok: true, balance: amount };
+  });
+
   ipcMain.handle('wallet:paperTrade', async (_e, trade: {
     ticker: string;
     side: 'long' | 'short';

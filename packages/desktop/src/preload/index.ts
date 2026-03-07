@@ -408,6 +408,10 @@ const api = {
   wallet: {
     getBalance: () =>
       ipcRenderer.invoke('wallet:getBalance') as Promise<{ snapshot?: unknown; error?: string }>,
+    getPaperBalance: () =>
+      ipcRenderer.invoke('wallet:paperBalance:get') as Promise<{ balance?: number; error?: string }>,
+    setPaperBalance: (amount: number) =>
+      ipcRenderer.invoke('wallet:paperBalance:set', amount) as Promise<{ ok?: boolean; balance?: number; error?: string }>,
     paperTrade: (trade: {
       ticker: string;
       side: 'long' | 'short';

@@ -4,7 +4,7 @@
 // Risk sizing: size = floor((balance * riskPct / 100) / |entry - stop|)
 // Council review panel: structured verdict from math + rule checks before submit.
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 
 interface TradeForm {
   ticker: string;
@@ -42,9 +42,7 @@ interface SubmittedTrade {
   timestamp: number;
 }
 
-const PAPER_BALANCE = 10_000; // default paper balance in dollars
-
-function calcSizing(form: TradeForm): SizingResult | null {
+function calcSizing(form: TradeForm, balance: number): SizingResult | null {
   const entry = parseFloat(form.entry);
   const stop  = parseFloat(form.stop);
   const target = parseFloat(form.target);
@@ -54,7 +52,7 @@ function calcSizing(form: TradeForm): SizingResult | null {
   if (entry === stop) return null;
 
   const riskPerShare = Math.abs(entry - stop);
-  const riskDollars  = PAPER_BALANCE * (riskPct / 100);
+  const riskDollars  = balance * (riskPct / 100);
   const size         = Math.floor(riskDollars / riskPerShare);
 
   if (size <= 0) return null;
@@ -109,6 +107,14 @@ function runCouncilReview(form: TradeForm, sizing: SizingResult | null): Council
 }
 
 export function TradeDesk({ onBack }: { onBack: () => void }) {
+  const [paperBalance, setPaperBalance] = useState<number>(10_000);
+
+  useEffect(() => {
+    window.triforge.wallet.getPaperBalance().then(res => {
+      if (res.balance !== undefined) setPaperBalance(res.balance);
+    }).catch(() => {/* use default */});
+  }, []);
+
   const [form, setForm] = useState<TradeForm>({
     ticker: '',
     side: 'long',
@@ -124,7 +130,7 @@ export function TradeDesk({ onBack }: { onBack: () => void }) {
   const [submitted, setSubmitted] = useState<SubmittedTrade | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  const sizing = calcSizing(form);
+  const sizing = calcSizing(form, paperBalance);
 
   const handleChange = useCallback((field: keyof TradeForm, value: string) => {
     setForm(f => ({ ...f, [field]: value }));
@@ -154,7 +160,7 @@ export function TradeDesk({ onBack }: { onBack: () => void }) {
         target:      parseFloat(form.target),
         size:        sizing.size,
         riskPercent: sizing.riskPct,
-        balance:     PAPER_BALANCE,
+        balance:     paperBalance,
       });
       if (result.error) {
         setSubmitError(result.error);
@@ -197,7 +203,7 @@ export function TradeDesk({ onBack }: { onBack: () => void }) {
         </div>
         <div style={s.balanceChip}>
           <span style={s.balanceLabel}>Paper Balance</span>
-          <span style={s.balanceValue}>${PAPER_BALANCE.toLocaleString()}</span>
+          <span style={s.balanceValue}>${paperBalance.toLocaleString()}</span>
         </div>
       </div>
 
