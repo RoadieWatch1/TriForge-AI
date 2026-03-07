@@ -2,22 +2,93 @@
 //
 // Intent-based dynamic provider selection for the council.
 //
-// Uses lightweight keyword scoring (no API calls) to detect the type of request
-// and selects the optimal provider order for each of the three council seats.
+// Two layers of intent detection:
 //
-// Integration: call routeCouncil(message, pm) before CouncilConversationEngine
-// in the chat:conversation handler. It sets the preferred provider order on the
-// ProviderManager via setPreferredProviders(), which getActiveProviders() respects.
+//   1. Triforge-native intents (checked first, highest priority)
+//      Detect requests for specific Triforge capabilities so Council can
+//      respond from the live awareness pack rather than from model memory.
+//      Examples: image_request, mission_request, capability_discovery.
 //
-// The three-seat council UI is unchanged — only the order (and thus which
-// provider gets which seat role) adapts to the detected intent.
+//   2. Generic reasoning intents (checked if no native intent matches)
+//      Shape which provider leads each council seat for best results.
+//      Examples: coding, strategy, research, creative.
+//
+// Integration: call routeCouncil(message, pm) before CouncilConversationEngine.
+// It sets the preferred provider order on the ProviderManager via
+// setPreferredProviders(), which getActiveProviders() respects.
 
 import type { ProviderManager } from '../core/providerManager';
 import type { ProviderName }     from '../protocol';
 
-export type IntentType = 'coding' | 'strategy' | 'research' | 'creative' | 'default';
+export type IntentType =
+  | 'coding'
+  | 'strategy'
+  | 'research'
+  | 'creative'
+  // ── Triforge-native intents (resolved before generic buckets) ────────────
+  | 'capability_discovery'  // "what can you do", "what tools do you have"
+  | 'system_status'         // "is X available", "what's configured"
+  | 'image_request'         // "generate an image", "create a picture"
+  | 'mission_request'       // "run a mission", "build X for me"
+  | 'voice_request'         // "use voice mode", "speak to me"
+  | 'phone_request'         // "pair my phone", "phone link"
+  | 'task_request'          // "check my tasks", "pending approvals"
+  | 'default';
 
-// ── Keyword banks ──────────────────────────────────────────────────────────────
+// ── Triforge-native keyword banks (exact phrase or substring match) ───────────
+
+const CAPABILITY_DISCOVERY_KW = [
+  'what can you do', 'what tools', 'what features', 'list your capabilities',
+  'what systems', 'what do you have', 'what are your abilities',
+  'what can triforge', 'capabilities', 'what powers do you',
+  'show me what you can', 'what is available', 'what can i use',
+];
+
+const SYSTEM_STATUS_KW = [
+  'is image generation', 'is voice', 'is autonomy', 'is phone',
+  'are you configured', 'what is configured', 'what\'s configured',
+  'what is set up', 'what\'s set up', 'system status', 'is X available',
+  'do you have image', 'do you have voice', 'do you have grok',
+  'is openai configured', 'is claude configured',
+  'what providers', 'which providers', 'what api keys',
+  'which systems are active', 'what is running', 'what\'s running',
+];
+
+const IMAGE_REQUEST_KW = [
+  'generate an image', 'generate image', 'create an image', 'create image',
+  'make an image', 'make image', 'draw', 'illustrate', 'dall-e', 'dalle',
+  'generate a picture', 'create a picture', 'make a picture',
+  'generate a photo', 'create a photo', 'visual for', 'design a logo',
+  'create a poster', 'make a poster', 'generate artwork', 'image of',
+];
+
+const MISSION_REQUEST_KW = [
+  'run a mission', 'start a mission', 'launch a mission',
+  'engineering mission', 'run this mission', 'start mission',
+  'build this for me', 'implement this for me', 'execute this plan',
+  'mission control', 'open mission', 'create a mission',
+];
+
+const VOICE_REQUEST_KW = [
+  'use voice mode', 'voice mode', 'speak to me', 'talk to me',
+  'activate voice', 'enable voice', 'voice chat', 'live voice',
+  'hey council', 'hands-free', 'voice conversation',
+  'use the microphone', 'start listening',
+];
+
+const PHONE_REQUEST_KW = [
+  'pair my phone', 'phone link', 'connect my phone', 'phone pairing',
+  'mobile pairing', 'pair device', 'connect mobile',
+  'set up phone', 'link my phone',
+];
+
+const TASK_REQUEST_KW = [
+  'check my tasks', 'what tasks', 'pending tasks', 'pending approvals',
+  'task status', 'task queue', 'what\'s pending', 'what is pending',
+  'show tasks', 'list tasks', 'my tasks', 'approve', 'approval queue',
+];
+
+// ── Generic keyword banks ─────────────────────────────────────────────────────
 
 const CODING_KW: string[] = [
   'code', 'function', 'bug', 'debug', 'implement', 'script', 'api',
@@ -44,6 +115,11 @@ const CREATIVE_KW: string[] = [
 
 // ── Intent detection ──────────────────────────────────────────────────────────
 
+/** Returns true if any phrase in the bank is a substring of the message. */
+function matchesAny(message: string, phrases: string[]): boolean {
+  return phrases.some(p => message.includes(p));
+}
+
 /** Score a message against a keyword bank (count of matching keywords). */
 function score(message: string, keywords: string[]): number {
   return keywords.filter(k => message.includes(k)).length;
@@ -51,11 +127,24 @@ function score(message: string, keywords: string[]): number {
 
 /**
  * Detect the dominant intent type from a user message.
- * Returns 'default' when no keyword bank wins clearly.
+ *
+ * Triforge-native intents are tested first (higher specificity).
+ * Falls back to generic reasoning intents when no native intent matches.
+ * Returns 'default' when nothing wins clearly.
  */
 export function detectIntentType(message: string): IntentType {
   const lower = message.toLowerCase();
 
+  // ── Priority 1: Triforge-native intents ────────────────────────────────────
+  if (matchesAny(lower, CAPABILITY_DISCOVERY_KW)) return 'capability_discovery';
+  if (matchesAny(lower, SYSTEM_STATUS_KW))        return 'system_status';
+  if (matchesAny(lower, IMAGE_REQUEST_KW))         return 'image_request';
+  if (matchesAny(lower, MISSION_REQUEST_KW))       return 'mission_request';
+  if (matchesAny(lower, VOICE_REQUEST_KW))         return 'voice_request';
+  if (matchesAny(lower, PHONE_REQUEST_KW))         return 'phone_request';
+  if (matchesAny(lower, TASK_REQUEST_KW))          return 'task_request';
+
+  // ── Priority 2: Generic reasoning intents ──────────────────────────────────
   const scores: [IntentType, number][] = [
     ['coding',   score(lower, CODING_KW)],
     ['strategy', score(lower, STRATEGY_KW)],
@@ -80,11 +169,23 @@ export function detectIntentType(message: string): IntentType {
  */
 export function selectCouncil(intent: IntentType): ProviderName[] {
   switch (intent) {
-    case 'coding':   return ['openai', 'claude', 'grok'];   // GPT-4o leads for code
-    case 'strategy': return ['claude', 'grok', 'openai'];   // Claude leads for strategy
-    case 'research': return ['claude', 'openai', 'grok'];   // Claude leads for research
-    case 'creative': return ['claude', 'grok', 'openai'];   // Claude leads for creative
-    default:         return ['claude', 'openai', 'grok'];   // Balanced default
+    // Native intents: Claude leads (strongest at nuanced, capability-aware responses)
+    case 'capability_discovery':
+    case 'system_status':        return ['claude', 'openai', 'grok'];
+    // Image: GPT-4o leads (knows DALL-E capabilities best)
+    case 'image_request':        return ['openai', 'claude', 'grok'];
+    // Mission / tasks: Claude leads (best at structured planning)
+    case 'mission_request':
+    case 'task_request':         return ['claude', 'openai', 'grok'];
+    // Voice / phone: balanced — these are mostly navigation responses
+    case 'voice_request':
+    case 'phone_request':        return ['claude', 'openai', 'grok'];
+    // Generic reasoning intents
+    case 'coding':               return ['openai', 'claude', 'grok'];
+    case 'strategy':             return ['claude', 'grok', 'openai'];
+    case 'research':             return ['claude', 'openai', 'grok'];
+    case 'creative':             return ['claude', 'grok', 'openai'];
+    default:                     return ['claude', 'openai', 'grok'];
   }
 }
 

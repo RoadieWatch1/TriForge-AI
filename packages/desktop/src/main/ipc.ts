@@ -43,7 +43,7 @@ import { getToolExecutor, newRequestId } from '../core/tools/toolExecutor';
 import { healthMonitor } from '../core/health/healthMonitor';
 import { MemoryStore } from '../core/memory/memoryStore';
 import { getMemoryManager } from '../core/memory/memoryManager';
-import { ImageService, getImageHistoryStore } from '@triforge/engine';
+import { ImageService, getImageHistoryStore, systemStateService, buildCouncilAwarenessAddendum } from '@triforge/engine';
 
 import { ResultStore } from './resultStore';
 import { ValueEngine, CampaignStore, MetricsStore, CompoundEngine } from '@triforge/engine';
@@ -125,6 +125,10 @@ let _memGraph: CouncilMemoryGraph | null = null;
 let _councilRuntime: CouncilRuntime | null = null;
 let _insightEngine: InsightEngine | null = null;
 let _insightRouter: InsightRouter | null = null;
+
+// ── Council Awareness — module-level state for registered getters ─────────────
+let _cachedTier: 'free' | 'pro' | 'business' = 'free';
+let _phoneLinkRef: PhoneLinkServer | null = null;
 
 function _getMissionCtxMgr(store: Store): MissionContextManager {
   if (!_missionCtxMgr) _missionCtxMgr = new MissionContextManager(store);
@@ -383,6 +387,38 @@ export function setupIpc(store: Store): void {
   serviceLocator.registerResultQuerier(resultSt.createQuerierAdapter());
   serviceLocator.registerCredentialGetter((name: string) => credMgr.getByName(name));
 
+  // ── Council Awareness — register live state getters (called once at startup) ─
+  systemStateService.registerTierGetter(() => _cachedTier);
+  systemStateService.registerProfileGetter(() => store.getActiveProfileId());
+  systemStateService.registerMissionGetter(() => null); // activeMissionId not tracked at module level
+  systemStateService.registerAutonomyGetter(() => {
+    if (!_autonomyEngine) return { running: false, workflowCount: 0 };
+    const s = _autonomyEngine.getStatus();
+    return { running: s.running, workflowCount: s.workflowCount };
+  });
+  systemStateService.registerProvidersGetter(async () => {
+    const openai = !!(await store.getSecret('triforge.openai.apiKey'));
+    const claude = !!(await store.getSecret('triforge.claude.apiKey'));
+    const grok   = !!(await store.getSecret('triforge.grok.apiKey'));
+    const ollama = !!(await store.getSecret('triforge.ollama.url'));
+    return { openai, claude, grok, ollama };
+  });
+  systemStateService.registerImageGetter(() => {
+    // imageReady: at least one image-capable key present (check via cached image service or providers)
+    return !!_imageService;
+  });
+  systemStateService.registerPhoneGetter(() => (_phoneLinkRef?.status().pairedDevices ?? 0) > 0);
+  systemStateService.registerApprovalsGetter(() => (_approvalStore ? _getApprovalStore().listPending().length : 0));
+  systemStateService.registerTasksGetter(() => (_taskStore ? _getTaskStore().list().filter(t => t.status === 'queued').length : 0));
+  systemStateService.registerPermissionsGetter(() => {
+    const perms = store.getPermissions();
+    const granted = (key: string) => perms.find(p => p.key === key)?.granted ?? false;
+    return { files: granted('files'), browser: granted('browser'), printer: granted('printer'), email: granted('email_s') };
+  });
+  systemStateService.registerMailGetter(() => false);    // no sync mail-configured check
+  systemStateService.registerTwitterGetter(() => false); // no Twitter integration yet
+  systemStateService.registerVoiceAuthGetter(() => false); // voice passphrase auth removed
+
   // ── Persistent event forwarder — set once, forwards to all open windows ────
   eventBus.onAny((ev) => {
     for (const win of BrowserWindow.getAllWindows()) {
@@ -550,6 +586,7 @@ export function setupIpc(store: Store): void {
     // Enforce message limit
     const license = await store.getLicense();
     const tier = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+    _cachedTier = tier; // keep awareness service in sync
     const used = store.getMonthlyMessageCount();
     if (isAtMessageLimit(used, tier)) {
       return { error: 'MESSAGE_LIMIT_REACHED', tier };
@@ -558,8 +595,10 @@ export function setupIpc(store: Store): void {
     // Track task context from this message
     updateTaskContext(message);
 
-    // Build system prompt with user identity, memories, and tier capabilities
-    const systemPrompt = await buildSystemPrompt(store, _professionEngine?.getSystemPromptAdditions());
+    // Build system prompt with user identity, memories, tier capabilities, and live awareness
+    const basePrompt = await buildSystemPrompt(store, _professionEngine?.getSystemPromptAdditions());
+    const awarenessAddendum = buildCouncilAwarenessAddendum(await systemStateService.snapshot());
+    const systemPrompt = basePrompt + '\n\n' + awarenessAddendum;
 
     try {
       const primary = providers[0];
@@ -658,6 +697,7 @@ export function setupIpc(store: Store): void {
 
     const license = await store.getLicense();
     const tierVal = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+    _cachedTier = tierVal; // keep awareness service in sync
     if (!hasCapability('THINK_TANK', tierVal)) {
       return { error: lockedError('THINK_TANK') };
     }
@@ -675,10 +715,11 @@ export function setupIpc(store: Store): void {
     updateTaskContext(message);
 
     const baseSystemPrompt = await buildSystemPrompt(store, _professionEngine?.getSystemPromptAdditions());
-    // Inject active task context into system prompt when available
-    const systemPrompt = activeTaskContext
-      ? baseSystemPrompt + `\n\n--- ACTIVE TASK CONTEXT ---\nThe user is currently working on: "${activeTaskContext}"\nAll responses should help advance this task.`
-      : baseSystemPrompt;
+    // Inject live Council Awareness addendum + active task context
+    const awarenessAddendum = buildCouncilAwarenessAddendum(await systemStateService.snapshot());
+    const systemPrompt = baseSystemPrompt + '\n\n' + awarenessAddendum + (activeTaskContext
+      ? `\n\n--- ACTIVE TASK CONTEXT ---\nThe user is currently working on: "${activeTaskContext}"\nAll responses should help advance this task.`
+      : '');
 
     // Notify renderer: forge starting
     event.sender.send('forge:update', { phase: 'querying', total: providers.length });
@@ -3269,6 +3310,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   // ── Phone Link — remote Council access on port 4587 ───────────────────────────
 
   const phoneLinkServer = new PhoneLinkServer();
+  _phoneLinkRef = phoneLinkServer; // wire Council Awareness phone getter
 
   // Persist paired devices to userData so they survive app restarts
   phoneLinkServer.setStorageDir(app.getPath('userData'));

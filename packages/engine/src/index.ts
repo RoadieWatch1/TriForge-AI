@@ -201,3 +201,9 @@ export type { ImageHistoryEntry }  from './image/imageHistoryStore';
 export type { GenerateImageOptions, GeneratedImage } from './image/generatorRouter';
 export type { CritiqueResult, ImageCritiqueScore } from './image/imageCritique';
 export type { StylePresetKey }     from './image/styles';
+
+// Council Awareness Layer (capability registry + live state + addendum builder)
+export { CAPABILITY_REGISTRY, getCapabilityById, getCapabilitiesByCategory, searchCapabilities } from './awareness/CapabilityRegistry';
+export { systemStateService }        from './awareness/SystemStateService';
+export { buildCouncilAwarenessAddendum } from './awareness/CouncilAwarenessService';
+export type { CapabilityDescriptor, CapabilityCategory, CapabilityRisk, SystemStateSnapshot, CouncilAwarenessPack } from './awareness/types';
