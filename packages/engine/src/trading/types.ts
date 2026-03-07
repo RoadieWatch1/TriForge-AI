@@ -184,7 +184,10 @@ export type ShadowBlockReason =
   | 'insufficient_seats' | 'grok_veto' | 'low_council_confidence'
   | 'insufficient_take_votes'
   // strategy_config (Phase 4 — logged under natural stage, not a new funnel stage)
-  | 'strategy_config_blocked';
+  | 'strategy_config_blocked'
+  // promotion workflow (Phase 6 — workflow states, not failure blocks)
+  | 'manual_confirmation_pending' | 'manual_confirmation_timeout'
+  | 'promotion_guardrail_blocked';
 
 export interface ShadowDecisionEvent {
   /** Schema version for forward-compatible JSONL evolution. */
@@ -192,6 +195,8 @@ export interface ShadowDecisionEvent {
   id: string;
   timestamp: number;
   stage: ShadowDecisionStage;
+  /** The operation mode when this event was generated (Phase 6). */
+  operationMode?: TradingOperationMode;
   /** Correlates all events from the same _evaluateEntry() pass (set from setup_detection onward). */
   candidateId?: string;
   blockReason?: ShadowBlockReason;
@@ -390,12 +395,74 @@ export interface StrategyReadinessReport {
   performance: ShadowPerformanceSummary;
   /** Threshold checks for the next state up (or own state if at top). */
   thresholdChecks: ThresholdCheck[];
+  /** Max cumulative drawdown in R-multiples. */
+  maxDrawdownR: number;
   stabilityChecks: StabilityCheck[];
   stabilityPassed: boolean;
   /** Human-readable reasons preventing next state. */
   blockers: string[];
   /** One-line summary — always ends with advisory disclaimer. */
   advisory: string;
+}
+
+// ── Phase 6: Promotion Workflow ──────────────────────────────────────────────
+
+export type TradingOperationMode = 'shadow' | 'paper' | 'guarded_live_candidate';
+
+export interface ModeGuardrails {
+  dailyLossCapR: number;
+  maxTradesPerDay: number;
+  maxPositionSize: number;
+  manualConfirmation: boolean;
+  autoDemotionEnabled: boolean;
+  lossStreakDemotion: number;
+}
+
+/** Guardrails split by promoted mode. guarded_live_candidate is stricter by default. */
+export interface PromotionGuardrails {
+  paper: ModeGuardrails;
+  guardedLiveCandidate: ModeGuardrails;
+}
+
+export const DEFAULT_PROMOTION_GUARDRAILS: PromotionGuardrails = {
+  paper: {
+    dailyLossCapR: 3,
+    maxTradesPerDay: 3,
+    maxPositionSize: 1,
+    manualConfirmation: true,
+    autoDemotionEnabled: true,
+    lossStreakDemotion: 3,
+  },
+  guardedLiveCandidate: {
+    dailyLossCapR: 2,
+    maxTradesPerDay: 2,
+    maxPositionSize: 1,
+    manualConfirmation: true,
+    autoDemotionEnabled: true,
+    lossStreakDemotion: 2,
+  },
+};
+
+export interface PromotionDecision {
+  eligible: boolean;
+  targetMode: TradingOperationMode;
+  requiredState: StrategyReadinessState;
+  currentState: StrategyReadinessState;
+  blockers: string[];
+  advisory: string;
+}
+
+export interface PromotionWorkflowStatus {
+  currentMode: TradingOperationMode;
+  promotedAt?: number;
+  demotedAt?: number;
+  demotionReason?: string;
+  dailyLossR: number;
+  tradesTodayPromoted: number;
+  consecutiveLosses: number;
+  activeGuardrails: ModeGuardrails;
+  guardrails: PromotionGuardrails;
+  lastReadinessState: StrategyReadinessState;
 }
 
 // ── Strategy config validation (Phase 4.1) ──────────────────────────────────
@@ -494,4 +561,62 @@ export function validateStrategyConfig(raw: unknown): StrategyConfigValidation {
   }
 
   return { config, warnings };
+}
+
+// ── Promotion guardrail validation (Phase 6) ─────────────────────────────────
+
+function _validateModeGuardrails(
+  raw: unknown,
+  prefix: string,
+  defaults: ModeGuardrails,
+): { guardrails: ModeGuardrails; warnings: string[] } {
+  const warnings: string[] = [];
+  if (!raw || typeof raw !== 'object') {
+    return { guardrails: { ...defaults }, warnings: [`${prefix}: not an object — using defaults.`] };
+  }
+  const input = raw as Record<string, unknown>;
+  const g: ModeGuardrails = { ...defaults };
+
+  if (input.dailyLossCapR !== undefined) {
+    const n = Number(input.dailyLossCapR);
+    if (isNaN(n) || n <= 0) warnings.push(`${prefix}.dailyLossCapR must be > 0, using default.`);
+    else g.dailyLossCapR = Math.min(10, n);
+  }
+  if (input.maxTradesPerDay !== undefined) {
+    const n = Number(input.maxTradesPerDay);
+    if (isNaN(n) || !Number.isInteger(n) || n < 1) warnings.push(`${prefix}.maxTradesPerDay must be integer >= 1, using default.`);
+    else g.maxTradesPerDay = Math.min(10, n);
+  }
+  if (input.maxPositionSize !== undefined) {
+    const n = Number(input.maxPositionSize);
+    if (isNaN(n) || !Number.isInteger(n) || n < 1) warnings.push(`${prefix}.maxPositionSize must be integer >= 1, using default.`);
+    else g.maxPositionSize = Math.min(5, n);
+  }
+  if (input.manualConfirmation !== undefined) g.manualConfirmation = input.manualConfirmation !== false;
+  if (input.autoDemotionEnabled !== undefined) g.autoDemotionEnabled = input.autoDemotionEnabled !== false;
+  if (input.lossStreakDemotion !== undefined) {
+    const n = Number(input.lossStreakDemotion);
+    if (isNaN(n) || !Number.isInteger(n) || n < 1) warnings.push(`${prefix}.lossStreakDemotion must be integer >= 1, using default.`);
+    else g.lossStreakDemotion = Math.min(10, n);
+  }
+  return { guardrails: g, warnings };
+}
+
+export function validatePromotionGuardrails(raw: unknown): { guardrails: PromotionGuardrails; warnings: string[] } {
+  if (!raw || typeof raw !== 'object') {
+    return { guardrails: { ...DEFAULT_PROMOTION_GUARDRAILS }, warnings: ['Input is not an object — using defaults.'] };
+  }
+  const input = raw as Record<string, unknown>;
+  const allWarnings: string[] = [];
+
+  const paperResult = _validateModeGuardrails(input.paper, 'paper', DEFAULT_PROMOTION_GUARDRAILS.paper);
+  allWarnings.push(...paperResult.warnings);
+
+  const glcResult = _validateModeGuardrails(input.guardedLiveCandidate, 'guardedLiveCandidate', DEFAULT_PROMOTION_GUARDRAILS.guardedLiveCandidate);
+  allWarnings.push(...glcResult.warnings);
+
+  return {
+    guardrails: { paper: paperResult.guardrails, guardedLiveCandidate: glcResult.guardrails },
+    warnings: allWarnings,
+  };
 }

@@ -2830,12 +2830,138 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     return { report: evaluateReadiness(events) };
   });
 
+  // ── Strategy Promotion (Phase 6) — manual-only promotion workflow ───────────
+
+  ipcMain.handle('trading:promotionStatus', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
+    return { status: shadowTradingController.getPromotionWorkflowStatus() };
+  });
+
+  ipcMain.handle('trading:promotionMode:set', async (_e, targetMode: string) => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
+
+    const VALID_MODES = ['shadow', 'paper', 'guarded_live_candidate'] as const;
+    if (!VALID_MODES.includes(targetMode as any)) {
+      return { error: `Invalid mode: ${targetMode}` };
+    }
+
+    const currentMode = shadowTradingController.getOperationMode();
+
+    // Demotion to shadow is always allowed
+    if (targetMode === 'shadow') {
+      shadowTradingController.demoteToShadow('user_manual_demotion');
+      store.setTradingOperationMode('shadow');
+      return { ok: true, mode: 'shadow' };
+    }
+
+    // No skip-levels: shadow→paper, paper→guarded_live_candidate
+    const LADDER: Record<string, string> = { shadow: 'paper', paper: 'guarded_live_candidate' };
+    if (LADDER[currentMode] !== targetMode) {
+      return { error: `Cannot promote from "${currentMode}" to "${targetMode}". Next valid mode: "${LADDER[currentMode] ?? 'none'}".` };
+    }
+
+    // Check eligibility via readiness
+    const events = shadowAnalyticsStore.loadAll();
+    const { evaluateReadiness, evaluatePromotionEligibility } = await import('@triforge/engine');
+    const report = evaluateReadiness(events);
+    const guardrails = shadowTradingController.getPromotionGuardrails();
+    const decision = evaluatePromotionEligibility(report, currentMode as any, guardrails);
+
+    if (!decision.eligible) {
+      return { error: `Not eligible for promotion: ${decision.blockers.join(' ')}` };
+    }
+
+    shadowTradingController.setOperationMode(targetMode as any);
+    shadowTradingController.setLastReadinessState(report.state);
+    store.setTradingOperationMode(targetMode as any);
+    return { ok: true, mode: targetMode };
+  });
+
+  ipcMain.handle('trading:promotionGuardrails:get', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
+    return { guardrails: shadowTradingController.getPromotionGuardrails() };
+  });
+
+  ipcMain.handle('trading:promotionGuardrails:set', async (_e, raw: unknown) => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
+    const { validatePromotionGuardrails } = await import('@triforge/engine');
+    const { guardrails, warnings } = validatePromotionGuardrails(raw);
+    shadowTradingController.setPromotionGuardrails(guardrails);
+    store.setPromotionGuardrails(guardrails as any);
+    return { ok: true, warnings: warnings.length > 0 ? warnings : undefined };
+  });
+
+  ipcMain.handle('trading:confirmPendingTrade', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
+    const ok = shadowTradingController.confirmPendingTrade();
+    if (!ok) return { error: 'No pending trade to confirm.' };
+    return { ok: true };
+  });
+
+  ipcMain.handle('trading:rejectPendingTrade', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
+    const ok = shadowTradingController.rejectPendingTrade();
+    if (!ok) return { error: 'No pending trade to reject.' };
+    return { ok: true };
+  });
+
   // Load persisted strategy config on startup
   {
     const savedConfig = store.getShadowStrategyConfig();
     if (savedConfig && Object.keys(savedConfig).length > 0) {
       shadowTradingController.setStrategyConfig(savedConfig);
     }
+  }
+
+  // Load persisted promotion mode + guardrails on startup (Phase 6)
+  {
+    // Restore guardrails first (always safe)
+    const savedGuardrails = store.getPromotionGuardrails();
+    if (savedGuardrails && typeof savedGuardrails === 'object') {
+      import('@triforge/engine').then(({ validatePromotionGuardrails }) => {
+        const { guardrails } = validatePromotionGuardrails(savedGuardrails);
+        shadowTradingController.setPromotionGuardrails(guardrails);
+      }).catch(() => { /* keep defaults */ });
+    }
+
+    // Restore mode — with readiness re-check for promoted modes
+    const savedMode = store.getTradingOperationMode();
+    if (savedMode === 'paper' || savedMode === 'guarded_live_candidate') {
+      // Critical safety gate: verify readiness still supports this mode
+      import('@triforge/engine').then(({ evaluateReadiness, evaluatePromotionEligibility }) => {
+        const events = shadowAnalyticsStore.loadAll();
+        const report = evaluateReadiness(events);
+        const guardrails = shadowTradingController.getPromotionGuardrails();
+        // Pretend starting from shadow — check if stored mode is still justified
+        const decision = evaluatePromotionEligibility(report, 'shadow', guardrails);
+
+        if (savedMode === 'paper' && decision.eligible) {
+          // paper_ready or higher — restore paper
+          shadowTradingController.setOperationMode('paper');
+          shadowTradingController.setLastReadinessState(report.state);
+        } else if (savedMode === 'guarded_live_candidate') {
+          // Must be eligible for paper AND guarded_live_candidate
+          const paperDecision = evaluatePromotionEligibility(report, 'paper', guardrails);
+          if (decision.eligible && paperDecision.eligible) {
+            shadowTradingController.setOperationMode('guarded_live_candidate');
+            shadowTradingController.setLastReadinessState(report.state);
+          } else {
+            // Readiness degraded — force shadow
+            shadowTradingController.demoteToShadow('startup_readiness_mismatch');
+            store.setTradingOperationMode('shadow');
+          }
+        } else {
+          // Readiness degraded — force shadow
+          shadowTradingController.demoteToShadow('startup_readiness_mismatch');
+          store.setTradingOperationMode('shadow');
+        }
+      }).catch(() => {
+        // On error, stay in shadow (safe default)
+        shadowTradingController.demoteToShadow('startup_readiness_check_error');
+        store.setTradingOperationMode('shadow');
+      });
+    }
+    // If savedMode is 'shadow' (or undefined), controller defaults to shadow — nothing to do
   }
 
   // ── Wire council review into shadow trading controller ────────────────────────

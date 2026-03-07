@@ -263,3 +263,11 @@ export type {
   ThresholdCheck, StabilityCheck, StrategyReadinessReport,
 } from './trading/types';
 export { DEFAULT_READINESS_THRESHOLDS, READINESS_STATES } from './trading/types';
+
+// Strategy Promotion (Phase 6) — pure evaluation, manual-only
+export { evaluatePromotionEligibility } from './trading/promotion';
+export type {
+  TradingOperationMode, ModeGuardrails, PromotionGuardrails,
+  PromotionDecision, PromotionWorkflowStatus,
+} from './trading/types';
+export { DEFAULT_PROMOTION_GUARDRAILS, validatePromotionGuardrails } from './trading/types';

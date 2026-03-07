@@ -507,6 +507,19 @@ const api = {
     // Phase 5: Strategy Readiness
     shadowReadinessReport: () =>
       ipcRenderer.invoke('trading:shadowReadinessReport') as Promise<{ report?: unknown; error?: string }>,
+    // Phase 6: Promotion Workflow
+    promotionStatus: () =>
+      ipcRenderer.invoke('trading:promotionStatus') as Promise<{ status?: unknown; error?: string }>,
+    promotionModeSet: (mode: string) =>
+      ipcRenderer.invoke('trading:promotionMode:set', mode) as Promise<{ ok?: boolean; mode?: string; error?: string }>,
+    promotionGuardrailsGet: () =>
+      ipcRenderer.invoke('trading:promotionGuardrails:get') as Promise<{ guardrails?: unknown; error?: string }>,
+    promotionGuardrailsSet: (guardrails: unknown) =>
+      ipcRenderer.invoke('trading:promotionGuardrails:set', guardrails) as Promise<{ ok?: boolean; error?: string }>,
+    confirmPendingTrade: () =>
+      ipcRenderer.invoke('trading:confirmPendingTrade') as Promise<{ ok?: boolean; error?: string }>,
+    rejectPendingTrade: () =>
+      ipcRenderer.invoke('trading:rejectPendingTrade') as Promise<{ ok?: boolean; error?: string }>,
   },
 
   // Scheduler (recurring + once jobs)

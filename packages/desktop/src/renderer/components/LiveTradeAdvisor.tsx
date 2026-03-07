@@ -183,9 +183,23 @@ interface ThresholdCheck { key: string; currentValue: number; requiredValue: num
 interface StabilityCheck { category: string; bucket: string; trades: number; metric: number; metricName: string; passed: boolean; rationale: string; }
 interface StrategyReadinessReport {
   state: StrategyReadinessState; generatedAt: number;
-  performance: ShadowPerformanceSummary;
+  performance: ShadowPerformanceSummary; maxDrawdownR: number;
   thresholdChecks: ThresholdCheck[]; stabilityChecks: StabilityCheck[];
   stabilityPassed: boolean; blockers: string[]; advisory: string;
+}
+
+// ── Phase 6: Promotion type mirrors ─────────────────────────────────────────
+type TradingOperationMode = 'shadow' | 'paper' | 'guarded_live_candidate';
+interface ModeGuardrails {
+  dailyLossCapR: number; maxTradesPerDay: number; maxPositionSize: number;
+  manualConfirmation: boolean; autoDemotionEnabled: boolean; lossStreakDemotion: number;
+}
+interface PromotionWorkflowStatus {
+  currentMode: TradingOperationMode; promotedAt?: number; demotedAt?: number;
+  demotionReason?: string; dailyLossR: number; tradesTodayPromoted: number;
+  consecutiveLosses: number; activeGuardrails: ModeGuardrails;
+  guardrails: { paper: ModeGuardrails; guardedLiveCandidate: ModeGuardrails };
+  lastReadinessState: StrategyReadinessState;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -247,6 +261,10 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
   // ── Strategy refinement (Phase 4) ──────────────────────────────────────────
   const [refinementSummary, setRefinementSummary] = useState<StrategyRefinementSummary | null>(null);
   const [readinessReport, setReadinessReport] = useState<StrategyReadinessReport | null>(null);
+
+  // ── Promotion workflow (Phase 6) ──────────────────────────────────────────
+  const [promotionStatus, setPromotionStatus] = useState<PromotionWorkflowStatus | null>(null);
+  const [promotionLoading, setPromotionLoading] = useState(false);
 
   // ── Tradovate account + proposed setup ─────────────────────────────────────
   const [accountState, setAccountState]   = useState<TradovateAccountState | null>(null);
@@ -313,10 +331,12 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
       (window.triforge.trading as any).shadowAnalyticsSummary(),
       (window.triforge.trading as any).shadowRefinementSummary(),
       (window.triforge.trading as any).shadowReadinessReport(),
-    ]).then(([analyticsRes, refinementRes, readinessRes]: any[]) => {
+      (window.triforge.trading as any).promotionStatus(),
+    ]).then(([analyticsRes, refinementRes, readinessRes, promotionRes]: any[]) => {
       if (analyticsRes?.summary) setAnalyticsSummary(analyticsRes.summary as ShadowAnalyticsSummary);
       if (refinementRes?.summary) setRefinementSummary(refinementRes.summary as StrategyRefinementSummary);
       if (readinessRes?.report) setReadinessReport(readinessRes.report as StrategyReadinessReport);
+      if (promotionRes?.status) setPromotionStatus(promotionRes.status as PromotionWorkflowStatus);
     }).catch(() => {}).finally(() => setAnalyticsLoading(false));
   }, [showAnalytics, closedCount, shadow?.enabled]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -325,6 +345,41 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
     setAnalyticsSummary(null);
     setReadinessReport(null);
     setShowAnalytics(false);
+  };
+
+  // ── Promotion workflow handlers (Phase 6) ─────────────────────────────────
+  const refreshPromotionStatus = async () => {
+    try {
+      const res = await (window.triforge.trading as any).promotionStatus();
+      if (res?.status) setPromotionStatus(res.status as PromotionWorkflowStatus);
+    } catch { /* ignore */ }
+  };
+
+  const handlePromote = async (targetMode: TradingOperationMode) => {
+    setPromotionLoading(true);
+    try {
+      const res = await (window.triforge.trading as any).promotionModeSet(targetMode);
+      if (res?.error) { alert(res.error); return; }
+      await refreshPromotionStatus();
+    } finally { setPromotionLoading(false); }
+  };
+
+  const handleReturnToShadow = async () => {
+    setPromotionLoading(true);
+    try {
+      await (window.triforge.trading as any).promotionModeSet('shadow');
+      await refreshPromotionStatus();
+    } finally { setPromotionLoading(false); }
+  };
+
+  const handleConfirmPendingTrade = async () => {
+    await (window.triforge.trading as any).confirmPendingTrade();
+    setShadow(await window.triforge.trading.shadowState() as ShadowAccountState);
+  };
+
+  const handleRejectPendingTrade = async () => {
+    await (window.triforge.trading as any).rejectPendingTrade();
+    setShadow(await window.triforge.trading.shadowState() as ShadowAccountState);
   };
 
   // ── Connection ───────────────────────────────────────────────────────────────
@@ -454,6 +509,16 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           <div style={s.badges}>
             <span style={s.badgeAdvisory}>Advisory Only</span>
             {shadow?.enabled && <span style={s.badgeShadow}>Shadow Trading Active</span>}
+            {promotionStatus && promotionStatus.currentMode === 'paper' && (
+              <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' as const, color: '#3b82f6', background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.25)', borderRadius: 4, padding: '2px 7px' }}>
+                Paper (Simulated)
+              </span>
+            )}
+            {promotionStatus && promotionStatus.currentMode === 'guarded_live_candidate' && (
+              <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' as const, color: '#22c55e', background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.25)', borderRadius: 4, padding: '2px 7px' }}>
+                Guarded Live Candidate (Simulated)
+              </span>
+            )}
             <span style={{ ...s.badgeConn, color: isConnected ? '#34d399' : 'rgba(255,255,255,0.3)', borderColor: isConnected ? 'rgba(52,211,153,0.3)' : 'rgba(255,255,255,0.1)' }}>
               {isConnected ? `● ${accountMode === 'live' ? 'LIVE' : 'SIM'}` : '○ Disconnected'}
             </span>
@@ -607,6 +672,22 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
               {!shadow.paused && shadow.blockedReason && (
                 <div style={s.shadowStatus}>{shadow.blockedReason}</div>
               )}
+
+              {/* Phase 6: Pending trade confirmation */}
+              {shadow.blockedReason?.includes('manual_confirmation_pending') && (
+                <div style={{ background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)', borderRadius: 6, padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: '#60a5fa' }}>Manual Confirmation Required (Simulated)</div>
+                  <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)', lineHeight: 1.5 }}>
+                    Council approved a simulated trade. In promoted mode, manual confirmation is required before opening.
+                    This is a simulation — no real orders are placed.
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button style={{ ...s.btn, ...s.btnPrimary, fontSize: 10, padding: '6px 14px' }} onClick={handleConfirmPendingTrade}>Confirm Simulated Trade</button>
+                    <button style={{ ...s.btn, ...s.btnGhost, fontSize: 10, padding: '6px 14px' }} onClick={handleRejectPendingTrade}>Reject</button>
+                  </div>
+                </div>
+              )}
+
               {shadow.lastEvalAt && (
                 <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: -4 }}>
                   Last eval: {new Date(shadow.lastEvalAt).toLocaleTimeString()}
@@ -834,7 +915,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
               analyticsLoading ? (
                 <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', fontStyle: 'italic' }}>Loading analytics...</div>
               ) : analyticsSummary ? (
-                <ShadowAnalyticsPanel summary={analyticsSummary} refinement={refinementSummary} readiness={readinessReport} onClear={handleAnalyticsClear} />
+                <ShadowAnalyticsPanel summary={analyticsSummary} refinement={refinementSummary} readiness={readinessReport} onClear={handleAnalyticsClear} promotion={promotionStatus} onPromote={handlePromote} onReturnToShadow={handleReturnToShadow} promotionLoading={promotionLoading} />
               ) : (
                 <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>No analytics data available.</div>
               )
@@ -1050,7 +1131,10 @@ function ShadowStat({ label, value, color }: { label: string; value: string; col
 
 // ── Phase 3: Analytics sub-components ─────────────────────────────────────────
 
-function ShadowAnalyticsPanel({ summary, refinement, readiness, onClear }: { summary: ShadowAnalyticsSummary; refinement?: StrategyRefinementSummary | null; readiness?: StrategyReadinessReport | null; onClear: () => void }) {
+function ShadowAnalyticsPanel({ summary, refinement, readiness, onClear, promotion, onPromote, onReturnToShadow, promotionLoading: promoLoading }: {
+  summary: ShadowAnalyticsSummary; refinement?: StrategyRefinementSummary | null; readiness?: StrategyReadinessReport | null; onClear: () => void;
+  promotion?: PromotionWorkflowStatus | null; onPromote?: (mode: TradingOperationMode) => void; onReturnToShadow?: () => void; promotionLoading?: boolean;
+}) {
   const o = summary.overall;
   const c = summary.council;
   const [showRefinement, setShowRefinement] = useState(false);
@@ -1075,18 +1159,23 @@ function ShadowAnalyticsPanel({ summary, refinement, readiness, onClear }: { sum
         <ShadowStat label="Max Loss Streak" value={String(o.maxConsecutiveLosses)} color={o.maxConsecutiveLosses >= 3 ? '#f87171' : undefined} />
       </div>
 
-      {/* Top block reasons */}
-      {summary.topBlockReasons.length > 0 && (
-        <div>
-          <div style={sectionLabel}>Top Block Reasons</div>
-          {summary.topBlockReasons.slice(0, 3).map((r, i) => (
-            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'rgba(255,255,255,0.5)', padding: '3px 0' }}>
-              <span>{r.reason.replace(/_/g, ' ')}</span>
-              <span style={{ color: 'rgba(255,255,255,0.35)' }}>{r.count} ({r.pct.toFixed(0)}%)</span>
-            </div>
-          ))}
-        </div>
-      )}
+      {/* Top block reasons — exclude manual_confirmation workflow states */}
+      {(() => {
+        const filtered = summary.topBlockReasons.filter(r =>
+          r.reason !== 'manual_confirmation_pending' && r.reason !== 'manual_confirmation_timeout'
+        );
+        return filtered.length > 0 ? (
+          <div>
+            <div style={sectionLabel}>Top Block Reasons</div>
+            {filtered.slice(0, 3).map((r, i) => (
+              <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'rgba(255,255,255,0.5)', padding: '3px 0' }}>
+                <span>{r.reason.replace(/_/g, ' ')}</span>
+                <span style={{ color: 'rgba(255,255,255,0.35)' }}>{r.count} ({r.pct.toFixed(0)}%)</span>
+              </div>
+            ))}
+          </div>
+        ) : null;
+      })()}
 
       {/* Council effectiveness */}
       {c.totalReviews > 0 && (
@@ -1130,6 +1219,17 @@ function ShadowAnalyticsPanel({ summary, refinement, readiness, onClear }: { sum
 
       {/* Phase 5: Strategy Readiness */}
       {readiness && <StrategyReadinessSection report={readiness} />}
+
+      {/* Phase 6: Promotion Workflow Status */}
+      {promotion && (
+        <PromotionStatusSection
+          status={promotion}
+          readiness={readiness}
+          onPromote={onPromote}
+          onReturnToShadow={onReturnToShadow}
+          loading={promoLoading}
+        />
+      )}
 
       {/* By Session */}
       {summary.bySession.length > 0 && <BucketTable title="By Session" rows={summary.bySession} />}
@@ -1298,6 +1398,22 @@ function StrategyReadinessSection({ report }: { report: StrategyReadinessReport 
         </span>
       </div>
 
+      {/* Core readiness metrics — always visible */}
+      {report.performance.totalTrades > 0 && (() => {
+        const p = report.performance;
+        const statStyle: React.CSSProperties = { fontSize: 10, color: 'rgba(255,255,255,0.5)', fontVariantNumeric: 'tabular-nums' };
+        const valStyle = (good: boolean): React.CSSProperties => ({ fontWeight: 700, color: good ? '#34d399' : '#f87171' });
+        return (
+          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 8 }}>
+            <span style={statStyle}>Win <span style={valStyle(p.winRate >= 0.50)}>{(p.winRate * 100).toFixed(0)}%</span></span>
+            <span style={statStyle}>Avg R <span style={valStyle(p.avgPnlR >= 0.10)}>{p.avgPnlR >= 0 ? '+' : ''}{p.avgPnlR.toFixed(2)}</span></span>
+            <span style={statStyle}>PF <span style={valStyle(p.profitFactor >= 1.2)}>{p.profitFactor === Infinity ? '\u221e' : p.profitFactor.toFixed(2)}</span></span>
+            <span style={statStyle}>DD <span style={valStyle(report.maxDrawdownR <= 5)}>{report.maxDrawdownR.toFixed(1)}R</span></span>
+            <span style={statStyle}>Edge <span style={valStyle(p.edgeCaptureRatio >= 0.15)}>{(p.edgeCaptureRatio * 100).toFixed(0)}%</span></span>
+          </div>
+        );
+      })()}
+
       {/* Collapsible detail */}
       {expanded && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
@@ -1366,6 +1482,135 @@ function StrategyReadinessSection({ report }: { report: StrategyReadinessReport 
       {/* Footer — always visible */}
       <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.2)', marginTop: 6, fontStyle: 'italic' }}>
         This status is advisory. It does not enable live trading.
+      </div>
+    </div>
+  );
+}
+
+// ── Phase 6: Promotion Status sub-component ──────────────────────────────────
+
+const MODE_BADGE_CONFIG: Record<TradingOperationMode, { label: string; color: string }> = {
+  shadow:                 { label: 'SHADOW',                              color: '#6b7280' },
+  paper:                  { label: 'PAPER (SIMULATED)',                   color: '#3b82f6' },
+  guarded_live_candidate: { label: 'GUARDED LIVE CANDIDATE (SIMULATED)', color: '#22c55e' },
+};
+
+const PROMOTION_LADDER: Record<TradingOperationMode, TradingOperationMode | null> = {
+  shadow: 'paper',
+  paper: 'guarded_live_candidate',
+  guarded_live_candidate: null,
+};
+
+function PromotionStatusSection({ status, readiness, onPromote, onReturnToShadow, loading }: {
+  status: PromotionWorkflowStatus;
+  readiness?: StrategyReadinessReport | null;
+  onPromote?: (mode: TradingOperationMode) => void;
+  onReturnToShadow?: () => void;
+  loading?: boolean;
+}) {
+  const [showGuardrails, setShowGuardrails] = useState(false);
+  const badge = MODE_BADGE_CONFIG[status.currentMode];
+  const nextMode = PROMOTION_LADDER[status.currentMode];
+  const sectionLabel: React.CSSProperties = { fontSize: 10, fontWeight: 700, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 };
+
+  // Determine if promotion is possible based on readiness
+  const canPromote = nextMode && readiness && (
+    (nextMode === 'paper' && (readiness.state === 'paper_ready' || readiness.state === 'guarded_live_candidate')) ||
+    (nextMode === 'guarded_live_candidate' && readiness.state === 'guarded_live_candidate')
+  ) && readiness.stabilityPassed;
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+        <div style={sectionLabel}>Promotion Workflow</div>
+        <button
+          style={{ ...s.btn, ...s.btnGhost, fontSize: 9, padding: '2px 6px' }}
+          onClick={() => setShowGuardrails(v => !v)}
+        >
+          {showGuardrails ? 'Hide Guardrails' : 'Guardrails'}
+        </button>
+      </div>
+
+      {/* Mode badge */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+        <span style={{
+          fontSize: 10, fontWeight: 800, letterSpacing: '0.06em',
+          color: badge.color, background: `${badge.color}18`,
+          border: `1px solid ${badge.color}40`,
+          borderRadius: 4, padding: '3px 8px',
+        }}>
+          {badge.label}
+        </span>
+        {status.currentMode !== 'shadow' && (
+          <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)', fontVariantNumeric: 'tabular-nums' }}>
+            Simulated trades: {status.tradesTodayPromoted}/{status.activeGuardrails.maxTradesPerDay} |
+            Simulated loss: {status.dailyLossR.toFixed(1)}R/{status.activeGuardrails.dailyLossCapR}R |
+            Streak: {status.consecutiveLosses}/{status.activeGuardrails.lossStreakDemotion}
+          </span>
+        )}
+      </div>
+
+      {/* Demotion notice */}
+      {status.demotedAt && status.demotionReason && (
+        <div style={{ background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)', borderRadius: 6, padding: '8px 12px', marginBottom: 8 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#f87171', marginBottom: 2 }}>Demoted to Shadow</div>
+          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)' }}>
+            Reason: {status.demotionReason.replace(/_/g, ' ')} — {new Date(status.demotedAt).toLocaleString()}
+          </div>
+        </div>
+      )}
+
+      {/* Promote / Return buttons */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+        {canPromote && nextMode && (
+          <button
+            style={{ ...s.btn, ...s.btnPrimary, fontSize: 10, padding: '6px 14px', opacity: loading ? 0.5 : 1 }}
+            disabled={loading}
+            onClick={() => onPromote?.(nextMode)}
+          >
+            {loading ? 'Processing...' : `Promote to ${nextMode === 'paper' ? 'Paper (Simulated)' : 'Guarded Live Candidate (Simulated)'}`}
+          </button>
+        )}
+        {status.currentMode !== 'shadow' && (
+          <button
+            style={{ ...s.btn, ...s.btnGhost, fontSize: 10, padding: '6px 14px', color: '#f87171', borderColor: 'rgba(248,113,113,0.25)', opacity: loading ? 0.5 : 1 }}
+            disabled={loading}
+            onClick={onReturnToShadow}
+          >
+            Return to Shadow Mode
+          </button>
+        )}
+      </div>
+
+      {/* Guardrail details */}
+      {showGuardrails && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+          <div style={{ fontSize: 9, fontWeight: 700, color: 'rgba(255,255,255,0.2)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            Active Guardrails ({status.currentMode !== 'shadow' ? status.currentMode.replace(/_/g, ' ') : 'paper defaults'})
+          </div>
+          {(() => {
+            const g = status.activeGuardrails;
+            const rows = [
+              { label: 'Daily Loss Cap', value: `${g.dailyLossCapR}R` },
+              { label: 'Max Simulated Trades/Day', value: String(g.maxTradesPerDay) },
+              { label: 'Max Position Size', value: `${g.maxPositionSize} contract(s)` },
+              { label: 'Manual Confirmation', value: g.manualConfirmation ? 'Required' : 'Off' },
+              { label: 'Auto-Demotion', value: g.autoDemotionEnabled ? 'Enabled' : 'Disabled' },
+              { label: 'Loss Streak Demotion', value: `${g.lossStreakDemotion} consecutive` },
+            ];
+            return rows.map((r, i) => (
+              <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'rgba(255,255,255,0.5)', padding: '2px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                <span>{r.label}</span>
+                <span style={{ color: 'rgba(255,255,255,0.65)', fontVariantNumeric: 'tabular-nums' }}>{r.value}</span>
+              </div>
+            ));
+          })()}
+        </div>
+      )}
+
+      {/* Advisory */}
+      <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.2)', fontStyle: 'italic' }}>
+        All modes remain simulation only. No live brokerage orders are placed. Mode changes require explicit user action.
       </div>
     </div>
   );

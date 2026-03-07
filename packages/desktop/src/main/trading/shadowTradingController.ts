@@ -32,7 +32,10 @@ import type {
   ShadowTrade, ShadowAccountState, ShadowAccountSettings, CouncilVote,
   ShadowDecisionEvent, ShadowBlockReason, ShadowDecisionStage,
   ShadowStrategyConfig,
+  TradingOperationMode, PromotionGuardrails, ModeGuardrails,
+  PromotionWorkflowStatus, StrategyReadinessState,
 } from '@triforge/engine';
+import { DEFAULT_PROMOTION_GUARDRAILS } from '@triforge/engine';
 
 // ── Council review callback type ──────────────────────────────────────────────
 // Injected from ipc.ts after engine init. Runs the 3-AI vote in the main process.
@@ -96,6 +99,22 @@ class ShadowTradingControllerClass {
   private _lastEmittedBlock = new Map<string, number>();
   private _strategyConfig: ShadowStrategyConfig = {};
 
+  // ── Phase 6: Promotion workflow state ─────────────────────────────────────
+  private _operationMode: TradingOperationMode = 'shadow';
+  private _promotionGuardrails: PromotionGuardrails = { paper: { ...DEFAULT_PROMOTION_GUARDRAILS.paper }, guardedLiveCandidate: { ...DEFAULT_PROMOTION_GUARDRAILS.guardedLiveCandidate } };
+  private _promotedAt?: number;
+  private _demotedAt?: number;
+  private _demotionReason?: string;
+  private _dailyLossRPromoted = 0;
+  private _tradesTodayPromoted = 0;
+  private _consecutiveLosses = 0;
+  private _lastReadinessState: StrategyReadinessState = 'not_ready';
+  private _pendingTrade: {
+    symbol: string; setup: ProposedTradeSetup; advice: ReturnType<typeof buildLiveTradeAdvice>;
+    snap: LiveTradeSnapshot; councilVotes: CouncilVote[]; candidateId: string; createdAt: number;
+  } | null = null;
+  private _pendingTradeTimeout: ReturnType<typeof setTimeout> | null = null;
+
   // ── Public API ──────────────────────────────────────────────────────────────
 
   /** Inject the council review callback from the main process (ipc.ts). Must be
@@ -143,6 +162,9 @@ class ShadowTradingControllerClass {
     this._todayKey = '';
     this._lastTradeOpenedAt = 0;
     // NOTE: analytics NOT cleared here — use explicit shadowAnalyticsStore.clear()
+    // Phase 6: reset promoted counters but keep mode + guardrails intact
+    this._resetPromotedCounters();
+    this._clearPendingTrade();
   }
 
   updateSettings(partial: Partial<ShadowAccountSettings>): void {
@@ -160,6 +182,114 @@ class ShadowTradingControllerClass {
     const price = snap?.lastPrice;
     for (const t of [...this._state.openTrades]) {
       this._closeTrade(t, price ?? t.entryPrice, 'manual');
+    }
+  }
+
+  // ── Phase 6: Promotion workflow API ────────────────────────────────────────
+
+  getOperationMode(): TradingOperationMode { return this._operationMode; }
+
+  setOperationMode(mode: TradingOperationMode): void {
+    const prev = this._operationMode;
+    this._operationMode = mode;
+    if (mode !== 'shadow' && prev === 'shadow') {
+      this._promotedAt = Date.now();
+      this._demotedAt = undefined;
+      this._demotionReason = undefined;
+      this._resetPromotedCounters();
+    }
+    if (mode === 'shadow' && prev !== 'shadow') {
+      this._demotedAt = Date.now();
+      this._resetPromotedCounters();
+      this._clearPendingTrade();
+    }
+  }
+
+  demoteToShadow(reason: string): void {
+    this._operationMode = 'shadow';
+    this._demotedAt = Date.now();
+    this._demotionReason = reason;
+    this._resetPromotedCounters();
+    this._clearPendingTrade();
+  }
+
+  getPromotionGuardrails(): PromotionGuardrails {
+    return { paper: { ...this._promotionGuardrails.paper }, guardedLiveCandidate: { ...this._promotionGuardrails.guardedLiveCandidate } };
+  }
+
+  setPromotionGuardrails(g: PromotionGuardrails): void {
+    this._promotionGuardrails = { paper: { ...g.paper }, guardedLiveCandidate: { ...g.guardedLiveCandidate } };
+  }
+
+  private _activeGuardrails(): ModeGuardrails {
+    return this._operationMode === 'guarded_live_candidate'
+      ? this._promotionGuardrails.guardedLiveCandidate
+      : this._promotionGuardrails.paper;
+  }
+
+  getPromotionWorkflowStatus(): PromotionWorkflowStatus {
+    return {
+      currentMode: this._operationMode,
+      promotedAt: this._promotedAt,
+      demotedAt: this._demotedAt,
+      demotionReason: this._demotionReason,
+      dailyLossR: this._dailyLossRPromoted,
+      tradesTodayPromoted: this._tradesTodayPromoted,
+      consecutiveLosses: this._consecutiveLosses,
+      activeGuardrails: { ...this._activeGuardrails() },
+      guardrails: this.getPromotionGuardrails(),
+      lastReadinessState: this._lastReadinessState,
+    };
+  }
+
+  setLastReadinessState(state: StrategyReadinessState): void {
+    this._lastReadinessState = state;
+  }
+
+  confirmPendingTrade(): boolean {
+    if (!this._pendingTrade) return false;
+    const { symbol, setup, advice, snap, councilVotes, candidateId } = this._pendingTrade;
+    this._clearPendingTradeTimeout();
+    this._pendingTrade = null;
+    this._openTrade(symbol, setup, advice, snap, councilVotes, candidateId);
+    return true;
+  }
+
+  rejectPendingTrade(): boolean {
+    if (!this._pendingTrade) return false;
+    const { snap, candidateId } = this._pendingTrade;
+    this._clearPendingTrade();
+    this._emitEvent(this._buildBlockEvent(
+      'council_review', 'manual_confirmation_pending',
+      'Trade rejected by user (manual confirmation denied).',
+      snap, { candidateId },
+    ));
+    return true;
+  }
+
+  hasPendingTrade(): boolean { return this._pendingTrade !== null; }
+
+  getPendingTradeInfo(): { symbol: string; side: string; entry: number; stop: number; target: number; createdAt: number } | null {
+    if (!this._pendingTrade) return null;
+    const { symbol, setup, createdAt } = this._pendingTrade;
+    return { symbol, side: setup.side!, entry: setup.entry!, stop: setup.stop!, target: setup.target!, createdAt };
+  }
+
+  private _resetPromotedCounters(): void {
+    this._dailyLossRPromoted = 0;
+    this._tradesTodayPromoted = 0;
+    this._consecutiveLosses = 0;
+  }
+
+  private _clearPendingTrade(): void {
+    this._clearPendingTradeTimeout();
+    this._pendingTrade = null;
+  }
+
+  private _clearPendingTradeTimeout(): void {
+    if (this._pendingTradeTimeout) {
+      clearTimeout(this._pendingTradeTimeout);
+      this._pendingTradeTimeout = null;
     }
   }
 
@@ -192,6 +322,9 @@ class ShadowTradingControllerClass {
   // ── Entry evaluation ─────────────────────────────────────────────────────────
 
   private async _evaluateEntry(): Promise<void> {
+    // Phase 6: Block new evaluations while a manual confirmation is pending
+    if (this._pendingTrade) return;
+
     const snap = tradovateService.getLastSnapshot();
 
     // ── limits_check ──────────────────────────────────────────────────────────
@@ -355,6 +488,33 @@ class ShadowTradingControllerClass {
       }
     }
 
+    // ── Phase 6: Manual confirmation gate (promoted modes only) ──────────────
+    if (this._operationMode !== 'shadow' && this._activeGuardrails().manualConfirmation) {
+      this._clearPendingTrade();
+      this._pendingTrade = {
+        symbol, setup, advice, snap, councilVotes: review.votes, candidateId, createdAt: Date.now(),
+      };
+      this._state.blockedReason = 'Awaiting manual confirmation to open trade.';
+      this._emitEvent(this._buildBlockEvent(
+        'council_review', 'manual_confirmation_pending',
+        'Trade approved by council — awaiting manual user confirmation.',
+        snap, { candidateId, setupType: setup.setupType, side: setup.side as 'long' | 'short', entryPrice: setup.entry, stopPrice: setup.stop, targetPrice: setup.target, councilVotes: review.votes, councilApproved: true },
+      ));
+      // Auto-expire after 60 seconds with distinct timeout reason
+      this._pendingTradeTimeout = setTimeout(() => {
+        if (this._pendingTrade?.candidateId === candidateId) {
+          this._emitEvent(this._buildBlockEvent(
+            'council_review', 'manual_confirmation_timeout',
+            'Pending trade expired (60s timeout — no user response).',
+            snap, { candidateId },
+          ));
+          this._pendingTrade = null;
+          this._state.blockedReason = 'Pending trade expired (60s timeout).';
+        }
+      }, 60_000);
+      return;
+    }
+
     // ── trade_opened ──────────────────────────────────────────────────────────
     this._openTrade(symbol, setup, advice, snap, review.votes, candidateId);
   }
@@ -430,6 +590,7 @@ class ShadowTradingControllerClass {
     };
     this._state.openTrades.push(trade);
     this._state.tradesToday++;
+    if (this._operationMode !== 'shadow') this._tradesTodayPromoted++;
     this._lastTradeOpenedAt = Date.now();
     this._state.lastEvalAt  = Date.now();
     this._state.blockedReason = undefined;
@@ -499,6 +660,24 @@ class ShadowTradingControllerClass {
     this._state.currentBalance += pnl;
     this._state.dailyPnL       += pnl;
 
+    // Phase 6: Update promoted-mode loss counters and check demotion
+    if (this._operationMode !== 'shadow') {
+      if (pnlR < 0) {
+        this._dailyLossRPromoted += Math.abs(pnlR);
+        this._consecutiveLosses++;
+      } else {
+        this._consecutiveLosses = 0;
+      }
+      const g = this._activeGuardrails();
+      if (g.autoDemotionEnabled) {
+        if (this._dailyLossRPromoted >= g.dailyLossCapR) {
+          this.demoteToShadow(`Daily loss cap breached: ${this._dailyLossRPromoted.toFixed(2)}R >= ${g.dailyLossCapR}R`);
+        } else if (this._consecutiveLosses >= g.lossStreakDemotion) {
+          this.demoteToShadow(`Loss streak: ${this._consecutiveLosses} consecutive losses >= limit of ${g.lossStreakDemotion}`);
+        }
+      }
+    }
+
     // Phase 3: Emit trade_closed event
     this._emitEvent(this._buildCloseEvent(trade));
   }
@@ -546,6 +725,24 @@ class ShadowTradingControllerClass {
       return false;
     }
 
+    // ── Phase 6: Promoted-mode guardrail limits ─────────────────────────────
+    if (this._operationMode !== 'shadow') {
+      const g = this._activeGuardrails();
+      if (this._tradesTodayPromoted >= g.maxTradesPerDay) {
+        s.blockedReason = `Promoted-mode daily trade limit (${g.maxTradesPerDay}) reached.`;
+        this._lastLimitBlockReason = 'promotion_guardrail_blocked';
+        return false;
+      }
+      if (this._dailyLossRPromoted >= g.dailyLossCapR) {
+        s.blockedReason = `Promoted-mode daily loss cap (${g.dailyLossCapR}R) reached.`;
+        this._lastLimitBlockReason = 'promotion_guardrail_blocked';
+        if (g.autoDemotionEnabled) {
+          this.demoteToShadow(`Daily loss cap breached: ${this._dailyLossRPromoted.toFixed(2)}R >= ${g.dailyLossCapR}R`);
+        }
+        return false;
+      }
+    }
+
     s.blockedReason = undefined;
     this._lastLimitBlockReason = undefined;
     return true;
@@ -559,6 +756,9 @@ class ShadowTradingControllerClass {
       this._todayKey          = today;
       this._state.dailyPnL    = 0;
       this._state.tradesToday = 0;
+      // Phase 6: reset promoted-mode daily counters (consecutive losses persist)
+      this._dailyLossRPromoted = 0;
+      this._tradesTodayPromoted = 0;
     }
   }
 
@@ -593,6 +793,7 @@ class ShadowTradingControllerClass {
       id: crypto.randomUUID(),
       timestamp: Date.now(),
       stage,
+      operationMode: this._operationMode,
       blockReason,
       blockMessage,
       ...this._snapContext(snap),
@@ -616,6 +817,7 @@ class ShadowTradingControllerClass {
       id: crypto.randomUUID(),
       timestamp: Date.now(),
       stage: 'council_review' as ShadowDecisionStage,
+      operationMode: this._operationMode,
       blockReason,
       blockMessage,
       candidateId,
@@ -650,6 +852,7 @@ class ShadowTradingControllerClass {
       id: crypto.randomUUID(),
       timestamp: Date.now(),
       stage: 'trade_opened' as ShadowDecisionStage,
+      operationMode: this._operationMode,
       candidateId,
       ...this._snapContext(snap),
       setupType:      trade.setupType,
@@ -678,6 +881,7 @@ class ShadowTradingControllerClass {
       id: crypto.randomUUID(),
       timestamp: Date.now(),
       stage: 'trade_closed' as ShadowDecisionStage,
+      operationMode: this._operationMode,
       tradeId:          trade.id,
       symbol:           trade.symbol,
       side:             trade.side,

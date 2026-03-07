@@ -293,6 +293,7 @@ export function evaluateReadiness(
     state: resolvedState,
     generatedAt: Date.now(),
     performance: perf,
+    maxDrawdownR: maxDD,
     thresholdChecks: reportChecks,
     stabilityChecks: stability.checks,
     stabilityPassed: stability.passed,

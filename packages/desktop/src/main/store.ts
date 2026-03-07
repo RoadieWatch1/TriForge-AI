@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { app, safeStorage } from 'electron';
-import type { StorageAdapter, ShadowStrategyConfig } from '@triforge/engine';
+import type { StorageAdapter, ShadowStrategyConfig, TradingOperationMode } from '@triforge/engine';
 
 export interface Permission {
   key: string;
@@ -58,6 +58,8 @@ interface StoreData {
   auth: StoredAuth;
   ledger: LedgerEntry[];
   shadowStrategyConfig?: ShadowStrategyConfig;
+  tradingOperationMode?: TradingOperationMode;
+  promotionGuardrails?: Record<string, unknown>;
 }
 
 function emptyData(): StoreData {
@@ -113,6 +115,8 @@ function isValidStoreData(d: unknown): d is Partial<StoreData> {
   if (o.auth !== undefined && typeof o.auth !== 'object') return false;
   if (o.firstRunDone !== undefined && typeof o.firstRunDone !== 'boolean') return false;
   if (o.shadowStrategyConfig !== undefined && typeof o.shadowStrategyConfig !== 'object') return false;
+  if (o.tradingOperationMode !== undefined && typeof o.tradingOperationMode !== 'string') return false;
+  if (o.promotionGuardrails !== undefined && typeof o.promotionGuardrails !== 'object') return false;
   return true;
 }
 
@@ -375,6 +379,23 @@ export class Store implements StorageAdapter {
 
   setShadowStrategyConfig(config: ShadowStrategyConfig): void {
     this.data.shadowStrategyConfig = config;
+    this.save();
+  }
+
+  // ── Trading Operation Mode & Guardrails (Phase 6) ───────────────────────
+
+  getTradingOperationMode(): TradingOperationMode {
+    return this.data.tradingOperationMode ?? 'shadow';
+  }
+  setTradingOperationMode(mode: TradingOperationMode): void {
+    this.data.tradingOperationMode = mode;
+    this.save();
+  }
+  getPromotionGuardrails(): Record<string, unknown> | undefined {
+    return this.data.promotionGuardrails;
+  }
+  setPromotionGuardrails(guardrails: Record<string, unknown>): void {
+    this.data.promotionGuardrails = guardrails;
     this.save();
   }
 
