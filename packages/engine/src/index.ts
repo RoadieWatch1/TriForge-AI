@@ -249,5 +249,9 @@ export {
 } from './trading/strategyTuning';
 export type {
   InsightRecommendation, StrategyInsight, StrategyRefinementSummary,
-  ShadowStrategyConfig,
+  ShadowStrategyConfig, ShadowSymbol, StrategyConfigValidation,
+} from './trading/types';
+export {
+  SHADOW_SUPPORTED_SYMBOLS, SESSION_LABELS, VOLATILITY_REGIMES, VWAP_RELATIONS,
+  validateStrategyConfig,
 } from './trading/types';

@@ -4,12 +4,25 @@
 // All shadow trades are simulation only — no real orders.
 
 // ── Phase 2 union types ─────────────────────────────────────────────────────
+// Canonical const arrays → derived union types. One source of truth.
 
-export type VwapRelation = 'above' | 'below' | 'at' | 'extended_above' | 'extended_below';
-export type BarTrend = 'up' | 'down' | 'range' | 'unknown';
-export type SessionLabel = 'premarket' | 'opening' | 'midmorning' | 'lunch' | 'afternoon' | 'close' | 'afterhours';
-export type VolatilityRegime = 'low' | 'normal' | 'high';
+export const VWAP_RELATIONS = ['above', 'below', 'at', 'extended_above', 'extended_below'] as const;
+export type VwapRelation = typeof VWAP_RELATIONS[number];
+
+export const BAR_TRENDS = ['up', 'down', 'range', 'unknown'] as const;
+export type BarTrend = typeof BAR_TRENDS[number];
+
+export const SESSION_LABELS = ['premarket', 'opening', 'midmorning', 'lunch', 'afternoon', 'close', 'afterhours'] as const;
+export type SessionLabel = typeof SESSION_LABELS[number];
+
+export const VOLATILITY_REGIMES = ['low', 'normal', 'high'] as const;
+export type VolatilityRegime = typeof VOLATILITY_REGIMES[number];
+
 export type IndicatorState = 'warming' | 'ready' | 'degraded';
+
+// ── Supported symbols (canonical source) ────────────────────────────────────
+export const SHADOW_SUPPORTED_SYMBOLS = ['NQ', 'MNQ', 'ES', 'MES', 'RTY', 'M2K', 'CL', 'GC'] as const;
+export type ShadowSymbol = typeof SHADOW_SUPPORTED_SYMBOLS[number];
 
 // ── Live market snapshot ────────────────────────────────────────────────────
 
@@ -324,5 +337,103 @@ export interface ShadowStrategyConfig {
   /** Block if rule-engine warnings exceed this count. */
   maxWarningsAllowed?: number;
   /** Preferred symbols — empty/undefined = all allowed. */
-  preferredSymbols?: string[];
+  preferredSymbols?: ShadowSymbol[];
+}
+
+// ── Strategy config validation (Phase 4.1) ──────────────────────────────────
+
+export interface StrategyConfigValidation {
+  config: ShadowStrategyConfig;
+  warnings: string[];
+}
+
+/** Sanitize raw input into a valid ShadowStrategyConfig. Drops invalid values,
+ *  clamps numerics, and returns warnings for anything that was corrected. */
+export function validateStrategyConfig(raw: unknown): StrategyConfigValidation {
+  const warnings: string[] = [];
+  if (!raw || typeof raw !== 'object') {
+    return { config: {}, warnings: ['Input is not an object — using empty config.'] };
+  }
+  const input = raw as Record<string, unknown>;
+  const config: ShadowStrategyConfig = {};
+
+  // allowedSessions
+  if (input.allowedSessions !== undefined) {
+    if (Array.isArray(input.allowedSessions)) {
+      const valid = input.allowedSessions.filter((v): v is SessionLabel =>
+        typeof v === 'string' && (SESSION_LABELS as readonly string[]).includes(v));
+      const dropped = input.allowedSessions.length - valid.length;
+      if (dropped > 0) warnings.push(`allowedSessions: dropped ${dropped} invalid value(s).`);
+      if (valid.length > 0) config.allowedSessions = valid;
+    } else {
+      warnings.push('allowedSessions: expected array, ignored.');
+    }
+  }
+
+  // blockedVolatilityRegimes
+  if (input.blockedVolatilityRegimes !== undefined) {
+    if (Array.isArray(input.blockedVolatilityRegimes)) {
+      const valid = input.blockedVolatilityRegimes.filter((v): v is VolatilityRegime =>
+        typeof v === 'string' && (VOLATILITY_REGIMES as readonly string[]).includes(v));
+      const dropped = input.blockedVolatilityRegimes.length - valid.length;
+      if (dropped > 0) warnings.push(`blockedVolatilityRegimes: dropped ${dropped} invalid value(s).`);
+      if (valid.length > 0) config.blockedVolatilityRegimes = valid;
+    } else {
+      warnings.push('blockedVolatilityRegimes: expected array, ignored.');
+    }
+  }
+
+  // blockedVwapRelations
+  if (input.blockedVwapRelations !== undefined) {
+    if (Array.isArray(input.blockedVwapRelations)) {
+      const valid = input.blockedVwapRelations.filter((v): v is VwapRelation =>
+        typeof v === 'string' && (VWAP_RELATIONS as readonly string[]).includes(v));
+      const dropped = input.blockedVwapRelations.length - valid.length;
+      if (dropped > 0) warnings.push(`blockedVwapRelations: dropped ${dropped} invalid value(s).`);
+      if (valid.length > 0) config.blockedVwapRelations = valid;
+    } else {
+      warnings.push('blockedVwapRelations: expected array, ignored.');
+    }
+  }
+
+  // preferredSymbols
+  if (input.preferredSymbols !== undefined) {
+    if (Array.isArray(input.preferredSymbols)) {
+      const valid = input.preferredSymbols.filter((v): v is ShadowSymbol =>
+        typeof v === 'string' && (SHADOW_SUPPORTED_SYMBOLS as readonly string[]).includes(v.toUpperCase()));
+      const dropped = input.preferredSymbols.length - valid.length;
+      if (dropped > 0) warnings.push(`preferredSymbols: dropped ${dropped} invalid value(s).`);
+      if (valid.length > 0) config.preferredSymbols = valid;
+    } else {
+      warnings.push('preferredSymbols: expected array, ignored.');
+    }
+  }
+
+  // minCouncilAvgConfidence
+  if (input.minCouncilAvgConfidence !== undefined) {
+    const n = Number(input.minCouncilAvgConfidence);
+    if (isNaN(n)) {
+      warnings.push('minCouncilAvgConfidence: not a number, ignored.');
+    } else if (n < 0 || n > 100) {
+      const clamped = Math.max(0, Math.min(100, n));
+      config.minCouncilAvgConfidence = clamped;
+      warnings.push(`minCouncilAvgConfidence: clamped ${n} to ${clamped} (range 0–100).`);
+    } else {
+      config.minCouncilAvgConfidence = n;
+    }
+  }
+
+  // maxWarningsAllowed
+  if (input.maxWarningsAllowed !== undefined) {
+    const n = Number(input.maxWarningsAllowed);
+    if (isNaN(n) || !Number.isInteger(n)) {
+      warnings.push('maxWarningsAllowed: must be an integer >= 0, ignored.');
+    } else if (n < 0) {
+      warnings.push(`maxWarningsAllowed: ${n} is negative, ignored.`);
+    } else {
+      config.maxWarningsAllowed = n;
+    }
+  }
+
+  return { config, warnings };
 }

@@ -10,6 +10,7 @@
 // ── Public types ──────────────────────────────────────────────────────────────
 
 import type { LiveTradeSnapshot } from './types';
+import { SHADOW_SUPPORTED_SYMBOLS } from './types';
 export type { LiveTradeSnapshot } from './types';
 
 export type TradeAdviceVerdict =
@@ -74,7 +75,7 @@ function getMeta(symbol: string): InstrumentMeta | null {
   return INSTRUMENT_META[symbol.toUpperCase()] ?? null;
 }
 
-const SUPPORTED_SYMBOLS = Object.keys(INSTRUMENT_META);
+const SUPPORTED_SYMBOLS: readonly string[] = SHADOW_SUPPORTED_SYMBOLS;
 
 // ── Main function ─────────────────────────────────────────────────────────────
 

@@ -2812,11 +2812,13 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     return { config: shadowTradingController.getStrategyConfig() };
   });
 
-  ipcMain.handle('trading:shadowStrategyConfig:set', async (_e, cfg: Record<string, unknown>) => {
+  ipcMain.handle('trading:shadowStrategyConfig:set', async (_e, cfg: unknown) => {
     if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
-    shadowTradingController.setStrategyConfig(cfg as any);
-    store.setShadowStrategyConfig(cfg as any);
-    return { ok: true };
+    const { validateStrategyConfig } = await import('@triforge/engine');
+    const { config, warnings } = validateStrategyConfig(cfg);
+    shadowTradingController.setStrategyConfig(config);
+    store.setShadowStrategyConfig(config);
+    return { ok: true, warnings: warnings.length > 0 ? warnings : undefined };
   });
 
   // Load persisted strategy config on startup
