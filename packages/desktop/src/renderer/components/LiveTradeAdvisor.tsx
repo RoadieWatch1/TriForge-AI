@@ -1162,7 +1162,7 @@ function ShadowAnalyticsPanel({ summary, refinement, readiness, onClear, promoti
       {/* Top block reasons — exclude manual_confirmation workflow states */}
       {(() => {
         const filtered = summary.topBlockReasons.filter(r =>
-          r.reason !== 'manual_confirmation_pending' && r.reason !== 'manual_confirmation_timeout'
+          r.reason !== 'manual_confirmation_pending' && r.reason !== 'manual_confirmation_timeout' && r.reason !== 'manual_confirmation_rejected'
         );
         return filtered.length > 0 ? (
           <div>

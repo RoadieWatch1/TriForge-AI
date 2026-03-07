@@ -260,7 +260,7 @@ class ShadowTradingControllerClass {
     const { snap, candidateId } = this._pendingTrade;
     this._clearPendingTrade();
     this._emitEvent(this._buildBlockEvent(
-      'council_review', 'manual_confirmation_pending',
+      'council_review', 'manual_confirmation_rejected',
       'Trade rejected by user (manual confirmation denied).',
       snap, { candidateId },
     ));

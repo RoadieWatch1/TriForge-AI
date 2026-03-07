@@ -186,7 +186,7 @@ export type ShadowBlockReason =
   // strategy_config (Phase 4 — logged under natural stage, not a new funnel stage)
   | 'strategy_config_blocked'
   // promotion workflow (Phase 6 — workflow states, not failure blocks)
-  | 'manual_confirmation_pending' | 'manual_confirmation_timeout'
+  | 'manual_confirmation_pending' | 'manual_confirmation_timeout' | 'manual_confirmation_rejected'
   | 'promotion_guardrail_blocked';
 
 export interface ShadowDecisionEvent {
