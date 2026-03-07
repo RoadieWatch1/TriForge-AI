@@ -262,7 +262,7 @@ class ShadowTradingControllerClass {
       suggestedSize:  advice.suggestedSize,
       strengthCount:  advice.strengths?.length ?? 0,
       warningCount:   advice.warnings?.length ?? 0,
-      violationCount: 0,
+      violationCount: advice.ruleViolations?.length ?? 0,
     };
 
     if (advice.verdict !== 'buy') {
@@ -305,7 +305,10 @@ class ShadowTradingControllerClass {
     if (!review.approved) {
       this._state.blockedReason = review.blockedReason ?? 'Council did not approve this setup.';
       this._state.councilBlockedReason = review.blockedReason;
-      const code = (review.blockedCode as ShadowBlockReason) ?? 'council_rejected';
+      const rawCode = review.blockedCode;
+      const code: ShadowBlockReason = rawCode === 'low_confidence'
+        ? 'low_council_confidence'
+        : (rawCode as ShadowBlockReason) ?? 'council_rejected';
       this._emitEvent(this._buildCouncilEvent(
         code, this._state.blockedReason, snap, setup, advice, candidateId, review.votes, false,
       ));
@@ -590,7 +593,7 @@ class ShadowTradingControllerClass {
       suggestedSize:  advice.suggestedSize,
       strengthCount:  advice.strengths?.length ?? 0,
       warningCount:   advice.warnings?.length ?? 0,
-      violationCount: 0,
+      violationCount: advice.ruleViolations?.length ?? 0,
       councilVotes:   votes,
       councilApproved: approved ?? false,
     } as ShadowDecisionEvent;
@@ -623,7 +626,7 @@ class ShadowTradingControllerClass {
       suggestedSize:  advice.suggestedSize,
       strengthCount:  advice.strengths?.length ?? 0,
       warningCount:   advice.warnings?.length ?? 0,
-      violationCount: 0,
+      violationCount: advice.ruleViolations?.length ?? 0,
       councilVotes,
       councilApproved: true,
       tradeId:        trade.id,
