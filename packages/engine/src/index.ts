@@ -219,5 +219,9 @@ export type {
   TradeAdviceVerdict, TradeAdviceConfidence, InstrumentMeta,
 } from './trading/buildLiveTradeAdvice';
 
+// Trade level proposals
+export { buildTradeLevels } from './trading/buildTradeLevels';
+export type { ProposedTradeSetup, SetupType } from './trading/buildTradeLevels';
+
 // Shadow Trading
 export type { ShadowTrade, ShadowAccountState, ShadowAccountSettings } from './trading/types';

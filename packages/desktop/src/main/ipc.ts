@@ -47,7 +47,7 @@ import { getToolExecutor, newRequestId } from '../core/tools/toolExecutor';
 import { healthMonitor } from '../core/health/healthMonitor';
 import { MemoryStore } from '../core/memory/memoryStore';
 import { getMemoryManager } from '../core/memory/memoryManager';
-import { ImageService, getImageHistoryStore, systemStateService, buildCouncilAwarenessAddendum, buildLiveTradeAdvice } from '@triforge/engine';
+import { ImageService, getImageHistoryStore, systemStateService, buildCouncilAwarenessAddendum, buildLiveTradeAdvice, buildTradeLevels } from '@triforge/engine';
 
 import { ResultStore } from './resultStore';
 import { ValueEngine, CampaignStore, MetricsStore, CompoundEngine } from '@triforge/engine';
@@ -2687,6 +2687,12 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   }) => {
     const result = buildLiveTradeAdvice(input as Parameters<typeof buildLiveTradeAdvice>[0]);
     return { result };
+  });
+
+  ipcMain.handle('trading:buildTradeLevels', (_e, symbol: string) => {
+    const snapshot = tradovateService.getSnapshot(symbol);
+    const setup    = buildTradeLevels(snapshot, symbol);
+    return { setup, snapshot };
   });
 
   // ── Shadow Trading ────────────────────────────────────────────────────────────
