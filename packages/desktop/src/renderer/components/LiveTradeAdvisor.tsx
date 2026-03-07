@@ -591,26 +591,45 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
         <div style={s.card}>
           <div style={{ ...s.cardTitle, gap: 8 }}>
             Live Market — {symbol}
-            {isConnected && <span style={s.liveDot} />}
+            {isConnected && snapshot?.lastPrice && <span style={s.liveDot} />}
             {snapshot?.feedFreshnessMs !== undefined && (
-              <span style={{ fontSize: 9, color: snapshot.feedFreshnessMs > 5000 ? '#f87171' : 'rgba(255,255,255,0.2)', marginLeft: 'auto' }}>
+              <span style={{ fontSize: 9, color: snapshot.feedFreshnessMs > 8000 ? '#f87171' : snapshot.feedFreshnessMs > 4000 ? '#fbbf24' : 'rgba(255,255,255,0.2)', marginLeft: 'auto' }}>
                 {snapshot.feedFreshnessMs < 1000 ? '<1s' : `${(snapshot.feedFreshnessMs / 1000).toFixed(0)}s`} ago
               </span>
             )}
           </div>
           {!isConnected ? (
-            <div style={s.offlineNote}>Connect Tradovate for live price data. Rule-based advice still works with manual levels.</div>
-          ) : snapshot ? (
+            <div style={s.statusNote}>
+              <span style={s.statusDot} />
+              Not connected — rule-based advice works with manual levels. Click <strong>Connect Tradovate</strong> above to enable live data.
+            </div>
+          ) : !snapshot?.lastPrice ? (
+            <div style={s.statusNote}>
+              <span style={{ ...s.statusDot, background: '#fbbf24' }} />
+              Connected — waiting for first price tick on {symbol}. Market may be closed or symbol unsupported.
+            </div>
+          ) : snapshot.feedFreshnessMs !== undefined && snapshot.feedFreshnessMs > 8000 ? (
+            <>
+              <div style={{ ...s.statusNote, color: '#f87171' }}>
+                <span style={{ ...s.statusDot, background: '#f87171' }} />
+                Feed stale ({(snapshot.feedFreshnessMs / 1000).toFixed(0)}s) — last known price shown. Advice may be outdated.
+              </div>
+              <div style={s.metricsRow}>
+                <Metric label="Last"  value={snapshot.lastPrice.toFixed(2)} dim />
+                <Metric label="High"  value={snapshot.highOfDay  !== undefined ? snapshot.highOfDay.toFixed(2)  : '—'} dim />
+                <Metric label="Low"   value={snapshot.lowOfDay   !== undefined ? snapshot.lowOfDay.toFixed(2)   : '—'} dim />
+                <Metric label="Trend" value={snapshot.trend ? snapshot.trend.toUpperCase() : '—'} dim />
+              </div>
+            </>
+          ) : (
             <div style={s.metricsRow}>
-              <Metric label="Last"  value={snapshot.lastPrice  !== undefined ? snapshot.lastPrice.toFixed(2)  : '—'} />
+              <Metric label="Last"  value={snapshot.lastPrice.toFixed(2)} />
               <Metric label="Bid"   value={snapshot.bidPrice   !== undefined ? snapshot.bidPrice.toFixed(2)   : '—'} dim />
               <Metric label="Ask"   value={snapshot.askPrice   !== undefined ? snapshot.askPrice.toFixed(2)   : '—'} dim />
               <Metric label="High"  value={snapshot.highOfDay  !== undefined ? snapshot.highOfDay.toFixed(2)  : '—'} />
               <Metric label="Low"   value={snapshot.lowOfDay   !== undefined ? snapshot.lowOfDay.toFixed(2)   : '—'} />
               <Metric label="Trend" value={snapshot.trend ? snapshot.trend.toUpperCase() : '—'} highlight={snapshot.trend === 'up'} dimRed={snapshot.trend === 'down'} />
             </div>
-          ) : (
-            <div style={s.offlineNote}>Waiting for first tick...</div>
           )}
           {snapshot?.warning && <div style={s.snapshotWarning}>{snapshot.warning}</div>}
         </div>
@@ -941,6 +960,8 @@ const s: Record<string, React.CSSProperties> = {
   metricsRow:    { display: 'flex', gap: 20, flexWrap: 'wrap' },
   liveDot:       { display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: '#34d399' },
   offlineNote:   { fontSize: 12, color: 'rgba(255,255,255,0.3)', fontStyle: 'italic' },
+  statusNote:    { display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 12, color: 'rgba(255,255,255,0.4)', lineHeight: 1.5 },
+  statusDot:     { display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: 'rgba(255,255,255,0.2)', flexShrink: 0, marginTop: 4 },
   snapshotWarning: { fontSize: 11, color: '#fbbf24', marginTop: -4 },
   errorBanner:   { background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)', borderRadius: 6, padding: '10px 14px', fontSize: 12, color: '#f87171' },
   actions:       { display: 'flex', gap: 10, flexWrap: 'wrap' },

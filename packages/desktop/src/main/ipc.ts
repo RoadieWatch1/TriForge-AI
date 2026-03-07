@@ -2644,6 +2644,9 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   // ── Live Trade Advisor / Tradovate ────────────────────────────────────────────
 
   tradovateService.init(store);
+  // Attempt to restore a previous Tradovate session using persisted credentials.
+  // Runs in the background; UI polls status independently so no await needed.
+  void tradovateService.autoConnect();
 
   ipcMain.handle('trading:tradovateConnect', async (_e, creds: {
     username: string;
