@@ -23,6 +23,7 @@ import { createMailAdapter } from './mailService';
 import { NativeIntentRouter } from './nativeIntentRouter';
 import { tradovateService } from './trading/tradovateService';
 import { shadowTradingController } from './trading/shadowTradingController';
+import { PaperEngine } from './trading/paperEngine';
 import { SensorManager } from './sensors/index';
 import { navigate as browserNavigate, screenshot as browserScreenshot, fillForm as browserFillForm, scrape as browserScrape, closeBrowser } from './browser/index';
 import { SocialPoster } from './social/index';
@@ -2567,16 +2568,20 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     return { snapshot };
   });
 
+  // ── Paper Trading Engine ──────────────────────────────────────────────────────
+
+  const paperEngine = new PaperEngine(store);
+  paperEngine.init();
+
   ipcMain.handle('wallet:paperBalance:get', () => {
-    const balance = store.get<number>('paper_balance', 10_000);
-    return { balance };
+    return { balance: paperEngine.getBalance() };
   });
 
   ipcMain.handle('wallet:paperBalance:set', (_e, amount: number) => {
     if (typeof amount !== 'number' || amount < 0 || !isFinite(amount)) {
       return { error: 'Invalid balance amount.' };
     }
-    store.update('paper_balance', amount);
+    paperEngine.setBalance(amount);
     return { ok: true, balance: amount };
   });
 
@@ -2597,16 +2602,43 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     if (trade.entry === trade.stop) {
       return { error: 'Entry and stop cannot be the same price.' };
     }
-    const tradeId = crypto.randomUUID();
-    const entry = {
-      id: tradeId,
+    const position = paperEngine.openPosition({
+      ticker:      trade.ticker,
+      side:        trade.side,
+      entryPrice:  trade.entry,
+      stopPrice:   trade.stop,
+      targetPrice: trade.target,
+      size:        trade.size,
+      riskPercent: trade.riskPercent,
+      thesis:      trade.thesis,
+    });
+    // Also log to ledger for audit trail
+    store.addLedger({
+      id:        position.id,
       timestamp: Date.now(),
-      workflow: 'PAPER_TRADE',
-      summary: `Paper ${trade.side.toUpperCase()} ${trade.ticker} — Entry: ${trade.entry}, Stop: ${trade.stop}, Target: ${trade.target}, Size: ${trade.size} shares, Risk: ${trade.riskPercent.toFixed(1)}%`,
-      data: trade,
-    };
-    store.addLedger(entry as any);
-    return { ok: true, tradeId, entry };
+      workflow:  'PAPER_TRADE',
+      summary:   `Paper ${trade.side.toUpperCase()} ${trade.ticker} — Entry: ${trade.entry}, Stop: ${trade.stop}, Target: ${trade.target}, Size: ${trade.size} shares, Risk: ${trade.riskPercent.toFixed(1)}%`,
+      data:      trade,
+    } as any);
+    return { ok: true, tradeId: position.id, position };
+  });
+
+  ipcMain.handle('wallet:paperState', (_e, lastPriceByTicker?: Record<string, number>) => {
+    return { state: paperEngine.getState(lastPriceByTicker) };
+  });
+
+  ipcMain.handle('wallet:paperClose', (_e, params: { id: string; exitPrice: number; reason: 'manual' | 'stop' | 'target' }) => {
+    if (!params.id || !params.exitPrice) {
+      return { error: 'Missing required fields: id, exitPrice.' };
+    }
+    const closed = paperEngine.closePosition(params.id, params.exitPrice, params.reason ?? 'manual');
+    if (!closed) return { error: 'Position not found.' };
+    return { ok: true, trade: closed };
+  });
+
+  ipcMain.handle('wallet:paperReset', (_e, newBalance?: number) => {
+    paperEngine.reset(newBalance);
+    return { ok: true, balance: paperEngine.getBalance() };
   });
 
   // ── Live Trade Advisor / Tradovate ────────────────────────────────────────────

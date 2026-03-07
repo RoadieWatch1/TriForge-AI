@@ -423,7 +423,13 @@ const api = {
       riskPercent: number;
       balance: number;
     }) =>
-      ipcRenderer.invoke('wallet:paperTrade', trade) as Promise<{ ok?: boolean; tradeId?: string; entry?: unknown; error?: string }>,
+      ipcRenderer.invoke('wallet:paperTrade', trade) as Promise<{ ok?: boolean; tradeId?: string; position?: unknown; error?: string }>,
+    paperState: (lastPriceByTicker?: Record<string, number>) =>
+      ipcRenderer.invoke('wallet:paperState', lastPriceByTicker) as Promise<{ state?: unknown; error?: string }>,
+    paperClose: (params: { id: string; exitPrice: number; reason?: 'manual' | 'stop' | 'target' }) =>
+      ipcRenderer.invoke('wallet:paperClose', params) as Promise<{ ok?: boolean; trade?: unknown; error?: string }>,
+    paperReset: (newBalance?: number) =>
+      ipcRenderer.invoke('wallet:paperReset', newBalance) as Promise<{ ok?: boolean; balance?: number; error?: string }>,
   },
 
   // Live Trade Advisor (Tradovate bridge + advice engine)

@@ -106,14 +106,46 @@ function runCouncilReview(form: TradeForm, sizing: SizingResult | null): Council
   };
 }
 
+interface PaperPosition {
+  id: string;
+  ticker: string;
+  side: 'long' | 'short';
+  entryPrice: number;
+  stopPrice: number;
+  targetPrice: number;
+  size: number;
+  openedAt: number;
+  unrealizedPnl?: number;
+}
+
+interface PaperEngineState {
+  balance: number;
+  startingBalance: number;
+  openPositions: PaperPosition[];
+  totalRealizedPnl: number;
+  winCount: number;
+  lossCount: number;
+  winRate: number;
+}
+
 export function TradeDesk({ onBack }: { onBack: () => void }) {
   const [paperBalance, setPaperBalance] = useState<number>(10_000);
+  const [engineState, setEngineState]   = useState<PaperEngineState | null>(null);
+  const [closingId, setClosingId]       = useState<string | null>(null);
+
+  const refreshState = useCallback(() => {
+    window.triforge.wallet.paperState().then(res => {
+      const s = res.state as PaperEngineState | undefined;
+      if (s) {
+        setEngineState(s);
+        setPaperBalance(s.balance);
+      }
+    }).catch(() => {/* ignore */});
+  }, []);
 
   useEffect(() => {
-    window.triforge.wallet.getPaperBalance().then(res => {
-      if (res.balance !== undefined) setPaperBalance(res.balance);
-    }).catch(() => {/* use default */});
-  }, []);
+    refreshState();
+  }, [refreshState]);
 
   const [form, setForm] = useState<TradeForm>({
     ticker: '',
@@ -176,11 +208,22 @@ export function TradeDesk({ onBack }: { onBack: () => void }) {
           riskPercent: sizing.riskPct,
           timestamp:   Date.now(),
         });
+        refreshState();
       }
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : String(err));
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleClose = async (id: string, exitPrice: number) => {
+    setClosingId(id);
+    try {
+      await window.triforge.wallet.paperClose({ id, exitPrice, reason: 'manual' });
+      refreshState();
+    } finally {
+      setClosingId(null);
     }
   };
 
@@ -338,6 +381,46 @@ export function TradeDesk({ onBack }: { onBack: () => void }) {
             )}
             <button style={{ ...s.btn, ...s.btnGhost }} onClick={handleReset}>Reset</button>
           </div>
+
+          {/* Open positions */}
+          {engineState && engineState.openPositions.length > 0 && (
+            <div style={s.card}>
+              <div style={s.cardTitle}>
+                Open Positions
+                <span style={{ marginLeft: 'auto', fontSize: 10, color: 'rgba(255,255,255,0.3)', fontWeight: 400 }}>
+                  W {engineState.winCount} / L {engineState.lossCount}
+                  {engineState.winCount + engineState.lossCount > 0 && ` · ${engineState.winRate.toFixed(0)}% win`}
+                </span>
+              </div>
+              {engineState.openPositions.map(pos => {
+                const pnl    = pos.unrealizedPnl ?? 0;
+                const pnlPos = pnl >= 0;
+                return (
+                  <div key={pos.id} style={s.posRow}>
+                    <div style={s.posLeft}>
+                      <span style={{ fontWeight: 700, color: 'rgba(255,255,255,0.85)', fontSize: 12 }}>{pos.ticker}</span>
+                      <span style={{ fontSize: 10, color: pos.side === 'long' ? '#34d399' : '#f87171', fontWeight: 600, marginLeft: 6 }}>
+                        {pos.side === 'long' ? '▲ L' : '▼ S'}
+                      </span>
+                      <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)', marginLeft: 8 }}>
+                        {pos.size} @ {pos.entryPrice}
+                      </span>
+                    </div>
+                    <div style={s.posRight}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: pnlPos ? '#34d399' : '#f87171', fontVariantNumeric: 'tabular-nums' }}>
+                        {pnlPos ? '+' : ''}{pnl.toFixed(2)}
+                      </span>
+                      <ClosePositionInline
+                        posId={pos.id}
+                        disabled={closingId === pos.id}
+                        onClose={handleClose}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -345,6 +428,32 @@ export function TradeDesk({ onBack }: { onBack: () => void }) {
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
+
+function ClosePositionInline({ posId, disabled, onClose }: {
+  posId: string;
+  disabled: boolean;
+  onClose: (id: string, exitPrice: number) => void;
+}) {
+  const [price, setPrice] = React.useState('');
+  return (
+    <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+      <input
+        style={{ width: 72, fontSize: 11, padding: '3px 6px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 4, color: 'rgba(255,255,255,0.8)', outline: 'none' }}
+        type="number"
+        placeholder="exit $"
+        value={price}
+        onChange={e => setPrice(e.target.value)}
+      />
+      <button
+        style={{ fontSize: 10, fontWeight: 700, padding: '3px 8px', background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.25)', borderRadius: 4, color: '#f87171', cursor: disabled || !price ? 'not-allowed' : 'pointer', opacity: disabled || !price ? 0.5 : 1 }}
+        disabled={disabled || !price}
+        onClick={() => onClose(posId, parseFloat(price))}
+      >
+        Close
+      </button>
+    </div>
+  );
+}
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -582,6 +691,23 @@ const s: Record<string, React.CSSProperties> = {
     background: 'rgba(96,165,250,0.15)',
     border: '1px solid rgba(96,165,250,0.3)',
     color: '#60a5fa',
+  },
+  posRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '8px 0',
+    borderTop: '1px solid rgba(255,255,255,0.05)',
+  },
+  posLeft: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 2,
+  },
+  posRight: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
   },
   btnGhost: {
     background: 'rgba(255,255,255,0.04)',
