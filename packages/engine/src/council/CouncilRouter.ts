@@ -34,6 +34,7 @@ export type IntentType =
   | 'phone_request'         // "pair my phone", "phone link"
   | 'task_request'          // "check my tasks", "pending approvals"
   | 'desktop_control'       // "open desktop", "bring triforge forward"
+  | 'folder_audit'          // "audit this folder", "analyze this codebase"
   | 'default';
 
 // ── Triforge-native keyword banks (exact phrase or substring match) ───────────
@@ -98,6 +99,22 @@ const DESKTOP_CONTROL_KW = [
   'triforge forward', 'show the app',
 ];
 
+const FOLDER_AUDIT_KW = [
+  'audit this folder', 'audit folder', 'audit the folder', 'audit my folder',
+  'audit this project', 'audit my project', 'audit this repo', 'audit the repo',
+  'audit this codebase', 'audit the codebase', 'audit codebase',
+  'analyze this folder', 'analyze this project', 'analyze this codebase',
+  'analyze this workspace', 'analyze workspace',
+  'inspect this folder', 'inspect this project', 'inspect the folder',
+  'review this folder', 'review this project', 'review this codebase',
+  'review project folder', 'review my project',
+  'scan this folder', 'scan this project', 'scan this directory',
+  'scan folder', 'scan the folder',
+  'what\'s wrong with this folder', 'what\'s wrong with this project',
+  'check this folder', 'check this repo', 'check this project',
+  'check for issues', 'find issues in', 'what issues are in',
+];
+
 // ── Generic keyword banks ─────────────────────────────────────────────────────
 
 const CODING_KW: string[] = [
@@ -154,6 +171,7 @@ export function detectIntentType(message: string): IntentType {
   if (matchesAny(lower, PHONE_REQUEST_KW))         return 'phone_request';
   if (matchesAny(lower, TASK_REQUEST_KW))          return 'task_request';
   if (matchesAny(lower, DESKTOP_CONTROL_KW))       return 'desktop_control';
+  if (matchesAny(lower, FOLDER_AUDIT_KW))          return 'folder_audit';
 
   // ── Priority 2: Generic reasoning intents ──────────────────────────────────
   const scores: [IntentType, number][] = [
@@ -192,6 +210,8 @@ export function selectCouncil(intent: IntentType): ProviderName[] {
     case 'voice_request':
     case 'phone_request':
     case 'desktop_control':      return ['claude', 'openai', 'grok'];
+    // Folder audit: Claude leads (best at structured code analysis and report writing)
+    case 'folder_audit':         return ['claude', 'openai', 'grok'];
     // Generic reasoning intents
     case 'coding':               return ['openai', 'claude', 'grok'];
     case 'strategy':             return ['claude', 'grok', 'openai'];

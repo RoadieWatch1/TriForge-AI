@@ -432,6 +432,10 @@ export function setupIpc(store: Store): void {
     getImageService: () => _getImageService(store),
     getTaskStore:    () => _getTaskStore(),
     getPhoneLinkRef: () => _phoneLinkRef,
+    pickFolder:      async () => {
+      const result = await dialog.showOpenDialog({ properties: ['openDirectory'], title: 'Select Folder to Audit' });
+      return result.canceled ? null : (result.filePaths[0] ?? null);
+    },
   });
 
   // ── Persistent event forwarder — set once, forwards to all open windows ────

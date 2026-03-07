@@ -14,15 +14,19 @@
 //   task_request     → TaskStore.create()
 //   phone_request    → PhoneLinkServer status + pairing
 //   desktop_control  → BrowserWindow.show/focus
+//   folder_audit     → buildFolderAudit() + formatAuditAsText()
 //
 // Adding a new capability: add its intent case to route(), implement a private
 // _handle<X> method, done. ipc.ts stays thin.
 
+import * as path from 'path';
 import { BrowserWindow } from 'electron';
 import {
   detectIntentType,
   ImageService,
   TaskStore,
+  buildFolderAudit,
+  formatAuditAsText,
   type SystemStateSnapshot,
 } from '@triforge/engine';
 import { missionController } from '../core/engineering/MissionController';
@@ -47,7 +51,8 @@ export type NativeExecutionType =
   | 'mission'
   | 'task'
   | 'phone'
-  | 'desktop';
+  | 'desktop'
+  | 'folder_audit';
 
 export interface NativeExecutionResult {
   ok: boolean;
@@ -66,6 +71,8 @@ export interface NativeIntentRouterDeps {
   getImageService: () => Promise<ImageService>;
   getTaskStore:    () => TaskStore;
   getPhoneLinkRef: () => PhoneLinkServer | null;
+  /** Opens native folder picker; returns selected path or null if canceled. */
+  pickFolder:      () => Promise<string | null>;
 }
 
 // ── Goal / title extraction helpers ──────────────────────────────────────────
@@ -107,6 +114,7 @@ export class NativeIntentRouter {
       case 'task_request':    return this._handleTask(message, snapshot);
       case 'phone_request':   return this._handlePhone(snapshot);
       case 'desktop_control': return this._handleDesktop();
+      case 'folder_audit':    return this._handleFolderAudit(message, snapshot);
       default:                return null;
     }
   }
@@ -311,5 +319,73 @@ export class NativeIntentRouter {
       message: `Triforge is now in the foreground. ${windows.length > 1 ? `${windows.length} windows brought forward.` : ''}`.trim(),
       data: { windowCount: windows.length },
     };
+  }
+
+  // ── Folder Audit ───────────────────────────────────────────────────────────
+
+  private async _handleFolderAudit(
+    message: string,
+    snapshot: SystemStateSnapshot,
+  ): Promise<NativeExecutionResult> {
+    // Permission check
+    if (!snapshot.permissions.files) {
+      return {
+        ok: false, type: 'folder_audit', status: 'unavailable',
+        message: 'Folder audit is installed but the **Files** permission is not enabled. Go to Settings → Permissions and grant Files access to use this capability.',
+        unavailableReason: 'Files permission not granted.',
+      };
+    }
+
+    // Try to extract an explicit path from the message
+    // Pattern: a path-like token (C:\..., /home/..., ~/..., ./...)
+    const explicitPath = this._extractPath(message);
+    let folderPath = explicitPath;
+
+    if (!folderPath) {
+      // No explicit path — open native folder picker
+      folderPath = await this.deps.pickFolder();
+      if (!folderPath) {
+        return {
+          ok: false, type: 'folder_audit', status: 'missing_args',
+          message: 'No folder was selected. Open the folder picker again and choose a folder to audit.',
+          missingArgs: ['folderPath'],
+        };
+      }
+    }
+
+    try {
+      const result = await buildFolderAudit(folderPath);
+      if (!result.ok) {
+        return {
+          ok: false, type: 'folder_audit', status: 'error',
+          message: `Could not audit the folder: ${result.unavailableReason ?? result.summary}`,
+          unavailableReason: result.unavailableReason,
+        };
+      }
+      return {
+        ok: true, type: 'folder_audit', status: 'executed',
+        message: formatAuditAsText(result),
+        data: { auditResult: result as unknown as Record<string, unknown> },
+      };
+    } catch (err: unknown) {
+      return {
+        ok: false, type: 'folder_audit', status: 'error',
+        message: `Folder audit failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
+  /** Extract a file-system path from a message, or return null. */
+  private _extractPath(message: string): string | null {
+    // Windows absolute path: C:\... or D:/...
+    const winMatch = message.match(/[A-Za-z]:[/\\][^\s"']+/);
+    if (winMatch) return path.normalize(winMatch[0]);
+    // Unix absolute: /home/... /Users/...
+    const unixMatch = message.match(/\/[a-zA-Z][^\s"']+/);
+    if (unixMatch) return unixMatch[0];
+    // Home-relative: ~/...
+    const homeMatch = message.match(/~[/\\][^\s"']*/);
+    if (homeMatch) return homeMatch[0];
+    return null;
   }
 }

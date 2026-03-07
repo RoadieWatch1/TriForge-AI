@@ -30,7 +30,8 @@ function hasPermission(
 ): boolean {
   switch (cap.id) {
     case 'files.organize':
-    case 'files.search':   return perms.files;
+    case 'files.search':
+    case 'files.auditFolder': return perms.files;
     case 'files.browser':  return perms.browser;
     case 'files.print':    return perms.printer;
     case 'files.email':    return perms.email;
@@ -58,7 +59,8 @@ function isConfigured(cap: CapabilityDescriptor, s: SystemStateSnapshot): boolea
     case 'autonomy.loop':
     case 'autonomy.workflows':       return true;
     case 'files.organize':
-    case 'files.search':             return s.permissions.files;
+    case 'files.search':
+    case 'files.auditFolder':        return s.permissions.files;
     case 'files.browser':            return s.permissions.browser;
     case 'files.print':              return s.permissions.printer;
     case 'files.email':              return s.permissions.email;
@@ -85,6 +87,8 @@ function configuredReason(cap: CapabilityDescriptor, s: SystemStateSnapshot): st
       return `${cap.name} (needs 2+ providers — only ${count} configured)`;
     case 'image.generate':
       return `${cap.name} (needs OpenAI or Grok key)`;
+    case 'files.auditFolder':
+      return `${cap.name} (Files permission not granted — enable in Settings → Permissions)`;
     case 'phone.link':
       return `${cap.name} (not paired — open Phone Link to pair)`;
     case 'social.twitter':

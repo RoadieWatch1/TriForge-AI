@@ -207,3 +207,7 @@ export { CAPABILITY_REGISTRY, getCapabilityById, getCapabilitiesByCategory, sear
 export { systemStateService }        from './awareness/SystemStateService';
 export { buildCouncilAwarenessAddendum } from './awareness/CouncilAwarenessService';
 export type { CapabilityDescriptor, CapabilityCategory, CapabilityRisk, SystemStateSnapshot, CouncilAwarenessPack } from './awareness/types';
+
+// Folder Audit Engine
+export { buildFolderAudit, formatAuditAsText } from './execution/buildFolderAudit';
+export type { FolderAuditResult, AuditFinding } from './execution/buildFolderAudit';

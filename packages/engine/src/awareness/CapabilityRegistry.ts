@@ -358,6 +358,24 @@ export const CAPABILITY_REGISTRY: CapabilityDescriptor[] = [
     examples: ['system health', 'what events are happening', 'event analysis'],
   },
 
+  // ── Workspace Audit ──────────────────────────────────────────────────────────
+
+  {
+    id: 'files.auditFolder',
+    name: 'Folder / Workspace Audit',
+    category: 'files',
+    description: 'Scans a local folder or codebase and produces a structured audit report: project type, tech stack, TODO clusters, large files, missing tests/docs, config risks, and recommended next steps. User selects the folder via a native picker or provides a path. Requires Files permission.',
+    tags: ['audit', 'folder', 'workspace', 'codebase', 'repo', 'inspect', 'review', 'analyze', 'scan', 'issues', 'code quality'],
+    riskLevel: 'safe',
+    approvalRequired: false,
+    invocationHint: 'Say "audit this folder", "analyze this project", or "scan this codebase". A folder picker opens if no path is given.',
+    examples: [
+      'audit this folder', 'analyze this codebase', 'review my project folder',
+      'scan this repo for issues', 'what\'s wrong with this project',
+      'check this folder', 'inspect this codebase',
+    ],
+  },
+
   // ── Social ───────────────────────────────────────────────────────────────────
 
   {
