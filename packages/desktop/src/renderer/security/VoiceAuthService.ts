@@ -1,14 +1,15 @@
 // ── VoiceAuthService.ts — Voice-driven identity verification ─────────────────
 //
 // Listens for the user's passphrase (Web Speech STT) before granting council
-// access. The stored display name is used only for the welcome greeting.
+// access. Only the passphrase is stored and verified — no name is required.
 //
-// Credentials are stored in localStorage under:
-//   triforge_auth_name  — display name only (not verified during auth)
+// Credential stored in localStorage:
 //   triforge_auth_pass  — the passphrase that must be spoken
 //
-// First-run behaviour: if no credentials are configured, access is DENIED
-// with reason 'not_configured' so the UI can prompt the user to set them up.
+// Legacy key triforge_auth_name is cleared on credential removal for migration.
+//
+// First-run behaviour: if no passphrase is configured, access is DENIED
+// with reason 'not_configured' so the UI can prompt the user to set one up.
 //
 // No IPC dependencies — runs entirely in the renderer via browser APIs.
 
@@ -25,6 +26,20 @@ export interface AuthResult {
   granted: boolean;
   name:    string;
   reason?: AuthDeniedReason; // present when granted === false
+}
+
+/**
+ * Structured result from listen().
+ * Allows callers to distinguish between mic errors, silence, and successful capture.
+ */
+export type ListenFailReason =
+  | 'sr_unavailable'     // browser SpeechRecognition API not present
+  | 'no_speech'          // timeout expired with no input
+  | 'recognition_error'; // mic error or SR internal failure
+
+export interface ListenResult {
+  transcript: string;       // non-empty if speech was captured
+  failReason?: ListenFailReason; // set when transcript is empty
 }
 
 // ── VoiceAuthService ──────────────────────────────────────────────────────────
@@ -70,11 +85,29 @@ class VoiceAuthService {
   // ── Speech recognition ─────────────────────────────────────────────────────
 
   /**
-   * Listen for a single utterance. Returns normalized transcript.
-   * Resolves with '' only after real timeout or hard error — early onend
-   * triggers a single restart so brief recognition blips don't cause instant denial.
+   * Listen for a single utterance. Returns a structured ListenResult.
+   *
+   * Callers can inspect failReason to distinguish between:
+   *   sr_unavailable    — browser has no SpeechRecognition API
+   *   no_speech         — timeout expired, nothing heard
+   *   recognition_error — mic or SR engine error
+   *
+   * Early onend (< 1.5 s without result) triggers a single restart so brief
+   * recognition blips don't cause instant denial.
    */
-  listen(timeoutMs = 10000): Promise<string> {
+  private _activeRec: { stop(): void } | null = null;
+
+  /**
+   * Cancel any in-progress listen() call immediately.
+   * Call this from component cleanup to avoid a dangling SR instance
+   * competing with whatever opens the mic next.
+   */
+  cancelListen(): void {
+    try { this._activeRec?.stop(); } catch { /* ignore */ }
+    this._activeRec = null;
+  }
+
+  listen(timeoutMs = 10000): Promise<ListenResult> {
     type SRCtor = new() => {
       lang: string; interimResults: boolean; maxAlternatives: number; continuous: boolean;
       onresult: ((e: Event) => void) | null;
@@ -86,7 +119,7 @@ class VoiceAuthService {
     return new Promise((resolve) => {
       const w  = window as Window & { SpeechRecognition?: SRCtor; webkitSpeechRecognition?: SRCtor };
       const SR = w.SpeechRecognition ?? w.webkitSpeechRecognition;
-      if (!SR) { resolve(''); return; }
+      if (!SR) { resolve({ transcript: '', failReason: 'sr_unavailable' }); return; }
 
       const rec           = new SR();
       rec.lang            = 'en-US';
@@ -94,21 +127,26 @@ class VoiceAuthService {
       rec.maxAlternatives = 1;
       rec.continuous      = false;
 
-      let finished   = false;
-      let hasResult  = false;
-      let didRestart = false;
+      this._activeRec = rec; // store so cancelListen() can reach it
+
+      let finished    = false;
+      let hasResult   = false;
+      let didRestart  = false;
+      let hadError    = false;
       const startedAt = Date.now();
 
-      const finish = (text: string) => {
+      const finish = (text: string, failReason?: ListenFailReason) => {
         if (finished) return;
         finished = true;
+        this._activeRec = null;
         clearTimeout(timer);
         try { rec.stop(); } catch { /* ignore */ }
-        resolve(this.normalizeSpoken(text));
+        const transcript = this.normalizeSpoken(text);
+        resolve(transcript ? { transcript } : { transcript: '', failReason });
       };
 
       // Hard upper bound — user has timeoutMs total
-      const timer = setTimeout(() => finish(''), timeoutMs);
+      const timer = setTimeout(() => finish('', 'no_speech'), timeoutMs);
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       rec.onresult = (e: Event) => {
@@ -119,12 +157,13 @@ class VoiceAuthService {
       };
 
       rec.onerror = () => {
+        hadError = true;
         clearTimeout(timer);
-        finish('');
+        finish('', 'recognition_error');
       };
 
       rec.onend = () => {
-        if (finished || hasResult) return;
+        if (finished || hasResult || hadError) return;
 
         const elapsed = Date.now() - startedAt;
 
@@ -132,7 +171,7 @@ class VoiceAuthService {
         // once — browser SR can fire onend almost immediately on some platforms.
         if (!didRestart && elapsed < 1500) {
           didRestart = true;
-          try { rec.start(); return; } catch { /* fall through to timeout */ }
+          try { this._activeRec = rec; rec.start(); return; } catch { /* fall through to timeout */ }
         }
 
         // Otherwise let the timeout own the final failure — don't deny instantly.
@@ -140,7 +179,7 @@ class VoiceAuthService {
 
       try { rec.start(); } catch {
         clearTimeout(timer);
-        finish('');
+        finish('', 'recognition_error');
       }
     });
   }
@@ -179,21 +218,15 @@ class VoiceAuthService {
     return !!localStorage.getItem('triforge_auth_pass');
   }
 
-  /** Returns the stored name (display only) or null if not configured. */
-  getConfiguredName(): string | null {
-    return localStorage.getItem('triforge_auth_name') || null;
-  }
-
-  /** Save credentials (called from a Settings screen or first-run wizard). */
-  setup(name: string, password: string): void {
-    localStorage.setItem('triforge_auth_name', this.normalizeSpoken(name));
+  /** Save voice passphrase. */
+  setup(_name: string, password: string): void {
     localStorage.setItem('triforge_auth_pass', this.normalizeSpoken(password));
   }
 
-  /** Remove credentials (resets to unconfigured / first-run mode). */
+  /** Remove passphrase (resets to unconfigured / first-run mode). Also clears legacy name key. */
   clearCredentials(): void {
-    localStorage.removeItem('triforge_auth_name');
     localStorage.removeItem('triforge_auth_pass');
+    localStorage.removeItem('triforge_auth_name'); // migration: remove old name key if present
   }
 }
 

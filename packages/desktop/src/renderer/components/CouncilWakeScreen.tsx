@@ -46,8 +46,8 @@ export function CouncilWakeScreen({ onGranted, onDismiss, onOpenSettings }: Prop
     if (!voiceAuth.isSetup()) {
       setPhase('setup');
       setMessage('WAKE ACCESS NOT SET UP');
-      setSubtext('Go to Settings → Wake Word Voice Access and save your access name and passphrase. The Spoken Reply Voice toggle alone does not enable wake access.');
-      await councilSpeech.speakAuth('Wake Word Voice Access is not set up yet. Please go to Settings and save your access name and passphrase.');
+      setSubtext('Go to Settings → Wake Word Voice Access and save your passphrase. The Spoken Reply Voice toggle alone does not enable wake access.');
+      await councilSpeech.speakAuth('Wake Word Voice Access is not set up yet. Please go to Settings and save your voice passphrase.');
       // Don't auto-dismiss — let the user read the message and click Open Settings
       return;
     }
@@ -66,11 +66,8 @@ export function CouncilWakeScreen({ onGranted, onDismiss, onOpenSettings }: Prop
       return;
     }
 
-    // Passphrase-only verification — name is not challenged, only used for greeting
-    const displayName = (() => {
-      const n = voiceAuth.getConfiguredName() ?? '';
-      return n ? n.charAt(0).toUpperCase() + n.slice(1) : 'Commander';
-    })();
+    // Passphrase-only verification — no name is stored or checked
+    const displayName = 'Commander';
 
     for (let attempt = 0; attempt < MAX_AUTH_RETRIES; attempt++) {
       const isRetry = attempt > 0;
@@ -83,11 +80,21 @@ export function CouncilWakeScreen({ onGranted, onDismiss, onOpenSettings }: Prop
         isRetry ? 'Please state your passphrase again.' : 'Please state your passphrase.'
       );
       await delay(POST_PROMPT_DELAY);
-      const password = await voiceAuth.listen(LISTEN_TIMEOUT_MS);
 
-      if (!password) {
+      // Show "Listening now…" BEFORE opening the mic so the user knows it is ready
+      setSubtext('Listening now\u2026');
+      const result = await voiceAuth.listen(LISTEN_TIMEOUT_MS);
+
+      if (!result.transcript) {
+        const failMessages: Record<string, string> = {
+          sr_unavailable:    'Voice recognition unavailable on this device.',
+          no_speech:         'No speech detected. Please try again.',
+          recognition_error: 'Microphone error. Please try again.',
+        };
+        const failMsg = failMessages[result.failReason ?? 'no_speech'];
+
         if (attempt < MAX_AUTH_RETRIES - 1) {
-          setSubtext("I didn't catch that. Let's try again.");
+          setSubtext(failMsg);
           await councilSpeech.speakAuth("I didn't catch that. Let's try again.");
           await delay(600);
           continue;
@@ -95,7 +102,7 @@ export function CouncilWakeScreen({ onGranted, onDismiss, onOpenSettings }: Prop
         break;
       }
 
-      if (voiceAuth.verify(password)) {
+      if (voiceAuth.verify(result.transcript)) {
         globalVoiceController.transition('authGranted');
         setPhase('granted');
         setMessage('ACCESS GRANTED');
@@ -107,7 +114,7 @@ export function CouncilWakeScreen({ onGranted, onDismiss, onOpenSettings }: Prop
 
       // Passphrase heard but didn't match — show what SR captured so user can diagnose
       if (attempt < MAX_AUTH_RETRIES - 1) {
-        setSubtext(`That did not match. I heard: "${password}". Try again.`);
+        setSubtext(`That did not match. I heard: \u201c${result.transcript}\u201d. Try again.`);
         await councilSpeech.speakAuth('That did not match. Please try again.');
         await delay(600);
       }
@@ -133,7 +140,7 @@ export function CouncilWakeScreen({ onGranted, onDismiss, onOpenSettings }: Prop
       if (!cancelled) onDismiss();
     });
 
-    return () => { cancelled = true; };
+    return () => { cancelled = true; voiceAuth.cancelListen(); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Triangle SVG ────────────────────────────────────────────────────────────

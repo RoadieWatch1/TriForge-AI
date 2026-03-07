@@ -185,6 +185,9 @@ export function App() {
   useEffect(() => {
     const handler = () => {
       globalVoiceController.transition('wakeDetected');
+      // Stop the wake engine BEFORE auth begins so it does not compete for the mic.
+      // Chat.tsx re-enables it when the voice session ends (handsFreeMode → false).
+      voiceService.disable();
       setWakeActive(true);
     };
     window.addEventListener('triforge:council-wake', handler);
@@ -262,9 +265,10 @@ export function App() {
         setWakeActive(false);
         setScreen('chat');
         setPendingSessionName(name);
+        // voiceService stays disabled — Chat.tsx re-enables it after the session ends
       }}
-      onDismiss={() => setWakeActive(false)}
-      onOpenSettings={() => { setWakeActive(false); setScreen('settings'); }}
+      onDismiss={() => { voiceService.enable(); setWakeActive(false); }}
+      onOpenSettings={() => { voiceService.enable(); setWakeActive(false); setScreen('settings'); }}
     />
   );
 
@@ -633,7 +637,7 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
 
       <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>Wake Word Voice Access</h2>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
-        Required for saying <strong>"Council"</strong> and unlocking TriForge by voice. TriForge will ask for this name and passphrase after detecting the wake word. This is separate from the Spoken Reply Voice toggle above.
+        Required for saying <strong>"Council"</strong> and unlocking TriForge by voice. After the wake word is detected, speak your passphrase to gain access. This is separate from the Spoken Reply Voice toggle above.
       </p>
       <VoiceCredentialsSection />
 
@@ -768,27 +772,19 @@ function PinSection({ hasPin, lockUsername, onPinChanged }: { hasPin: boolean; l
 // ── Voice Credentials Section ────────────────────────────────────────────────
 
 function VoiceCredentialsSection() {
-  const [name,     setName]     = useState('');
   const [pass,     setPass]     = useState('');
-  const [saving,   setSaving]   = useState(false);
   const [removing, setRemoving] = useState(false);
   const [error,    setError]    = useState<string | null>(null);
   const [success,  setSuccess]  = useState<string | null>(null);
   const [configured, setConfigured] = useState(() => voiceAuth.isSetup());
-  const [configuredName, setConfiguredName] = useState(() => voiceAuth.getConfiguredName());
 
   const save = () => {
-    if (!name.trim())  { setError('Enter a name.'); return; }
-    if (!pass.trim())  { setError('Enter a passphrase.'); return; }
-    setSaving(true);
+    if (!pass.trim()) { setError('Enter a passphrase.'); return; }
     setError(null);
-    voiceAuth.setup(name.trim(), pass.trim());
+    voiceAuth.setup('', pass.trim());
     setConfigured(true);
-    setConfiguredName(name.trim().toLowerCase());
-    setName('');
     setPass('');
-    setSuccess('Wake Word Voice Access saved. You can now say "Council" and sign in by voice.');
-    setSaving(false);
+    setSuccess('Passphrase saved. Say "Council" to unlock TriForge by voice.');
   };
 
   const clear = () => {
@@ -796,8 +792,7 @@ function VoiceCredentialsSection() {
     setError(null);
     voiceAuth.clearCredentials();
     setConfigured(false);
-    setConfiguredName(null);
-    setSuccess('Wake Word Voice Access credentials removed.');
+    setSuccess('Voice passphrase removed.');
     setRemoving(false);
   };
 
@@ -805,11 +800,10 @@ function VoiceCredentialsSection() {
     return (
       <div style={styles.pinCard}>
         <div style={styles.pinActiveRow}>
-          <span style={{ color: '#10a37f', fontWeight: 600, fontSize: 13 }}>Configured</span>
-          <span style={{ color: 'var(--text-secondary)', fontSize: 13 }}>Name: <strong>{configuredName}</strong></span>
+          <span style={{ color: '#10a37f', fontWeight: 600, fontSize: 13 }}>Passphrase configured</span>
         </div>
         <button style={styles.removeBtn} onClick={clear} disabled={removing}>
-          {removing ? 'Removing…' : 'Remove credentials'}
+          {removing ? 'Removing…' : 'Remove passphrase'}
         </button>
         {success && <div style={styles.successMsg}>{success}</div>}
       </div>
@@ -821,24 +815,16 @@ function VoiceCredentialsSection() {
       <div style={styles.pinFields}>
         <input
           style={styles.keyField}
-          placeholder="Your name (spoken to wake)"
-          value={name}
-          onChange={e => { setName(e.target.value); setError(null); setSuccess(null); }}
-          autoComplete="off"
-        />
-        <input
-          style={styles.keyField}
-          placeholder="Passphrase (spoken to authenticate)"
+          placeholder="Passphrase (spoken to unlock)"
           value={pass}
           onChange={e => { setPass(e.target.value); setError(null); setSuccess(null); }}
           autoComplete="off"
         />
         <button
-          style={{ ...styles.saveBtn, ...(saving ? styles.saveBtnDisabled : {}) }}
+          style={styles.saveBtn}
           onClick={save}
-          disabled={saving}
         >
-          Save credentials
+          Save passphrase
         </button>
       </div>
       {error   && <div style={styles.errorMsg}>{error}</div>}
