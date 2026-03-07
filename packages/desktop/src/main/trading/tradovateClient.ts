@@ -163,6 +163,38 @@ function _aggregateBars(bars: OhlcBar[]): OhlcBar {
   };
 }
 
+/** Floor a millisecond timestamp to the start of its N-minute bucket. */
+function _floorToTimeframe(tsMs: number, minutes: number): number {
+  const msPerBucket = minutes * 60_000;
+  return Math.floor(tsMs / msPerBucket) * msPerBucket;
+}
+
+/** Aggregate 1m bars into N-minute bars aligned to clock-time boundaries. */
+function _aggregateBarsByTimeframe(bars1m: OhlcBar[], minutes: number): OhlcBar[] {
+  if (bars1m.length === 0) return [];
+  const buckets = new Map<number, OhlcBar[]>();
+  for (const bar of bars1m) {
+    const key = _floorToTimeframe(bar.timestamp, minutes);
+    let arr = buckets.get(key);
+    if (!arr) { arr = []; buckets.set(key, arr); }
+    arr.push(bar);
+  }
+  const sorted = [...buckets.keys()].sort((a, b) => a - b);
+  return sorted.map(k => _aggregateBars(buckets.get(k)!));
+}
+
+/** Check if a bar timestamp falls within RTH session (09:30-16:00 ET). */
+function _isRthBar(tsMs: number): boolean {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric', minute: 'numeric', hour12: false,
+  }).formatToParts(new Date(tsMs));
+  const h = Number(parts.find(p => p.type === 'hour')?.value ?? 0);
+  const m = Number(parts.find(p => p.type === 'minute')?.value ?? 0);
+  const t = h * 60 + m;
+  return t >= 570 && t < 960; // 09:30 <= t < 16:00
+}
+
 function _getETHoursMinutes(): { hour: number; minute: number } {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/New_York',
@@ -223,12 +255,20 @@ class BarAccumulator {
 
     // Volume delta from TotalTradeVolume
     let tickVolume = 1; // fallback: count 1 per tick
+    let volumeValid = true;
     if (totalVolume != null && this._prevTotalVolume != null) {
       const delta = totalVolume - this._prevTotalVolume;
       if (delta > 0 && delta < 100000) {
         tickVolume = delta;
+      } else {
+        // Negative or huge delta (reconnect boundary / reset) — discard
+        volumeValid = false;
+        if (delta < 0) {
+          console.log(`[BarAccumulator] Invalid volume delta=${delta} (negative) — ignoring for VWAP`);
+        } else if (delta >= 100000) {
+          console.log(`[BarAccumulator] Invalid volume delta=${delta} (too large) — ignoring for VWAP`);
+        }
       }
-      // Negative or huge delta (reconnect boundary) → discard, keep fallback
     }
     if (totalVolume != null) {
       this._prevTotalVolume = totalVolume;
@@ -236,9 +276,12 @@ class BarAccumulator {
 
     this._currentBar.volume += tickVolume;
 
-    // Accumulate VWAP
-    this._vwapSumPV += price * tickVolume;
-    this._vwapSumV  += tickVolume;
+    // Accumulate VWAP — RTH session only, skip invalid volume deltas
+    const isRth = _isRthBar(Date.now());
+    if (isRth && volumeValid) {
+      this._vwapSumPV += price * tickVolume;
+      this._vwapSumV  += tickVolume;
+    }
 
     // Check daily VWAP session reset at 9:30 ET
     this._checkSessionReset();
@@ -248,22 +291,33 @@ class BarAccumulator {
   loadHistorical(bars: OhlcBar[]): void {
     bars.sort((a, b) => a.timestamp - b.timestamp);
     this._bars1m = bars.slice(-300);
-    this._rebuildAggregates();
 
-    // Seed VWAP from today's session bars
+    // Clock-aligned aggregation (not array-chunked)
+    this._bars5m  = _aggregateBarsByTimeframe(this._bars1m, 5).slice(-60);
+    this._bars15m = _aggregateBarsByTimeframe(this._bars1m, 15).slice(-20);
+
+    // Seed VWAP from today's RTH bars only (09:30-16:00 ET)
     const todayKey = _getETDateKey();
     this._vwapSumPV = 0;
     this._vwapSumV  = 0;
+    let rthBarCount = 0;
     for (const b of this._bars1m) {
       const barKey = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date(b.timestamp));
       if (barKey !== todayKey) continue;
+      if (!_isRthBar(b.timestamp)) continue;
       const typicalPrice = (b.high + b.low + b.close) / 3;
       this._vwapSumPV += typicalPrice * b.volume;
       this._vwapSumV  += b.volume;
+      rthBarCount++;
     }
 
-    console.log(`[BarAccumulator] Loaded ${bars.length} historical bars, seeded VWAP from today's session`);
-    this._updateState();
+    const readiness = this._computeReadiness();
+    console.log(
+      `[BarAccumulator] Loaded ${bars.length} 1m bars → ${this._bars5m.length} aligned 5m, ${this._bars15m.length} aligned 15m. ` +
+      `VWAP seeded from ${rthBarCount} RTH bars. ` +
+      `indicatorState=${readiness.state}${readiness.missing.length ? ` missing=[${readiness.missing.join(',')}]` : ''}`,
+    );
+    this._state = readiness.state;
   }
 
   reset(reason: string): void {
@@ -344,43 +398,40 @@ class BarAccumulator {
 
   private _closeCurrentBar(): void {
     if (!this._currentBar) return;
+    const barTs = this._currentBar.minuteKey * 60000;
     const bar: OhlcBar = {
-      timestamp: this._currentBar.minuteKey * 60000,
+      timestamp: barTs,
       open:   this._currentBar.open,
       high:   this._currentBar.high,
       low:    this._currentBar.low,
       close:  this._currentBar.close,
       volume: this._currentBar.volume,
     };
-    const closedMinuteKey = this._currentBar.minuteKey;
     this._bars1m.push(bar);
     if (this._bars1m.length > 300) this._bars1m.shift();
 
-    // Aggregate to 5m when a 5-minute slot completes (last minute of slot: 4, 9, 14, …)
-    if ((closedMinuteKey + 1) % 5 === 0 && this._bars1m.length >= 5) {
-      this._bars5m.push(_aggregateBars(this._bars1m.slice(-5)));
-      if (this._bars5m.length > 60) this._bars5m.shift();
+    // Clock-aligned aggregation: check if this bar is the last minute in its 5m/15m bucket
+    const nextMinuteTs = barTs + 60_000;
+    const bucket5m  = _floorToTimeframe(barTs, 5);
+    const bucket15m = _floorToTimeframe(barTs, 15);
+
+    // If the next minute would start a new 5m bucket, this bar closes the current one
+    if (_floorToTimeframe(nextMinuteTs, 5) !== bucket5m) {
+      const barsInBucket = this._bars1m.filter(b => _floorToTimeframe(b.timestamp, 5) === bucket5m);
+      if (barsInBucket.length > 0) {
+        this._bars5m.push(_aggregateBars(barsInBucket));
+        if (this._bars5m.length > 60) this._bars5m.shift();
+      }
     }
-    // Aggregate to 15m
-    if ((closedMinuteKey + 1) % 15 === 0 && this._bars1m.length >= 15) {
-      this._bars15m.push(_aggregateBars(this._bars1m.slice(-15)));
-      if (this._bars15m.length > 20) this._bars15m.shift();
+    if (_floorToTimeframe(nextMinuteTs, 15) !== bucket15m) {
+      const barsInBucket = this._bars1m.filter(b => _floorToTimeframe(b.timestamp, 15) === bucket15m);
+      if (barsInBucket.length > 0) {
+        this._bars15m.push(_aggregateBars(barsInBucket));
+        if (this._bars15m.length > 20) this._bars15m.shift();
+      }
     }
 
     this._currentBar = null;
-  }
-
-  private _rebuildAggregates(): void {
-    this._bars5m  = [];
-    this._bars15m = [];
-    for (let i = 0; i + 5 <= this._bars1m.length; i += 5) {
-      this._bars5m.push(_aggregateBars(this._bars1m.slice(i, i + 5)));
-    }
-    for (let i = 0; i + 15 <= this._bars1m.length; i += 15) {
-      this._bars15m.push(_aggregateBars(this._bars1m.slice(i, i + 15)));
-    }
-    if (this._bars5m.length > 60)  this._bars5m  = this._bars5m.slice(-60);
-    if (this._bars15m.length > 20) this._bars15m = this._bars15m.slice(-20);
   }
 
   private _checkSessionReset(): void {
@@ -393,11 +444,29 @@ class BarAccumulator {
     }
   }
 
+  /** Centralized readiness: all 5 required components must be available. */
+  private _computeReadiness(): { state: IndicatorState; missing: string[] } {
+    // If already degraded from bad data, stay degraded until reset
+    if (this._state === 'degraded') return { state: 'degraded', missing: [] };
+
+    const missing: string[] = [];
+    if (this.getATR() == null)                         missing.push('atr5m');
+    if (this.getVWAP() == null)                        missing.push('vwap');
+    if (this.getTrend('5m') === 'unknown')             missing.push('trend5m');
+    if (this.getTrend('15m') === 'unknown')            missing.push('trend15m');
+    if (this.getVolatilityRegime() == null)            missing.push('volatilityRegime');
+
+    if (missing.length === 0) return { state: 'ready', missing: [] };
+    return { state: 'warming', missing };
+  }
+
+  /** Update state and log when transitioning or when components are missing. */
   private _updateState(): void {
-    if (this._bars5m.length >= 15) {
-      if (this._state !== 'degraded') this._state = 'ready';
-    } else {
-      if (this._state !== 'degraded') this._state = 'warming';
+    const { state, missing } = this._computeReadiness();
+    const prev = this._state;
+    this._state = state;
+    if (state !== prev) {
+      console.log(`[BarAccumulator] indicatorState=${state}${missing.length ? ` missing=[${missing.join(',')}]` : ''}`);
     }
   }
 }
