@@ -74,6 +74,7 @@ import {
   buildTaskContextAddendum,
   getTaskContext,
   routeCouncil,
+  detectIntentType,
   MissionContextManager,
   CouncilMemoryGraph,
   CouncilRuntime,
@@ -129,6 +130,8 @@ let _insightRouter: InsightRouter | null = null;
 // ── Council Awareness — module-level state for registered getters ─────────────
 let _cachedTier: 'free' | 'pro' | 'business' = 'free';
 let _phoneLinkRef: PhoneLinkServer | null = null;
+let _cachedMailConfigured = false;
+let _cachedTwitterConfigured = false;
 
 function _getMissionCtxMgr(store: Store): MissionContextManager {
   if (!_missionCtxMgr) _missionCtxMgr = new MissionContextManager(store);
@@ -390,7 +393,7 @@ export function setupIpc(store: Store): void {
   // ── Council Awareness — register live state getters (called once at startup) ─
   systemStateService.registerTierGetter(() => _cachedTier);
   systemStateService.registerProfileGetter(() => store.getActiveProfileId());
-  systemStateService.registerMissionGetter(() => null); // activeMissionId not tracked at module level
+  systemStateService.registerMissionGetter(() => _missionCtxMgr ? _getMissionCtxMgr(store).get()?.mission ?? null : null);
   systemStateService.registerAutonomyGetter(() => {
     if (!_autonomyEngine) return { running: false, workflowCount: 0 };
     const s = _autonomyEngine.getStatus();
@@ -401,6 +404,11 @@ export function setupIpc(store: Store): void {
     const claude = !!(await store.getSecret('triforge.claude.apiKey'));
     const grok   = !!(await store.getSecret('triforge.grok.apiKey'));
     const ollama = !!(await store.getSecret('triforge.ollama.url'));
+    // Refresh mail/twitter as side-effect — this getter is already async per turn
+    const cm = _getCredentialManager(store);
+    const [smtp, twit] = await Promise.all([cm.getSmtp(), cm.getTwitter()]);
+    _cachedMailConfigured    = smtp !== null;
+    _cachedTwitterConfigured = twit !== null;
     return { openai, claude, grok, ollama };
   });
   systemStateService.registerImageGetter(() => {
@@ -415,8 +423,8 @@ export function setupIpc(store: Store): void {
     const granted = (key: string) => perms.find(p => p.key === key)?.granted ?? false;
     return { files: granted('files'), browser: granted('browser'), printer: granted('printer'), email: granted('email_s') };
   });
-  systemStateService.registerMailGetter(() => false);    // no sync mail-configured check
-  systemStateService.registerTwitterGetter(() => false); // no Twitter integration yet
+  systemStateService.registerMailGetter(() => _cachedMailConfigured);
+  systemStateService.registerTwitterGetter(() => _cachedTwitterConfigured);
   systemStateService.registerVoiceAuthGetter(() => false); // voice passphrase auth removed
 
   // ── Persistent event forwarder — set once, forwards to all open windows ────
@@ -595,6 +603,21 @@ export function setupIpc(store: Store): void {
     // Track task context from this message
     updateTaskContext(message);
 
+    // Auto-route image requests directly to the image generator
+    if (detectIntentType(message) === 'image_request') {
+      try {
+        const imgSvc = await _getImageService(store);
+        if (!imgSvc.canGenerate()) {
+          return { text: 'Image generation requires an OpenAI or Grok API key. Add one in Settings → API Keys.', provider: 'system' };
+        }
+        const result = await imgSvc.generate({ userPrompt: message, enableRefine: true });
+        store.incrementMessageCount();
+        return { text: `Here's your generated image.\n\nPrompt used: ${result.refinedPrompt}`, imageResult: result, provider: result.generator };
+      } catch (err: unknown) {
+        return { text: `Image generation failed: ${err instanceof Error ? err.message : String(err)}. Try the Image Generator in the sidebar.`, provider: 'system' };
+      }
+    }
+
     // Build system prompt with user identity, memories, tier capabilities, and live awareness
     const basePrompt = await buildSystemPrompt(store, _professionEngine?.getSystemPromptAdditions());
     const awarenessAddendum = buildCouncilAwarenessAddendum(await systemStateService.snapshot());
@@ -704,6 +727,21 @@ export function setupIpc(store: Store): void {
     const used = store.getMonthlyMessageCount();
     if (isAtMessageLimit(used, tierVal)) {
       return { error: 'MESSAGE_LIMIT_REACHED', tier: tierVal };
+    }
+
+    // Auto-route image requests directly to the image generator
+    if (detectIntentType(message) === 'image_request') {
+      try {
+        const imgSvc = await _getImageService(store);
+        if (!imgSvc.canGenerate()) {
+          return { error: 'Image generation requires an OpenAI or Grok API key. Add one in Settings → API Keys.' };
+        }
+        const result = await imgSvc.generate({ userPrompt: message, enableRefine: true });
+        store.incrementMessageCount();
+        return { synthesis: `Here's your generated image.\n\nPrompt used: ${result.refinedPrompt}`, imageResult: result, responses: [] };
+      } catch (err: unknown) {
+        return { error: `Image generation failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
     }
 
     // Validate + normalise intensity
@@ -1050,13 +1088,31 @@ VERIFY: [1-3 specific things the user should double-check]
 
     const license = await store.getLicense();
     const tier = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+    _cachedTier = tier; // keep awareness service in sync
     const used = store.getMonthlyMessageCount();
     if (isAtMessageLimit(used, tier)) return { error: 'MESSAGE_LIMIT_REACHED', tier };
+
+    // Auto-route image requests directly to the image generator
+    if (detectIntentType(message) === 'image_request') {
+      try {
+        const imgSvc = await _getImageService(store);
+        if (!imgSvc.canGenerate()) {
+          return { synthesis: 'Image generation requires an OpenAI or Grok API key. Add one in Settings → API Keys.', responses: [] };
+        }
+        const result = await imgSvc.generate({ userPrompt: message, enableRefine: true });
+        store.incrementMessageCount();
+        return { synthesis: `Here's your generated image.\n\nPrompt used: ${result.refinedPrompt}`, imageResult: result, responses: [] };
+      } catch (err: unknown) {
+        return { error: `Image generation failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    }
 
     updateTaskContext(message);
     routeCouncil(message, pm);  // intent-based provider order (CouncilRouter)
     const basePrompt = await buildSystemPrompt(store, _professionEngine?.getSystemPromptAdditions());
+    const awarenessAddendum = buildCouncilAwarenessAddendum(await systemStateService.snapshot());
     const systemPrompt = basePrompt
+      + '\n\n' + awarenessAddendum
       + buildTaskContextAddendum()
       + _getMissionCtxMgr(store).buildAddendum()
       + _getMemGraph(store).buildContextAddendum(message);
