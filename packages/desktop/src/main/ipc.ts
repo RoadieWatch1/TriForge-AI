@@ -2573,11 +2573,17 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   const paperEngine = new PaperEngine(store);
   paperEngine.init();
 
-  ipcMain.handle('wallet:paperBalance:get', () => {
+  async function _tradeTier(): Promise<'free' | 'pro' | 'business'> {
+    return ((await store.getLicense()).tier ?? 'free') as 'free' | 'pro' | 'business';
+  }
+
+  ipcMain.handle('wallet:paperBalance:get', async () => {
+    if (!hasCapability('FINANCE_DASHBOARD', await _tradeTier())) return { error: lockedError('FINANCE_DASHBOARD') };
     return { balance: paperEngine.getBalance() };
   });
 
-  ipcMain.handle('wallet:paperBalance:set', (_e, amount: number) => {
+  ipcMain.handle('wallet:paperBalance:set', async (_e, amount: number) => {
+    if (!hasCapability('FINANCE_DASHBOARD', await _tradeTier())) return { error: lockedError('FINANCE_DASHBOARD') };
     if (typeof amount !== 'number' || amount < 0 || !isFinite(amount)) {
       return { error: 'Invalid balance amount.' };
     }
@@ -2596,6 +2602,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     riskPercent: number;
     balance: number;
   }) => {
+    if (!hasCapability('FINANCE_DASHBOARD', await _tradeTier())) return { error: lockedError('FINANCE_DASHBOARD') };
     if (!trade.ticker || !trade.entry || !trade.stop) {
       return { error: 'Missing required fields: ticker, entry, stop.' };
     }
@@ -2623,11 +2630,13 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     return { ok: true, tradeId: position.id, position };
   });
 
-  ipcMain.handle('wallet:paperState', (_e, lastPriceByTicker?: Record<string, number>) => {
+  ipcMain.handle('wallet:paperState', async (_e, lastPriceByTicker?: Record<string, number>) => {
+    if (!hasCapability('FINANCE_DASHBOARD', await _tradeTier())) return { error: lockedError('FINANCE_DASHBOARD') };
     return { state: paperEngine.getState(lastPriceByTicker) };
   });
 
-  ipcMain.handle('wallet:paperClose', (_e, params: { id: string; exitPrice: number; reason: 'manual' | 'stop' | 'target' }) => {
+  ipcMain.handle('wallet:paperClose', async (_e, params: { id: string; exitPrice: number; reason: 'manual' | 'stop' | 'target' }) => {
+    if (!hasCapability('FINANCE_DASHBOARD', await _tradeTier())) return { error: lockedError('FINANCE_DASHBOARD') };
     if (!params.id || !params.exitPrice) {
       return { error: 'Missing required fields: id, exitPrice.' };
     }
@@ -2636,7 +2645,8 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     return { ok: true, trade: closed };
   });
 
-  ipcMain.handle('wallet:paperReset', (_e, newBalance?: number) => {
+  ipcMain.handle('wallet:paperReset', async (_e, newBalance?: number) => {
+    if (!hasCapability('FINANCE_DASHBOARD', await _tradeTier())) return { error: lockedError('FINANCE_DASHBOARD') };
     paperEngine.reset(newBalance);
     return { ok: true, balance: paperEngine.getBalance() };
   });
@@ -2655,29 +2665,34 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     cid?: number;
     sec?: string;
   }) => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
     return tradovateService.connect(creds);
   });
 
+  // Always available — user must be able to see and clear connection status.
   ipcMain.handle('trading:tradovateStatus', () => {
     return tradovateService.status();
   });
 
-  ipcMain.handle('trading:tradovateSnapshot', (_e, symbol: string) => {
+  ipcMain.handle('trading:tradovateSnapshot', async (_e, symbol: string) => {
+    if (!hasCapability('FINANCE_DASHBOARD', await _tradeTier())) return { snapshot: null };
     const snapshot = tradovateService.getSnapshot(symbol);
     return { snapshot };
   });
 
+  // Always available — user must be able to disconnect regardless of tier.
   ipcMain.handle('trading:tradovateDisconnect', async () => {
     await tradovateService.forget();
     return { ok: true };
   });
 
   ipcMain.handle('trading:tradovateAccountState', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { state: null };
     const state = await tradovateService.getAccountState();
     return { state };
   });
 
-  ipcMain.handle('trading:buildAdvice', (_e, input: {
+  ipcMain.handle('trading:buildAdvice', async (_e, input: {
     snapshot: unknown;
     balance: number;
     riskPercent: number;
@@ -2688,11 +2703,13 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     stop?: number;
     target?: number;
   }) => {
+    if (!hasCapability('FINANCE_DASHBOARD', await _tradeTier())) return { error: lockedError('FINANCE_DASHBOARD') };
     const result = buildLiveTradeAdvice(input as Parameters<typeof buildLiveTradeAdvice>[0]);
     return { result };
   });
 
-  ipcMain.handle('trading:buildTradeLevels', (_e, symbol: string) => {
+  ipcMain.handle('trading:buildTradeLevels', async (_e, symbol: string) => {
+    if (!hasCapability('FINANCE_DASHBOARD', await _tradeTier())) return { setup: null, snapshot: null };
     const snapshot = tradovateService.getSnapshot(symbol);
     const setup    = buildTradeLevels(snapshot, symbol);
     return { setup, snapshot };
@@ -2700,41 +2717,49 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   // ── Shadow Trading ────────────────────────────────────────────────────────────
 
-  ipcMain.handle('trading:shadowState', () => {
+  ipcMain.handle('trading:shadowState', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return shadowTradingController.getState();
     return shadowTradingController.getState();
   });
 
-  ipcMain.handle('trading:shadowEnable', () => {
+  ipcMain.handle('trading:shadowEnable', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
     shadowTradingController.enable();
     return { ok: true };
   });
 
-  ipcMain.handle('trading:shadowDisable', () => {
+  ipcMain.handle('trading:shadowDisable', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
     shadowTradingController.disable();
     return { ok: true };
   });
 
-  ipcMain.handle('trading:shadowPause', () => {
+  ipcMain.handle('trading:shadowPause', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
     shadowTradingController.pause();
     return { ok: true };
   });
 
-  ipcMain.handle('trading:shadowResume', () => {
+  ipcMain.handle('trading:shadowResume', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
     shadowTradingController.resume();
     return { ok: true };
   });
 
-  ipcMain.handle('trading:shadowReset', (_e, newBalance?: number) => {
+  ipcMain.handle('trading:shadowReset', async (_e, newBalance?: number) => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
     shadowTradingController.reset(newBalance);
     return { ok: true };
   });
 
-  ipcMain.handle('trading:shadowFlatten', () => {
+  ipcMain.handle('trading:shadowFlatten', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
     shadowTradingController.flattenAll();
     return { ok: true };
   });
 
-  ipcMain.handle('trading:shadowUpdateSettings', (_e, settings: Record<string, unknown>) => {
+  ipcMain.handle('trading:shadowUpdateSettings', async (_e, settings: Record<string, unknown>) => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
     shadowTradingController.updateSettings(settings as Parameters<typeof shadowTradingController.updateSettings>[0]);
     return { ok: true };
   });
