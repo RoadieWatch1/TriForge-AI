@@ -2669,6 +2669,11 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     return { ok: true };
   });
 
+  ipcMain.handle('trading:tradovateAccountState', async () => {
+    const state = await tradovateService.getAccountState();
+    return { state };
+  });
+
   ipcMain.handle('trading:buildAdvice', (_e, input: {
     snapshot: unknown;
     balance: number;

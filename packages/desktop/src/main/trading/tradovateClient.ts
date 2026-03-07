@@ -104,6 +104,42 @@ function restGet(url: string, token: string): Promise<unknown> {
   });
 }
 
+// ── Account state types ───────────────────────────────────────────────────────
+
+export interface TradovateAccountPosition {
+  contractId: number;
+  symbol: string;
+  netPos: number;         // positive = long, negative = short
+  netPrice: number;       // average fill price
+  openPnl: number;
+  closedPnl: number;
+}
+
+export interface TradovateWorkingOrder {
+  id: number;
+  contractId: number;
+  symbol: string;
+  side: 'Buy' | 'Sell';
+  qty: number;
+  orderType: string;      // 'Limit' | 'Stop' | 'Market' etc.
+  price?: number;
+  stopPrice?: number;
+  status: string;
+}
+
+export interface TradovateAccountState {
+  accountId: number;
+  accountName: string;
+  accountMode: 'simulation' | 'live';
+  cashBalance: number;
+  openPnl: number;
+  realizedPnl: number;
+  buyingPower: number;
+  positions: TradovateAccountPosition[];
+  workingOrders: TradovateWorkingOrder[];
+  fetchedAt: number;
+}
+
 // ── TradovateClient ───────────────────────────────────────────────────────────
 
 export class TradovateClient {
@@ -294,6 +330,78 @@ export class TradovateClient {
 
   private _symbolForContract(contractId: string): string | undefined {
     return this._contractMap.get(contractId);
+  }
+
+  // ── Account state (REST) ─────────────────────────────────────────────────────
+
+  async getAccountState(): Promise<TradovateAccountState> {
+    if (!this.session) throw new Error('Not authenticated.');
+
+    const base  = this.session.accountMode === 'live'
+      ? 'https://live.tradovateapi.com/v1'
+      : 'https://demo.tradovateapi.com/v1';
+    const token = this.session.accessToken;
+
+    const [accountsRaw, positionsRaw, ordersRaw] = await Promise.all([
+      restGet(`${base}/account/list`, token),
+      restGet(`${base}/position/list`, token),
+      restGet(`${base}/order/list`,    token),
+    ]) as [unknown[], unknown[], unknown[]];
+
+    // Pick first account (most users have one)
+    const acct = (Array.isArray(accountsRaw) ? accountsRaw[0] : {}) as Record<string, unknown>;
+
+    const positions: TradovateAccountPosition[] = (Array.isArray(positionsRaw) ? positionsRaw : [])
+      .filter((p: unknown) => {
+        const pos = p as Record<string, unknown>;
+        return typeof pos['netPos'] === 'number' && (pos['netPos'] as number) !== 0;
+      })
+      .map((p: unknown) => {
+        const pos = p as Record<string, unknown>;
+        return {
+          contractId: Number(pos['contractId'] ?? 0),
+          symbol:     String(pos['contractSymbol'] ?? pos['symbol'] ?? pos['contractId'] ?? ''),
+          netPos:     Number(pos['netPos'] ?? 0),
+          netPrice:   Number(pos['netPrice'] ?? 0),
+          openPnl:    Number(pos['openPnl'] ?? 0),
+          closedPnl:  Number(pos['closedPnl'] ?? 0),
+        };
+      });
+
+    const workingOrders: TradovateWorkingOrder[] = (Array.isArray(ordersRaw) ? ordersRaw : [])
+      .filter((o: unknown) => {
+        const ord = o as Record<string, unknown>;
+        const status = String(ord['ordStatus'] ?? '');
+        return status === 'Working' || status === 'Accepted';
+      })
+      .map((o: unknown) => {
+        const ord = o as Record<string, unknown>;
+        const action = String(ord['action'] ?? 'Buy');
+        return {
+          id:         Number(ord['id'] ?? 0),
+          contractId: Number(ord['contractId'] ?? 0),
+          symbol:     String(ord['contractSymbol'] ?? ord['symbol'] ?? ord['contractId'] ?? ''),
+          side:       (action === 'Sell' ? 'Sell' : 'Buy') as 'Buy' | 'Sell',
+          qty:        Number(ord['totalQty'] ?? ord['qty'] ?? 0),
+          orderType:  String(ord['orderType'] ?? 'Market'),
+          price:      ord['price']     !== undefined ? Number(ord['price'])     : undefined,
+          stopPrice:  ord['stopPrice'] !== undefined ? Number(ord['stopPrice']) : undefined,
+          status:     String(ord['ordStatus'] ?? ''),
+        };
+      });
+
+    return {
+      accountId:   Number(acct['id'] ?? 0),
+      accountName: String(acct['name'] ?? acct['nickname'] ?? ''),
+      accountMode: this.session.accountMode,
+      cashBalance: Number(acct['cashBalance'] ?? acct['balance'] ?? 0),
+      openPnl:     Number(acct['openPnl'] ?? 0),
+      realizedPnl: Number(acct['realizedPnl'] ?? 0),
+      buyingPower: Number(acct['buyingPower'] ?? acct['availableFunds'] ?? acct['cashBalance'] ?? 0),
+      positions,
+      workingOrders,
+      fetchedAt:   Date.now(),
+    };
   }
 
   // ── Public API ───────────────────────────────────────────────────────────────

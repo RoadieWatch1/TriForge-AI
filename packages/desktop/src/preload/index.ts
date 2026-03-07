@@ -453,6 +453,8 @@ const api = {
       ipcRenderer.invoke('trading:tradovateSnapshot', symbol) as Promise<{ snapshot?: unknown }>,
     tradovateDisconnect: () =>
       ipcRenderer.invoke('trading:tradovateDisconnect') as Promise<{ ok?: boolean }>,
+    tradovateAccountState: () =>
+      ipcRenderer.invoke('trading:tradovateAccountState') as Promise<{ state?: unknown }>,
     buildAdvice: (input: {
       snapshot: unknown;
       balance: number;

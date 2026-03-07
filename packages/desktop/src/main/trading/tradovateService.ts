@@ -5,7 +5,7 @@
 // Returned by getTradovateService() — call once after Store is ready.
 
 import type { Store } from '../store';
-import { TradovateClient, type TradovateCredentials } from './tradovateClient';
+import { TradovateClient, type TradovateCredentials, type TradovateAccountState } from './tradovateClient';
 import type { LiveTradeSnapshot } from '@triforge/engine';
 
 const CRED_KEY_USER = 'tradovate.username';
@@ -127,6 +127,17 @@ class TradovateService {
   getLastSnapshot(): LiveTradeSnapshot | null {
     if (!this.activeSymbol) return null;
     return this.client.getSnapshot(this.activeSymbol);
+  }
+
+  // ── Account state (REST) ──────────────────────────────────────────────────────
+
+  async getAccountState(): Promise<TradovateAccountState | null> {
+    if (!this.client.isConnected) return null;
+    try {
+      return await this.client.getAccountState();
+    } catch {
+      return null;
+    }
   }
 }
 
