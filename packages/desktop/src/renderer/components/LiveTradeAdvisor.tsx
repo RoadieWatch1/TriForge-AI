@@ -57,6 +57,52 @@ interface ShadowTrade {
   unrealizedPnl?: number;
   reason: string;
   verdict: string;
+  setupType?: string;
+  invalidationRule?: string;
+  qualityScore?: number;
+}
+
+interface TradovateAccountPosition {
+  symbol: string;
+  netPos: number;
+  avgPrice: number;
+  openPnl: number;
+}
+
+interface TradovateWorkingOrder {
+  orderId: number;
+  symbol: string;
+  side: 'Buy' | 'Sell';
+  qty: number;
+  limitPrice?: number;
+  orderType: string;
+  status: string;
+}
+
+interface TradovateAccountState {
+  accountId: number;
+  accountName: string;
+  cashBalance: number;
+  openPnl: number;
+  totalPnl: number;
+  marginBalance: number;
+  buyingPower: number;
+  accountMode: 'simulation' | 'live' | 'unknown';
+  positions: TradovateAccountPosition[];
+  workingOrders: TradovateWorkingOrder[];
+}
+
+type SetupType = 'breakout_long' | 'breakout_short' | 'pullback_long' | 'pullback_short' | 'reversal_long' | 'reversal_short' | 'none';
+
+interface ProposedTradeSetup {
+  setupType: SetupType;
+  side: 'long' | 'short' | null;
+  entry?: number;
+  stop?: number;
+  target?: number;
+  stopPoints?: number;
+  thesis: string;
+  confidence: 'low' | 'medium' | 'high';
 }
 
 interface ShadowAccountSettings {
@@ -132,6 +178,10 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
   const [shadowResetConfirm, setShadowResetConfirm] = useState(false);
   const [showHistory, setShowHistory]     = useState(false);
 
+  // ── Tradovate account + proposed setup ─────────────────────────────────────
+  const [accountState, setAccountState]   = useState<TradovateAccountState | null>(null);
+  const [proposedSetup, setProposedSetup] = useState<ProposedTradeSetup | null>(null);
+
   // ── Init ─────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -157,12 +207,16 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
     stopPolling();
     const tick = async () => {
       try {
-        const [snapRes, shadowState] = await Promise.all([
+        const [snapRes, shadowState, acctRes, setupRes] = await Promise.all([
           window.triforge.trading.tradovateSnapshot(sym),
           window.triforge.trading.shadowState(),
+          (window.triforge.trading as any).tradovateAccountState?.() ?? Promise.resolve(null),
+          (window.triforge.trading as any).buildTradeLevels?.(sym) ?? Promise.resolve(null),
         ]);
         if (snapRes.snapshot) setSnapshot(snapRes.snapshot as LiveSnapshot);
         setShadow(shadowState as ShadowAccountState);
+        if (acctRes?.state) setAccountState(acctRes.state as TradovateAccountState);
+        if (setupRes?.setup) setProposedSetup(setupRes.setup as ProposedTradeSetup);
       } catch { /* ignore */ }
     };
     tick();
@@ -347,6 +401,50 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           </div>
         )}
 
+        {/* ── Tradovate Account Summary ── */}
+        {isConnected && accountState && (
+          <div style={s.card}>
+            <div style={s.cardTitle}>
+              Tradovate Account — {accountState.accountName}
+              <span style={{ ...s.simBadge, marginLeft: 'auto', color: accountState.accountMode === 'live' ? '#f87171' : '#a78bfa' }}>
+                {accountState.accountMode === 'live' ? 'LIVE' : 'SIM'}
+              </span>
+            </div>
+            <div style={s.metricsRow}>
+              <Metric label="Cash"        value={`$${accountState.cashBalance.toFixed(0)}`} />
+              <Metric label="Buying Power" value={`$${accountState.buyingPower.toFixed(0)}`} />
+              <Metric label="Open P/L"    value={`${accountState.openPnl >= 0 ? '+' : ''}$${accountState.openPnl.toFixed(0)}`} highlight={accountState.openPnl > 0} dimRed={accountState.openPnl < 0} />
+              <Metric label="Total P/L"   value={`${accountState.totalPnl >= 0 ? '+' : ''}$${accountState.totalPnl.toFixed(0)}`} highlight={accountState.totalPnl > 0} dimRed={accountState.totalPnl < 0} />
+              <Metric label="Positions"   value={String(accountState.positions.length)} />
+              <Metric label="Orders"      value={String(accountState.workingOrders.length)} />
+            </div>
+            {accountState.positions.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 2 }}>
+                <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'rgba(255,255,255,0.25)', marginBottom: 2 }}>Open Positions</div>
+                {accountState.positions.map(p => (
+                  <div key={p.symbol} style={s.acctRow}>
+                    <span style={{ fontWeight: 700, color: p.netPos > 0 ? '#34d399' : '#f87171' }}>{p.netPos > 0 ? '▲' : '▼'} {p.symbol}</span>
+                    <span style={s.acctDetail}>×{Math.abs(p.netPos)} @ {p.avgPrice.toFixed(2)}</span>
+                    <span style={{ ...s.acctDetail, color: p.openPnl >= 0 ? '#34d399' : '#f87171', marginLeft: 'auto' }}>{p.openPnl >= 0 ? '+' : ''}${p.openPnl.toFixed(0)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {accountState.workingOrders.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 2 }}>
+                <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'rgba(255,255,255,0.25)', marginBottom: 2 }}>Working Orders</div>
+                {accountState.workingOrders.map(o => (
+                  <div key={o.orderId} style={s.acctRow}>
+                    <span style={{ fontWeight: 700, color: o.side === 'Buy' ? '#34d399' : '#f87171' }}>{o.side === 'Buy' ? '▲' : '▼'} {o.symbol}</span>
+                    <span style={s.acctDetail}>{o.orderType} ×{o.qty}{o.limitPrice ? ` @ ${o.limitPrice.toFixed(2)}` : ''}</span>
+                    <span style={{ ...s.acctDetail, marginLeft: 'auto' }}>{o.status}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* ── Balance + risk ── */}
         <div style={s.card}>
           <div style={s.cardTitle}>Account Settings</div>
@@ -517,6 +615,42 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           {snapshot?.warning && <div style={s.snapshotWarning}>{snapshot.warning}</div>}
         </div>
 
+        {/* ── Proposed setup from engine ── */}
+        {proposedSetup && proposedSetup.setupType !== 'none' && (
+          <div style={{ ...s.card, borderColor: 'rgba(96,165,250,0.2)' }}>
+            <div style={{ ...s.cardTitle, justifyContent: 'space-between' }}>
+              <span style={{ color: '#60a5fa' }}>Proposed Setup — {symbol}</span>
+              <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '0.06em', color: proposedSetup.confidence === 'high' ? '#34d399' : proposedSetup.confidence === 'medium' ? '#fbbf24' : 'rgba(255,255,255,0.3)', border: '1px solid currentColor', borderRadius: 4, padding: '1px 6px', opacity: 0.8 }}>
+                {proposedSetup.confidence.toUpperCase()} CONF
+              </span>
+            </div>
+            <div style={s.metricsRow}>
+              <Metric label="Setup"  value={proposedSetup.setupType.replace(/_/g, ' ').toUpperCase()} highlight={proposedSetup.side === 'long'} dimRed={proposedSetup.side === 'short'} />
+              <Metric label="Side"   value={proposedSetup.side?.toUpperCase() ?? '—'} highlight={proposedSetup.side === 'long'} dimRed={proposedSetup.side === 'short'} />
+              <Metric label="Entry"  value={proposedSetup.entry  !== undefined ? proposedSetup.entry.toFixed(2)  : '—'} />
+              <Metric label="Stop"   value={proposedSetup.stop   !== undefined ? proposedSetup.stop.toFixed(2)   : '—'} />
+              <Metric label="Target" value={proposedSetup.target !== undefined ? proposedSetup.target.toFixed(2) : '—'} />
+              {proposedSetup.stopPoints && <Metric label="Risk pts" value={String(proposedSetup.stopPoints)} dim />}
+            </div>
+            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', lineHeight: 1.6, fontStyle: 'italic' }}>{proposedSetup.thesis}</div>
+            <div style={s.actions}>
+              <button
+                style={{ ...s.btn, ...s.btnPrimary, fontSize: 11, padding: '6px 14px' }}
+                onClick={() => {
+                  if (proposedSetup.side) setSide(proposedSetup.side);
+                  if (proposedSetup.entry  !== undefined) setEntry(String(proposedSetup.entry));
+                  if (proposedSetup.stop   !== undefined) setStop(String(proposedSetup.stop));
+                  if (proposedSetup.target !== undefined) setTarget(String(proposedSetup.target));
+                  setThesis(proposedSetup.thesis);
+                  setAdvice(null);
+                }}
+              >
+                Use These Levels
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* ── Get advice ── */}
         <div style={s.actions}>
           <button
@@ -595,6 +729,9 @@ Provide a concise Council review (4–6 sentences): agree/disagree with verdict,
 function OpenPositionRow({ trade }: { trade: ShadowTrade }) {
   const pnl   = trade.unrealizedPnl ?? 0;
   const color = pnl > 0 ? '#34d399' : pnl < 0 ? '#f87171' : 'rgba(255,255,255,0.5)';
+  const qColor = trade.qualityScore !== undefined
+    ? trade.qualityScore >= 70 ? '#34d399' : trade.qualityScore >= 50 ? '#fbbf24' : '#f87171'
+    : 'rgba(255,255,255,0.3)';
   return (
     <div style={s.positionRow}>
       <span style={{ ...s.posSide, color: trade.side === 'long' ? '#34d399' : '#f87171' }}>
@@ -604,8 +741,16 @@ function OpenPositionRow({ trade }: { trade: ShadowTrade }) {
       <span style={s.posDetail}>×{trade.qty} @ {trade.entryPrice.toFixed(2)}</span>
       <span style={s.posDetail}>Stop: {trade.stopPrice.toFixed(2)}</span>
       <span style={s.posDetail}>Target: {trade.targetPrice.toFixed(2)}</span>
+      {trade.setupType && trade.setupType !== 'none' && (
+        <span style={{ ...s.posDetail, color: 'rgba(96,165,250,0.7)', flexShrink: 0 }}>{trade.setupType.replace(/_/g, ' ')}</span>
+      )}
+      {trade.qualityScore !== undefined && (
+        <span style={{ fontSize: 10, fontWeight: 700, color: qColor, flexShrink: 0 }}>Q{trade.qualityScore}</span>
+      )}
       <span style={{ ...s.posPnl, color }}>{pnl >= 0 ? '+' : ''}${pnl.toFixed(0)}</span>
-      <span style={s.posReason} title={trade.reason}>{trade.reason.slice(0, 60)}{trade.reason.length > 60 ? '…' : ''}</span>
+      <span style={s.posReason} title={trade.invalidationRule ?? trade.reason}>
+        {trade.invalidationRule ?? trade.reason.slice(0, 60)}{!trade.invalidationRule && trade.reason.length > 60 ? '…' : ''}
+      </span>
     </div>
   );
 }
@@ -834,6 +979,9 @@ const s: Record<string, React.CSSProperties> = {
   sizingValue:   { fontSize: 18, fontWeight: 700, color: 'rgba(255,255,255,0.85)', fontVariantNumeric: 'tabular-nums' },
   sizingMeta:    { fontSize: 11, color: 'rgba(255,255,255,0.4)' },
   councilText:   { fontSize: 13, color: 'rgba(255,255,255,0.7)', lineHeight: 1.7, whiteSpace: 'pre-wrap' },
+  // Account summary rows
+  acctRow:       { display: 'flex', gap: 12, alignItems: 'baseline', fontSize: 12, padding: '4px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' },
+  acctDetail:    { color: 'rgba(255,255,255,0.4)', fontVariantNumeric: 'tabular-nums', fontSize: 11 },
   // History
   historyTable:  { display: 'flex', flexDirection: 'column', gap: 0 },
   historyHeader: { display: 'grid', gridTemplateColumns: '60px 50px 50px 70px 70px 60px 50px 50px', gap: 8, fontSize: 9, fontWeight: 700, color: 'rgba(255,255,255,0.25)', textTransform: 'uppercase', letterSpacing: '0.05em', padding: '0 0 6px', borderBottom: '1px solid rgba(255,255,255,0.06)' },
