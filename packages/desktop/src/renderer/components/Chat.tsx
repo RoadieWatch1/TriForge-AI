@@ -708,7 +708,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           playConsensusTone();
         }
 
-        if (!result.error && result.synthesis && (voiceMode || handsFreeMode)) {
+        if (!result.error && result.synthesis && (voiceMode || handsFreeMode || voiceChatActive)) {
           speakMessage(aiMsg.id, result.synthesis);
         }
       } else {
@@ -752,7 +752,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           streaming: false,
         } : msg));
 
-        if (result.text && (voiceMode || handsFreeMode)) {
+        if (result.text && (voiceMode || handsFreeMode || voiceChatActive)) {
           speakMessage(streamId, result.text);
         }
       }
