@@ -2785,14 +2785,6 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     },
   };
 
-  function _providerRole(providerName: string): { role: string; instruction: string } {
-    const n = providerName.toLowerCase();
-    if (n.includes('claude'))             return COUNCIL_ROLES.claude;
-    if (n.includes('gpt') || n.includes('openai')) return COUNCIL_ROLES.openai;
-    if (n.includes('grok'))               return COUNCIL_ROLES.grok;
-    return COUNCIL_ROLES.openai; // fallback
-  }
-
   function _parseCouncilVote(provider: string, text: string): CouncilVote {
     const voteLine   = text.match(/VOTE:\s*(TAKE|WAIT|REJECT)/i);
     const confLine   = text.match(/CONFIDENCE:\s*(\d+)/i);
@@ -2805,19 +2797,8 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     };
   }
 
-  shadowTradingController.setCouncilFn(async (setup, snap, symbol): Promise<CouncilReviewResult> => {
-    const { providerManager: pm } = await getEngine();
-    const providers = await pm.getActiveProviders();
-
-    if (providers.length < 3) {
-      return {
-        approved: false,
-        votes: [],
-        blockedReason: `Council requires 3 active providers — only ${providers.length} configured.`,
-      };
-    }
-
-    const votePrompt =
+  function _buildTradeVotePrompt(setup: any, snap: any, symbol: string): string {
+    return (
       `You are reviewing a proposed shadow trade (simulation only — no real money at risk).\n\n` +
       `INSTRUMENT: ${symbol}\n` +
       `SETUP TYPE: ${setup.setupType}\n` +
@@ -2833,11 +2814,38 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       `CONFIDENCE: 75\n` +
       `REASON: One sentence explanation.\n\n` +
       `VOTE must be exactly TAKE, WAIT, or REJECT.\n` +
-      `CONFIDENCE must be a number 0-100.`;
+      `CONFIDENCE must be a number 0-100.`
+    );
+  }
+
+  shadowTradingController.setCouncilFn(async (setup, snap, symbol): Promise<CouncilReviewResult> => {
+    const { providerManager: pm } = await getEngine();
+
+    // Fetch providers by name — bypasses getActiveProviders() ordering entirely
+    const SEAT_NAMES: Array<'claude' | 'openai' | 'grok'> = ['claude', 'openai', 'grok'];
+    const seatEntries: Array<{ name: 'claude' | 'openai' | 'grok'; provider: any }> = [];
+    for (const name of SEAT_NAMES) {
+      const provider = await pm.getProvider(name);
+      if (provider) seatEntries.push({ name, provider });
+    }
+
+    const seatCount = seatEntries.length;
+    const hasGrok   = seatEntries.some(s => s.name === 'grok');
+
+    if (seatCount < 2) {
+      return {
+        approved: false,
+        votes: [],
+        blockedReason: `Shadow trading council requires at least 2 configured council providers (claude, openai, grok) — only ${seatCount} present.`,
+        blockedCode: 'insufficient_seats',
+      };
+    }
+
+    const votePrompt = _buildTradeVotePrompt(setup, snap, symbol);
 
     const settled = await Promise.allSettled(
-      providers.slice(0, 3).map(async (p, i) => {
-        const councilRole = _providerRole(p.name);
+      seatEntries.map(async (seat) => {
+        const councilRole = COUNCIL_ROLES[seat.name];
         const msgs = [
           {
             role: 'system',
@@ -2845,30 +2853,56 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
           },
           { role: 'user', content: votePrompt },
         ];
-        const text = await p.chat(msgs as { role: string; content: string }[]);
-        return { provider: p.name, text, index: i };
+        const text = await seat.provider.chat(msgs as { role: string; content: string }[]);
+        return { provider: seat.name, text };
       }),
     );
 
     const votes: CouncilVote[] = settled.map((r, i) => {
       if (r.status === 'rejected') {
-        return { provider: providers[i].name, vote: 'WAIT' as const, confidence: 0, reason: 'Provider failed to respond.' };
+        return { provider: seatEntries[i].name, vote: 'WAIT' as const, confidence: 0, reason: 'Provider failed to respond.' };
       }
       return _parseCouncilVote(r.value.provider, r.value.text);
     });
 
-    const takeCount  = votes.filter(v => v.vote === 'TAKE').length;
-    const grokVote   = votes.find(v => v.provider.toLowerCase().includes('grok'));
-    const avgConf    = votes.reduce((a, v) => a + v.confidence, 0) / votes.length;
-    const grokVetoed = grokVote?.vote === 'REJECT';
-    const approved   = takeCount >= 2 && !grokVetoed && avgConf >= 60;
+    const takeCount = votes.filter(v => v.vote === 'TAKE').length;
+    const avgConf   = votes.reduce((a, v) => a + v.confidence, 0) / votes.length;
 
-    const blockedReason = approved ? undefined
-      : grokVetoed      ? `Critic vetoed: ${grokVote!.reason}`
-      : takeCount < 2   ? `Only ${takeCount}/3 voted TAKE — need at least 2.`
-      :                   `Avg confidence ${avgConf.toFixed(0)}/100 below threshold (60).`;
+    // ── Tiered approval — three explicit branches for auditability ──
 
-    return { approved, votes, blockedReason };
+    // Branch 1: 3 seats (all providers present, Grok is the critic)
+    if (seatCount >= 3 && hasGrok) {
+      const grokVote   = votes.find(v => v.provider === 'grok')!;
+      const grokVetoed = grokVote.vote === 'REJECT';
+      const approved   = takeCount >= 2 && !grokVetoed && avgConf >= 60;
+
+      if (approved) return { approved: true, votes };
+
+      if (grokVetoed)   return { approved: false, votes, blockedReason: `Critic vetoed: ${grokVote.reason}`, blockedCode: 'grok_veto' };
+      if (takeCount < 2) return { approved: false, votes, blockedReason: `Only ${takeCount}/${seatCount} voted TAKE — need at least 2.`, blockedCode: 'insufficient_take_votes' };
+      return { approved: false, votes, blockedReason: `Avg confidence ${avgConf.toFixed(0)}/100 below threshold (60).`, blockedCode: 'low_confidence' };
+    }
+
+    // Branch 2: 2 seats including Grok — unanimous + veto + higher threshold
+    if (seatCount === 2 && hasGrok) {
+      const grokVote   = votes.find(v => v.provider === 'grok')!;
+      const grokVetoed = grokVote.vote === 'REJECT';
+      const approved   = takeCount === 2 && !grokVetoed && avgConf >= 65;
+
+      if (approved) return { approved: true, votes };
+
+      if (grokVetoed)   return { approved: false, votes, blockedReason: `Critic vetoed: ${grokVote.reason}`, blockedCode: 'grok_veto' };
+      if (takeCount < 2) return { approved: false, votes, blockedReason: `Only ${takeCount}/2 voted TAKE — unanimous required.`, blockedCode: 'insufficient_take_votes' };
+      return { approved: false, votes, blockedReason: `Avg confidence ${avgConf.toFixed(0)}/100 below threshold (65).`, blockedCode: 'low_confidence' };
+    }
+
+    // Branch 3: 2 seats without Grok — unanimous + strictest threshold
+    const approved = takeCount === seatCount && avgConf >= 70;
+
+    if (approved) return { approved: true, votes };
+
+    if (takeCount < seatCount) return { approved: false, votes, blockedReason: `Only ${takeCount}/${seatCount} voted TAKE — unanimous required without critic.`, blockedCode: 'insufficient_take_votes' };
+    return { approved: false, votes, blockedReason: `Avg confidence ${avgConf.toFixed(0)}/100 below threshold (70).`, blockedCode: 'low_confidence' };
   });
 
   // ── Scheduler ─────────────────────────────────────────────────────────────────

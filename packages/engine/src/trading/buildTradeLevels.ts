@@ -14,7 +14,7 @@
 //   reversal_short   — trend=down but price near HOD → failed breakout
 //   none             — insufficient data or range too narrow to classify
 
-import type { LiveTradeSnapshot } from './buildLiveTradeAdvice';
+import type { LiveTradeSnapshot } from './types';
 import { INSTRUMENT_META } from './buildLiveTradeAdvice';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -53,7 +53,12 @@ const DEFAULT_STOP_POINTS: Record<string, number> = {
   GC:   5,
 };
 
-function stopFor(symbol: string): number {
+function stopFor(symbol: string, atr5m?: number): number {
+  if (atr5m != null) {
+    const meta = INSTRUMENT_META[symbol.toUpperCase()];
+    const minStop = meta ? meta.tickSize * 3 : 0.75;
+    return Math.max(atr5m * 1.5, minStop);
+  }
   return DEFAULT_STOP_POINTS[symbol.toUpperCase()] ?? 10;
 }
 
@@ -70,7 +75,8 @@ export function buildTradeLevels(
   const sym  = symbol.toUpperCase();
   const meta = INSTRUMENT_META[sym];
   const tick = meta?.tickSize ?? 0.25;
-  const N    = stopFor(sym);
+  const N    = stopFor(sym, snapshot.atr5m);
+  const usingATR = snapshot.atr5m != null;
 
   const NONE: ProposedTradeSetup = {
     setupType: 'none',
@@ -86,6 +92,16 @@ export function buildTradeLevels(
 
   if (!price || !hod || !lod) return NONE;
 
+  // ATR sanity: reject if ATR-based stop is unreliable
+  if (usingATR && meta) {
+    if (N < meta.tickSize * 3) {
+      return { setupType: 'none', side: null, thesis: 'ATR-based stop too tight for reliable execution.', confidence: 'low' };
+    }
+    if (N / price > 0.05) {
+      return { setupType: 'none', side: null, thesis: 'ATR-based stop exceeds 5% of price — volatility too extreme.', confidence: 'low' };
+    }
+  }
+
   const range = hod - lod;
   // Require at least 2× the stop distance of range to be meaningful
   if (range < N * 2) {
@@ -98,6 +114,8 @@ export function buildTradeLevels(
   }
 
   const pos = (price - lod) / range; // 0 = at LOD, 1 = at HOD
+  const vwapCtx = snapshot.vwapRelation;
+  const stopLabel = usingATR ? `${N.toFixed(2)} pts (1.5×ATR)` : `${N} pts`;
 
   // ── Breakout long: price near HOD + uptrend ────────────────────────────────
   if (pos >= 0.78 && (trend === 'up' || trend === 'range')) {
@@ -109,7 +127,7 @@ export function buildTradeLevels(
       side:       'long',
       entry, stop, target,
       stopPoints: N,
-      thesis:     `Breakout long — ${sym} is pressing the high of day (${hod}) with ${trend === 'up' ? 'bullish' : 'neutral'} session trend. Entry at current price, stop ${N} pts below, target 2:1 at ${target}.`,
+      thesis:     `Breakout long — ${sym} pressing HOD (${hod}), ${trend === 'up' ? 'bullish' : 'neutral'} trend. Stop ${stopLabel}, target 2:1 at ${target}.`,
       confidence: trend === 'up' ? 'high' : 'medium',
     };
   }
@@ -124,7 +142,7 @@ export function buildTradeLevels(
       side:       'short',
       entry, stop, target,
       stopPoints: N,
-      thesis:     `Breakout short — ${sym} is pressing the low of day (${lod}) with ${trend === 'down' ? 'bearish' : 'neutral'} session trend. Entry at current price, stop ${N} pts above, target 2:1 at ${target}.`,
+      thesis:     `Breakout short — ${sym} pressing LOD (${lod}), ${trend === 'down' ? 'bearish' : 'neutral'} trend. Stop ${stopLabel}, target 2:1 at ${target}.`,
       confidence: trend === 'down' ? 'high' : 'medium',
     };
   }
@@ -133,14 +151,20 @@ export function buildTradeLevels(
   if (trend === 'up' && pos >= 0.35 && pos <= 0.65) {
     const entry  = round(price, tick);
     const stop   = round(entry - N, tick);
-    const target = round(hod + N, tick);   // target above HOD
+    // ATR-aware target: use 2.5×ATR when available, else HOD + N
+    const target = usingATR
+      ? round(entry + snapshot.atr5m! * 2.5, tick)
+      : round(hod + N, tick);
+    // VWAP-aware confidence upgrade
+    const vwapSupports = vwapCtx === 'at' || vwapCtx === 'above';
+    const vwapNote = vwapCtx ? `, VWAP ${vwapCtx}` : '';
     return {
       setupType:  'pullback_long',
       side:       'long',
       entry, stop, target,
       stopPoints: N,
-      thesis:     `Pullback long — ${sym} is in an uptrend and has pulled back to mid-range (${(pos * 100).toFixed(0)}% of session range). Entry at current price, stop ${N} pts below, targeting above HOD at ${target}.`,
-      confidence: 'medium',
+      thesis:     `Pullback long — ${sym} mid-range (${(pos * 100).toFixed(0)}%), uptrend. Stop ${stopLabel}${vwapNote}, target at ${target}.`,
+      confidence: vwapSupports ? 'high' : 'medium',
     };
   }
 
@@ -148,14 +172,18 @@ export function buildTradeLevels(
   if (trend === 'down' && pos >= 0.35 && pos <= 0.65) {
     const entry  = round(price, tick);
     const stop   = round(entry + N, tick);
-    const target = round(lod - N, tick);   // target below LOD
+    const target = usingATR
+      ? round(entry - snapshot.atr5m! * 2.5, tick)
+      : round(lod - N, tick);
+    const vwapSupports = vwapCtx === 'at' || vwapCtx === 'below';
+    const vwapNote = vwapCtx ? `, VWAP ${vwapCtx}` : '';
     return {
       setupType:  'pullback_short',
       side:       'short',
       entry, stop, target,
       stopPoints: N,
-      thesis:     `Pullback short — ${sym} is in a downtrend and has bounced to mid-range (${(pos * 100).toFixed(0)}% of session range). Entry at current price, stop ${N} pts above, targeting below LOD at ${target}.`,
-      confidence: 'medium',
+      thesis:     `Pullback short — ${sym} mid-range (${(pos * 100).toFixed(0)}%), downtrend. Stop ${stopLabel}${vwapNote}, target at ${target}.`,
+      confidence: vwapSupports ? 'high' : 'medium',
     };
   }
 

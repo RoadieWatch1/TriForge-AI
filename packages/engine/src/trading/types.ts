@@ -1,7 +1,53 @@
 // ── engine/src/trading/types.ts ───────────────────────────────────────────────
 //
-// Shared types for Shadow Trading Mode.
+// Shared trading types: snapshot, shadow trades, council votes, Phase 2 unions.
 // All shadow trades are simulation only — no real orders.
+
+// ── Phase 2 union types ─────────────────────────────────────────────────────
+
+export type VwapRelation = 'above' | 'below' | 'at' | 'extended_above' | 'extended_below';
+export type BarTrend = 'up' | 'down' | 'range' | 'unknown';
+export type SessionLabel = 'premarket' | 'opening' | 'midmorning' | 'lunch' | 'afternoon' | 'close' | 'afterhours';
+export type VolatilityRegime = 'low' | 'normal' | 'high';
+export type IndicatorState = 'warming' | 'ready' | 'degraded';
+
+// ── Live market snapshot ────────────────────────────────────────────────────
+
+export interface LiveTradeSnapshot {
+  connected: boolean;
+  accountMode: 'simulation' | 'live' | 'unknown';
+  symbol: string;
+  lastPrice?: number;
+  bidPrice?: number;
+  askPrice?: number;
+  highOfDay?: number;
+  lowOfDay?: number;
+  /** Positive = bullish session, negative = bearish. */
+  trend?: 'up' | 'down' | 'range' | 'unknown';
+  /** Milliseconds since last quote tick. >5000 = stale. */
+  feedFreshnessMs?: number;
+  warning?: string;
+
+  // ── Phase 2 enrichments (optional — fallback gracefully when absent) ──
+  /** ATR(14) on 5-min bars. Undefined during warm-up. */
+  atr5m?: number;
+  /** Session VWAP. Undefined until first bar completes. */
+  vwap?: number;
+  /** Qualitative VWAP relation for the current price. */
+  vwapRelation?: VwapRelation;
+  /** 5-min bar trend (short timeframe). */
+  trend5m?: BarTrend;
+  /** 15-min bar trend (higher timeframe bias). */
+  trend15m?: BarTrend;
+  /** Current session time window (ET). */
+  sessionLabel?: SessionLabel;
+  /** Volatility regime derived from ATR vs recent ATR average. */
+  volatilityRegime?: VolatilityRegime;
+  /** Day range as percentage of price: (HOD-LOD)/price * 100. */
+  rangePct?: number;
+  /** Indicator computation readiness. */
+  indicatorState?: IndicatorState;
+}
 
 // ── Council vote ──────────────────────────────────────────────────────────────
 
@@ -47,6 +93,15 @@ export interface ShadowTrade {
   councilVotes?: CouncilVote[];
   /** True when council approved this trade (always true for opened trades). */
   councilPassed?: boolean;
+
+  // ── Phase 2 Market Context (logged at entry) ─────────
+  atr5m?: number;
+  vwap?: number;
+  vwapRelation?: VwapRelation;
+  trend5m?: BarTrend;
+  trend15m?: BarTrend;
+  sessionLabel?: SessionLabel;
+  volatilityRegime?: VolatilityRegime;
 }
 
 export interface ShadowAccountSettings {

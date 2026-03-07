@@ -29,10 +29,17 @@ import type { ShadowTrade, ShadowAccountState, ShadowAccountSettings, CouncilVot
 // ── Council review callback type ──────────────────────────────────────────────
 // Injected from ipc.ts after engine init. Runs the 3-AI vote in the main process.
 
+export type CouncilBlockedCode =
+  | 'insufficient_seats'
+  | 'grok_veto'
+  | 'low_confidence'
+  | 'insufficient_take_votes';
+
 export interface CouncilReviewResult {
   approved: boolean;
   votes: CouncilVote[];
   blockedReason?: string;
+  blockedCode?: CouncilBlockedCode;
 }
 
 export type CouncilReviewFn = (
@@ -179,6 +186,12 @@ class ShadowTradingControllerClass {
       return;
     }
 
+    // Phase 2: require indicators to be ready before opening shadow trades
+    if (snap.indicatorState !== 'ready') {
+      this._state.blockedReason = `Indicators ${snap.indicatorState ?? 'unavailable'} — waiting for market data to warm up.`;
+      return;
+    }
+
     const symbol = snap.symbol.toUpperCase();
     if (!this._state.settings.allowedSymbols.includes(symbol)) {
       this._state.blockedReason = `${symbol} not in allowed symbols.`;
@@ -216,7 +229,7 @@ class ShadowTradingControllerClass {
     }
 
     // ── Council gate — required before any shadow trade opens ─────────────────
-    // All 3 AIs must vote. ≥2 TAKE + Grok does not REJECT + avg confidence ≥ 60.
+    // Tiered approval: 3-seat, 2-seat+Grok, or 2-seat-no-Grok. See ipc.ts.
     if (!this._councilFn) {
       this._state.blockedReason = 'Council review not initialized — cannot open trade.';
       return;
@@ -240,7 +253,7 @@ class ShadowTradingControllerClass {
     this._state.councilBlockedReason = undefined;
 
     // Open the shadow trade — council approved
-    this._openTrade(symbol, setup, advice, review.votes);
+    this._openTrade(symbol, setup, advice, snap, review.votes);
   }
 
   // ── Setup builder (autonomous) ───────────────────────────────────────────────
@@ -248,6 +261,10 @@ class ShadowTradingControllerClass {
   private _buildSetup(snap: LiveTradeSnapshot, symbol: string): ProposedTradeSetup | null {
     const setup = buildTradeLevels(snap, symbol);
     if (setup.setupType === 'none' || !setup.side || !setup.entry || !setup.stop || !setup.target) {
+      return null;
+    }
+    // Phase 2: shadow trading only takes pullback continuations
+    if (setup.setupType !== 'pullback_long' && setup.setupType !== 'pullback_short') {
       return null;
     }
     return setup;
@@ -259,6 +276,7 @@ class ShadowTradingControllerClass {
     symbol: string,
     setup: ProposedTradeSetup,
     advice: ReturnType<typeof buildLiveTradeAdvice>,
+    snap: LiveTradeSnapshot,
     councilVotes?: CouncilVote[],
   ): void {
     // Quality score: base 50, +20 for high confidence, +10 for medium,
@@ -292,6 +310,14 @@ class ShadowTradingControllerClass {
       qualityScore,
       councilVotes,
       councilPassed:    true,
+      // Phase 2: market context at entry
+      atr5m:            snap.atr5m,
+      vwap:             snap.vwap,
+      vwapRelation:     snap.vwapRelation,
+      trend5m:          snap.trend5m,
+      trend15m:         snap.trend15m,
+      sessionLabel:     snap.sessionLabel,
+      volatilityRegime: snap.volatilityRegime,
     };
     this._state.openTrades.push(trade);
     this._state.tradesToday++;

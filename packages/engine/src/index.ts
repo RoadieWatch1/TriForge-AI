@@ -212,16 +212,19 @@ export type { CapabilityDescriptor, CapabilityCategory, CapabilityRisk, SystemSt
 export { buildFolderAudit, formatAuditAsText } from './execution/buildFolderAudit';
 export type { FolderAuditResult, AuditFinding } from './execution/buildFolderAudit';
 
+// Trading types (centralized)
+export type {
+  LiveTradeSnapshot, ShadowTrade, ShadowAccountState, ShadowAccountSettings, CouncilVote,
+  VwapRelation, BarTrend, SessionLabel, VolatilityRegime, IndicatorState,
+} from './trading/types';
+
 // Live Trade Advisor
 export { buildLiveTradeAdvice, SUPPORTED_SYMBOLS, INSTRUMENT_META } from './trading/buildLiveTradeAdvice';
 export type {
-  LiveTradeSnapshot, TradeAdviceInput, TradeAdviceResult,
+  TradeAdviceInput, TradeAdviceResult,
   TradeAdviceVerdict, TradeAdviceConfidence, InstrumentMeta,
 } from './trading/buildLiveTradeAdvice';
 
 // Trade level proposals
 export { buildTradeLevels } from './trading/buildTradeLevels';
 export type { ProposedTradeSetup, SetupType } from './trading/buildTradeLevels';
-
-// Shadow Trading
-export type { ShadowTrade, ShadowAccountState, ShadowAccountSettings, CouncilVote } from './trading/types';

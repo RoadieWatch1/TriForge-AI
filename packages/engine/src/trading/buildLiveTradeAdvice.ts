@@ -9,6 +9,9 @@
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
+import type { LiveTradeSnapshot } from './types';
+export type { LiveTradeSnapshot } from './types';
+
 export type TradeAdviceVerdict =
   | 'buy'
   | 'wait'
@@ -17,22 +20,6 @@ export type TradeAdviceVerdict =
   | 'missing_confirmation';
 
 export type TradeAdviceConfidence = 'low' | 'medium' | 'high';
-
-export interface LiveTradeSnapshot {
-  connected: boolean;
-  accountMode: 'simulation' | 'live' | 'unknown';
-  symbol: string;
-  lastPrice?: number;
-  bidPrice?: number;
-  askPrice?: number;
-  highOfDay?: number;
-  lowOfDay?: number;
-  /** Positive = bullish session, negative = bearish. */
-  trend?: 'up' | 'down' | 'range' | 'unknown';
-  /** Milliseconds since last quote tick. >5000 = stale. */
-  feedFreshnessMs?: number;
-  warning?: string;
-}
 
 export interface TradeAdviceInput {
   snapshot: LiveTradeSnapshot;
@@ -245,7 +232,101 @@ export function buildLiveTradeAdvice(input: TradeAdviceInput): TradeAdviceResult
     strengths.push('Trade thesis is documented.');
   }
 
-  // ── 10. Verdict logic ────────────────────────────────────────────────────────
+  // ── 10. Session filter (Phase 2) ─────────────────────────────────────────────
+
+  if (snapshot.sessionLabel) {
+    switch (snapshot.sessionLabel) {
+      case 'premarket':  violations.push('Pre-market — waiting for RTH open.');                 break;
+      case 'lunch':      violations.push('Lunch session (11:30-13:00 ET) — no new setups.');    break;
+      case 'close':      violations.push('Close session (15:00-16:00 ET) — blocked.');          break;
+      case 'afterhours': violations.push('After-hours — shadow trading disabled.');             break;
+      case 'opening':    strengths.push('Opening session — high liquidity window.');            break;
+      case 'midmorning': strengths.push('Mid-morning continuation window.');                    break;
+      // 'afternoon' — neutral, no strength/warning
+    }
+  }
+
+  // ── 11. Multi-timeframe alignment (Phase 2) ───────────────────────────────
+
+  if (snapshot.trend5m && snapshot.trend5m !== 'unknown'
+   && snapshot.trend15m && snapshot.trend15m !== 'unknown') {
+    if (side === 'long') {
+      if (snapshot.trend5m === 'up' && snapshot.trend15m === 'up') {
+        strengths.push('5m and 15m trends aligned bullish.');
+      } else if (snapshot.trend5m === 'up' && snapshot.trend15m === 'down') {
+        violations.push('5m trend up but 15m bias down — conflicting signals.');
+      } else if (snapshot.trend5m === 'down') {
+        warnings.push('Short-term (5m) trend is bearish for a long setup.');
+      } else {
+        warnings.push('Timeframe trend unclear — proceed with caution.');
+      }
+    } else {
+      if (snapshot.trend5m === 'down' && snapshot.trend15m === 'down') {
+        strengths.push('5m and 15m trends aligned bearish.');
+      } else if (snapshot.trend5m === 'down' && snapshot.trend15m === 'up') {
+        violations.push('5m trend down but 15m bias up — conflicting signals.');
+      } else if (snapshot.trend5m === 'up') {
+        warnings.push('Short-term (5m) trend is bullish for a short setup.');
+      } else {
+        warnings.push('Timeframe trend unclear — proceed with caution.');
+      }
+    }
+  }
+
+  // ── 12. ATR sanity (Phase 2) ───────────────────────────────────────────────
+
+  if (snapshot.atr5m != null && entry != null && stop != null) {
+    const stopDistance = Math.abs(entry - stop);
+    if (stopDistance < 0.5 * snapshot.atr5m) {
+      violations.push(`Stop too tight relative to volatility (${stopDistance.toFixed(2)} pts < 0.5 ATR ${(snapshot.atr5m * 0.5).toFixed(2)} pts).`);
+    } else if (stopDistance > 3.0 * snapshot.atr5m) {
+      violations.push(`Stop too wide relative to volatility (${stopDistance.toFixed(2)} pts > 3.0 ATR ${(snapshot.atr5m * 3).toFixed(2)} pts).`);
+    } else {
+      strengths.push('Stop-loss sized within ATR bounds.');
+    }
+  }
+
+  // ── 13. VWAP context (Phase 2) ────────────────────────────────────────────
+
+  if (snapshot.vwapRelation) {
+    if (snapshot.vwapRelation === 'at') {
+      strengths.push('Price at VWAP — pullback to value.');
+    } else if (side === 'long') {
+      if (snapshot.vwapRelation === 'above')          strengths.push('Price above VWAP — supportive for longs.');
+      else if (snapshot.vwapRelation === 'extended_above') warnings.push('Extended above VWAP — chasing risk.');
+      else if (snapshot.vwapRelation === 'below')          warnings.push('Buying below VWAP — counter-value.');
+      else if (snapshot.vwapRelation === 'extended_below') warnings.push('Far below VWAP — counter-value for longs.');
+    } else {
+      if (snapshot.vwapRelation === 'below')               strengths.push('Price below VWAP — supportive for shorts.');
+      else if (snapshot.vwapRelation === 'extended_below')  warnings.push('Extended below VWAP — chasing risk.');
+      else if (snapshot.vwapRelation === 'above')           warnings.push('Shorting above VWAP — counter-value.');
+      else if (snapshot.vwapRelation === 'extended_above')  warnings.push('Far above VWAP — counter-value for shorts.');
+    }
+  }
+
+  // ── 14. Environment rejection (Phase 2) ───────────────────────────────────
+
+  if (snapshot.volatilityRegime === 'low') {
+    violations.push('Volatility too low — compressed range, skip.');
+  } else if (snapshot.volatilityRegime === 'high') {
+    warnings.push('Elevated volatility — reduce sizing or skip.');
+  }
+
+  if (snapshot.rangePct != null && snapshot.rangePct < 0.15) {
+    warnings.push(`Day range extremely compressed (${snapshot.rangePct.toFixed(3)}%).`);
+  }
+
+  // HOD/LOD hard rejection for pullback setups
+  if (snapshot.lastPrice != null && snapshot.highOfDay != null && snapshot.lowOfDay != null) {
+    const sessionRange = snapshot.highOfDay - snapshot.lowOfDay;
+    if (sessionRange > 0) {
+      const posInRange = (snapshot.lastPrice - snapshot.lowOfDay) / sessionRange;
+      if (side === 'long'  && posInRange > 0.90) violations.push('Price at session high — no room for pullback long.');
+      if (side === 'short' && posInRange < 0.10) violations.push('Price at session low — no room for pullback short.');
+    }
+  }
+
+  // ── 15. Verdict logic ──────────────────────────────────────────────────────
 
   let verdict: TradeAdviceVerdict;
   let confidence: TradeAdviceConfidence;
@@ -253,11 +334,18 @@ export function buildLiveTradeAdvice(input: TradeAdviceInput): TradeAdviceResult
 
   if (violations.length > 0) {
     // Hard rule violations → skip or reduce
-    if (violations.some(v => v.includes('stop') || v.includes('target') || v.includes('thesis'))) {
+    const hasStructural  = violations.some(v => v.includes('stop') || v.includes('target') || v.includes('thesis'));
+    const hasSizing      = violations.some(v => v.includes('R:R') || v.includes('risk') || v.includes('budget'));
+    const hasEnvironment = violations.some(v =>
+      v.includes('session') || v.includes('Session') || v.includes('Pre-market')
+      || v.includes('After-hours') || v.includes('Volatility') || v.includes('ATR')
+      || v.includes('conflicting') || v.includes('no room'));
+
+    if (hasStructural || hasEnvironment) {
       verdict    = 'skip';
       confidence = 'high';
-      summary    = `${violations.length} rule violation${violations.length > 1 ? 's' : ''} detected. Fix the setup before trading.`;
-    } else if (violations.some(v => v.includes('R:R') || v.includes('risk') || v.includes('budget'))) {
+      summary    = `${violations.length} rule violation${violations.length > 1 ? 's' : ''} detected. ${hasEnvironment ? 'Environment or session blocked.' : 'Fix the setup before trading.'}`;
+    } else if (hasSizing) {
       verdict    = 'reduce_size';
       confidence = 'medium';
       summary    = 'Setup has merit but sizing or R:R needs adjustment.';
