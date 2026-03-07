@@ -50,7 +50,7 @@
     "target": [{ "target": "nsis", "arch": ["x64"] }],
     "icon": "assets/icon.png",
     "artifactName": "TriForge-AI-x64-Setup.exe",
-    "signingHashAlgorithms": ["sha256"],
+    "sign": null,
     "signDlls": false
   },
 
