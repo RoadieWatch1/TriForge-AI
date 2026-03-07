@@ -22,8 +22,8 @@
 
 import crypto from 'crypto';
 import { tradovateService } from './tradovateService';
-import { buildLiveTradeAdvice, INSTRUMENT_META } from '@triforge/engine';
-import type { LiveTradeSnapshot } from '@triforge/engine';
+import { buildLiveTradeAdvice, buildTradeLevels, INSTRUMENT_META } from '@triforge/engine';
+import type { LiveTradeSnapshot, ProposedTradeSetup } from '@triforge/engine';
 import type { ShadowTrade, ShadowAccountState, ShadowAccountSettings } from '@triforge/engine';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -163,10 +163,10 @@ class ShadowTradingControllerClass {
       return;
     }
 
-    // Build autonomous setup from live snapshot
+    // Build autonomous setup from live snapshot using buildTradeLevels
     const setup = this._buildSetup(snap, symbol);
     if (!setup) {
-      this._state.blockedReason = `No valid setup on ${symbol} (trend: ${snap.trend ?? 'unknown'}).`;
+      this._state.blockedReason = `No valid setup on ${symbol} (trend: ${snap.trend ?? 'unknown'}, position in range unclear).`;
       return;
     }
 
@@ -176,7 +176,7 @@ class ShadowTradingControllerClass {
       balance:     this._state.currentBalance,
       riskPercent: this._state.settings.riskPercentPerTrade,
       symbol,
-      side:        setup.side,
+      side:        setup.side!,
       entry:       setup.entry,
       stop:        setup.stop,
       target:      setup.target,
@@ -193,65 +193,56 @@ class ShadowTradingControllerClass {
       return;
     }
 
-    // Open the shadow trade
+    // Open the shadow trade (setup is already a ProposedTradeSetup)
     this._openTrade(symbol, setup, advice);
   }
 
   // ── Setup builder (autonomous) ───────────────────────────────────────────────
 
-  private _buildSetup(snap: LiveTradeSnapshot, symbol: string): {
-    side: 'long' | 'short';
-    entry: number;
-    stop: number;
-    target: number;
-    thesis: string;
-  } | null {
-    const lastPrice = snap.lastPrice!;
-    const trend     = snap.trend;
-
-    if (!trend || trend === 'unknown' || trend === 'range') return null;
-
-    const stopPts = DEFAULT_STOP_POINTS[symbol] ?? 10;
-    const side    = trend === 'up' ? 'long' : 'short';
-
-    const entry  = lastPrice;
-    const stop   = side === 'long'  ? lastPrice - stopPts : lastPrice + stopPts;
-    const target = side === 'long'  ? lastPrice + stopPts * 2 : lastPrice - stopPts * 2;
-
-    const posDesc = snap.highOfDay && snap.lowOfDay
-      ? (() => {
-          const range = snap.highOfDay - snap.lowOfDay;
-          const pos   = range > 0 ? (lastPrice - snap.lowOfDay) / range : 0.5;
-          return pos > 0.6 ? 'upper range' : pos < 0.4 ? 'lower range' : 'mid range';
-        })()
-      : 'unknown position';
-
-    const thesis = side === 'long'
-      ? `Council autonomous long — ${symbol} trending up, price in ${posDesc}. Stop ${stopPts}pts below entry.`
-      : `Council autonomous short — ${symbol} trending down, price in ${posDesc}. Stop ${stopPts}pts above entry.`;
-
-    return { side, entry, stop, target, thesis };
+  private _buildSetup(snap: LiveTradeSnapshot, symbol: string): ProposedTradeSetup | null {
+    const setup = buildTradeLevels(snap, symbol);
+    if (setup.setupType === 'none' || !setup.side || !setup.entry || !setup.stop || !setup.target) {
+      return null;
+    }
+    return setup;
   }
 
   // ── Trade open ───────────────────────────────────────────────────────────────
 
   private _openTrade(
     symbol: string,
-    setup: { side: 'long' | 'short'; entry: number; stop: number; target: number; thesis: string },
+    setup: ProposedTradeSetup,
     advice: ReturnType<typeof buildLiveTradeAdvice>,
   ): void {
+    // Quality score: base 50, +20 for high confidence, +10 for medium,
+    //   +20 if R:R ≥ 2.5, +10 if R:R ≥ 1.5, +10 if strengths ≥ 3, -10 per warning
+    const rr = advice.rr ?? 0;
+    const confidenceBonus = setup.confidence === 'high' ? 20 : setup.confidence === 'medium' ? 10 : 0;
+    const rrBonus         = rr >= 2.5 ? 20 : rr >= 1.5 ? 10 : 0;
+    const strengthBonus   = (advice.strengths?.length ?? 0) >= 3 ? 10 : 0;
+    const warningPenalty  = (advice.warnings?.length ?? 0) * 10;
+    const qualityScore    = Math.max(0, Math.min(100, 50 + confidenceBonus + rrBonus + strengthBonus - warningPenalty));
+
+    // Invalidation rule: what price level would negate the setup
+    const invalidationRule = setup.side === 'long'
+      ? `Below stop at ${setup.stop} — setup fails if price violates this level before entry.`
+      : `Above stop at ${setup.stop} — setup fails if price violates this level before entry.`;
+
     const trade: ShadowTrade = {
-      id:          crypto.randomUUID(),
+      id:               crypto.randomUUID(),
       symbol,
-      side:        setup.side,
-      entryPrice:  setup.entry,
-      stopPrice:   setup.stop,
-      targetPrice: setup.target,
-      qty:         advice.suggestedSize!,
-      status:      'open',
-      openedAt:    Date.now(),
-      reason:      setup.thesis,
-      verdict:     `${advice.verdict} (${advice.confidence})`,
+      side:             setup.side!,
+      entryPrice:       setup.entry!,
+      stopPrice:        setup.stop!,
+      targetPrice:      setup.target!,
+      qty:              advice.suggestedSize!,
+      status:           'open',
+      openedAt:         Date.now(),
+      reason:           setup.thesis,
+      verdict:          `${advice.verdict} (${advice.confidence})`,
+      setupType:        setup.setupType,
+      invalidationRule,
+      qualityScore,
     };
     this._state.openTrades.push(trade);
     this._state.tradesToday++;

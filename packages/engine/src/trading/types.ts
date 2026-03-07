@@ -27,6 +27,12 @@ export interface ShadowTrade {
   reason: string;
   /** The rule-engine verdict that triggered entry. */
   verdict: string;
+  /** Setup type detected by buildTradeLevels (e.g. 'breakout_long'). */
+  setupType?: string;
+  /** What condition would have invalidated this trade before entry. */
+  invalidationRule?: string;
+  /** Quality score 0–100: confidence + R:R + trend alignment. */
+  qualityScore?: number;
 }
 
 export interface ShadowAccountSettings {
