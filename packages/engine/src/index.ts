@@ -255,3 +255,11 @@ export {
   SHADOW_SUPPORTED_SYMBOLS, SESSION_LABELS, VOLATILITY_REGIMES, VWAP_RELATIONS,
   validateStrategyConfig,
 } from './trading/types';
+
+// Strategy Readiness (Phase 5) — pure evaluation, advisory only
+export { evaluateReadiness } from './trading/readiness';
+export type {
+  StrategyReadinessState, ReadinessThresholds,
+  ThresholdCheck, StabilityCheck, StrategyReadinessReport,
+} from './trading/types';
+export { DEFAULT_READINESS_THRESHOLDS, READINESS_STATES } from './trading/types';

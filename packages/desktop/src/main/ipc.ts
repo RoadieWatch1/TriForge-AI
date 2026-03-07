@@ -2821,6 +2821,15 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     return { ok: true, warnings: warnings.length > 0 ? warnings : undefined };
   });
 
+  // ── Strategy Readiness (Phase 5) ──────────────────────────────────────────────
+
+  ipcMain.handle('trading:shadowReadinessReport', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
+    const events = shadowAnalyticsStore.loadAll();
+    const { evaluateReadiness } = await import('@triforge/engine');
+    return { report: evaluateReadiness(events) };
+  });
+
   // Load persisted strategy config on startup
   {
     const savedConfig = store.getShadowStrategyConfig();

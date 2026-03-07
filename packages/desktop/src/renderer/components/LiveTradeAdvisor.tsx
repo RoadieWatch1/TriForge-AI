@@ -177,6 +177,17 @@ interface StrategyRefinementSummary {
   config: Record<string, unknown>;
 }
 
+// ── Phase 5: Readiness type mirrors ──────────────────────────────────────────
+type StrategyReadinessState = 'not_ready' | 'developing' | 'paper_ready' | 'guarded_live_candidate';
+interface ThresholdCheck { key: string; currentValue: number; requiredValue: number; passed: boolean; rationale: string; }
+interface StabilityCheck { category: string; bucket: string; trades: number; metric: number; metricName: string; passed: boolean; rationale: string; }
+interface StrategyReadinessReport {
+  state: StrategyReadinessState; generatedAt: number;
+  performance: ShadowPerformanceSummary;
+  thresholdChecks: ThresholdCheck[]; stabilityChecks: StabilityCheck[];
+  stabilityPassed: boolean; blockers: string[]; advisory: string;
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const SUPPORTED_SYMBOLS = ['NQ', 'MNQ', 'ES', 'MES', 'RTY', 'M2K', 'CL', 'GC'];
@@ -235,6 +246,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
 
   // ── Strategy refinement (Phase 4) ──────────────────────────────────────────
   const [refinementSummary, setRefinementSummary] = useState<StrategyRefinementSummary | null>(null);
+  const [readinessReport, setReadinessReport] = useState<StrategyReadinessReport | null>(null);
 
   // ── Tradovate account + proposed setup ─────────────────────────────────────
   const [accountState, setAccountState]   = useState<TradovateAccountState | null>(null);
@@ -300,15 +312,18 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
     Promise.all([
       (window.triforge.trading as any).shadowAnalyticsSummary(),
       (window.triforge.trading as any).shadowRefinementSummary(),
-    ]).then(([analyticsRes, refinementRes]: any[]) => {
+      (window.triforge.trading as any).shadowReadinessReport(),
+    ]).then(([analyticsRes, refinementRes, readinessRes]: any[]) => {
       if (analyticsRes?.summary) setAnalyticsSummary(analyticsRes.summary as ShadowAnalyticsSummary);
       if (refinementRes?.summary) setRefinementSummary(refinementRes.summary as StrategyRefinementSummary);
+      if (readinessRes?.report) setReadinessReport(readinessRes.report as StrategyReadinessReport);
     }).catch(() => {}).finally(() => setAnalyticsLoading(false));
   }, [showAnalytics, closedCount, shadow?.enabled]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleAnalyticsClear = async () => {
     await (window.triforge.trading as any).shadowAnalyticsClear();
     setAnalyticsSummary(null);
+    setReadinessReport(null);
     setShowAnalytics(false);
   };
 
@@ -819,7 +834,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
               analyticsLoading ? (
                 <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', fontStyle: 'italic' }}>Loading analytics...</div>
               ) : analyticsSummary ? (
-                <ShadowAnalyticsPanel summary={analyticsSummary} refinement={refinementSummary} onClear={handleAnalyticsClear} />
+                <ShadowAnalyticsPanel summary={analyticsSummary} refinement={refinementSummary} readiness={readinessReport} onClear={handleAnalyticsClear} />
               ) : (
                 <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>No analytics data available.</div>
               )
@@ -1035,7 +1050,7 @@ function ShadowStat({ label, value, color }: { label: string; value: string; col
 
 // ── Phase 3: Analytics sub-components ─────────────────────────────────────────
 
-function ShadowAnalyticsPanel({ summary, refinement, onClear }: { summary: ShadowAnalyticsSummary; refinement?: StrategyRefinementSummary | null; onClear: () => void }) {
+function ShadowAnalyticsPanel({ summary, refinement, readiness, onClear }: { summary: ShadowAnalyticsSummary; refinement?: StrategyRefinementSummary | null; readiness?: StrategyReadinessReport | null; onClear: () => void }) {
   const o = summary.overall;
   const c = summary.council;
   const [showRefinement, setShowRefinement] = useState(false);
@@ -1112,6 +1127,9 @@ function ShadowAnalyticsPanel({ summary, refinement, onClear }: { summary: Shado
           )}
         </div>
       )}
+
+      {/* Phase 5: Strategy Readiness */}
+      {readiness && <StrategyReadinessSection report={readiness} />}
 
       {/* By Session */}
       {summary.bySession.length > 0 && <BucketTable title="By Session" rows={summary.bySession} />}
@@ -1215,6 +1233,139 @@ function RefinementInsightsPanel({ refinement }: { refinement: StrategyRefinemen
       {/* Footer */}
       <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.2)', marginTop: 6, fontStyle: 'italic' }}>
         Recommendations are advisory only. They are not auto-applied.
+      </div>
+    </div>
+  );
+}
+
+// ── Phase 5: Strategy Readiness sub-component ────────────────────────────────
+
+const READINESS_STATE_COLORS: Record<StrategyReadinessState, string> = {
+  not_ready: '#6b7280',
+  developing: '#eab308',
+  paper_ready: '#3b82f6',
+  guarded_live_candidate: '#22c55e',
+};
+
+const READINESS_STATE_LABELS: Record<StrategyReadinessState, string> = {
+  not_ready: 'NOT READY',
+  developing: 'DEVELOPING',
+  paper_ready: 'PAPER READY',
+  guarded_live_candidate: 'GUARDED LIVE CANDIDATE',
+};
+
+function formatThresholdValue(key: string, value: number): string {
+  if (key === 'minWinRate' || key === 'minEdgeCaptureRatio') return `${(value * 100).toFixed(1)}%`;
+  if (key === 'minAvgPnlR' || key === 'maxDrawdownR') return `${value.toFixed(2)}R`;
+  if (key === 'minProfitFactor') return value === Infinity ? '\u221e' : value.toFixed(2);
+  return String(value);
+}
+
+function StrategyReadinessSection({ report }: { report: StrategyReadinessReport }) {
+  const [expanded, setExpanded] = useState(false);
+  const stateColor = READINESS_STATE_COLORS[report.state];
+  const stateLabel = READINESS_STATE_LABELS[report.state];
+  const sectionLabel: React.CSSProperties = { fontSize: 10, fontWeight: 700, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 };
+
+  const passedCount = report.thresholdChecks.filter(c => c.passed).length;
+  const totalChecks = report.thresholdChecks.length;
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+        <div style={sectionLabel}>Strategy Readiness</div>
+        <button
+          style={{ ...s.btn, ...s.btnGhost, fontSize: 9, padding: '2px 6px' }}
+          onClick={() => setExpanded(v => !v)}
+        >
+          {expanded ? 'Collapse' : 'Details'}
+        </button>
+      </div>
+
+      {/* State badge + key metrics */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+        <span style={{
+          fontSize: 10, fontWeight: 800, letterSpacing: '0.06em',
+          color: stateColor, background: `${stateColor}18`,
+          border: `1px solid ${stateColor}40`,
+          borderRadius: 4, padding: '3px 8px',
+        }}>
+          {stateLabel}
+        </span>
+        <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>
+          {report.performance.totalTrades} trades | {passedCount}/{totalChecks} checks passed
+          {!report.stabilityPassed && ' | Stability: FAIL'}
+        </span>
+      </div>
+
+      {/* Collapsible detail */}
+      {expanded && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 4 }}>
+          {/* Threshold checks */}
+          {report.thresholdChecks.length > 0 && (
+            <div>
+              <div style={{ fontSize: 9, fontWeight: 700, color: 'rgba(255,255,255,0.2)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>
+                Threshold Checks
+              </div>
+              {report.thresholdChecks.map((tc, i) => (
+                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'rgba(255,255,255,0.5)', padding: '3px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                  <span>{tc.key.replace(/([A-Z])/g, ' $1').replace(/^./, c => c.toUpperCase()).trim()}</span>
+                  <span style={{ display: 'flex', gap: 8 }}>
+                    <span style={{ color: tc.passed ? '#34d399' : '#f87171', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+                      {formatThresholdValue(tc.key, tc.currentValue)}
+                    </span>
+                    <span style={{ color: tc.passed ? '#34d399' : '#f87171', fontSize: 9, fontWeight: 800 }}>
+                      {tc.passed ? 'PASS' : 'FAIL'}
+                    </span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Stability checks */}
+          {report.stabilityChecks.length > 0 && (
+            <div>
+              <div style={{ fontSize: 9, fontWeight: 700, color: 'rgba(255,255,255,0.2)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>
+                Stability Checks{' '}
+                <span style={{ color: report.stabilityPassed ? '#34d399' : '#f87171', marginLeft: 6 }}>
+                  {report.stabilityPassed ? 'PASSED' : 'FAILED'}
+                </span>
+              </div>
+              {report.stabilityChecks.map((sc, i) => (
+                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'rgba(255,255,255,0.5)', padding: '3px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                  <span>{sc.category.replace(/_/g, ' ')}: {sc.bucket}</span>
+                  <span style={{ color: sc.passed ? '#34d399' : '#f87171', fontSize: 9, fontVariantNumeric: 'tabular-nums' }}>
+                    {sc.trades} trades, {sc.metricName === 'winRate' ? `${(sc.metric * 100).toFixed(0)}%` : `${sc.metric.toFixed(2)}R`}
+                    {' '}{sc.passed ? 'PASS' : 'FAIL'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Blockers */}
+          {report.blockers.length > 0 && (
+            <div>
+              <div style={{ fontSize: 9, fontWeight: 700, color: 'rgba(255,255,255,0.2)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>
+                Blockers
+              </div>
+              {report.blockers.map((b, i) => (
+                <div key={i} style={{ fontSize: 10, color: '#f87171', padding: '2px 0' }}>{b}</div>
+              ))}
+            </div>
+          )}
+
+          {/* Advisory */}
+          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)', fontStyle: 'italic', marginTop: 2 }}>
+            {report.advisory}
+          </div>
+        </div>
+      )}
+
+      {/* Footer — always visible */}
+      <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.2)', marginTop: 6, fontStyle: 'italic' }}>
+        This status is advisory. It does not enable live trading.
       </div>
     </div>
   );

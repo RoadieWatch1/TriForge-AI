@@ -504,6 +504,9 @@ const api = {
       ipcRenderer.invoke('trading:shadowStrategyConfig:get') as Promise<{ config?: unknown; error?: string }>,
     shadowStrategyConfigSet: (cfg: unknown) =>
       ipcRenderer.invoke('trading:shadowStrategyConfig:set', cfg) as Promise<{ ok?: boolean; error?: string }>,
+    // Phase 5: Strategy Readiness
+    shadowReadinessReport: () =>
+      ipcRenderer.invoke('trading:shadowReadinessReport') as Promise<{ report?: unknown; error?: string }>,
   },
 
   // Scheduler (recurring + once jobs)

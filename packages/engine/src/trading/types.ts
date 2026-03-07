@@ -340,6 +340,64 @@ export interface ShadowStrategyConfig {
   preferredSymbols?: ShadowSymbol[];
 }
 
+// ── Phase 5: Strategy Readiness ──────────────────────────────────────────────
+
+export type StrategyReadinessState = 'not_ready' | 'developing' | 'paper_ready' | 'guarded_live_candidate';
+export const READINESS_STATES = ['not_ready', 'developing', 'paper_ready', 'guarded_live_candidate'] as const;
+
+export interface ReadinessThresholds {
+  minTrades: number;
+  minWinRate: number;
+  minAvgPnlR?: number;
+  minProfitFactor?: number;
+  maxConsecutiveLosses?: number;
+  minEdgeCaptureRatio?: number;
+  /** Max cumulative drawdown in R-multiples. */
+  maxDrawdownR?: number;
+}
+
+export const DEFAULT_READINESS_THRESHOLDS: Record<
+  Exclude<StrategyReadinessState, 'not_ready'>,
+  ReadinessThresholds
+> = {
+  developing:             { minTrades: 15, minWinRate: 0.35 },
+  paper_ready:            { minTrades: 30, minWinRate: 0.50, minAvgPnlR: 0.10, minProfitFactor: 1.2, maxConsecutiveLosses: 5, maxDrawdownR: 8 },
+  guarded_live_candidate: { minTrades: 75, minWinRate: 0.55, minAvgPnlR: 0.20, minProfitFactor: 1.5, maxConsecutiveLosses: 4, minEdgeCaptureRatio: 0.25, maxDrawdownR: 5 },
+};
+
+export interface ThresholdCheck {
+  key: string;
+  currentValue: number;
+  requiredValue: number;
+  passed: boolean;
+  rationale: string;
+}
+
+export interface StabilityCheck {
+  category: 'session' | 'volatility_regime';
+  bucket: string;
+  trades: number;
+  /** winRate for session, avgPnlR for volatility. */
+  metric: number;
+  metricName: string;
+  passed: boolean;
+  rationale: string;
+}
+
+export interface StrategyReadinessReport {
+  state: StrategyReadinessState;
+  generatedAt: number;
+  performance: ShadowPerformanceSummary;
+  /** Threshold checks for the next state up (or own state if at top). */
+  thresholdChecks: ThresholdCheck[];
+  stabilityChecks: StabilityCheck[];
+  stabilityPassed: boolean;
+  /** Human-readable reasons preventing next state. */
+  blockers: string[];
+  /** One-line summary — always ends with advisory disclaimer. */
+  advisory: string;
+}
+
 // ── Strategy config validation (Phase 4.1) ──────────────────────────────────
 
 export interface StrategyConfigValidation {
