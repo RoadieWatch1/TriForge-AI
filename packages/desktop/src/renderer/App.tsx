@@ -18,11 +18,8 @@ import { InboxMode } from './modes/InboxMode';
 import { AutomationMode } from './modes/AutomationMode';
 import { HustleMode } from './modes/HustleMode';
 import { PhoneLink } from './components/PhoneLink';
-import { CouncilWakeScreen } from './components/CouncilWakeScreen';
 import { TrianglePresence } from './components/TrianglePresence';
 import { voiceService } from './voice/VoiceService';
-import { globalVoiceController } from './voice/GlobalVoiceController';
-import { voiceAuth } from './security/VoiceAuthService';
 
 // ── Error Boundary ───────────────────────────────────────────────────────────
 export class ErrorBoundary extends React.Component<
@@ -87,8 +84,6 @@ export function App() {
     setIsFullscreen(next);
   }, []);
 
-  // Council wake screen state
-  const [wakeActive, setWakeActive] = useState(false);
   const [pendingSessionName, setPendingSessionName] = useState<string | null>(null);
 
   // Session lock state
@@ -181,24 +176,15 @@ export function App() {
     return () => voiceService.stop();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Listen for wake word — show council verification screen immediately
+  // Listen for wake word — jump straight to hands-free chat (no auth screen)
   useEffect(() => {
     const handler = () => {
-      globalVoiceController.transition('wakeDetected');
-      // Stop the wake engine BEFORE auth begins so it does not compete for the mic.
-      // Chat.tsx re-enables it when the voice session ends (handsFreeMode → false).
       voiceService.disable();
-      setWakeActive(true);
+      setScreen('chat');
+      setPendingSessionName('Commander');
     };
     window.addEventListener('triforge:council-wake', handler);
     return () => window.removeEventListener('triforge:council-wake', handler);
-  }, []);
-
-  // Reset state machine on auth denial
-  useEffect(() => {
-    const onDenied = () => globalVoiceController.reset();
-    window.addEventListener('triforge:council-auth-denied', onDenied);
-    return () => window.removeEventListener('triforge:council-auth-denied', onDenied);
   }, []);
 
   const refreshKeys = async () => {
@@ -257,22 +243,7 @@ export function App() {
 
   if (firstRun) return <PermissionWizard permissions={permissions} onComplete={handleWizardDone} />;
 
-  // Wake word takes priority — CouncilWakeScreen has its own identity check
-  if (wakeActive) return (
-    <CouncilWakeScreen
-      onGranted={(name) => {
-        setLocked(false);
-        setWakeActive(false);
-        setScreen('chat');
-        setPendingSessionName(name);
-        // voiceService stays disabled — Chat.tsx re-enables it after the session ends
-      }}
-      onDismiss={() => { voiceService.enable(); setWakeActive(false); }}
-      onOpenSettings={() => { voiceService.enable(); setWakeActive(false); setScreen('settings'); }}
-    />
-  );
-
-  // Show lock screen if PIN is set and app is locked (after wake check above)
+  // Show lock screen if PIN is set and app is locked
   if (locked && hasPin) return <LockScreen username={lockUsername} onUnlock={handleUnlock} />;
 
   return (
@@ -630,16 +601,10 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
           <div style={styles.permDesc}>
             {voiceMode
               ? 'Active — AI responses will be spoken aloud.'
-              : 'Off — AI responses are text only. This is separate from wake word access.'}
+              : 'Off — AI responses are text only.'}
           </div>
         </div>
       </div>
-
-      <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>Wake Word Voice Access</h2>
-      <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
-        Required for saying <strong>"Council"</strong> and unlocking TriForge by voice. After the wake word is detected, speak your passphrase to gain access. This is separate from the Spoken Reply Voice toggle above.
-      </p>
-      <VoiceCredentialsSection />
 
       <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>Updates</h2>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
@@ -764,70 +729,6 @@ function PinSection({ hasPin, lockUsername, onPinChanged }: { hasPin: boolean; l
         </button>
       </div>
       {error && <div style={styles.errorMsg}>{error}</div>}
-      {success && <div style={styles.successMsg}>{success}</div>}
-    </div>
-  );
-}
-
-// ── Voice Credentials Section ────────────────────────────────────────────────
-
-function VoiceCredentialsSection() {
-  const [pass,     setPass]     = useState('');
-  const [removing, setRemoving] = useState(false);
-  const [error,    setError]    = useState<string | null>(null);
-  const [success,  setSuccess]  = useState<string | null>(null);
-  const [configured, setConfigured] = useState(() => voiceAuth.isSetup());
-
-  const save = () => {
-    if (!pass.trim()) { setError('Enter a passphrase.'); return; }
-    setError(null);
-    voiceAuth.setup('', pass.trim());
-    setConfigured(true);
-    setPass('');
-    setSuccess('Passphrase saved. Say "Council" to unlock TriForge by voice.');
-  };
-
-  const clear = () => {
-    setRemoving(true);
-    setError(null);
-    voiceAuth.clearCredentials();
-    setConfigured(false);
-    setSuccess('Voice passphrase removed.');
-    setRemoving(false);
-  };
-
-  if (configured) {
-    return (
-      <div style={styles.pinCard}>
-        <div style={styles.pinActiveRow}>
-          <span style={{ color: '#10a37f', fontWeight: 600, fontSize: 13 }}>Passphrase configured</span>
-        </div>
-        <button style={styles.removeBtn} onClick={clear} disabled={removing}>
-          {removing ? 'Removing…' : 'Remove passphrase'}
-        </button>
-        {success && <div style={styles.successMsg}>{success}</div>}
-      </div>
-    );
-  }
-
-  return (
-    <div style={styles.pinCard}>
-      <div style={styles.pinFields}>
-        <input
-          style={styles.keyField}
-          placeholder="Passphrase (spoken to unlock)"
-          value={pass}
-          onChange={e => { setPass(e.target.value); setError(null); setSuccess(null); }}
-          autoComplete="off"
-        />
-        <button
-          style={styles.saveBtn}
-          onClick={save}
-        >
-          Save passphrase
-        </button>
-      </div>
-      {error   && <div style={styles.errorMsg}>{error}</div>}
       {success && <div style={styles.successMsg}>{success}</div>}
     </div>
   );
