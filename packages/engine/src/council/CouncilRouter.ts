@@ -33,6 +33,7 @@ export type IntentType =
   | 'voice_request'         // "use voice mode", "speak to me"
   | 'phone_request'         // "pair my phone", "phone link"
   | 'task_request'          // "check my tasks", "pending approvals"
+  | 'desktop_control'       // "open desktop", "bring triforge forward"
   | 'default';
 
 // ── Triforge-native keyword banks (exact phrase or substring match) ───────────
@@ -86,6 +87,15 @@ const TASK_REQUEST_KW = [
   'check my tasks', 'what tasks', 'pending tasks', 'pending approvals',
   'task status', 'task queue', 'what\'s pending', 'what is pending',
   'show tasks', 'list tasks', 'my tasks', 'approve', 'approval queue',
+  'create a task', 'add a task', 'make a task', 'schedule a task',
+  'remind me to', 'remind me tomorrow',
+];
+
+const DESKTOP_CONTROL_KW = [
+  'open desktop', 'open up desktop', 'bring triforge', 'show triforge',
+  'focus triforge', 'open triforge', 'bring window', 'show window',
+  'switch to desktop', 'desktop mode', 'open the app', 'bring the app',
+  'triforge forward', 'show the app',
 ];
 
 // ── Generic keyword banks ─────────────────────────────────────────────────────
@@ -143,6 +153,7 @@ export function detectIntentType(message: string): IntentType {
   if (matchesAny(lower, VOICE_REQUEST_KW))         return 'voice_request';
   if (matchesAny(lower, PHONE_REQUEST_KW))         return 'phone_request';
   if (matchesAny(lower, TASK_REQUEST_KW))          return 'task_request';
+  if (matchesAny(lower, DESKTOP_CONTROL_KW))       return 'desktop_control';
 
   // ── Priority 2: Generic reasoning intents ──────────────────────────────────
   const scores: [IntentType, number][] = [
@@ -177,9 +188,10 @@ export function selectCouncil(intent: IntentType): ProviderName[] {
     // Mission / tasks: Claude leads (best at structured planning)
     case 'mission_request':
     case 'task_request':         return ['claude', 'openai', 'grok'];
-    // Voice / phone: balanced — these are mostly navigation responses
+    // Voice / phone / desktop: balanced — navigation/system responses
     case 'voice_request':
-    case 'phone_request':        return ['claude', 'openai', 'grok'];
+    case 'phone_request':
+    case 'desktop_control':      return ['claude', 'openai', 'grok'];
     // Generic reasoning intents
     case 'coding':               return ['openai', 'claude', 'grok'];
     case 'strategy':             return ['claude', 'grok', 'openai'];

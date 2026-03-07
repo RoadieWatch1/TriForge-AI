@@ -20,6 +20,7 @@ import { listPrinters, printFile, printText } from './printer';
 import { CredentialManager } from './credentials';
 import { createNotifyAdapter } from './notifications';
 import { createMailAdapter } from './mailService';
+import { NativeIntentRouter } from './nativeIntentRouter';
 import { SensorManager } from './sensors/index';
 import { navigate as browserNavigate, screenshot as browserScreenshot, fillForm as browserFillForm, scrape as browserScrape, closeBrowser } from './browser/index';
 import { SocialPoster } from './social/index';
@@ -74,7 +75,6 @@ import {
   buildTaskContextAddendum,
   getTaskContext,
   routeCouncil,
-  detectIntentType,
   MissionContextManager,
   CouncilMemoryGraph,
   CouncilRuntime,
@@ -427,6 +427,13 @@ export function setupIpc(store: Store): void {
   systemStateService.registerTwitterGetter(() => _cachedTwitterConfigured);
   systemStateService.registerVoiceAuthGetter(() => false); // voice passphrase auth removed
 
+  // ── Native Intent Router — shared across all three chat handlers ──────────
+  const nativeRouter = new NativeIntentRouter({
+    getImageService: () => _getImageService(store),
+    getTaskStore:    () => _getTaskStore(),
+    getPhoneLinkRef: () => _phoneLinkRef,
+  });
+
   // ── Persistent event forwarder — set once, forwards to all open windows ────
   eventBus.onAny((ev) => {
     for (const win of BrowserWindow.getAllWindows()) {
@@ -603,24 +610,19 @@ export function setupIpc(store: Store): void {
     // Track task context from this message
     updateTaskContext(message);
 
-    // Auto-route image requests directly to the image generator
-    if (detectIntentType(message) === 'image_request') {
-      try {
-        const imgSvc = await _getImageService(store);
-        if (!imgSvc.canGenerate()) {
-          return { text: 'Image generation requires an OpenAI or Grok API key. Add one in Settings → API Keys.', provider: 'system' };
-        }
-        const result = await imgSvc.generate({ userPrompt: message, enableRefine: true });
+    // Native intent routing — image, mission, task, phone, desktop before LLM
+    const snapshot = await systemStateService.snapshot();
+    const nativeResult = await nativeRouter.route(message, snapshot);
+    if (nativeResult) {
+      if (nativeResult.ok || nativeResult.status === 'requires_approval' || nativeResult.status === 'already_active') {
         store.incrementMessageCount();
-        return { text: `Here's your generated image.\n\nPrompt used: ${result.refinedPrompt}`, imageResult: result, provider: result.generator };
-      } catch (err: unknown) {
-        return { text: `Image generation failed: ${err instanceof Error ? err.message : String(err)}. Try the Image Generator in the sidebar.`, provider: 'system' };
       }
+      return { text: nativeResult.message, provider: nativeResult.type, nativeResult };
     }
 
     // Build system prompt with user identity, memories, tier capabilities, and live awareness
     const basePrompt = await buildSystemPrompt(store, _professionEngine?.getSystemPromptAdditions());
-    const awarenessAddendum = buildCouncilAwarenessAddendum(await systemStateService.snapshot());
+    const awarenessAddendum = buildCouncilAwarenessAddendum(snapshot);
     const systemPrompt = basePrompt + '\n\n' + awarenessAddendum;
 
     try {
@@ -729,19 +731,14 @@ export function setupIpc(store: Store): void {
       return { error: 'MESSAGE_LIMIT_REACHED', tier: tierVal };
     }
 
-    // Auto-route image requests directly to the image generator
-    if (detectIntentType(message) === 'image_request') {
-      try {
-        const imgSvc = await _getImageService(store);
-        if (!imgSvc.canGenerate()) {
-          return { error: 'Image generation requires an OpenAI or Grok API key. Add one in Settings → API Keys.' };
-        }
-        const result = await imgSvc.generate({ userPrompt: message, enableRefine: true });
+    // Native intent routing — image, mission, task, phone, desktop before LLM
+    const snapshotC = await systemStateService.snapshot();
+    const nativeResultC = await nativeRouter.route(message, snapshotC);
+    if (nativeResultC) {
+      if (nativeResultC.ok || nativeResultC.status === 'requires_approval' || nativeResultC.status === 'already_active') {
         store.incrementMessageCount();
-        return { synthesis: `Here's your generated image.\n\nPrompt used: ${result.refinedPrompt}`, imageResult: result, responses: [] };
-      } catch (err: unknown) {
-        return { error: `Image generation failed: ${err instanceof Error ? err.message : String(err)}` };
       }
+      return { synthesis: nativeResultC.message, responses: [], nativeResult: nativeResultC };
     }
 
     // Validate + normalise intensity
@@ -754,7 +751,7 @@ export function setupIpc(store: Store): void {
 
     const baseSystemPrompt = await buildSystemPrompt(store, _professionEngine?.getSystemPromptAdditions());
     // Inject live Council Awareness addendum + active task context
-    const awarenessAddendum = buildCouncilAwarenessAddendum(await systemStateService.snapshot());
+    const awarenessAddendum = buildCouncilAwarenessAddendum(snapshotC);
     const systemPrompt = baseSystemPrompt + '\n\n' + awarenessAddendum + (activeTaskContext
       ? `\n\n--- ACTIVE TASK CONTEXT ---\nThe user is currently working on: "${activeTaskContext}"\nAll responses should help advance this task.`
       : '');
@@ -1092,25 +1089,20 @@ VERIFY: [1-3 specific things the user should double-check]
     const used = store.getMonthlyMessageCount();
     if (isAtMessageLimit(used, tier)) return { error: 'MESSAGE_LIMIT_REACHED', tier };
 
-    // Auto-route image requests directly to the image generator
-    if (detectIntentType(message) === 'image_request') {
-      try {
-        const imgSvc = await _getImageService(store);
-        if (!imgSvc.canGenerate()) {
-          return { synthesis: 'Image generation requires an OpenAI or Grok API key. Add one in Settings → API Keys.', responses: [] };
-        }
-        const result = await imgSvc.generate({ userPrompt: message, enableRefine: true });
+    // Native intent routing — image, mission, task, phone, desktop before LLM
+    const snapshotV = await systemStateService.snapshot();
+    const nativeResultV = await nativeRouter.route(message, snapshotV);
+    if (nativeResultV) {
+      if (nativeResultV.ok || nativeResultV.status === 'requires_approval' || nativeResultV.status === 'already_active') {
         store.incrementMessageCount();
-        return { synthesis: `Here's your generated image.\n\nPrompt used: ${result.refinedPrompt}`, imageResult: result, responses: [] };
-      } catch (err: unknown) {
-        return { error: `Image generation failed: ${err instanceof Error ? err.message : String(err)}` };
       }
+      return { synthesis: nativeResultV.message, responses: [], nativeResult: nativeResultV };
     }
 
     updateTaskContext(message);
     routeCouncil(message, pm);  // intent-based provider order (CouncilRouter)
     const basePrompt = await buildSystemPrompt(store, _professionEngine?.getSystemPromptAdditions());
-    const awarenessAddendum = buildCouncilAwarenessAddendum(await systemStateService.snapshot());
+    const awarenessAddendum = buildCouncilAwarenessAddendum(snapshotV);
     const systemPrompt = basePrompt
       + '\n\n' + awarenessAddendum
       + buildTaskContextAddendum()
