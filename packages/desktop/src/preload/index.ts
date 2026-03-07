@@ -486,6 +486,17 @@ const api = {
       ipcRenderer.invoke('trading:shadowFlatten') as Promise<{ ok?: boolean }>,
     shadowUpdateSettings: (settings: unknown) =>
       ipcRenderer.invoke('trading:shadowUpdateSettings', settings) as Promise<{ ok?: boolean }>,
+    // Phase 3: Shadow Analytics
+    shadowAnalyticsSummary: () =>
+      ipcRenderer.invoke('trading:shadowAnalyticsSummary') as Promise<{ summary?: unknown; error?: string }>,
+    shadowAnalyticsEvents: (opts?: { stage?: string; symbol?: string; limit?: number; since?: number }) =>
+      ipcRenderer.invoke('trading:shadowAnalyticsEvents', opts) as Promise<{ events?: unknown[]; error?: string }>,
+    shadowAnalyticsFunnel: (hoursBack?: number) =>
+      ipcRenderer.invoke('trading:shadowAnalyticsFunnel', hoursBack) as Promise<{ funnel?: unknown; error?: string }>,
+    shadowAnalyticsCouncil: () =>
+      ipcRenderer.invoke('trading:shadowAnalyticsCouncil') as Promise<{ council?: unknown; error?: string }>,
+    shadowAnalyticsClear: () =>
+      ipcRenderer.invoke('trading:shadowAnalyticsClear') as Promise<{ ok?: boolean; error?: string }>,
   },
 
   // Scheduler (recurring + once jobs)

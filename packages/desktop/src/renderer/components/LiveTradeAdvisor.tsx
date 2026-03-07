@@ -127,6 +127,41 @@ interface ShadowAccountState {
   blockedReason?: string;
 }
 
+// ── Phase 3: Analytics type mirrors ──────────────────────────────────────────
+
+interface ShadowPerformanceSummary {
+  totalTrades: number; wins: number; losses: number; winRate: number;
+  avgPnlR: number; avgWinR: number; avgLossR: number;
+  profitFactor: number; expectancyR: number; totalPnlDollars: number;
+  maxConsecutiveWins: number; maxConsecutiveLosses: number;
+  avgTimeInTradeMs: number; avgMfeR: number; avgMaeR: number;
+  edgeCaptureRatio: number;
+}
+
+interface BucketPerformanceSummary {
+  bucket: string; trades: number; winRate: number; avgPnlR: number; totalPnlDollars: number;
+}
+
+interface CouncilEffectivenessSummary {
+  totalReviews: number; approvals: number; rejections: number;
+  approvalRate: number; approvedWinRate: number;
+  avgConfidenceWins: number; avgConfidenceLosses: number;
+  providerAccuracy: Record<string, { votes: number; correctCalls: number; accuracy: number }>;
+}
+
+interface ShadowAnalyticsSummary {
+  overall: ShadowPerformanceSummary;
+  bySession: BucketPerformanceSummary[];
+  bySetupType: BucketPerformanceSummary[];
+  bySymbol: BucketPerformanceSummary[];
+  council: CouncilEffectivenessSummary;
+  decisionFunnel: Record<string, number>;
+  topBlockReasons: Array<{ reason: string; count: number; pct: number }>;
+  eventCount: number;
+  oldestEventTs: number;
+  newestEventTs: number;
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const SUPPORTED_SYMBOLS = ['NQ', 'MNQ', 'ES', 'MES', 'RTY', 'M2K', 'CL', 'GC'];
@@ -177,6 +212,11 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
   const [shadowToggling, setShadowToggling] = useState(false);
   const [shadowResetConfirm, setShadowResetConfirm] = useState(false);
   const [showHistory, setShowHistory]     = useState(false);
+
+  // ── Shadow analytics (Phase 3) ────────────────────────────────────────────
+  const [showAnalytics, setShowAnalytics] = useState(false);
+  const [analyticsSummary, setAnalyticsSummary] = useState<ShadowAnalyticsSummary | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
 
   // ── Tradovate account + proposed setup ─────────────────────────────────────
   const [accountState, setAccountState]   = useState<TradovateAccountState | null>(null);
@@ -232,6 +272,22 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
     setAdvice(null);
     setCouncilReview(null);
     if (isConnected) startPolling(sym);
+  };
+
+  // ── Shadow analytics fetch (Phase 3) ─────────────────────────────────────────
+  const closedCount = shadow?.closedTrades.length ?? 0;
+  useEffect(() => {
+    if (!showAnalytics || !shadow?.enabled) return;
+    setAnalyticsLoading(true);
+    (window.triforge.trading as any).shadowAnalyticsSummary().then((res: any) => {
+      if (res?.summary) setAnalyticsSummary(res.summary as ShadowAnalyticsSummary);
+    }).catch(() => {}).finally(() => setAnalyticsLoading(false));
+  }, [showAnalytics, closedCount, shadow?.enabled]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleAnalyticsClear = async () => {
+    await (window.triforge.trading as any).shadowAnalyticsClear();
+    setAnalyticsSummary(null);
+    setShowAnalytics(false);
   };
 
   // ── Connection ───────────────────────────────────────────────────────────────
@@ -724,6 +780,30 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
             )}
           </div>
         )}
+
+        {/* ── Shadow Analytics (Phase 3) ── */}
+        {shadow?.enabled && shadow.closedTrades.length >= 3 && (
+          <div style={s.card}>
+            <div style={{ ...s.cardTitle, justifyContent: 'space-between' }}>
+              <span>Shadow Analytics <span style={s.simBadge}>SIM</span></span>
+              <button
+                style={{ ...s.btn, ...s.btnGhost, fontSize: 10, padding: '3px 8px' }}
+                onClick={() => setShowAnalytics(v => !v)}
+              >
+                {showAnalytics ? 'Collapse' : 'View Analytics'}
+              </button>
+            </div>
+            {showAnalytics && (
+              analyticsLoading ? (
+                <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', fontStyle: 'italic' }}>Loading analytics...</div>
+              ) : analyticsSummary ? (
+                <ShadowAnalyticsPanel summary={analyticsSummary} onClear={handleAnalyticsClear} />
+              ) : (
+                <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>No analytics data available.</div>
+              )
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -927,6 +1007,101 @@ function ShadowStat({ label, value, color }: { label: string; value: string; col
     <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
       <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</span>
       <span style={{ fontSize: 15, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: color ?? 'rgba(255,255,255,0.8)' }}>{value}</span>
+    </div>
+  );
+}
+
+// ── Phase 3: Analytics sub-components ─────────────────────────────────────────
+
+function ShadowAnalyticsPanel({ summary, onClear }: { summary: ShadowAnalyticsSummary; onClear: () => void }) {
+  const o = summary.overall;
+  const c = summary.council;
+  const sectionLabel: React.CSSProperties = { fontSize: 10, fontWeight: 700, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {/* Core stats */}
+      <div style={s.shadowStats}>
+        <ShadowStat label="Trades" value={String(o.totalTrades)} />
+        <ShadowStat label="Win Rate" value={`${(o.winRate * 100).toFixed(0)}%`} color={o.winRate >= 0.5 ? '#34d399' : '#f87171'} />
+        <ShadowStat label="Expectancy" value={`${o.expectancyR >= 0 ? '+' : ''}${o.expectancyR.toFixed(2)}R`} color={o.expectancyR > 0 ? '#34d399' : '#f87171'} />
+        <ShadowStat label="Profit Factor" value={o.profitFactor === Infinity ? '\u221e' : o.profitFactor.toFixed(2)} color={o.profitFactor > 1 ? '#34d399' : '#f87171'} />
+        <ShadowStat label="Net P/L" value={`${o.totalPnlDollars >= 0 ? '+' : ''}$${o.totalPnlDollars.toFixed(0)}`} color={o.totalPnlDollars >= 0 ? '#34d399' : '#f87171'} />
+      </div>
+
+      {/* Excursion stats */}
+      <div style={s.shadowStats}>
+        <ShadowStat label="Avg MFE" value={`${o.avgMfeR.toFixed(2)}R`} />
+        <ShadowStat label="Avg MAE" value={`${o.avgMaeR.toFixed(2)}R`} />
+        <ShadowStat label="Edge Capture" value={`${(o.edgeCaptureRatio * 100).toFixed(0)}%`} />
+        <ShadowStat label="Max Win Streak" value={String(o.maxConsecutiveWins)} />
+        <ShadowStat label="Max Loss Streak" value={String(o.maxConsecutiveLosses)} color={o.maxConsecutiveLosses >= 3 ? '#f87171' : undefined} />
+      </div>
+
+      {/* Top block reasons */}
+      {summary.topBlockReasons.length > 0 && (
+        <div>
+          <div style={sectionLabel}>Top Block Reasons</div>
+          {summary.topBlockReasons.slice(0, 3).map((r, i) => (
+            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'rgba(255,255,255,0.5)', padding: '3px 0' }}>
+              <span>{r.reason.replace(/_/g, ' ')}</span>
+              <span style={{ color: 'rgba(255,255,255,0.35)' }}>{r.count} ({r.pct.toFixed(0)}%)</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Council effectiveness */}
+      {c.totalReviews > 0 && (
+        <div>
+          <div style={sectionLabel}>Council Effectiveness</div>
+          <div style={s.shadowStats}>
+            <ShadowStat label="Reviews" value={String(c.totalReviews)} />
+            <ShadowStat label="Approval Rate" value={`${(c.approvalRate * 100).toFixed(0)}%`} />
+            <ShadowStat label="Approved Win%" value={`${(c.approvedWinRate * 100).toFixed(0)}%`} color={c.approvedWinRate >= 0.5 ? '#34d399' : '#f87171'} />
+          </div>
+          {Object.keys(c.providerAccuracy).length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              {Object.entries(c.providerAccuracy).map(([name, pa]) => (
+                <div key={name} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'rgba(255,255,255,0.5)', padding: '3px 0' }}>
+                  <span>{name}</span>
+                  <span style={{ color: pa.accuracy >= 0.5 ? '#34d399' : '#f87171' }}>{(pa.accuracy * 100).toFixed(0)}% agreement ({pa.votes} votes)</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* By Session */}
+      {summary.bySession.length > 0 && <BucketTable title="By Session" rows={summary.bySession} />}
+
+      {/* By Setup Type */}
+      {summary.bySetupType.length > 0 && <BucketTable title="By Setup Type" rows={summary.bySetupType} />}
+
+      {/* Clear button */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        <button style={{ ...s.btn, ...s.btnGhost, fontSize: 10, padding: '3px 8px' }} onClick={onClear}>Clear Analytics Data</button>
+      </div>
+    </div>
+  );
+}
+
+function BucketTable({ title, rows }: { title: string; rows: BucketPerformanceSummary[] }) {
+  const headerStyle: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 50px 55px 55px 60px', gap: 6, fontSize: 9, fontWeight: 700, color: 'rgba(255,255,255,0.25)', textTransform: 'uppercase', letterSpacing: '0.05em', paddingBottom: 4, borderBottom: '1px solid rgba(255,255,255,0.06)' };
+  const rowStyle: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 50px 55px 55px 60px', gap: 6, fontSize: 11, color: 'rgba(255,255,255,0.6)', padding: '4px 0', borderBottom: '1px solid rgba(255,255,255,0.04)', fontVariantNumeric: 'tabular-nums' };
+  return (
+    <div>
+      <div style={{ fontSize: 10, fontWeight: 700, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>{title}</div>
+      <div style={headerStyle}><span>Bucket</span><span>Trades</span><span>Win%</span><span>Avg R</span><span>P/L</span></div>
+      {rows.map((r, i) => (
+        <div key={i} style={rowStyle}>
+          <span>{r.bucket?.replace(/_/g, ' ') ?? 'unknown'}</span>
+          <span>{r.trades}</span>
+          <span style={{ color: r.winRate >= 0.5 ? '#34d399' : '#f87171' }}>{(r.winRate * 100).toFixed(0)}%</span>
+          <span style={{ color: r.avgPnlR >= 0 ? '#34d399' : '#f87171' }}>{r.avgPnlR >= 0 ? '+' : ''}{r.avgPnlR.toFixed(2)}</span>
+          <span style={{ color: r.totalPnlDollars >= 0 ? '#34d399' : '#f87171' }}>{r.totalPnlDollars >= 0 ? '+' : ''}${r.totalPnlDollars.toFixed(0)}</span>
+        </div>
+      ))}
     </div>
   );
 }

@@ -216,6 +216,9 @@ export type { FolderAuditResult, AuditFinding } from './execution/buildFolderAud
 export type {
   LiveTradeSnapshot, ShadowTrade, ShadowAccountState, ShadowAccountSettings, CouncilVote,
   VwapRelation, BarTrend, SessionLabel, VolatilityRegime, IndicatorState,
+  ShadowDecisionStage, ShadowBlockReason, ShadowDecisionEvent,
+  ShadowPerformanceSummary, BucketPerformanceSummary,
+  CouncilEffectivenessSummary, ShadowAnalyticsSummary,
 } from './trading/types';
 
 // Live Trade Advisor
@@ -228,3 +231,12 @@ export type {
 // Trade level proposals
 export { buildTradeLevels } from './trading/buildTradeLevels';
 export type { ProposedTradeSetup, SetupType } from './trading/buildTradeLevels';
+
+// Shadow Trading Analytics (Phase 3) — pure computation
+export {
+  computePerformanceSummary, computeBucketSummary, computeCouncilEffectiveness,
+  computeDecisionFunnel, computeTopBlockReasons, computeFullSummary,
+} from './trading/analytics';
+
+// Trade scoring helpers (Phase 3)
+export { updateExcursions, computeExcursionR } from './trading/tradeScoring';

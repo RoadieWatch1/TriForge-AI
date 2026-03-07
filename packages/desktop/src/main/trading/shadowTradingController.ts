@@ -22,9 +22,16 @@
 
 import crypto from 'crypto';
 import { tradovateService } from './tradovateService';
-import { buildLiveTradeAdvice, buildTradeLevels, INSTRUMENT_META } from '@triforge/engine';
+import { shadowAnalyticsStore } from './shadowAnalyticsStore';
+import {
+  buildLiveTradeAdvice, buildTradeLevels, INSTRUMENT_META,
+  updateExcursions, computeExcursionR,
+} from '@triforge/engine';
 import type { LiveTradeSnapshot, ProposedTradeSetup } from '@triforge/engine';
-import type { ShadowTrade, ShadowAccountState, ShadowAccountSettings, CouncilVote } from '@triforge/engine';
+import type {
+  ShadowTrade, ShadowAccountState, ShadowAccountSettings, CouncilVote,
+  ShadowDecisionEvent, ShadowBlockReason, ShadowDecisionStage,
+} from '@triforge/engine';
 
 // ── Council review callback type ──────────────────────────────────────────────
 // Injected from ipc.ts after engine init. Runs the 3-AI vote in the main process.
@@ -53,6 +60,7 @@ export type CouncilReviewFn = (
 const EVAL_INTERVAL_MS = 15_000;          // re-evaluate every 15s
 const TRADE_COOLDOWN_MS = 3 * 60_000;    // wait 3 min before new entry after a trade
 const MAX_CLOSED_HISTORY = 50;
+const BLOCK_THROTTLE_MS = 60_000;         // suppress duplicate block events for 60s
 
 /** Default stop-loss distance in points per instrument. */
 const DEFAULT_STOP_POINTS: Record<string, number> = {
@@ -83,6 +91,8 @@ class ShadowTradingControllerClass {
   private _lastTradeOpenedAt = 0;
   private _todayKey = '';   // YYYY-MM-DD, resets on new day
   private _councilFn: CouncilReviewFn | null = null;
+  private _lastLimitBlockReason: ShadowBlockReason | undefined;
+  private _lastEmittedBlock = new Map<string, number>();
 
   // ── Public API ──────────────────────────────────────────────────────────────
 
@@ -124,6 +134,7 @@ class ShadowTradingControllerClass {
     this._state.settings        = { ...DEFAULT_SETTINGS, startingBalance: bal };
     this._todayKey = '';
     this._lastTradeOpenedAt = 0;
+    // NOTE: analytics NOT cleared here — use explicit shadowAnalyticsStore.clear()
   }
 
   updateSettings(partial: Partial<ShadowAccountSettings>): void {
@@ -173,39 +184,59 @@ class ShadowTradingControllerClass {
   // ── Entry evaluation ─────────────────────────────────────────────────────────
 
   private async _evaluateEntry(): Promise<void> {
-    if (!this._state.enabled || this._state.paused) return;
-    if (!this._canOpenTrade()) return;
-
     const snap = tradovateService.getLastSnapshot();
+
+    // ── limits_check ──────────────────────────────────────────────────────────
+    if (!this._state.enabled) {
+      this._emitBlock('limits_check', 'disabled', 'Shadow trading disabled.', snap);
+      return;
+    }
+    if (this._state.paused) {
+      this._emitBlock('limits_check', 'paused', 'Shadow trading paused.', snap);
+      return;
+    }
+    if (!this._canOpenTrade()) {
+      this._emitBlock('limits_check', this._lastLimitBlockReason!, this._state.blockedReason ?? '', snap);
+      return;
+    }
+
+    // ── feed_check ────────────────────────────────────────────────────────────
     if (!snap || !snap.connected || !snap.lastPrice) {
+      const reason: ShadowBlockReason = !snap ? 'no_snapshot' : !snap.connected ? 'not_connected' : 'no_price';
       this._state.blockedReason = 'Waiting for live price data.';
+      this._emitBlock('feed_check', reason, this._state.blockedReason, snap);
       return;
     }
     if (snap.feedFreshnessMs !== undefined && snap.feedFreshnessMs > 8_000) {
       this._state.blockedReason = 'Feed stale — skipping evaluation.';
+      this._emitBlock('feed_check', 'feed_stale', this._state.blockedReason, snap);
       return;
     }
 
     // Phase 2: require indicators to be ready before opening shadow trades
     if (snap.indicatorState !== 'ready') {
       this._state.blockedReason = `Indicators ${snap.indicatorState ?? 'unavailable'} — waiting for market data to warm up.`;
+      this._emitBlock('feed_check', 'indicators_not_ready', this._state.blockedReason, snap);
       return;
     }
 
     const symbol = snap.symbol.toUpperCase();
     if (!this._state.settings.allowedSymbols.includes(symbol)) {
       this._state.blockedReason = `${symbol} not in allowed symbols.`;
+      this._emitBlock('feed_check', 'symbol_not_allowed', this._state.blockedReason, snap);
       return;
     }
 
-    // Build autonomous setup from live snapshot using buildTradeLevels
-    const setup = this._buildSetup(snap, symbol);
+    // ── setup_detection (unthrottled from here on) ────────────────────────────
+    const candidateId = crypto.randomUUID();
+    const { setup, blockReason: setupBlockReason } = this._buildSetup(snap, symbol);
     if (!setup) {
       this._state.blockedReason = `No valid setup on ${symbol} (trend: ${snap.trend ?? 'unknown'}, position in range unclear).`;
+      this._emitEvent(this._buildBlockEvent('setup_detection', setupBlockReason ?? 'no_setup', this._state.blockedReason, snap, { candidateId }));
       return;
     }
 
-    // Validate with rule engine
+    // ── rule_engine ───────────────────────────────────────────────────────────
     const advice = buildLiveTradeAdvice({
       snapshot:    snap,
       balance:     this._state.currentBalance,
@@ -218,56 +249,89 @@ class ShadowTradingControllerClass {
       thesis:      setup.thesis,
     });
 
-    if (advice.verdict !== 'buy' || advice.confidence === 'low') {
+    const ruleCtx: Partial<ShadowDecisionEvent> = {
+      candidateId,
+      setupType:      setup.setupType,
+      side:           setup.side as 'long' | 'short',
+      entryPrice:     setup.entry,
+      stopPrice:      setup.stop,
+      targetPrice:    setup.target,
+      ruleVerdict:    advice.verdict,
+      ruleConfidence: advice.confidence,
+      rr:             advice.rr,
+      suggestedSize:  advice.suggestedSize,
+      strengthCount:  advice.strengths?.length ?? 0,
+      warningCount:   advice.warnings?.length ?? 0,
+      violationCount: 0,
+    };
+
+    if (advice.verdict !== 'buy') {
       this._state.blockedReason = `Rule engine: ${advice.verdict} (${advice.confidence}). ${advice.summary}`;
+      this._emitEvent(this._buildBlockEvent('rule_engine', 'verdict_not_buy', this._state.blockedReason, snap, ruleCtx));
       return;
     }
-
+    if (advice.confidence === 'low') {
+      this._state.blockedReason = `Rule engine: ${advice.verdict} (${advice.confidence}). ${advice.summary}`;
+      this._emitEvent(this._buildBlockEvent('rule_engine', 'low_confidence', this._state.blockedReason, snap, ruleCtx));
+      return;
+    }
     if (!advice.suggestedSize || advice.suggestedSize < 1) {
       this._state.blockedReason = 'Shadow balance too small for 1 contract at this stop.';
+      this._emitEvent(this._buildBlockEvent('rule_engine', 'size_too_small', this._state.blockedReason, snap, ruleCtx));
       return;
     }
 
-    // ── Council gate — required before any shadow trade opens ─────────────────
-    // Tiered approval: 3-seat, 2-seat+Grok, or 2-seat-no-Grok. See ipc.ts.
+    // ── council_review ────────────────────────────────────────────────────────
     if (!this._councilFn) {
       this._state.blockedReason = 'Council review not initialized — cannot open trade.';
+      this._emitEvent(this._buildCouncilEvent(
+        'council_not_initialized', this._state.blockedReason, snap, setup, advice, candidateId,
+      ));
       return;
     }
 
-    this._state.blockedReason = 'Council reviewing setup…';
+    this._state.blockedReason = 'Council reviewing setup\u2026';
     let review: CouncilReviewResult;
     try {
       review = await this._councilFn(setup, snap, symbol);
     } catch (err) {
       this._state.blockedReason = `Council review error: ${err instanceof Error ? err.message : String(err)}`;
+      this._emitEvent(this._buildCouncilEvent(
+        'council_error', this._state.blockedReason, snap, setup, advice, candidateId,
+      ));
       return;
     }
 
     if (!review.approved) {
       this._state.blockedReason = review.blockedReason ?? 'Council did not approve this setup.';
       this._state.councilBlockedReason = review.blockedReason;
+      const code = (review.blockedCode as ShadowBlockReason) ?? 'council_rejected';
+      this._emitEvent(this._buildCouncilEvent(
+        code, this._state.blockedReason, snap, setup, advice, candidateId, review.votes, false,
+      ));
       return;
     }
 
     this._state.councilBlockedReason = undefined;
 
-    // Open the shadow trade — council approved
-    this._openTrade(symbol, setup, advice, snap, review.votes);
+    // ── trade_opened ──────────────────────────────────────────────────────────
+    this._openTrade(symbol, setup, advice, snap, review.votes, candidateId);
   }
 
   // ── Setup builder (autonomous) ───────────────────────────────────────────────
 
-  private _buildSetup(snap: LiveTradeSnapshot, symbol: string): ProposedTradeSetup | null {
+  private _buildSetup(
+    snap: LiveTradeSnapshot, symbol: string,
+  ): { setup: ProposedTradeSetup | null; blockReason?: ShadowBlockReason } {
     const setup = buildTradeLevels(snap, symbol);
     if (setup.setupType === 'none' || !setup.side || !setup.entry || !setup.stop || !setup.target) {
-      return null;
+      return { setup: null, blockReason: 'no_setup' };
     }
     // Phase 2: shadow trading only takes pullback continuations
     if (setup.setupType !== 'pullback_long' && setup.setupType !== 'pullback_short') {
-      return null;
+      return { setup: null, blockReason: 'non_pullback' };
     }
-    return setup;
+    return { setup };
   }
 
   // ── Trade open ───────────────────────────────────────────────────────────────
@@ -277,10 +341,11 @@ class ShadowTradingControllerClass {
     setup: ProposedTradeSetup,
     advice: ReturnType<typeof buildLiveTradeAdvice>,
     snap: LiveTradeSnapshot,
-    councilVotes?: CouncilVote[],
+    councilVotes: CouncilVote[] | undefined,
+    candidateId: string,
   ): void {
     // Quality score: base 50, +20 for high confidence, +10 for medium,
-    //   +20 if R:R ≥ 2.5, +10 if R:R ≥ 1.5, +10 if strengths ≥ 3, -10 per warning
+    //   +20 if R:R >= 2.5, +10 if R:R >= 1.5, +10 if strengths >= 3, -10 per warning
     const rr = advice.rr ?? 0;
     const confidenceBonus = setup.confidence === 'high' ? 20 : setup.confidence === 'medium' ? 10 : 0;
     const rrBonus         = rr >= 2.5 ? 20 : rr >= 1.5 ? 10 : 0;
@@ -290,8 +355,8 @@ class ShadowTradingControllerClass {
 
     // Invalidation rule: what price level would negate the setup
     const invalidationRule = setup.side === 'long'
-      ? `Below stop at ${setup.stop} — setup fails if price violates this level before entry.`
-      : `Above stop at ${setup.stop} — setup fails if price violates this level before entry.`;
+      ? `Below stop at ${setup.stop} \u2014 setup fails if price violates this level before entry.`
+      : `Above stop at ${setup.stop} \u2014 setup fails if price violates this level before entry.`;
 
     const trade: ShadowTrade = {
       id:               crypto.randomUUID(),
@@ -318,12 +383,18 @@ class ShadowTradingControllerClass {
       trend15m:         snap.trend15m,
       sessionLabel:     snap.sessionLabel,
       volatilityRegime: snap.volatilityRegime,
+      // Phase 3: MFE/MAE init at entry price
+      mfPrice:          setup.entry!,
+      maPrice:          setup.entry!,
     };
     this._state.openTrades.push(trade);
     this._state.tradesToday++;
     this._lastTradeOpenedAt = Date.now();
     this._state.lastEvalAt  = Date.now();
     this._state.blockedReason = undefined;
+
+    // Phase 3: Emit trade_opened event
+    this._emitEvent(this._buildOpenEvent(snap, trade, advice, candidateId, councilVotes));
   }
 
   // ── Price-based exit check ───────────────────────────────────────────────────
@@ -331,6 +402,14 @@ class ShadowTradingControllerClass {
   private _checkExitsOnSnapshot(snap: LiveTradeSnapshot): void {
     const price = snap.lastPrice!;
     for (const trade of [...this._state.openTrades]) {
+      // Phase 3: Update MFE/MAE tracking on every tick
+      const excursions = updateExcursions(
+        trade.side, trade.entryPrice,
+        trade.mfPrice, trade.maPrice, price,
+      );
+      trade.mfPrice = excursions.mfPrice;
+      trade.maPrice = excursions.maPrice;
+
       if (trade.side === 'long') {
         if (price <= trade.stopPrice)  { this._closeTrade(trade, trade.stopPrice,  'stop');   continue; }
         if (price >= trade.targetPrice){ this._closeTrade(trade, trade.targetPrice, 'target'); continue; }
@@ -357,18 +436,30 @@ class ShadowTradingControllerClass {
       : trade.entryPrice - exitPrice;
     const pnlR        = riskPoints > 0 ? pnlPoints / riskPoints : 0;
 
+    // Phase 3: Compute excursion-R at close
+    const excR = computeExcursionR(
+      trade.side, trade.entryPrice, trade.stopPrice,
+      trade.mfPrice ?? trade.entryPrice,
+      trade.maPrice ?? trade.entryPrice,
+    );
+
     trade.status     = 'closed';
     trade.closedAt   = Date.now();
     trade.exitPrice  = exitPrice;
     trade.exitReason = reason;
     trade.pnl        = pnl;
     trade.pnlR       = pnlR;
+    trade.mfeR       = excR.mfeR;
+    trade.maeR       = excR.maeR;
     delete trade.unrealizedPnl;
 
     this._state.openTrades   = this._state.openTrades.filter(t => t.id !== trade.id);
     this._state.closedTrades = [trade, ...this._state.closedTrades].slice(0, MAX_CLOSED_HISTORY);
     this._state.currentBalance += pnl;
     this._state.dailyPnL       += pnl;
+
+    // Phase 3: Emit trade_closed event
+    this._emitEvent(this._buildCloseEvent(trade));
   }
 
   // ── Unrealized P/L update ────────────────────────────────────────────────────
@@ -393,24 +484,29 @@ class ShadowTradingControllerClass {
 
     if (s.openTrades.length >= s.settings.maxConcurrentPositions) {
       s.blockedReason = `Max ${s.settings.maxConcurrentPositions} concurrent position(s) active.`;
+      this._lastLimitBlockReason = 'max_concurrent';
       return false;
     }
     if (s.tradesToday >= s.settings.maxTradesPerDay) {
       s.blockedReason = `Daily limit of ${s.settings.maxTradesPerDay} trades reached.`;
+      this._lastLimitBlockReason = 'daily_trade_limit';
       return false;
     }
     const maxLoss = -(s.startingBalance * s.settings.maxDailyLossPercent / 100);
     if (s.dailyPnL <= maxLoss) {
       s.blockedReason = `Daily loss limit hit ($${Math.abs(maxLoss).toFixed(0)}).`;
+      this._lastLimitBlockReason = 'daily_loss_limit';
       return false;
     }
     if (Date.now() - this._lastTradeOpenedAt < TRADE_COOLDOWN_MS) {
       const remaining = Math.ceil((TRADE_COOLDOWN_MS - (Date.now() - this._lastTradeOpenedAt)) / 1000);
-      s.blockedReason = `Cooling down — next eval in ${remaining}s.`;
+      s.blockedReason = `Cooling down \u2014 next eval in ${remaining}s.`;
+      this._lastLimitBlockReason = 'cooldown_active';
       return false;
     }
 
     s.blockedReason = undefined;
+    this._lastLimitBlockReason = undefined;
     return true;
   }
 
@@ -423,6 +519,166 @@ class ShadowTradingControllerClass {
       this._state.dailyPnL    = 0;
       this._state.tradesToday = 0;
     }
+  }
+
+  // ── Analytics event builders (Phase 3) ─────────────────────────────────────
+
+  /** Extract snapshot fields relevant to analytics events. */
+  private _snapContext(snap?: LiveTradeSnapshot | null): Partial<ShadowDecisionEvent> {
+    if (!snap) return {};
+    return {
+      symbol:           snap.symbol?.toUpperCase(),
+      lastPrice:        snap.lastPrice,
+      feedFreshnessMs:  snap.feedFreshnessMs,
+      sessionLabel:     snap.sessionLabel,
+      volatilityRegime: snap.volatilityRegime,
+      trend5m:          snap.trend5m,
+      trend15m:         snap.trend15m,
+      vwapRelation:     snap.vwapRelation,
+      atr5m:            snap.atr5m,
+    };
+  }
+
+  /** Build a generic block event (limits_check, feed_check, setup_detection, rule_engine). */
+  private _buildBlockEvent(
+    stage: ShadowDecisionStage,
+    blockReason: ShadowBlockReason,
+    blockMessage: string,
+    snap?: LiveTradeSnapshot | null,
+    extra?: Partial<ShadowDecisionEvent>,
+  ): ShadowDecisionEvent {
+    return {
+      schemaVersion: 1,
+      id: crypto.randomUUID(),
+      timestamp: Date.now(),
+      stage,
+      blockReason,
+      blockMessage,
+      ...this._snapContext(snap),
+      ...(extra ?? {}),
+    } as ShadowDecisionEvent;
+  }
+
+  /** Build a council_review event (blocked or approved-but-rejected). */
+  private _buildCouncilEvent(
+    blockReason: ShadowBlockReason,
+    blockMessage: string,
+    snap: LiveTradeSnapshot,
+    setup: ProposedTradeSetup,
+    advice: ReturnType<typeof buildLiveTradeAdvice>,
+    candidateId: string,
+    votes?: CouncilVote[],
+    approved?: boolean,
+  ): ShadowDecisionEvent {
+    return {
+      schemaVersion: 1,
+      id: crypto.randomUUID(),
+      timestamp: Date.now(),
+      stage: 'council_review' as ShadowDecisionStage,
+      blockReason,
+      blockMessage,
+      candidateId,
+      ...this._snapContext(snap),
+      setupType:      setup.setupType,
+      side:           setup.side as 'long' | 'short',
+      entryPrice:     setup.entry,
+      stopPrice:      setup.stop,
+      targetPrice:    setup.target,
+      ruleVerdict:    advice.verdict,
+      ruleConfidence: advice.confidence,
+      rr:             advice.rr,
+      suggestedSize:  advice.suggestedSize,
+      strengthCount:  advice.strengths?.length ?? 0,
+      warningCount:   advice.warnings?.length ?? 0,
+      violationCount: 0,
+      councilVotes:   votes,
+      councilApproved: approved ?? false,
+    } as ShadowDecisionEvent;
+  }
+
+  /** Build a trade_opened event. */
+  private _buildOpenEvent(
+    snap: LiveTradeSnapshot,
+    trade: ShadowTrade,
+    advice: ReturnType<typeof buildLiveTradeAdvice>,
+    candidateId: string,
+    councilVotes?: CouncilVote[],
+  ): ShadowDecisionEvent {
+    return {
+      schemaVersion: 1,
+      id: crypto.randomUUID(),
+      timestamp: Date.now(),
+      stage: 'trade_opened' as ShadowDecisionStage,
+      candidateId,
+      ...this._snapContext(snap),
+      setupType:      trade.setupType,
+      side:           trade.side,
+      entryPrice:     trade.entryPrice,
+      stopPrice:      trade.stopPrice,
+      targetPrice:    trade.targetPrice,
+      qualityScore:   trade.qualityScore,
+      ruleVerdict:    advice.verdict,
+      ruleConfidence: advice.confidence,
+      rr:             advice.rr,
+      suggestedSize:  advice.suggestedSize,
+      strengthCount:  advice.strengths?.length ?? 0,
+      warningCount:   advice.warnings?.length ?? 0,
+      violationCount: 0,
+      councilVotes,
+      councilApproved: true,
+      tradeId:        trade.id,
+    } as ShadowDecisionEvent;
+  }
+
+  /** Build a trade_closed event. */
+  private _buildCloseEvent(trade: ShadowTrade): ShadowDecisionEvent {
+    return {
+      schemaVersion: 1,
+      id: crypto.randomUUID(),
+      timestamp: Date.now(),
+      stage: 'trade_closed' as ShadowDecisionStage,
+      tradeId:          trade.id,
+      symbol:           trade.symbol,
+      side:             trade.side,
+      entryPrice:       trade.entryPrice,
+      stopPrice:        trade.stopPrice,
+      targetPrice:      trade.targetPrice,
+      setupType:        trade.setupType,
+      sessionLabel:     trade.sessionLabel,
+      volatilityRegime: trade.volatilityRegime,
+      exitPrice:        trade.exitPrice,
+      exitReason:       trade.exitReason,
+      pnl:              trade.pnl,
+      pnlR:             trade.pnlR,
+      mfeR:             trade.mfeR,
+      maeR:             trade.maeR,
+      timeInTradeMs:    trade.closedAt ? trade.closedAt - trade.openedAt : 0,
+      councilVotes:     trade.councilVotes,
+      councilApproved:  true,
+    } as ShadowDecisionEvent;
+  }
+
+  // ── Emit helpers ────────────────────────────────────────────────────────────
+
+  /** Emit a block event for limits_check or feed_check with throttle. */
+  private _emitBlock(
+    stage: 'limits_check' | 'feed_check',
+    blockReason: ShadowBlockReason,
+    blockMessage: string,
+    snap?: LiveTradeSnapshot | null,
+  ): void {
+    const symbol = snap?.symbol?.toUpperCase() ?? '';
+    const key = `${stage}:${blockReason}:${symbol}`;
+    const now = Date.now();
+    const last = this._lastEmittedBlock.get(key);
+    if (last && now - last < BLOCK_THROTTLE_MS) return;
+    this._lastEmittedBlock.set(key, now);
+    shadowAnalyticsStore.append(this._buildBlockEvent(stage, blockReason, blockMessage, snap));
+  }
+
+  /** Emit an event unconditionally (setup_detection, rule_engine, council, open, close). */
+  private _emitEvent(event: ShadowDecisionEvent): void {
+    shadowAnalyticsStore.append(event);
   }
 
   // ── Fresh state ──────────────────────────────────────────────────────────────

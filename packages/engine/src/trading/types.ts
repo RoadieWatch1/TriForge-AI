@@ -102,6 +102,16 @@ export interface ShadowTrade {
   trend15m?: BarTrend;
   sessionLabel?: SessionLabel;
   volatilityRegime?: VolatilityRegime;
+
+  // ── Phase 3: MFE/MAE tracking ─────────
+  /** Maximum favorable price seen during the trade (updated on each tick). */
+  mfPrice?: number;
+  /** Maximum adverse price seen during the trade (updated on each tick). */
+  maPrice?: number;
+  /** MFE in R-multiples (set on close). */
+  mfeR?: number;
+  /** MAE in R-multiples (set on close). */
+  maeR?: number;
 }
 
 export interface ShadowAccountSettings {
@@ -136,4 +146,138 @@ export interface ShadowAccountState {
   blockedReason?: string;
   /** Set when council voted on a setup but rejected it. */
   councilBlockedReason?: string;
+}
+
+// ── Phase 3: Shadow Trading Analytics ─────────────────────────────────────────
+
+export type ShadowDecisionStage =
+  | 'limits_check'    | 'feed_check'      | 'setup_detection'
+  | 'rule_engine'     | 'council_review'   | 'trade_opened'
+  | 'trade_closed';
+
+export type ShadowBlockReason =
+  // limits_check
+  | 'disabled' | 'paused' | 'max_concurrent' | 'daily_trade_limit'
+  | 'daily_loss_limit' | 'cooldown_active'
+  // feed_check
+  | 'no_snapshot' | 'not_connected' | 'no_price' | 'feed_stale'
+  | 'indicators_not_ready' | 'symbol_not_allowed'
+  // setup_detection
+  | 'no_setup' | 'non_pullback'
+  // rule_engine
+  | 'verdict_not_buy' | 'low_confidence' | 'size_too_small'
+  // council_review
+  | 'council_not_initialized' | 'council_error' | 'council_rejected'
+  | 'insufficient_seats' | 'grok_veto' | 'low_council_confidence'
+  | 'insufficient_take_votes';
+
+export interface ShadowDecisionEvent {
+  /** Schema version for forward-compatible JSONL evolution. */
+  schemaVersion: 1;
+  id: string;
+  timestamp: number;
+  stage: ShadowDecisionStage;
+  /** Correlates all events from the same _evaluateEntry() pass (set from setup_detection onward). */
+  candidateId?: string;
+  blockReason?: ShadowBlockReason;
+  blockMessage?: string;
+
+  // ── Market context ──
+  symbol?: string;
+  lastPrice?: number;
+  feedFreshnessMs?: number;
+  sessionLabel?: SessionLabel;
+  volatilityRegime?: VolatilityRegime;
+  trend5m?: BarTrend;
+  trend15m?: BarTrend;
+  vwapRelation?: VwapRelation;
+  atr5m?: number;
+
+  // ── Setup context (from setup_detection onward) ──
+  setupType?: string;
+  side?: 'long' | 'short';
+  entryPrice?: number;
+  stopPrice?: number;
+  targetPrice?: number;
+  qualityScore?: number;
+
+  // ── Rule engine context (from rule_engine onward) ──
+  ruleVerdict?: string;
+  ruleConfidence?: string;
+  rr?: number;
+  suggestedSize?: number;
+  strengthCount?: number;
+  warningCount?: number;
+  violationCount?: number;
+
+  // ── Council context (from council_review onward) ──
+  councilVotes?: CouncilVote[];
+  councilApproved?: boolean;
+
+  // ── Trade outcome (trade_opened / trade_closed) ──
+  tradeId?: string;
+  exitPrice?: number;
+  exitReason?: string;
+  pnl?: number;
+  pnlR?: number;
+  mfeR?: number;
+  maeR?: number;
+  timeInTradeMs?: number;
+}
+
+// ── Analytics summary types ──────────────────────────────────────────────────
+
+export interface ShadowPerformanceSummary {
+  totalTrades: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  avgPnlR: number;
+  avgWinR: number;
+  avgLossR: number;
+  /** sum(winning R) / |sum(losing R)|. Infinity if no losses. */
+  profitFactor: number;
+  /** (winRate * avgWinR) + ((1 - winRate) * avgLossR) */
+  expectancyR: number;
+  totalPnlDollars: number;
+  maxConsecutiveWins: number;
+  maxConsecutiveLosses: number;
+  avgTimeInTradeMs: number;
+  avgMfeR: number;
+  avgMaeR: number;
+  /** avgPnlR / avgMfeR — how much of the favorable move was captured. */
+  edgeCaptureRatio: number;
+}
+
+export interface BucketPerformanceSummary {
+  bucket: string;
+  trades: number;
+  winRate: number;
+  avgPnlR: number;
+  totalPnlDollars: number;
+}
+
+export interface CouncilEffectivenessSummary {
+  totalReviews: number;
+  approvals: number;
+  rejections: number;
+  approvalRate: number;
+  approvedWinRate: number;
+  avgConfidenceWins: number;
+  avgConfidenceLosses: number;
+  /** Provider agreement with outcomes — only computed on opened/closed trades. */
+  providerAccuracy: Record<string, { votes: number; correctCalls: number; accuracy: number }>;
+}
+
+export interface ShadowAnalyticsSummary {
+  overall: ShadowPerformanceSummary;
+  bySession: BucketPerformanceSummary[];
+  bySetupType: BucketPerformanceSummary[];
+  bySymbol: BucketPerformanceSummary[];
+  council: CouncilEffectivenessSummary;
+  decisionFunnel: Record<ShadowDecisionStage, number>;
+  topBlockReasons: Array<{ reason: ShadowBlockReason; count: number; pct: number }>;
+  eventCount: number;
+  oldestEventTs: number;
+  newestEventTs: number;
 }

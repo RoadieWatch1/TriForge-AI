@@ -235,8 +235,9 @@ class BarAccumulator {
 
   get state(): IndicatorState { return this._state; }
 
-  onTick(price: number, totalVolume?: number): void {
-    const minuteKey = Math.floor(Date.now() / 60000);
+  onTick(price: number, totalVolume: number | undefined, tickTs: number): void {
+    // Use one consistent timestamp for all time-based decisions
+    const minuteKey = Math.floor(tickTs / 60000);
 
     // Close current bar if new minute started
     if (this._currentBar && this._currentBar.minuteKey !== minuteKey) {
@@ -276,15 +277,15 @@ class BarAccumulator {
 
     this._currentBar.volume += tickVolume;
 
+    // Session reset BEFORE VWAP accumulation — prevents first RTH tick from being dropped
+    this._checkSessionReset(tickTs);
+
     // Accumulate VWAP — RTH session only, skip invalid volume deltas
-    const isRth = _isRthBar(Date.now());
-    if (isRth && volumeValid) {
+    if (_isRthBar(tickTs) && volumeValid) {
       this._vwapSumPV += price * tickVolume;
       this._vwapSumV  += tickVolume;
     }
 
-    // Check daily VWAP session reset at 9:30 ET
-    this._checkSessionReset();
     this._updateState();
   }
 
@@ -434,9 +435,15 @@ class BarAccumulator {
     this._currentBar = null;
   }
 
-  private _checkSessionReset(): void {
-    const { hour, minute } = _getETHoursMinutes();
-    const dateKey = _getETDateKey();
+  private _checkSessionReset(tsMs: number): void {
+    const d = new Date(tsMs);
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour: 'numeric', minute: 'numeric', hour12: false,
+    }).formatToParts(d);
+    const hour   = Number(parts.find(p => p.type === 'hour')?.value ?? 0);
+    const minute = Number(parts.find(p => p.type === 'minute')?.value ?? 0);
+    const dateKey = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(d);
     if (dateKey !== this._lastSessionResetKey && hour === 9 && minute >= 30) {
       this._lastSessionResetKey = dateKey;
       this.resetVwap();
@@ -460,7 +467,7 @@ class BarAccumulator {
     return { state: 'warming', missing };
   }
 
-  /** Update state and log when transitioning or when components are missing. */
+  /** Update state and log on state transitions. */
   private _updateState(): void {
     const { state, missing } = this._computeReadiness();
     const prev = this._state;
@@ -672,7 +679,7 @@ export class TradovateClient {
 
     // Feed tick to bar accumulator for ATR / VWAP / trend computation
     if (existing.lastPrice != null) {
-      this._accumulator.onTick(existing.lastPrice, existing.totalVolume);
+      this._accumulator.onTick(existing.lastPrice, existing.totalVolume, existing.receivedAt);
     }
   }
 

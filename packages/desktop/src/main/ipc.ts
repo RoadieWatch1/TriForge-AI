@@ -24,6 +24,7 @@ import { NativeIntentRouter } from './nativeIntentRouter';
 import { tradovateService } from './trading/tradovateService';
 import { shadowTradingController } from './trading/shadowTradingController';
 import type { CouncilReviewResult } from './trading/shadowTradingController';
+import { shadowAnalyticsStore } from './trading/shadowAnalyticsStore';
 import { PaperEngine } from './trading/paperEngine';
 import { SensorManager } from './sensors/index';
 import { navigate as browserNavigate, screenshot as browserScreenshot, fillForm as browserFillForm, scrape as browserScrape, closeBrowser } from './browser/index';
@@ -2763,6 +2764,36 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   ipcMain.handle('trading:shadowUpdateSettings', async (_e, settings: Record<string, unknown>) => {
     if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
     shadowTradingController.updateSettings(settings as Parameters<typeof shadowTradingController.updateSettings>[0]);
+    return { ok: true };
+  });
+
+  // ── Shadow Analytics (Phase 3) — read-only endpoints ──────────────────────────
+
+  ipcMain.handle('trading:shadowAnalyticsSummary', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
+    return { summary: shadowAnalyticsStore.getSummary() };
+  });
+
+  ipcMain.handle('trading:shadowAnalyticsEvents', async (_e, opts?: { stage?: string; symbol?: string; limit?: number; since?: number }) => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
+    return { events: shadowAnalyticsStore.query(opts) };
+  });
+
+  ipcMain.handle('trading:shadowAnalyticsFunnel', async (_e, hoursBack?: number) => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
+    return { funnel: shadowAnalyticsStore.getDecisionFunnel(hoursBack) };
+  });
+
+  ipcMain.handle('trading:shadowAnalyticsCouncil', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
+    const events = shadowAnalyticsStore.loadAll();
+    const { computeCouncilEffectiveness } = await import('@triforge/engine');
+    return { council: computeCouncilEffectiveness(events) };
+  });
+
+  ipcMain.handle('trading:shadowAnalyticsClear', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
+    shadowAnalyticsStore.clear();
     return { ok: true };
   });
 
