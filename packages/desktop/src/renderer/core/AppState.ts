@@ -100,6 +100,20 @@ export const SYSTEM_REGISTRY: SystemCard[] = [
     status: 'coming_soon',
     modes: ['hustle'],
   },
+  {
+    id: 'trade_desk',
+    name: 'Trade Desk',
+    description: 'Size positions, run Council review, and log paper trades',
+    status: 'active',
+    modes: ['hustle'],
+  },
+  {
+    id: 'live_trade_advisor',
+    name: 'Live Trade Advisor',
+    description: 'Watch Tradovate, validate setups, and get real-time Council guidance',
+    status: 'active',
+    modes: ['hustle'],
+  },
 ];
 
 // ── TriforgeTask (Scheduler payload) ────────────────────────────────────────

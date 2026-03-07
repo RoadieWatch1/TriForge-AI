@@ -211,3 +211,13 @@ export type { CapabilityDescriptor, CapabilityCategory, CapabilityRisk, SystemSt
 // Folder Audit Engine
 export { buildFolderAudit, formatAuditAsText } from './execution/buildFolderAudit';
 export type { FolderAuditResult, AuditFinding } from './execution/buildFolderAudit';
+
+// Live Trade Advisor
+export { buildLiveTradeAdvice, SUPPORTED_SYMBOLS, INSTRUMENT_META } from './trading/buildLiveTradeAdvice';
+export type {
+  LiveTradeSnapshot, TradeAdviceInput, TradeAdviceResult,
+  TradeAdviceVerdict, TradeAdviceConfidence, InstrumentMeta,
+} from './trading/buildLiveTradeAdvice';
+
+// Shadow Trading
+export type { ShadowTrade, ShadowAccountState, ShadowAccountSettings } from './trading/types';

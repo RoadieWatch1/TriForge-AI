@@ -408,6 +408,70 @@ const api = {
   wallet: {
     getBalance: () =>
       ipcRenderer.invoke('wallet:getBalance') as Promise<{ snapshot?: unknown; error?: string }>,
+    paperTrade: (trade: {
+      ticker: string;
+      side: 'long' | 'short';
+      thesis: string;
+      entry: number;
+      stop: number;
+      target: number;
+      size: number;
+      riskPercent: number;
+      balance: number;
+    }) =>
+      ipcRenderer.invoke('wallet:paperTrade', trade) as Promise<{ ok?: boolean; tradeId?: string; entry?: unknown; error?: string }>,
+  },
+
+  // Live Trade Advisor (Tradovate bridge + advice engine)
+  trading: {
+    tradovateConnect: (creds: {
+      username: string;
+      password: string;
+      accountMode: 'simulation' | 'live';
+      cid?: number;
+      sec?: string;
+    }) =>
+      ipcRenderer.invoke('trading:tradovateConnect', creds) as Promise<{ ok?: boolean; error?: string }>,
+    tradovateStatus: () =>
+      ipcRenderer.invoke('trading:tradovateStatus') as Promise<{
+        connected: boolean;
+        accountMode: 'simulation' | 'live' | 'unknown';
+        symbol?: string;
+        error?: string;
+      }>,
+    tradovateSnapshot: (symbol: string) =>
+      ipcRenderer.invoke('trading:tradovateSnapshot', symbol) as Promise<{ snapshot?: unknown }>,
+    tradovateDisconnect: () =>
+      ipcRenderer.invoke('trading:tradovateDisconnect') as Promise<{ ok?: boolean }>,
+    buildAdvice: (input: {
+      snapshot: unknown;
+      balance: number;
+      riskPercent: number;
+      symbol: string;
+      side: 'long' | 'short';
+      thesis?: string;
+      entry?: number;
+      stop?: number;
+      target?: number;
+    }) =>
+      ipcRenderer.invoke('trading:buildAdvice', input) as Promise<{ result?: unknown }>,
+    // Shadow Trading
+    shadowState: () =>
+      ipcRenderer.invoke('trading:shadowState') as Promise<unknown>,
+    shadowEnable: () =>
+      ipcRenderer.invoke('trading:shadowEnable') as Promise<{ ok?: boolean }>,
+    shadowDisable: () =>
+      ipcRenderer.invoke('trading:shadowDisable') as Promise<{ ok?: boolean }>,
+    shadowPause: () =>
+      ipcRenderer.invoke('trading:shadowPause') as Promise<{ ok?: boolean }>,
+    shadowResume: () =>
+      ipcRenderer.invoke('trading:shadowResume') as Promise<{ ok?: boolean }>,
+    shadowReset: (newBalance?: number) =>
+      ipcRenderer.invoke('trading:shadowReset', newBalance) as Promise<{ ok?: boolean }>,
+    shadowFlatten: () =>
+      ipcRenderer.invoke('trading:shadowFlatten') as Promise<{ ok?: boolean }>,
+    shadowUpdateSettings: (settings: unknown) =>
+      ipcRenderer.invoke('trading:shadowUpdateSettings', settings) as Promise<{ ok?: boolean }>,
   },
 
   // Scheduler (recurring + once jobs)

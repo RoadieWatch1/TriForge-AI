@@ -21,6 +21,8 @@ import { CredentialManager } from './credentials';
 import { createNotifyAdapter } from './notifications';
 import { createMailAdapter } from './mailService';
 import { NativeIntentRouter } from './nativeIntentRouter';
+import { tradovateService } from './trading/tradovateService';
+import { shadowTradingController } from './trading/shadowTradingController';
 import { SensorManager } from './sensors/index';
 import { navigate as browserNavigate, screenshot as browserScreenshot, fillForm as browserFillForm, scrape as browserScrape, closeBrowser } from './browser/index';
 import { SocialPoster } from './social/index';
@@ -44,7 +46,7 @@ import { getToolExecutor, newRequestId } from '../core/tools/toolExecutor';
 import { healthMonitor } from '../core/health/healthMonitor';
 import { MemoryStore } from '../core/memory/memoryStore';
 import { getMemoryManager } from '../core/memory/memoryManager';
-import { ImageService, getImageHistoryStore, systemStateService, buildCouncilAwarenessAddendum } from '@triforge/engine';
+import { ImageService, getImageHistoryStore, systemStateService, buildCouncilAwarenessAddendum, buildLiveTradeAdvice } from '@triforge/engine';
 
 import { ResultStore } from './resultStore';
 import { ValueEngine, CampaignStore, MetricsStore, CompoundEngine } from '@triforge/engine';
@@ -2563,6 +2565,119 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
     const snapshot = _getWalletEngine(store).getSnapshot();
     return { snapshot };
+  });
+
+  ipcMain.handle('wallet:paperTrade', async (_e, trade: {
+    ticker: string;
+    side: 'long' | 'short';
+    thesis: string;
+    entry: number;
+    stop: number;
+    target: number;
+    size: number;
+    riskPercent: number;
+    balance: number;
+  }) => {
+    if (!trade.ticker || !trade.entry || !trade.stop) {
+      return { error: 'Missing required fields: ticker, entry, stop.' };
+    }
+    if (trade.entry === trade.stop) {
+      return { error: 'Entry and stop cannot be the same price.' };
+    }
+    const tradeId = crypto.randomUUID();
+    const entry = {
+      id: tradeId,
+      timestamp: Date.now(),
+      workflow: 'PAPER_TRADE',
+      summary: `Paper ${trade.side.toUpperCase()} ${trade.ticker} — Entry: ${trade.entry}, Stop: ${trade.stop}, Target: ${trade.target}, Size: ${trade.size} shares, Risk: ${trade.riskPercent.toFixed(1)}%`,
+      data: trade,
+    };
+    store.addLedger(entry as any);
+    return { ok: true, tradeId, entry };
+  });
+
+  // ── Live Trade Advisor / Tradovate ────────────────────────────────────────────
+
+  tradovateService.init(store);
+
+  ipcMain.handle('trading:tradovateConnect', async (_e, creds: {
+    username: string;
+    password: string;
+    accountMode: 'simulation' | 'live';
+    cid?: number;
+    sec?: string;
+  }) => {
+    return tradovateService.connect(creds);
+  });
+
+  ipcMain.handle('trading:tradovateStatus', () => {
+    return tradovateService.status();
+  });
+
+  ipcMain.handle('trading:tradovateSnapshot', (_e, symbol: string) => {
+    const snapshot = tradovateService.getSnapshot(symbol);
+    return { snapshot };
+  });
+
+  ipcMain.handle('trading:tradovateDisconnect', async () => {
+    await tradovateService.forget();
+    return { ok: true };
+  });
+
+  ipcMain.handle('trading:buildAdvice', (_e, input: {
+    snapshot: unknown;
+    balance: number;
+    riskPercent: number;
+    symbol: string;
+    side: 'long' | 'short';
+    thesis?: string;
+    entry?: number;
+    stop?: number;
+    target?: number;
+  }) => {
+    const result = buildLiveTradeAdvice(input as Parameters<typeof buildLiveTradeAdvice>[0]);
+    return { result };
+  });
+
+  // ── Shadow Trading ────────────────────────────────────────────────────────────
+
+  ipcMain.handle('trading:shadowState', () => {
+    return shadowTradingController.getState();
+  });
+
+  ipcMain.handle('trading:shadowEnable', () => {
+    shadowTradingController.enable();
+    return { ok: true };
+  });
+
+  ipcMain.handle('trading:shadowDisable', () => {
+    shadowTradingController.disable();
+    return { ok: true };
+  });
+
+  ipcMain.handle('trading:shadowPause', () => {
+    shadowTradingController.pause();
+    return { ok: true };
+  });
+
+  ipcMain.handle('trading:shadowResume', () => {
+    shadowTradingController.resume();
+    return { ok: true };
+  });
+
+  ipcMain.handle('trading:shadowReset', (_e, newBalance?: number) => {
+    shadowTradingController.reset(newBalance);
+    return { ok: true };
+  });
+
+  ipcMain.handle('trading:shadowFlatten', () => {
+    shadowTradingController.flattenAll();
+    return { ok: true };
+  });
+
+  ipcMain.handle('trading:shadowUpdateSettings', (_e, settings: Record<string, unknown>) => {
+    shadowTradingController.updateSettings(settings as Parameters<typeof shadowTradingController.updateSettings>[0]);
+    return { ok: true };
   });
 
   // ── Scheduler ─────────────────────────────────────────────────────────────────

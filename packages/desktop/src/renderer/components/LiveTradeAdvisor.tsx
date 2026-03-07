@@ -1,0 +1,841 @@
+// ── LiveTradeAdvisor.tsx ──────────────────────────────────────────────────────
+//
+// Real-time futures trade advisory screen backed by Tradovate.
+// Includes Shadow Trading Mode — Triforge trades beside you in simulation.
+//
+// ADVISORY ONLY / SIMULATION ONLY — no live orders ever placed by Triforge.
+
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+
+// ── Local type mirrors (engine types, no direct import) ───────────────────────
+
+type TradeAdviceVerdict = 'buy' | 'wait' | 'skip' | 'reduce_size' | 'missing_confirmation';
+type TradeAdviceConfidence = 'low' | 'medium' | 'high';
+
+interface TradeAdviceResult {
+  verdict: TradeAdviceVerdict;
+  confidence: TradeAdviceConfidence;
+  summary: string;
+  strengths: string[];
+  warnings: string[];
+  ruleViolations: string[];
+  suggestedSize?: number;
+  riskDollars?: number;
+  rewardDollars?: number;
+  rr?: number;
+}
+
+interface LiveSnapshot {
+  connected: boolean;
+  accountMode: 'simulation' | 'live' | 'unknown';
+  symbol: string;
+  lastPrice?: number;
+  bidPrice?: number;
+  askPrice?: number;
+  highOfDay?: number;
+  lowOfDay?: number;
+  trend?: 'up' | 'down' | 'range' | 'unknown';
+  feedFreshnessMs?: number;
+  warning?: string;
+}
+
+interface ShadowTrade {
+  id: string;
+  symbol: string;
+  side: 'long' | 'short';
+  entryPrice: number;
+  stopPrice: number;
+  targetPrice: number;
+  qty: number;
+  status: 'open' | 'closed';
+  openedAt: number;
+  closedAt?: number;
+  exitPrice?: number;
+  exitReason?: string;
+  pnl?: number;
+  pnlR?: number;
+  unrealizedPnl?: number;
+  reason: string;
+  verdict: string;
+}
+
+interface ShadowAccountSettings {
+  startingBalance: number;
+  riskPercentPerTrade: number;
+  maxDailyLossPercent: number;
+  maxTradesPerDay: number;
+  maxConcurrentPositions: number;
+}
+
+interface ShadowAccountState {
+  enabled: boolean;
+  paused: boolean;
+  settings: ShadowAccountSettings;
+  startingBalance: number;
+  currentBalance: number;
+  dailyPnL: number;
+  tradesToday: number;
+  openTrades: ShadowTrade[];
+  closedTrades: ShadowTrade[];
+  lastEvalAt?: number;
+  blockedReason?: string;
+}
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const SUPPORTED_SYMBOLS = ['NQ', 'MNQ', 'ES', 'MES', 'RTY', 'M2K', 'CL', 'GC'];
+
+const VERDICT_CONFIG: Record<TradeAdviceVerdict, { label: string; color: string; bg: string }> = {
+  buy:                  { label: 'BUY',                  color: '#34d399', bg: 'rgba(52,211,153,0.12)' },
+  wait:                 { label: 'WAIT',                 color: '#fbbf24', bg: 'rgba(251,191,36,0.12)' },
+  skip:                 { label: 'SKIP',                 color: '#f87171', bg: 'rgba(248,113,113,0.12)' },
+  reduce_size:          { label: 'REDUCE SIZE',          color: '#fb923c', bg: 'rgba(251,146,60,0.12)' },
+  missing_confirmation: { label: 'MISSING CONFIRMATION', color: 'rgba(255,255,255,0.4)', bg: 'rgba(255,255,255,0.05)' },
+};
+
+// ── Component ─────────────────────────────────────────────────────────────────
+
+export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
+  // ── Connection state ────────────────────────────────────────────────────────
+  const [isConnected, setIsConnected]     = useState(false);
+  const [accountMode, setAccountMode]     = useState<'simulation' | 'live' | 'unknown'>('unknown');
+  const [showConnForm, setShowConnForm]   = useState(false);
+  const [connCreds, setConnCreds]         = useState({ username: '', password: '', accountMode: 'simulation' as 'simulation' | 'live', cid: '', sec: '' });
+  const [connecting, setConnecting]       = useState(false);
+  const [connError, setConnError]         = useState<string | null>(null);
+
+  // ── Balance / risk ──────────────────────────────────────────────────────────
+  const [balance, setBalance]             = useState('25000');
+  const [riskPct, setRiskPct]             = useState('1');
+
+  // ── Symbol / setup ──────────────────────────────────────────────────────────
+  const [symbol, setSymbol]               = useState('NQ');
+  const [side, setSide]                   = useState<'long' | 'short'>('long');
+  const [entry, setEntry]                 = useState('');
+  const [stop, setStop]                   = useState('');
+  const [target, setTarget]               = useState('');
+  const [thesis, setThesis]               = useState('');
+
+  // ── Live snapshot ───────────────────────────────────────────────────────────
+  const [snapshot, setSnapshot]           = useState<LiveSnapshot | null>(null);
+  const pollRef                           = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // ── Advice ──────────────────────────────────────────────────────────────────
+  const [advice, setAdvice]               = useState<TradeAdviceResult | null>(null);
+  const [adviceLoading, setAdviceLoading] = useState(false);
+  const [councilReview, setCouncilReview] = useState<string | null>(null);
+  const [councilLoading, setCouncilLoading] = useState(false);
+
+  // ── Shadow trading ──────────────────────────────────────────────────────────
+  const [shadow, setShadow]               = useState<ShadowAccountState | null>(null);
+  const [shadowToggling, setShadowToggling] = useState(false);
+  const [shadowResetConfirm, setShadowResetConfirm] = useState(false);
+  const [showHistory, setShowHistory]     = useState(false);
+
+  // ── Init ─────────────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    // Load initial status
+    Promise.all([
+      window.triforge.trading.tradovateStatus(),
+      window.triforge.trading.shadowState(),
+    ]).then(([status, shadowState]) => {
+      setIsConnected(status.connected);
+      setAccountMode(status.accountMode);
+      setShadow(shadowState as ShadowAccountState);
+      if (status.connected) startPolling(symbol);
+      else setSnapshot({ connected: false, accountMode: 'unknown', symbol });
+    }).catch(() => {
+      setSnapshot({ connected: false, accountMode: 'unknown', symbol });
+    });
+    return () => stopPolling();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Polling (market + shadow state) ─────────────────────────────────────────
+
+  const startPolling = useCallback((sym: string) => {
+    stopPolling();
+    const tick = async () => {
+      try {
+        const [snapRes, shadowState] = await Promise.all([
+          window.triforge.trading.tradovateSnapshot(sym),
+          window.triforge.trading.shadowState(),
+        ]);
+        if (snapRes.snapshot) setSnapshot(snapRes.snapshot as LiveSnapshot);
+        setShadow(shadowState as ShadowAccountState);
+      } catch { /* ignore */ }
+    };
+    tick();
+    pollRef.current = setInterval(tick, 2000);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+  }, []);
+
+  const handleSymbolChange = (sym: string) => {
+    setSymbol(sym);
+    setAdvice(null);
+    setCouncilReview(null);
+    if (isConnected) startPolling(sym);
+  };
+
+  // ── Connection ───────────────────────────────────────────────────────────────
+
+  const handleConnect = async () => {
+    if (!connCreds.username || !connCreds.password) { setConnError('Username and password required.'); return; }
+    setConnecting(true); setConnError(null);
+    try {
+      const res = await window.triforge.trading.tradovateConnect({
+        username: connCreds.username, password: connCreds.password,
+        accountMode: connCreds.accountMode,
+        cid: connCreds.cid ? Number(connCreds.cid) : undefined,
+        sec: connCreds.sec || undefined,
+      });
+      if (res.error) { setConnError(res.error); return; }
+      const status = await window.triforge.trading.tradovateStatus();
+      setIsConnected(status.connected);
+      setAccountMode(status.accountMode);
+      setShowConnForm(false);
+      startPolling(symbol);
+    } catch (err) {
+      setConnError(err instanceof Error ? err.message : String(err));
+    } finally { setConnecting(false); }
+  };
+
+  const handleDisconnect = async () => {
+    stopPolling();
+    await window.triforge.trading.tradovateDisconnect();
+    setIsConnected(false); setAccountMode('unknown');
+    setSnapshot({ connected: false, accountMode: 'unknown', symbol });
+    setAdvice(null); setCouncilReview(null);
+  };
+
+  // ── Advice ───────────────────────────────────────────────────────────────────
+
+  const handleGetAdvice = async () => {
+    setAdviceLoading(true); setAdvice(null); setCouncilReview(null);
+    try {
+      const snap: LiveSnapshot = snapshot ?? { connected: false, accountMode: 'unknown', symbol };
+      const res = await window.triforge.trading.buildAdvice({
+        snapshot: snap as unknown,
+        balance: parseFloat(balance) || 0,
+        riskPercent: parseFloat(riskPct) || 1,
+        symbol, side,
+        thesis: thesis.trim() || undefined,
+        entry: entry ? parseFloat(entry) : undefined,
+        stop: stop ? parseFloat(stop) : undefined,
+        target: target ? parseFloat(target) : undefined,
+      });
+      if (res.result) setAdvice(res.result as TradeAdviceResult);
+    } catch (err) {
+      setAdvice({ verdict: 'skip', confidence: 'low', summary: String(err), strengths: [], warnings: [], ruleViolations: [] });
+    } finally { setAdviceLoading(false); }
+  };
+
+  const handleCouncilReview = async () => {
+    if (!advice) return;
+    setCouncilLoading(true); setCouncilReview(null);
+    try {
+      const prompt = buildCouncilPrompt({ symbol, side, entry, stop, target, thesis, balance, riskPct, snapshot, advice });
+      const res = await (window.triforge as any).chat?.send(prompt);
+      setCouncilReview(typeof res === 'string' ? res : (res as { text?: string })?.text ?? 'No response.');
+    } catch (err) {
+      setCouncilReview(`Council review failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally { setCouncilLoading(false); }
+  };
+
+  // ── Shadow trading ───────────────────────────────────────────────────────────
+
+  const handleShadowToggle = async () => {
+    if (!shadow) return;
+    setShadowToggling(true);
+    try {
+      if (shadow.enabled) {
+        await window.triforge.trading.shadowDisable();
+      } else {
+        await window.triforge.trading.shadowEnable();
+      }
+      const state = await window.triforge.trading.shadowState();
+      setShadow(state as ShadowAccountState);
+    } finally { setShadowToggling(false); }
+  };
+
+  const handleShadowPauseResume = async () => {
+    if (!shadow) return;
+    if (shadow.paused) await window.triforge.trading.shadowResume();
+    else               await window.triforge.trading.shadowPause();
+    setShadow(await window.triforge.trading.shadowState() as ShadowAccountState);
+  };
+
+  const handleShadowReset = async () => {
+    if (!shadowResetConfirm) { setShadowResetConfirm(true); return; }
+    await window.triforge.trading.shadowReset();
+    setShadow(await window.triforge.trading.shadowState() as ShadowAccountState);
+    setShadowResetConfirm(false);
+  };
+
+  const handleShadowFlatten = async () => {
+    await window.triforge.trading.shadowFlatten();
+    setShadow(await window.triforge.trading.shadowState() as ShadowAccountState);
+  };
+
+  // ── Derived values ───────────────────────────────────────────────────────────
+
+  const maxRiskDollars = (parseFloat(balance) || 0) * (parseFloat(riskPct) || 1) / 100;
+  const shadowPnlColor = !shadow ? 'rgba(255,255,255,0.7)' : shadow.dailyPnL > 0 ? '#34d399' : shadow.dailyPnL < 0 ? '#f87171' : 'rgba(255,255,255,0.7)';
+  const shadowBalPct   = shadow ? ((shadow.currentBalance - shadow.startingBalance) / shadow.startingBalance * 100) : 0;
+
+  // ── Render ───────────────────────────────────────────────────────────────────
+
+  return (
+    <div style={s.page}>
+      {/* ── Header ── */}
+      <div style={s.header}>
+        <button style={s.backBtn} onClick={onBack}>← Hustle</button>
+        <div>
+          <h1 style={s.title}>Live Trade Advisor</h1>
+          <div style={s.badges}>
+            <span style={s.badgeAdvisory}>Advisory Only</span>
+            {shadow?.enabled && <span style={s.badgeShadow}>Shadow Trading Active</span>}
+            <span style={{ ...s.badgeConn, color: isConnected ? '#34d399' : 'rgba(255,255,255,0.3)', borderColor: isConnected ? 'rgba(52,211,153,0.3)' : 'rgba(255,255,255,0.1)' }}>
+              {isConnected ? `● ${accountMode === 'live' ? 'LIVE' : 'SIM'}` : '○ Disconnected'}
+            </span>
+          </div>
+        </div>
+        <div style={s.headerActions}>
+          {isConnected
+            ? <button style={{ ...s.btn, ...s.btnGhost, fontSize: 10 }} onClick={handleDisconnect}>Disconnect</button>
+            : <button style={{ ...s.btn, ...s.btnPrimary }} onClick={() => setShowConnForm(v => !v)}>{showConnForm ? 'Cancel' : 'Connect Tradovate'}</button>
+          }
+        </div>
+      </div>
+
+      <div style={s.disclaimer}>
+        No live orders are placed by this feature. Shadow trades use virtual funds only. Always confirm inside Tradovate.
+      </div>
+
+      <div style={s.body}>
+        {/* ── Connection form ── */}
+        {showConnForm && !isConnected && (
+          <div style={s.card}>
+            <div style={s.cardTitle}>Connect Tradovate</div>
+            <div style={s.noteBox}>Requires a Tradovate account with API access. Use your Tradovate username and password. Partner CID/SEC are optional.</div>
+            <div style={s.row}>
+              <Field label="Username"><input style={s.input} value={connCreds.username} onChange={e => setConnCreds(c => ({ ...c, username: e.target.value }))} placeholder="username" autoComplete="off" /></Field>
+              <Field label="Password"><input style={s.input} type="password" value={connCreds.password} onChange={e => setConnCreds(c => ({ ...c, password: e.target.value }))} placeholder="••••••••" /></Field>
+            </div>
+            <div style={s.row}>
+              <Field label="Mode">
+                <div style={s.segmented}>
+                  {(['simulation', 'live'] as const).map(m => (
+                    <button key={m} style={{ ...s.seg, ...(connCreds.accountMode === m ? s.segActive : {}) }} onClick={() => setConnCreds(c => ({ ...c, accountMode: m }))}>
+                      {m === 'simulation' ? 'Simulation' : 'Live'}
+                    </button>
+                  ))}
+                </div>
+              </Field>
+              <Field label="CID (optional)"><input style={s.input} value={connCreds.cid} onChange={e => setConnCreds(c => ({ ...c, cid: e.target.value }))} placeholder="0" /></Field>
+              <Field label="SEC (optional)"><input style={s.input} type="password" value={connCreds.sec} onChange={e => setConnCreds(c => ({ ...c, sec: e.target.value }))} /></Field>
+            </div>
+            {connError && <div style={s.errorBanner}>{connError}</div>}
+            <div style={s.actions}>
+              <button style={{ ...s.btn, ...s.btnPrimary, opacity: connecting ? 0.5 : 1 }} disabled={connecting} onClick={handleConnect}>
+                {connecting ? 'Connecting...' : 'Connect'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── Balance + risk ── */}
+        <div style={s.card}>
+          <div style={s.cardTitle}>Account Settings</div>
+          <div style={s.row}>
+            <Field label="Balance ($)">
+              <input style={s.input} type="number" value={balance} onChange={e => { setBalance(e.target.value); setAdvice(null); }} placeholder="25000" />
+            </Field>
+            <Field label="Risk %">
+              <input style={{ ...s.input, width: 80 }} type="number" min="0.1" max="5" step="0.25" value={riskPct} onChange={e => { setRiskPct(e.target.value); setAdvice(null); }} />
+            </Field>
+            <div style={s.derivedMetric}>
+              <span style={s.derivedLabel}>Max Risk $</span>
+              <span style={s.derivedValue}>${maxRiskDollars.toFixed(0)}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Shadow Trading Mode ── */}
+        <div style={{ ...s.card, borderColor: shadow?.enabled ? 'rgba(167,139,250,0.25)' : 'rgba(255,255,255,0.07)' }}>
+          <div style={{ ...s.cardTitle, justifyContent: 'space-between' }}>
+            <span style={{ color: shadow?.enabled ? '#a78bfa' : undefined }}>Shadow Trading Mode</span>
+            <div style={s.toggleRow}>
+              {shadow?.enabled && !shadow.paused && (
+                <button style={{ ...s.btn, ...s.btnGhost, fontSize: 10, padding: '4px 10px' }} onClick={handleShadowPauseResume}>Pause</button>
+              )}
+              {shadow?.enabled && shadow.paused && (
+                <button style={{ ...s.btn, ...s.btnPrimary, fontSize: 10, padding: '4px 10px' }} onClick={handleShadowPauseResume}>Resume</button>
+              )}
+              <button
+                style={{ ...s.toggleBtn, background: shadow?.enabled ? '#a78bfa' : 'rgba(255,255,255,0.08)', opacity: shadowToggling ? 0.5 : 1 }}
+                disabled={shadowToggling}
+                onClick={handleShadowToggle}
+              >
+                <div style={{ ...s.toggleKnob, transform: shadow?.enabled ? 'translateX(18px)' : 'translateX(2px)' }} />
+              </button>
+            </div>
+          </div>
+
+          <p style={s.shadowDesc}>
+            Triforge trades beside you using <strong style={{ color: '#a78bfa' }}>virtual funds</strong> — watching live context, applying its own discipline, and showing every move transparently. SIM ONLY. No real orders are placed.
+          </p>
+
+          {shadow?.enabled && (
+            <>
+              {/* Shadow account stats */}
+              <div style={s.shadowStats}>
+                <ShadowStat label="Virtual Balance" value={`$${shadow.currentBalance.toFixed(0)}`} />
+                <ShadowStat label="Daily P/L" value={`${shadow.dailyPnL >= 0 ? '+' : ''}$${shadow.dailyPnL.toFixed(0)}`} color={shadowPnlColor} />
+                <ShadowStat label="Trades Today" value={`${shadow.tradesToday} / ${shadow.settings.maxTradesPerDay}`} />
+                <ShadowStat label="Open" value={String(shadow.openTrades.length)} />
+                <ShadowStat label="Net" value={`${shadowBalPct >= 0 ? '+' : ''}${shadowBalPct.toFixed(1)}%`} color={shadowPnlColor} />
+              </div>
+
+              {/* Status / blocked reason */}
+              {shadow.paused && (
+                <div style={s.shadowStatus}>Paused — no new entries. Open positions continuing to manage exits.</div>
+              )}
+              {!shadow.paused && shadow.blockedReason && (
+                <div style={s.shadowStatus}>{shadow.blockedReason}</div>
+              )}
+              {shadow.lastEvalAt && (
+                <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)', marginTop: -4 }}>
+                  Last eval: {new Date(shadow.lastEvalAt).toLocaleTimeString()}
+                </div>
+              )}
+
+              {/* Controls */}
+              <div style={s.actions}>
+                {shadow.openTrades.length > 0 && (
+                  <button style={{ ...s.btn, ...s.btnGhost, fontSize: 10 }} onClick={handleShadowFlatten}>Flatten All</button>
+                )}
+                <button
+                  style={{ ...s.btn, ...s.btnGhost, fontSize: 10, color: shadowResetConfirm ? '#f87171' : undefined }}
+                  onClick={handleShadowReset}
+                >
+                  {shadowResetConfirm ? 'Confirm Reset' : 'Reset Account'}
+                </button>
+                {shadowResetConfirm && (
+                  <button style={{ ...s.btn, ...s.btnGhost, fontSize: 10 }} onClick={() => setShadowResetConfirm(false)}>Cancel</button>
+                )}
+              </div>
+            </>
+          )}
+
+          {!shadow?.enabled && (
+            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.25)', marginTop: -4 }}>
+              Enable to let Triforge place simulated trades autonomously and show its reasoning in real time.
+            </div>
+          )}
+        </div>
+
+        {/* ── Open shadow positions ── */}
+        {shadow?.enabled && shadow.openTrades.length > 0 && (
+          <div style={{ ...s.card, borderColor: 'rgba(167,139,250,0.2)' }}>
+            <div style={s.cardTitle}>Open Shadow Positions <span style={s.simBadge}>SIM</span></div>
+            {shadow.openTrades.map(t => (
+              <OpenPositionRow key={t.id} trade={t} />
+            ))}
+          </div>
+        )}
+
+        {/* ── Symbol + setup ── */}
+        <div style={s.card}>
+          <div style={s.cardTitle}>Your Setup</div>
+          <div style={s.row}>
+            <Field label="Symbol">
+              <select style={s.select} value={symbol} onChange={e => handleSymbolChange(e.target.value)}>
+                {SUPPORTED_SYMBOLS.map(sym => <option key={sym} value={sym}>{sym}</option>)}
+              </select>
+            </Field>
+            <Field label="Direction">
+              <div style={s.segmented}>
+                {(['long', 'short'] as const).map(d => (
+                  <button key={d} style={{ ...s.seg, ...(side === d ? (d === 'long' ? s.segLong : s.segShort) : {}) }} onClick={() => { setSide(d); setAdvice(null); }}>
+                    {d === 'long' ? '▲ Long' : '▼ Short'}
+                  </button>
+                ))}
+              </div>
+            </Field>
+          </div>
+          <div style={s.row}>
+            <Field label="Entry"><input style={s.input} type="number" placeholder="0.00" value={entry} onChange={e => { setEntry(e.target.value); setAdvice(null); }} /></Field>
+            <Field label="Stop"><input style={s.input} type="number" placeholder="0.00" value={stop} onChange={e => { setStop(e.target.value); setAdvice(null); }} /></Field>
+            <Field label="Target"><input style={s.input} type="number" placeholder="0.00" value={target} onChange={e => { setTarget(e.target.value); setAdvice(null); }} /></Field>
+          </div>
+          <Field label="Thesis">
+            <textarea style={s.textarea} rows={2} placeholder="Entry catalyst, structure, invalidation..." value={thesis} onChange={e => { setThesis(e.target.value); setAdvice(null); }} />
+          </Field>
+        </div>
+
+        {/* ── Comparison panel ── */}
+        {shadow?.enabled && shadow.openTrades.some(t => t.symbol === symbol) && (entry || stop || target) && (
+          <ComparisonPanel
+            symbol={symbol}
+            userSide={side}
+            userEntry={parseFloat(entry) || undefined}
+            userStop={parseFloat(stop) || undefined}
+            userTarget={parseFloat(target) || undefined}
+            shadowTrade={shadow.openTrades.find(t => t.symbol === symbol)!}
+          />
+        )}
+
+        {/* ── Live market panel ── */}
+        <div style={s.card}>
+          <div style={{ ...s.cardTitle, gap: 8 }}>
+            Live Market — {symbol}
+            {isConnected && <span style={s.liveDot} />}
+            {snapshot?.feedFreshnessMs !== undefined && (
+              <span style={{ fontSize: 9, color: snapshot.feedFreshnessMs > 5000 ? '#f87171' : 'rgba(255,255,255,0.2)', marginLeft: 'auto' }}>
+                {snapshot.feedFreshnessMs < 1000 ? '<1s' : `${(snapshot.feedFreshnessMs / 1000).toFixed(0)}s`} ago
+              </span>
+            )}
+          </div>
+          {!isConnected ? (
+            <div style={s.offlineNote}>Connect Tradovate for live price data. Rule-based advice still works with manual levels.</div>
+          ) : snapshot ? (
+            <div style={s.metricsRow}>
+              <Metric label="Last"  value={snapshot.lastPrice  !== undefined ? snapshot.lastPrice.toFixed(2)  : '—'} />
+              <Metric label="Bid"   value={snapshot.bidPrice   !== undefined ? snapshot.bidPrice.toFixed(2)   : '—'} dim />
+              <Metric label="Ask"   value={snapshot.askPrice   !== undefined ? snapshot.askPrice.toFixed(2)   : '—'} dim />
+              <Metric label="High"  value={snapshot.highOfDay  !== undefined ? snapshot.highOfDay.toFixed(2)  : '—'} />
+              <Metric label="Low"   value={snapshot.lowOfDay   !== undefined ? snapshot.lowOfDay.toFixed(2)   : '—'} />
+              <Metric label="Trend" value={snapshot.trend ? snapshot.trend.toUpperCase() : '—'} highlight={snapshot.trend === 'up'} dimRed={snapshot.trend === 'down'} />
+            </div>
+          ) : (
+            <div style={s.offlineNote}>Waiting for first tick...</div>
+          )}
+          {snapshot?.warning && <div style={s.snapshotWarning}>{snapshot.warning}</div>}
+        </div>
+
+        {/* ── Get advice ── */}
+        <div style={s.actions}>
+          <button
+            style={{ ...s.btn, ...s.btnPrimary, opacity: adviceLoading ? 0.5 : 1, minWidth: 160 }}
+            disabled={adviceLoading}
+            onClick={handleGetAdvice}
+          >
+            {adviceLoading ? 'Analyzing...' : 'Get Fast Verdict'}
+          </button>
+        </div>
+
+        {/* ── Advice result ── */}
+        {advice && (
+          <VerdictCard
+            advice={advice}
+            onCouncilReview={handleCouncilReview}
+            councilLoading={councilLoading}
+          />
+        )}
+        {councilReview && (
+          <div style={s.card}>
+            <div style={s.cardTitle}>Council Review</div>
+            <div style={s.councilText}>{councilReview}</div>
+          </div>
+        )}
+
+        {/* ── Shadow trade history ── */}
+        {shadow?.enabled && shadow.closedTrades.length > 0 && (
+          <div style={s.card}>
+            <div style={{ ...s.cardTitle, justifyContent: 'space-between' }}>
+              <span>Shadow Trade History <span style={s.simBadge}>SIM</span></span>
+              <button style={{ ...s.btn, ...s.btnGhost, fontSize: 10, padding: '3px 8px' }} onClick={() => setShowHistory(v => !v)}>
+                {showHistory ? 'Collapse' : `Show ${shadow.closedTrades.length} trades`}
+              </button>
+            </div>
+            {showHistory && (
+              <HistoryTable trades={shadow.closedTrades.slice(0, 20)} />
+            )}
+            {!showHistory && (
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>
+                {shadow.closedTrades.length} closed trade{shadow.closedTrades.length !== 1 ? 's' : ''} — daily P/L: <span style={{ color: shadowPnlColor }}>{shadow.dailyPnL >= 0 ? '+' : ''}${shadow.dailyPnL.toFixed(0)}</span>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Council prompt ────────────────────────────────────────────────────────────
+
+function buildCouncilPrompt(p: {
+  symbol: string; side: string; entry: string; stop: string; target: string;
+  thesis: string; balance: string; riskPct: string;
+  snapshot: LiveSnapshot | null; advice: TradeAdviceResult;
+}): string {
+  const price = p.snapshot?.lastPrice !== undefined ? `Last: ${p.snapshot.lastPrice}` : 'No live price';
+  return `[LIVE TRADE ADVISORY — Council Short Review]
+
+Instrument: ${p.symbol} | Direction: ${p.side.toUpperCase()}
+Entry: ${p.entry || 'not set'} | Stop: ${p.stop || 'not set'} | Target: ${p.target || 'not set'}
+Thesis: ${p.thesis || 'none'}
+Balance: $${p.balance} | Risk: ${p.riskPct}%
+Live Context: ${price}, Trend: ${p.snapshot?.trend ?? 'unknown'}
+
+Rule Engine Verdict: ${p.advice.verdict.toUpperCase()} (${p.advice.confidence} confidence)
+${p.advice.summary}
+${p.advice.ruleViolations.length > 0 ? `Violations: ${p.advice.ruleViolations.join('; ')}` : ''}
+
+Provide a concise Council review (4–6 sentences): agree/disagree with verdict, what would invalidate, best next move.`;
+}
+
+// ── Sub-components ────────────────────────────────────────────────────────────
+
+function OpenPositionRow({ trade }: { trade: ShadowTrade }) {
+  const pnl   = trade.unrealizedPnl ?? 0;
+  const color = pnl > 0 ? '#34d399' : pnl < 0 ? '#f87171' : 'rgba(255,255,255,0.5)';
+  return (
+    <div style={s.positionRow}>
+      <span style={{ ...s.posSide, color: trade.side === 'long' ? '#34d399' : '#f87171' }}>
+        {trade.side === 'long' ? '▲' : '▼'} {trade.side.toUpperCase()}
+      </span>
+      <span style={s.posSymbol}>{trade.symbol}</span>
+      <span style={s.posDetail}>×{trade.qty} @ {trade.entryPrice.toFixed(2)}</span>
+      <span style={s.posDetail}>Stop: {trade.stopPrice.toFixed(2)}</span>
+      <span style={s.posDetail}>Target: {trade.targetPrice.toFixed(2)}</span>
+      <span style={{ ...s.posPnl, color }}>{pnl >= 0 ? '+' : ''}${pnl.toFixed(0)}</span>
+      <span style={s.posReason} title={trade.reason}>{trade.reason.slice(0, 60)}{trade.reason.length > 60 ? '…' : ''}</span>
+    </div>
+  );
+}
+
+function ComparisonPanel({ symbol, userSide, userEntry, userStop, userTarget, shadowTrade }: {
+  symbol: string;
+  userSide: 'long' | 'short';
+  userEntry?: number;
+  userStop?: number;
+  userTarget?: number;
+  shadowTrade: ShadowTrade;
+}) {
+  const userRr = userEntry && userStop && userTarget
+    ? Math.abs(userTarget - userEntry) / Math.abs(userEntry - userStop)
+    : undefined;
+  const shadowRr = Math.abs(shadowTrade.targetPrice - shadowTrade.entryPrice) / Math.abs(shadowTrade.entryPrice - shadowTrade.stopPrice);
+
+  return (
+    <div style={{ ...s.card, borderColor: 'rgba(167,139,250,0.2)' }}>
+      <div style={s.cardTitle}>Compare — {symbol} — Your Trade vs Council Shadow</div>
+      <div style={s.compareGrid}>
+        {/* User */}
+        <div style={s.compareCol}>
+          <div style={s.compareHeader}>Your Setup</div>
+          <CompareRow label="Direction" value={userSide.toUpperCase()} color={userSide === 'long' ? '#34d399' : '#f87171'} />
+          <CompareRow label="Entry"  value={userEntry  ? userEntry.toFixed(2)  : '—'} />
+          <CompareRow label="Stop"   value={userStop   ? userStop.toFixed(2)   : '—'} />
+          <CompareRow label="Target" value={userTarget ? userTarget.toFixed(2) : '—'} />
+          <CompareRow label="R:R"    value={userRr ? `${userRr.toFixed(2)}:1` : '—'} />
+        </div>
+        <div style={s.compareDivider} />
+        {/* Shadow */}
+        <div style={s.compareCol}>
+          <div style={{ ...s.compareHeader, color: '#a78bfa' }}>Council Shadow <span style={s.simBadge}>SIM</span></div>
+          <CompareRow label="Direction" value={shadowTrade.side.toUpperCase()} color={shadowTrade.side === 'long' ? '#34d399' : '#f87171'} />
+          <CompareRow label="Entry"  value={shadowTrade.entryPrice.toFixed(2)} />
+          <CompareRow label="Stop"   value={shadowTrade.stopPrice.toFixed(2)} />
+          <CompareRow label="Target" value={shadowTrade.targetPrice.toFixed(2)} />
+          <CompareRow label="R:R"    value={`${shadowRr.toFixed(2)}:1`} />
+          {shadowTrade.unrealizedPnl !== undefined && (
+            <CompareRow label="P/L" value={`${shadowTrade.unrealizedPnl >= 0 ? '+' : ''}$${shadowTrade.unrealizedPnl.toFixed(0)}`} color={shadowTrade.unrealizedPnl >= 0 ? '#34d399' : '#f87171'} />
+          )}
+        </div>
+      </div>
+      {shadowTrade.reason && (
+        <div style={{ fontSize: 11, color: 'rgba(167,139,250,0.7)', marginTop: 4, fontStyle: 'italic' }}>
+          Council reason: {shadowTrade.reason}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HistoryTable({ trades }: { trades: ShadowTrade[] }) {
+  return (
+    <div style={s.historyTable}>
+      <div style={s.historyHeader}>
+        <span>Time</span><span>Symbol</span><span>Side</span><span>Entry</span><span>Exit</span><span>P/L</span><span>R</span><span>Exit</span>
+      </div>
+      {trades.map(t => {
+        const pnl   = t.pnl ?? 0;
+        const color = pnl > 0 ? '#34d399' : pnl < 0 ? '#f87171' : 'rgba(255,255,255,0.4)';
+        return (
+          <div key={t.id} style={s.historyRow}>
+            <span>{new Date(t.openedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+            <span>{t.symbol}</span>
+            <span style={{ color: t.side === 'long' ? '#34d399' : '#f87171' }}>{t.side.toUpperCase()}</span>
+            <span>{t.entryPrice.toFixed(2)}</span>
+            <span>{t.exitPrice?.toFixed(2) ?? '—'}</span>
+            <span style={{ color }}>{pnl >= 0 ? '+' : ''}${pnl.toFixed(0)}</span>
+            <span style={{ color }}>{t.pnlR !== undefined ? `${t.pnlR >= 0 ? '+' : ''}${t.pnlR.toFixed(2)}R` : '—'}</span>
+            <span style={{ color: 'rgba(255,255,255,0.3)', fontSize: 9 }}>{t.exitReason ?? '—'}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function VerdictCard({ advice, onCouncilReview, councilLoading }: {
+  advice: TradeAdviceResult;
+  onCouncilReview: () => void;
+  councilLoading: boolean;
+}) {
+  const cfg = VERDICT_CONFIG[advice.verdict];
+  return (
+    <div style={{ ...s.card, borderColor: cfg.color + '44' }}>
+      <div style={s.verdictHeader}>
+        <div style={{ ...s.verdictBadge, background: cfg.bg, color: cfg.color }}>{cfg.label}</div>
+        <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)' }}>{advice.confidence} confidence</span>
+      </div>
+      <p style={s.verdictSummary}>{advice.summary}</p>
+      {advice.suggestedSize !== undefined && (
+        <div style={s.sizingRow}>
+          <span style={s.sizingLabel}>Suggested</span>
+          <span style={s.sizingValue}>{advice.suggestedSize} contract{advice.suggestedSize !== 1 ? 's' : ''}</span>
+          {advice.riskDollars    !== undefined && <span style={s.sizingMeta}>Risk: ${advice.riskDollars.toFixed(0)}</span>}
+          {advice.rewardDollars  !== undefined && <span style={s.sizingMeta}>Reward: ${advice.rewardDollars.toFixed(0)}</span>}
+          {advice.rr             !== undefined && <span style={s.sizingMeta}>R:R {advice.rr.toFixed(2)}:1</span>}
+        </div>
+      )}
+      {advice.ruleViolations.length > 0 && <ItemList items={advice.ruleViolations} icon="✕" color="#f87171" />}
+      {advice.warnings.length > 0        && <ItemList items={advice.warnings}       icon="⚠" color="#fbbf24" />}
+      {advice.strengths.length > 0       && <ItemList items={advice.strengths}      icon="✓" color="#34d399" />}
+      <div style={{ ...s.actions, marginTop: 8 }}>
+        <button style={{ ...s.btn, ...s.btnPrimary, opacity: councilLoading ? 0.5 : 1 }} disabled={councilLoading} onClick={onCouncilReview}>
+          {councilLoading ? 'Reviewing...' : 'Council Review'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ItemList({ items, icon, color }: { items: string[]; icon: string; color: string }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+      {items.map((item, i) => (
+        <div key={i} style={{ display: 'flex', gap: 8, fontSize: 12, color: 'rgba(255,255,255,0.6)', lineHeight: 1.5 }}>
+          <span style={{ color, flexShrink: 0 }}>{icon}</span><span>{item}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
+      <span style={{ fontSize: 10, fontWeight: 600, color: 'rgba(255,255,255,0.35)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</span>
+      {children}
+    </div>
+  );
+}
+
+function Metric({ label, value, highlight, dim, dimRed }: { label: string; value: string; highlight?: boolean; dim?: boolean; dimRed?: boolean }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 70 }}>
+      <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</span>
+      <span style={{ fontSize: 16, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: highlight ? '#34d399' : dimRed ? '#f87171' : dim ? 'rgba(255,255,255,0.4)' : 'rgba(255,255,255,0.85)' }}>{value}</span>
+    </div>
+  );
+}
+
+function ShadowStat({ label, value, color }: { label: string; value: string; color?: string }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</span>
+      <span style={{ fontSize: 15, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: color ?? 'rgba(255,255,255,0.8)' }}>{value}</span>
+    </div>
+  );
+}
+
+function CompareRow({ label, value, color }: { label: string; value: string; color?: string }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '3px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+      <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>{label}</span>
+      <span style={{ fontSize: 12, fontWeight: 600, color: color ?? 'rgba(255,255,255,0.75)', fontVariantNumeric: 'tabular-nums' }}>{value}</span>
+    </div>
+  );
+}
+
+// ── Styles ────────────────────────────────────────────────────────────────────
+
+const s: Record<string, React.CSSProperties> = {
+  page:      { display: 'flex', flexDirection: 'column', height: '100%', overflowY: 'auto', background: 'var(--bg, #0d0d0f)', color: 'rgba(255,255,255,0.85)', fontFamily: 'var(--font-mono, monospace)', padding: '0 24px 40px' },
+  header:    { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', padding: '20px 0 12px', borderBottom: '1px solid rgba(255,255,255,0.06)', marginBottom: 16, gap: 12, flexWrap: 'wrap' },
+  backBtn:   { background: 'none', border: 'none', color: 'rgba(255,255,255,0.35)', fontSize: 11, cursor: 'pointer', padding: '4px 0', marginTop: 2 },
+  title:     { fontSize: 18, fontWeight: 700, margin: '0 0 6px', color: 'rgba(255,255,255,0.9)' },
+  badges:    { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
+  badgeAdvisory: { fontSize: 9, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#fbbf24', background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.25)', borderRadius: 4, padding: '2px 7px' },
+  badgeShadow:   { fontSize: 9, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#a78bfa', background: 'rgba(167,139,250,0.1)', border: '1px solid rgba(167,139,250,0.25)', borderRadius: 4, padding: '2px 7px' },
+  badgeConn:     { fontSize: 10, fontWeight: 600, border: '1px solid', borderRadius: 4, padding: '2px 8px' },
+  headerActions: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 },
+  disclaimer:    { fontSize: 11, color: 'rgba(255,255,255,0.3)', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: 6, padding: '8px 12px', marginBottom: 16, lineHeight: 1.5 },
+  body:          { display: 'flex', flexDirection: 'column', gap: 14 },
+  card:          { background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 10, padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 12 },
+  cardTitle:     { fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'rgba(255,255,255,0.35)', display: 'flex', alignItems: 'center', gap: 8 },
+  noteBox:       { fontSize: 11, color: 'rgba(255,255,255,0.4)', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 6, padding: '8px 10px', lineHeight: 1.5 },
+  row:           { display: 'flex', gap: 12, flexWrap: 'wrap' },
+  input:         { background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, color: 'rgba(255,255,255,0.85)', fontSize: 12, padding: '7px 10px', outline: 'none', width: '100%', boxSizing: 'border-box', fontFamily: 'inherit' },
+  select:        { background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, color: 'rgba(255,255,255,0.85)', fontSize: 12, padding: '7px 10px', outline: 'none', width: '100%', boxSizing: 'border-box', fontFamily: 'inherit', cursor: 'pointer' },
+  textarea:      { background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, color: 'rgba(255,255,255,0.85)', fontSize: 12, padding: '7px 10px', outline: 'none', width: '100%', boxSizing: 'border-box', resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.5 },
+  segmented:     { display: 'flex', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, overflow: 'hidden' },
+  seg:           { flex: 1, background: 'none', border: 'none', color: 'rgba(255,255,255,0.35)', fontSize: 11, fontWeight: 600, padding: '7px 12px', cursor: 'pointer', fontFamily: 'inherit' },
+  segActive:     { background: 'rgba(96,165,250,0.12)', color: '#60a5fa' },
+  segLong:       { background: 'rgba(52,211,153,0.12)', color: '#34d399' },
+  segShort:      { background: 'rgba(248,113,113,0.12)', color: '#f87171' },
+  metricsRow:    { display: 'flex', gap: 20, flexWrap: 'wrap' },
+  liveDot:       { display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: '#34d399' },
+  offlineNote:   { fontSize: 12, color: 'rgba(255,255,255,0.3)', fontStyle: 'italic' },
+  snapshotWarning: { fontSize: 11, color: '#fbbf24', marginTop: -4 },
+  errorBanner:   { background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)', borderRadius: 6, padding: '10px 14px', fontSize: 12, color: '#f87171' },
+  actions:       { display: 'flex', gap: 10, flexWrap: 'wrap' },
+  btn:           { border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 700, padding: '9px 18px', cursor: 'pointer', fontFamily: 'inherit' },
+  btnPrimary:    { background: 'rgba(96,165,250,0.15)', border: '1px solid rgba(96,165,250,0.3)', color: '#60a5fa' },
+  btnGhost:      { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.4)' },
+  derivedMetric: { display: 'flex', flexDirection: 'column', gap: 2, justifyContent: 'flex-end' },
+  derivedLabel:  { fontSize: 10, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: '0.06em' },
+  derivedValue:  { fontSize: 16, fontWeight: 700, color: 'rgba(255,255,255,0.7)', fontVariantNumeric: 'tabular-nums' },
+  // Shadow trading
+  shadowDesc:    { fontSize: 12, color: 'rgba(255,255,255,0.5)', lineHeight: 1.6, margin: 0 },
+  shadowStats:   { display: 'flex', gap: 24, flexWrap: 'wrap' },
+  shadowStatus:  { fontSize: 11, color: 'rgba(255,255,255,0.35)', fontStyle: 'italic' },
+  simBadge:      { fontSize: 8, fontWeight: 800, letterSpacing: '0.08em', background: 'rgba(167,139,250,0.15)', color: '#a78bfa', border: '1px solid rgba(167,139,250,0.25)', borderRadius: 3, padding: '1px 5px' },
+  toggleRow:     { display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto' },
+  toggleBtn:     { width: 40, height: 22, borderRadius: 11, border: 'none', cursor: 'pointer', position: 'relative', padding: 0, transition: 'background 0.2s' },
+  toggleKnob:    { position: 'absolute', top: 2, width: 18, height: 18, borderRadius: '50%', background: '#fff', transition: 'transform 0.2s' },
+  // Position row
+  positionRow:   { display: 'flex', gap: 12, alignItems: 'baseline', fontSize: 12, flexWrap: 'wrap', paddingBottom: 8, borderBottom: '1px solid rgba(255,255,255,0.05)' },
+  posSide:       { fontWeight: 700, fontSize: 11, letterSpacing: '0.04em', flexShrink: 0 },
+  posSymbol:     { fontWeight: 700, color: 'rgba(255,255,255,0.85)', flexShrink: 0 },
+  posDetail:     { color: 'rgba(255,255,255,0.4)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 },
+  posPnl:        { fontWeight: 700, fontVariantNumeric: 'tabular-nums', marginLeft: 'auto', flexShrink: 0 },
+  posReason:     { fontSize: 10, color: 'rgba(167,139,250,0.6)', width: '100%', fontStyle: 'italic' },
+  // Compare
+  compareGrid:   { display: 'flex', gap: 16 },
+  compareCol:    { flex: 1, display: 'flex', flexDirection: 'column', gap: 2 },
+  compareHeader: { fontSize: 11, fontWeight: 700, color: 'rgba(255,255,255,0.6)', marginBottom: 6, letterSpacing: '0.04em' },
+  compareDivider:{ width: 1, background: 'rgba(255,255,255,0.06)', flexShrink: 0 },
+  // Verdict
+  verdictHeader: { display: 'flex', alignItems: 'center', gap: 12 },
+  verdictBadge:  { fontSize: 13, fontWeight: 800, letterSpacing: '0.06em', padding: '5px 14px', borderRadius: 6 },
+  verdictSummary:{ fontSize: 13, color: 'rgba(255,255,255,0.75)', lineHeight: 1.6, margin: 0 },
+  sizingRow:     { display: 'flex', gap: 16, alignItems: 'baseline', flexWrap: 'wrap' },
+  sizingLabel:   { fontSize: 10, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: '0.06em' },
+  sizingValue:   { fontSize: 18, fontWeight: 700, color: 'rgba(255,255,255,0.85)', fontVariantNumeric: 'tabular-nums' },
+  sizingMeta:    { fontSize: 11, color: 'rgba(255,255,255,0.4)' },
+  councilText:   { fontSize: 13, color: 'rgba(255,255,255,0.7)', lineHeight: 1.7, whiteSpace: 'pre-wrap' },
+  // History
+  historyTable:  { display: 'flex', flexDirection: 'column', gap: 0 },
+  historyHeader: { display: 'grid', gridTemplateColumns: '60px 50px 50px 70px 70px 60px 50px 50px', gap: 8, fontSize: 9, fontWeight: 700, color: 'rgba(255,255,255,0.25)', textTransform: 'uppercase', letterSpacing: '0.05em', padding: '0 0 6px', borderBottom: '1px solid rgba(255,255,255,0.06)' },
+  historyRow:    { display: 'grid', gridTemplateColumns: '60px 50px 50px 70px 70px 60px 50px 50px', gap: 8, fontSize: 11, color: 'rgba(255,255,255,0.6)', padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.04)', fontVariantNumeric: 'tabular-nums' },
+};

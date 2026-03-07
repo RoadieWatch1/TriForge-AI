@@ -18,6 +18,8 @@ import { InboxMode } from './modes/InboxMode';
 import { AutomationMode } from './modes/AutomationMode';
 import { HustleMode } from './modes/HustleMode';
 import { PhoneLink } from './components/PhoneLink';
+import { TradeDesk } from './components/TradeDesk';
+import { LiveTradeAdvisor } from './components/LiveTradeAdvisor';
 import { TrianglePresence } from './components/TrianglePresence';
 import { voiceService } from './voice/VoiceService';
 
@@ -50,7 +52,7 @@ type Screen =
   | 'chat' | 'settings' | 'memory' | 'ledger' | 'plan' | 'builder'
   | 'profiles' | 'missioncontrol' | 'agenthq'
   | 'dashboard' | 'operator' | 'world' | 'files' | 'inbox' | 'automation' | 'hustle'
-  | 'forge' | 'phonelink';
+  | 'forge' | 'phonelink' | 'tradeDesk' | 'liveTradeAdvisor';
 
 const LOCK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -338,6 +340,8 @@ export function App() {
           {screen === 'inbox'      && <InboxMode      onNavigate={s => setScreen(s as Screen)} />}
           {screen === 'automation' && <AutomationMode onNavigate={s => setScreen(s as Screen)} />}
           {screen === 'hustle'     && <HustleMode     onNavigate={s => setScreen(s as Screen)} />}
+          {screen === 'tradeDesk'        && <TradeDesk         onBack={() => setScreen('hustle')} />}
+          {screen === 'liveTradeAdvisor' && <LiveTradeAdvisor   onBack={() => setScreen('hustle')} />}
           {screen === 'chat' && (
             <Chat
               mode={mode}

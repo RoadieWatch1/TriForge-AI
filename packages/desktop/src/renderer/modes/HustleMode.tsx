@@ -6,7 +6,7 @@ interface Props {
   onNavigate: (screen: string) => void;
 }
 
-export function HustleMode({ onNavigate: _onNavigate }: Props) {
+export function HustleMode({ onNavigate }: Props) {
   const systems = SYSTEM_REGISTRY.filter(s => s.modes.includes('hustle'));
   const [prompt, setPrompt] = useState('');
   const [imageUrl, setImageUrl] = useState<string | null>(null);
@@ -32,8 +32,10 @@ export function HustleMode({ onNavigate: _onNavigate }: Props) {
     }
   };
 
-  const visualSystem = systems.find(s => s.id === 'visual_engine');
-  const otherSystems = systems.filter(s => s.id !== 'visual_engine');
+  const visualSystem  = systems.find(s => s.id === 'visual_engine');
+  const tradeSystem   = systems.find(s => s.id === 'trade_desk');
+  const liveAdvisor   = systems.find(s => s.id === 'live_trade_advisor');
+  const otherSystems  = systems.filter(s => !['visual_engine', 'trade_desk', 'live_trade_advisor'].includes(s.id));
 
   return (
     <ModeShell
@@ -83,6 +85,26 @@ export function HustleMode({ onNavigate: _onNavigate }: Props) {
             )}
           </div>
         </SystemTile>
+      )}
+
+      {/* Trade Desk */}
+      {tradeSystem && (
+        <SystemTile
+          key={tradeSystem.id}
+          system={tradeSystem}
+          onAction={() => onNavigate('tradeDesk')}
+          actionLabel="Open Trade Desk"
+        />
+      )}
+
+      {/* Live Trade Advisor */}
+      {liveAdvisor && (
+        <SystemTile
+          key={liveAdvisor.id}
+          system={liveAdvisor}
+          onAction={() => onNavigate('liveTradeAdvisor')}
+          actionLabel="Open Live Trade Advisor"
+        />
       )}
 
       {/* Coming soon systems */}
