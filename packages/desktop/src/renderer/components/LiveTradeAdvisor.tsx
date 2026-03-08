@@ -6,6 +6,10 @@
 // ADVISORY ONLY / SIMULATION ONLY — no live orders ever placed by Triforge.
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  SetupGradeBadge, CouncilLiveTradeCard, BlockedTradeCards,
+  UserComparisonPanel, TrustDashboardPanel, GradeAnalyticsPanel,
+} from './TrustComponents';
 
 // ── Local type mirrors (engine types, no direct import) ───────────────────────
 
@@ -60,6 +64,9 @@ interface ShadowTrade {
   setupType?: string;
   invalidationRule?: string;
   qualityScore?: number;
+  // Phase 7: Explainability
+  explanation?: { setupGrade: 'A' | 'B' | 'C' | 'D'; confidenceLabel: 'high' | 'medium' | 'low'; whyNow: string[]; keyRisks: string[]; invalidationTriggers: string[]; councilSummary: { approved: boolean; avgConfidence: number; agreementLabel: 'strong' | 'mixed' | 'weak'; providerReasons: Array<{ provider: string; vote: string; confidence: number; reason: string }> }; ruleSummary: { strengths: string[]; warnings: string[]; violations: string[] }; trustNote: string };
+  setupGrade?: 'A' | 'B' | 'C' | 'D';
 }
 
 interface TradovateAccountPosition {
@@ -266,6 +273,12 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
   const [promotionStatus, setPromotionStatus] = useState<PromotionWorkflowStatus | null>(null);
   const [promotionLoading, setPromotionLoading] = useState(false);
 
+  // Phase 7: Trust Layer state
+  const [blockedExplanations, setBlockedExplanations] = useState<any[]>([]);
+  const [gradeSummary, setGradeSummary] = useState<any[] | null>(null);
+  const [councilValueAdded, setCouncilValueAdded] = useState<any | null>(null);
+  const [showBlockedTrades, setShowBlockedTrades] = useState(false);
+
   // ── Tradovate account + proposed setup ─────────────────────────────────────
   const [accountState, setAccountState]   = useState<TradovateAccountState | null>(null);
   const [proposedSetup, setProposedSetup] = useState<ProposedTradeSetup | null>(null);
@@ -332,11 +345,17 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
       (window.triforge.trading as any).shadowRefinementSummary(),
       (window.triforge.trading as any).shadowReadinessReport(),
       (window.triforge.trading as any).promotionStatus(),
-    ]).then(([analyticsRes, refinementRes, readinessRes, promotionRes]: any[]) => {
+      (window.triforge.trading as any).recentBlockedExplanations?.(),
+      (window.triforge.trading as any).gradeSummary?.(),
+      (window.triforge.trading as any).councilValueAdded?.(),
+    ]).then(([analyticsRes, refinementRes, readinessRes, promotionRes, blockedRes, gradeRes, councilValueRes]: any[]) => {
       if (analyticsRes?.summary) setAnalyticsSummary(analyticsRes.summary as ShadowAnalyticsSummary);
       if (refinementRes?.summary) setRefinementSummary(refinementRes.summary as StrategyRefinementSummary);
       if (readinessRes?.report) setReadinessReport(readinessRes.report as StrategyReadinessReport);
       if (promotionRes?.status) setPromotionStatus(promotionRes.status as PromotionWorkflowStatus);
+      if (blockedRes?.explanations) setBlockedExplanations(blockedRes.explanations);
+      if (gradeRes?.summary) setGradeSummary(gradeRes.summary);
+      if (councilValueRes?.analysis) setCouncilValueAdded(councilValueRes.analysis);
     }).catch(() => {}).finally(() => setAnalyticsLoading(false));
   }, [showAnalytics, closedCount, shadow?.enabled]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -719,13 +738,27 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           )}
         </div>
 
-        {/* ── Open shadow positions ── */}
-        {shadow?.enabled && shadow.openTrades.length > 0 && (
-          <div style={{ ...s.card, borderColor: 'rgba(167,139,250,0.2)' }}>
-            <div style={s.cardTitle}>Open Shadow Positions <span style={s.simBadge}>SIM</span></div>
-            {shadow.openTrades.map(t => (
-              <OpenPositionRow key={t.id} trade={t} />
-            ))}
+        {/* ── Open shadow positions (Phase 7: CouncilLiveTradeCard) ── */}
+        {shadow?.enabled && shadow.openTrades.length > 0 && shadow.openTrades.map(t => (
+          <CouncilLiveTradeCard key={t.id} trade={t as any} currentPrice={snapshot?.lastPrice} />
+        ))}
+
+        {/* ── User comparison (Phase 7) ── */}
+        {shadow?.enabled && shadow.openTrades.some(t => t.symbol === symbol) && (
+          <UserComparisonPanel matchedTrade={shadow.openTrades.find(t => t.symbol === symbol) as any} />
+        )}
+
+        {/* ── Blocked trade candidates (Phase 7) ── */}
+        {shadow?.enabled && blockedExplanations.length > 0 && (
+          <div style={s.card}>
+            <div style={{ ...s.cardTitle, justifyContent: 'space-between' }}>
+              <span>Recent Blocked Candidates <span style={s.simBadge}>SIM</span></span>
+              <button style={{ ...s.btn, ...s.btnGhost, fontSize: 10, padding: '3px 8px' }}
+                onClick={() => setShowBlockedTrades(v => !v)}>
+                {showBlockedTrades ? 'Collapse' : `Show ${blockedExplanations.length}`}
+              </button>
+            </div>
+            {showBlockedTrades && <BlockedTradeCards explanations={blockedExplanations as any} />}
           </div>
         )}
 
@@ -915,7 +948,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
               analyticsLoading ? (
                 <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', fontStyle: 'italic' }}>Loading analytics...</div>
               ) : analyticsSummary ? (
-                <ShadowAnalyticsPanel summary={analyticsSummary} refinement={refinementSummary} readiness={readinessReport} onClear={handleAnalyticsClear} promotion={promotionStatus} onPromote={handlePromote} onReturnToShadow={handleReturnToShadow} promotionLoading={promotionLoading} />
+                <ShadowAnalyticsPanel summary={analyticsSummary} refinement={refinementSummary} readiness={readinessReport} onClear={handleAnalyticsClear} promotion={promotionStatus} onPromote={handlePromote} onReturnToShadow={handleReturnToShadow} promotionLoading={promotionLoading} councilValueAdded={councilValueAdded} gradeSummary={gradeSummary} />
               ) : (
                 <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>No analytics data available.</div>
               )
@@ -1031,16 +1064,17 @@ function ComparisonPanel({ symbol, userSide, userEntry, userStop, userTarget, sh
 }
 
 function HistoryTable({ trades }: { trades: ShadowTrade[] }) {
+  const histGrid = '60px 50px 50px 70px 70px 60px 50px 50px 45px';
   return (
     <div style={s.historyTable}>
-      <div style={s.historyHeader}>
-        <span>Time</span><span>Symbol</span><span>Side</span><span>Entry</span><span>Exit</span><span>P/L</span><span>R</span><span>Exit</span>
+      <div style={{ ...s.historyHeader, gridTemplateColumns: histGrid }}>
+        <span>Time</span><span>Symbol</span><span>Side</span><span>Entry</span><span>Exit</span><span>P/L</span><span>R</span><span>Exit</span><span>Grade</span>
       </div>
       {trades.map(t => {
         const pnl   = t.pnl ?? 0;
         const color = pnl > 0 ? '#34d399' : pnl < 0 ? '#f87171' : 'rgba(255,255,255,0.4)';
         return (
-          <div key={t.id} style={s.historyRow}>
+          <div key={t.id} style={{ ...s.historyRow, gridTemplateColumns: histGrid }}>
             <span>{new Date(t.openedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
             <span>{t.symbol}</span>
             <span style={{ color: t.side === 'long' ? '#34d399' : '#f87171' }}>{t.side.toUpperCase()}</span>
@@ -1049,6 +1083,7 @@ function HistoryTable({ trades }: { trades: ShadowTrade[] }) {
             <span style={{ color }}>{pnl >= 0 ? '+' : ''}${pnl.toFixed(0)}</span>
             <span style={{ color }}>{t.pnlR !== undefined ? `${t.pnlR >= 0 ? '+' : ''}${t.pnlR.toFixed(2)}R` : '—'}</span>
             <span style={{ color: 'rgba(255,255,255,0.3)', fontSize: 9 }}>{t.exitReason ?? '—'}</span>
+            <span><SetupGradeBadge grade={t.setupGrade as any} /></span>
           </div>
         );
       })}
@@ -1131,9 +1166,10 @@ function ShadowStat({ label, value, color }: { label: string; value: string; col
 
 // ── Phase 3: Analytics sub-components ─────────────────────────────────────────
 
-function ShadowAnalyticsPanel({ summary, refinement, readiness, onClear, promotion, onPromote, onReturnToShadow, promotionLoading: promoLoading }: {
+function ShadowAnalyticsPanel({ summary, refinement, readiness, onClear, promotion, onPromote, onReturnToShadow, promotionLoading: promoLoading, councilValueAdded: cvaProp, gradeSummary: gradeProp }: {
   summary: ShadowAnalyticsSummary; refinement?: StrategyRefinementSummary | null; readiness?: StrategyReadinessReport | null; onClear: () => void;
   promotion?: PromotionWorkflowStatus | null; onPromote?: (mode: TradingOperationMode) => void; onReturnToShadow?: () => void; promotionLoading?: boolean;
+  councilValueAdded?: any; gradeSummary?: any[] | null;
 }) {
   const o = summary.overall;
   const c = summary.council;
@@ -1236,6 +1272,20 @@ function ShadowAnalyticsPanel({ summary, refinement, readiness, onClear, promoti
 
       {/* By Setup Type */}
       {summary.bySetupType.length > 0 && <BucketTable title="By Setup Type" rows={summary.bySetupType} />}
+
+      {/* Phase 7: Trust Dashboard */}
+      <TrustDashboardPanel
+        analytics={summary}
+        readiness={readiness as any}
+        promotion={promotion as any}
+        councilValueAdded={cvaProp}
+        gradeSummary={gradeProp}
+      />
+
+      {/* Phase 7: Grade-Based Analytics */}
+      {gradeProp && gradeProp.length > 0 && (
+        <GradeAnalyticsPanel gradeSummary={gradeProp} />
+      )}
 
       {/* Clear button */}
       <div style={{ display: 'flex', justifyContent: 'flex-end' }}>

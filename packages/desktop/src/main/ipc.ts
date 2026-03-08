@@ -2797,6 +2797,33 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     return { ok: true };
   });
 
+  // ── Phase 7: Trade Explainability ────────────────────────────────────────────
+
+  ipcMain.handle('trading:recentBlockedExplanations', async (_e, opts?: { limit?: number; since?: number }) => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
+    const { buildBlockedTradeExplanation } = await import('@triforge/engine');
+    const limit = opts?.limit ?? 10;
+    const since = opts?.since ?? (Date.now() - 2 * 3600_000);
+    const all = shadowAnalyticsStore.loadAll();
+    const blocked = all.filter(e =>
+      e.timestamp >= since && e.blockReason &&
+      (e.stage === 'setup_detection' || e.stage === 'rule_engine' || e.stage === 'council_review')
+    );
+    return { explanations: blocked.slice(-limit).map(e => buildBlockedTradeExplanation(e)) };
+  });
+
+  ipcMain.handle('trading:gradeSummary', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
+    const { computeGradeSummary } = await import('@triforge/engine');
+    return { summary: computeGradeSummary(shadowAnalyticsStore.loadAll()) };
+  });
+
+  ipcMain.handle('trading:councilValueAdded', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
+    const { computeCouncilValueAdded } = await import('@triforge/engine');
+    return { analysis: computeCouncilValueAdded(shadowAnalyticsStore.loadAll()) };
+  });
+
   // ── Strategy Refinement (Phase 4) ─────────────────────────────────────────────
 
   ipcMain.handle('trading:shadowRefinementSummary', async () => {

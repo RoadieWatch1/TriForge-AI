@@ -520,6 +520,14 @@ const api = {
       ipcRenderer.invoke('trading:confirmPendingTrade') as Promise<{ ok?: boolean; error?: string }>,
     rejectPendingTrade: () =>
       ipcRenderer.invoke('trading:rejectPendingTrade') as Promise<{ ok?: boolean; error?: string }>,
+
+    // Phase 7: Trust Layer
+    recentBlockedExplanations: (opts?: { limit?: number; since?: number }) =>
+      ipcRenderer.invoke('trading:recentBlockedExplanations', opts) as Promise<{ explanations?: unknown[]; error?: string }>,
+    gradeSummary: () =>
+      ipcRenderer.invoke('trading:gradeSummary') as Promise<{ summary?: unknown[]; error?: string }>,
+    councilValueAdded: () =>
+      ipcRenderer.invoke('trading:councilValueAdded') as Promise<{ analysis?: unknown; error?: string }>,
   },
 
   // Scheduler (recurring + once jobs)

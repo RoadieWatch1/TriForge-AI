@@ -271,3 +271,18 @@ export type {
   PromotionDecision, PromotionWorkflowStatus,
 } from './trading/types';
 export { DEFAULT_PROMOTION_GUARDRAILS, validatePromotionGuardrails } from './trading/types';
+
+// Phase 7: Trade Explainability — pure deterministic functions
+export {
+  computeSetupGrade, computeAgreementLabel,
+  buildTradeDecisionExplanation, buildBlockedTradeExplanation,
+  computeGradeSummary, computeCouncilValueAdded,
+} from './trading/tradeExplainability';
+export type {
+  SetupGradeInput, ExplanationInput,
+} from './trading/tradeExplainability';
+export type {
+  SetupGrade, CouncilAgreementLabel, ConfidenceLabel,
+  TradeDecisionExplanation, CouncilSummary, RuleSummary,
+  BlockedTradeExplanation, GradeBucketSummary, CouncilValueAdded,
+} from './trading/types';

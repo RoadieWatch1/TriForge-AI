@@ -34,8 +34,9 @@ import type {
   ShadowStrategyConfig,
   TradingOperationMode, PromotionGuardrails, ModeGuardrails,
   PromotionWorkflowStatus, StrategyReadinessState,
+  SetupGrade, TradeDecisionExplanation,
 } from '@triforge/engine';
-import { DEFAULT_PROMOTION_GUARDRAILS } from '@triforge/engine';
+import { DEFAULT_PROMOTION_GUARDRAILS, computeSetupGrade, computeAgreementLabel, buildTradeDecisionExplanation } from '@triforge/engine';
 
 // ── Council review callback type ──────────────────────────────────────────────
 // Injected from ipc.ts after engine init. Runs the 3-AI vote in the main process.
@@ -559,6 +560,41 @@ class ShadowTradingControllerClass {
       ? `Below stop at ${setup.stop} \u2014 setup fails if price violates this level before entry.`
       : `Above stop at ${setup.stop} \u2014 setup fails if price violates this level before entry.`;
 
+    // Phase 7: Compute setup grade + explanation
+    const avgCouncilConfidence = (councilVotes ?? []).length > 0
+      ? (councilVotes ?? []).reduce((s: number, v: CouncilVote) => s + v.confidence, 0) / (councilVotes ?? []).length : 0;
+    const agreementLabel = computeAgreementLabel(councilVotes ?? []);
+    const trendAligned = setup.side === 'long'
+      ? (snap.trend5m === 'up' || snap.trend15m === 'up')
+      : (snap.trend5m === 'down' || snap.trend15m === 'down');
+    const supportiveVwap = setup.side === 'long'
+      ? (snap.vwapRelation === 'above' || snap.vwapRelation === 'at')
+      : (snap.vwapRelation === 'below' || snap.vwapRelation === 'at');
+    const setupGradeVal: SetupGrade = computeSetupGrade({
+      councilVotes: councilVotes ?? [], councilApproved: true,
+      warningCount: advice.warnings?.length ?? 0,
+      violationCount: advice.ruleViolations?.length ?? 0,
+      strengthCount: advice.strengths?.length ?? 0,
+      sessionLabel: snap.sessionLabel, vwapRelation: snap.vwapRelation,
+      trend5m: snap.trend5m, trend15m: snap.trend15m,
+      side: setup.side as 'long' | 'short', volatilityRegime: snap.volatilityRegime,
+    });
+    const explanation: TradeDecisionExplanation = buildTradeDecisionExplanation({
+      councilVotes: councilVotes ?? [], councilApproved: true,
+      strengthCount: advice.strengths?.length ?? 0,
+      warningCount: advice.warnings?.length ?? 0,
+      violationCount: advice.ruleViolations?.length ?? 0,
+      strengths: advice.strengths, warnings: advice.warnings,
+      violations: advice.ruleViolations,
+      side: setup.side! as 'long' | 'short',
+      stopPrice: setup.stop, invalidationRule,
+      sessionLabel: snap.sessionLabel, vwapRelation: snap.vwapRelation,
+      trend5m: snap.trend5m, trend15m: snap.trend15m,
+      volatilityRegime: snap.volatilityRegime,
+      trendAligned, supportiveVwap, avgCouncilConfidence, agreementLabel,
+      setupGrade: setupGradeVal,
+    });
+
     const trade: ShadowTrade = {
       id:               crypto.randomUUID(),
       symbol,
@@ -587,6 +623,9 @@ class ShadowTradingControllerClass {
       // Phase 3: MFE/MAE init at entry price
       mfPrice:          setup.entry!,
       maPrice:          setup.entry!,
+      // Phase 7: Explainability
+      explanation,
+      setupGrade:       setupGradeVal,
     };
     this._state.openTrades.push(trade);
     this._state.tradesToday++;
@@ -836,6 +875,15 @@ class ShadowTradingControllerClass {
       violationCount: advice.ruleViolations?.length ?? 0,
       councilVotes:   votes,
       councilApproved: approved ?? false,
+      setupGrade: votes ? computeSetupGrade({
+        councilVotes: votes, councilApproved: approved ?? false,
+        warningCount: advice.warnings?.length ?? 0,
+        violationCount: advice.ruleViolations?.length ?? 0,
+        strengthCount: advice.strengths?.length ?? 0,
+        sessionLabel: snap.sessionLabel, vwapRelation: snap.vwapRelation,
+        trend5m: snap.trend5m, trend15m: snap.trend15m,
+        side: setup.side as 'long' | 'short', volatilityRegime: snap.volatilityRegime,
+      }) : undefined,
     } as ShadowDecisionEvent;
   }
 
@@ -861,6 +909,7 @@ class ShadowTradingControllerClass {
       stopPrice:      trade.stopPrice,
       targetPrice:    trade.targetPrice,
       qualityScore:   trade.qualityScore,
+      setupGrade:     trade.setupGrade,
       ruleVerdict:    advice.verdict,
       ruleConfidence: advice.confidence,
       rr:             advice.rr,
@@ -900,6 +949,7 @@ class ShadowTradingControllerClass {
       timeInTradeMs:    trade.closedAt ? trade.closedAt - trade.openedAt : 0,
       councilVotes:     trade.councilVotes,
       councilApproved:  true,
+      setupGrade:       trade.setupGrade,
     } as ShadowDecisionEvent;
   }
 

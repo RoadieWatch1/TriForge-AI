@@ -125,6 +125,10 @@ export interface ShadowTrade {
   mfeR?: number;
   /** MAE in R-multiples (set on close). */
   maeR?: number;
+
+  // ── Phase 7: Explainability ─────────
+  explanation?: TradeDecisionExplanation;
+  setupGrade?: SetupGrade;
 }
 
 export interface ShadowAccountSettings {
@@ -220,6 +224,9 @@ export interface ShadowDecisionEvent {
   stopPrice?: number;
   targetPrice?: number;
   qualityScore?: number;
+
+  /** Phase 7: Setup grade for grade-based analytics. */
+  setupGrade?: SetupGrade;
 
   // ── Rule engine context (from rule_engine onward) ──
   ruleVerdict?: string;
@@ -463,6 +470,64 @@ export interface PromotionWorkflowStatus {
   activeGuardrails: ModeGuardrails;
   guardrails: PromotionGuardrails;
   lastReadinessState: StrategyReadinessState;
+}
+
+// ── Phase 7: Trade Explainability ──────────────────────────────────────────
+
+export type SetupGrade = 'A' | 'B' | 'C' | 'D';
+export type CouncilAgreementLabel = 'strong' | 'mixed' | 'weak';
+export type ConfidenceLabel = 'high' | 'medium' | 'low';
+
+export interface CouncilSummary {
+  approved: boolean;
+  avgConfidence: number;
+  agreementLabel: CouncilAgreementLabel;
+  providerReasons: Array<{ provider: string; vote: string; confidence: number; reason: string }>;
+}
+
+export interface RuleSummary {
+  strengths: string[];
+  warnings: string[];
+  violations: string[];
+}
+
+export interface TradeDecisionExplanation {
+  setupGrade: SetupGrade;
+  confidenceLabel: ConfidenceLabel;
+  whyNow: string[];
+  keyRisks: string[];
+  invalidationTriggers: string[];
+  councilSummary: CouncilSummary;
+  ruleSummary: RuleSummary;
+  trustNote: string;
+}
+
+export interface BlockedTradeExplanation {
+  timestamp: number;
+  symbol?: string;
+  blockStage: ShadowDecisionStage;
+  blockReason: string;
+  blockMessage: string;
+  setupGrade?: SetupGrade;
+  trustNote: string;
+}
+
+export interface GradeBucketSummary {
+  grade: SetupGrade;
+  trades: number;
+  winRate: number;
+  avgPnlR: number;
+  totalPnlDollars: number;
+}
+
+export interface CouncilValueAdded {
+  rulesQualifiedCount: number;
+  councilApprovedCount: number;
+  councilBlockedCount: number;
+  approvedExpectancyR: number;
+  blockedExpectancyR: null;
+  councilBlockRate: number;
+  advisory: string;
 }
 
 // ── Strategy config validation (Phase 4.1) ──────────────────────────────────
