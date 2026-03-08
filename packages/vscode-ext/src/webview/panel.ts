@@ -2,7 +2,16 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { execSync } from 'child_process';
-import { ProviderManager, ProviderName } from '@triforge/engine';
+import {
+  ProviderManager, ProviderName,
+  CouncilWorkflowEngine,
+  type CouncilWorkflowSession,
+  type CouncilWorkflowPhase,
+  type ExecutionMode,
+  type CouncilWorkflowAction,
+  type UserInputAction,
+  eventBus,
+} from '@triforge/engine';
 import { ChangePatch } from '../core/patch';
 import { LicenseManager, LicenseStatus, LS_CHECKOUT } from '../core/license';
 
@@ -134,6 +143,12 @@ export class TriForgeCouncilPanel {
   private _ledgerConsentShown = false;
   private _licenseManager!: LicenseManager;
 
+  // ── Governed Workflow Pipeline ──────────────────────────────────────────
+  private _workflowEngine: CouncilWorkflowEngine;
+  private _workflowSession: CouncilWorkflowSession | null = null;
+  private _useGovernedPipeline = true; // feature flag: true = new governed pipeline, false = legacy
+  private _workflowEventUnsubscribers: Array<() => void> = [];
+
   private static readonly _validProviders: ProviderName[] = ['openai', 'grok', 'claude'];
   private static _isValidProvider(v: unknown): v is ProviderName {
     return typeof v === 'string' && TriForgeCouncilPanel._validProviders.includes(v as ProviderName);
@@ -149,10 +164,12 @@ export class TriForgeCouncilPanel {
     this._extensionUri = extensionUri;
     this._providerManager = providerManager;
     this._licenseManager = licenseManager;
+    this._workflowEngine = new CouncilWorkflowEngine(providerManager);
 
     this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
     this._providerManager.onDidChangeStatus(() => { this.refreshProviderStatus(); });
     this._setWebviewMessageListener();
+    this._subscribeWorkflowEvents();
     this.updateContent();
   }
 
@@ -183,6 +200,8 @@ export class TriForgeCouncilPanel {
   public dispose() {
     TriForgeCouncilPanel.currentPanel = undefined;
     this._abortController?.abort();
+    for (const unsub of this._workflowEventUnsubscribers) { unsub(); }
+    this._workflowEventUnsubscribers = [];
     this._panel.dispose();
     while (this._disposables.length) {
       const x = this._disposables.pop();
@@ -294,11 +313,20 @@ export class TriForgeCouncilPanel {
       async (message: any) => {
         switch (message.command) {
           case 'council:run':
-            await this._runCouncilPipeline(
-              message.prompt as string,
-              (message.context as string) ?? '',
-              (message.intensity as string) ?? 'adaptive'
-            );
+            if (this._useGovernedPipeline) {
+              await this._runGovernedPipeline(
+                message.prompt as string,
+                (message.context as string) ?? '',
+                (message.mode as ExecutionMode) ?? 'safe',
+                (message.action as CouncilWorkflowAction) ?? 'plan_then_code'
+              );
+            } else {
+              await this._runCouncilPipeline(
+                message.prompt as string,
+                (message.context as string) ?? '',
+                (message.intensity as string) ?? 'adaptive'
+              );
+            }
             break;
           case 'council:apply':
             await this._applyFinalCode();
@@ -569,6 +597,75 @@ export class TriForgeCouncilPanel {
             vscode.env.openExternal(vscode.Uri.parse(message.url as string));
             break;
           }
+
+          // ── Governed Workflow Pipeline ────────────────────────────────
+          case 'workflow:approvePlan':
+            if (this._workflowSession) {
+              this._workflowSession = await this._workflowEngine.advancePhase(
+                this._workflowSession.id,
+                { type: 'approve_plan' }
+              );
+            }
+            break;
+          case 'workflow:rejectPlan':
+            if (this._workflowSession) {
+              this._workflowSession = await this._workflowEngine.advancePhase(
+                this._workflowSession.id,
+                { type: 'reject_plan', reason: (message.reason as string) || 'Rejected by user' }
+              );
+            }
+            break;
+          case 'workflow:narrowPlan':
+            if (this._workflowSession) {
+              this._workflowSession = await this._workflowEngine.advancePhase(
+                this._workflowSession.id,
+                { type: 'narrow_plan', instructions: (message.instructions as string) || '' }
+              );
+            }
+            break;
+          case 'workflow:approveCommit':
+            if (this._workflowSession) {
+              this._workflowSession = await this._workflowEngine.advancePhase(
+                this._workflowSession.id,
+                { type: 'approve_commit' }
+              );
+            }
+            break;
+          case 'workflow:rejectCommit':
+            if (this._workflowSession) {
+              this._workflowSession = await this._workflowEngine.advancePhase(
+                this._workflowSession.id,
+                { type: 'reject_commit' }
+              );
+            }
+            break;
+          case 'workflow:approvePush':
+            if (this._workflowSession) {
+              this._workflowSession = await this._workflowEngine.advancePhase(
+                this._workflowSession.id,
+                { type: 'approve_push' }
+              );
+            }
+            break;
+          case 'workflow:rejectPush':
+            if (this._workflowSession) {
+              this._workflowSession = await this._workflowEngine.advancePhase(
+                this._workflowSession.id,
+                { type: 'reject_push' }
+              );
+            }
+            break;
+          case 'workflow:abort':
+            if (this._workflowSession) {
+              this._workflowEngine.abortSession(this._workflowSession.id);
+              this._workflowSession = null;
+              this._send({ type: 'workflow-phase', phase: 'blocked', message: 'Aborted by user.' });
+            }
+            break;
+          case 'workflow:setMode':
+            // Switch between governed and legacy pipeline
+            this._useGovernedPipeline = message.governed !== false;
+            break;
         }
       },
       undefined,
@@ -576,7 +673,215 @@ export class TriForgeCouncilPanel {
     );
   }
 
-  // ── Council pipeline ──────────────────────────────────────────────────────
+  // ── Governed Workflow Pipeline ───────────────────────────────────────────
+
+  private async _runGovernedPipeline(
+    prompt: string,
+    context: string,
+    mode: ExecutionMode,
+    action: CouncilWorkflowAction,
+  ): Promise<void> {
+    // License gate
+    const allProviders = await this._providerManager.getActiveProviders();
+    if (allProviders.length >= 2) {
+      const lic = await this._licenseManager.getStatus();
+      if (!lic.isCouncilAllowed) {
+        this._send({
+          type: 'license-gate',
+          message: 'Your 1-day trial has ended. Subscribe to TriForge AI Code Council to unlock full multi-model deliberation.',
+          checkoutUrl: LS_CHECKOUT,
+        });
+        return;
+      }
+    }
+
+    // Build workspace path
+    const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
+
+    // Build context from session + context files
+    let fullContext = context;
+    if (this._session?.fullFileContent) {
+      fullContext += `\n\n--- Active File ---\n${this._session.fullFileContent}`;
+    }
+    if (this._session?.contextFiles) {
+      for (const [relPath, content] of Object.entries(this._session.contextFiles)) {
+        fullContext += `\n\n--- ${relPath} ---\n${content}`;
+      }
+    }
+
+    try {
+      // Start session
+      this._workflowSession = await this._workflowEngine.startSession(
+        {
+          request: prompt,
+          context: fullContext,
+          selectedFiles: this._session?.filePath ? [this._session.filePath] : [],
+          workspacePath,
+        },
+        mode,
+        action,
+      );
+
+      this._send({
+        type: 'workflow-started',
+        sessionId: this._workflowSession.id,
+        mode,
+        action,
+        roles: this._workflowSession.roles,
+      });
+
+      // Run to the first user-input-required phase
+      this._workflowSession = await this._workflowEngine.advancePhase(
+        this._workflowSession.id
+      );
+
+    } catch (err: unknown) {
+      const error = err as Error;
+      this._send({
+        type: 'workflow-error',
+        error: error.message || 'Workflow failed',
+      });
+    }
+  }
+
+  private _subscribeWorkflowEvents(): void {
+    // Map engine events to webview messages
+    const phaseUnsub = eventBus.on('PHASE_CHANGED' as any, (ev: any) => {
+      this._send({
+        type: 'workflow-phase',
+        sessionId: ev.sessionId,
+        from: ev.from,
+        phase: ev.to,
+        message: `Phase: ${ev.from} → ${ev.to}`,
+      });
+    });
+    this._workflowEventUnsubscribers.push(phaseUnsub);
+
+    const planDraftUnsub = eventBus.on('PLAN_DRAFT_STARTED' as any, (ev: any) => {
+      this._send({ type: 'workflow-stage', stage: 'plan_draft', round: ev.round });
+    });
+    this._workflowEventUnsubscribers.push(planDraftUnsub);
+
+    const planReviewUnsub = eventBus.on('PLAN_REVIEW_SUBMITTED' as any, (ev: any) => {
+      this._send({
+        type: 'workflow-review',
+        stage: 'plan_review',
+        provider: ev.provider,
+        role: ev.role,
+        approved: ev.approved,
+      });
+    });
+    this._workflowEventUnsubscribers.push(planReviewUnsub);
+
+    const planApprovedUnsub = eventBus.on('PLAN_APPROVED' as any, (ev: any) => {
+      // Send the full plan snapshot for UI display
+      const session = this._workflowEngine.getSession(ev.sessionId);
+      const latestPlan = session?.planSnapshots[session.planSnapshots.length - 1];
+      this._send({
+        type: 'workflow-plan-approved',
+        planHash: ev.planHash,
+        approvedBy: ev.approvedBy,
+        plan: latestPlan?.plan,
+        reviews: latestPlan?.reviews,
+        round: latestPlan?.round,
+      });
+    });
+    this._workflowEventUnsubscribers.push(planApprovedUnsub);
+
+    const codeDraftUnsub = eventBus.on('CODE_DRAFT_STARTED' as any, (ev: any) => {
+      this._send({ type: 'workflow-stage', stage: 'code_draft', round: ev.round, fileCount: ev.fileCount });
+    });
+    this._workflowEventUnsubscribers.push(codeDraftUnsub);
+
+    const codeReviewUnsub = eventBus.on('CODE_REVIEW_SUBMITTED' as any, (ev: any) => {
+      this._send({
+        type: 'workflow-review',
+        stage: 'code_review',
+        provider: ev.provider,
+        role: ev.role,
+        approved: ev.approved,
+      });
+    });
+    this._workflowEventUnsubscribers.push(codeReviewUnsub);
+
+    const codeApprovedUnsub = eventBus.on('CODE_APPROVED' as any, (ev: any) => {
+      const session = this._workflowEngine.getSession(ev.sessionId);
+      const latestCode = session?.codeSnapshots[session.codeSnapshots.length - 1];
+      this._send({
+        type: 'workflow-code-approved',
+        codeHash: ev.codeHash,
+        approvedBy: ev.approvedBy,
+        files: latestCode?.snapshot.files.map(f => ({
+          filePath: f.filePath,
+          explanation: f.explanation,
+        })),
+        round: latestCode?.round,
+      });
+    });
+    this._workflowEventUnsubscribers.push(codeApprovedUnsub);
+
+    const scopeDriftUnsub = eventBus.on('SCOPE_DRIFT_DETECTED' as any, (ev: any) => {
+      this._send({ type: 'workflow-scope-drift', extraFiles: ev.extraFiles });
+    });
+    this._workflowEventUnsubscribers.push(scopeDriftUnsub);
+
+    const verifyStartUnsub = eventBus.on('VERIFICATION_STARTED' as any, (ev: any) => {
+      this._send({ type: 'workflow-stage', stage: 'verifying', checkCount: ev.checkCount });
+    });
+    this._workflowEventUnsubscribers.push(verifyStartUnsub);
+
+    const checkPassedUnsub = eventBus.on('CHECK_PASSED' as any, (ev: any) => {
+      this._send({ type: 'workflow-check', checkType: ev.checkType, passed: true, duration: ev.duration });
+    });
+    this._workflowEventUnsubscribers.push(checkPassedUnsub);
+
+    const checkFailedUnsub = eventBus.on('CHECK_FAILED' as any, (ev: any) => {
+      this._send({ type: 'workflow-check', checkType: ev.checkType, passed: false, output: ev.output });
+    });
+    this._workflowEventUnsubscribers.push(checkFailedUnsub);
+
+    const verifyCompleteUnsub = eventBus.on('VERIFICATION_COMPLETE' as any, (ev: any) => {
+      this._send({ type: 'workflow-verify-complete', allPassed: ev.allPassed });
+    });
+    this._workflowEventUnsubscribers.push(verifyCompleteUnsub);
+
+    const gitGateUnsub = eventBus.on('GIT_GATE_EVALUATED' as any, (ev: any) => {
+      this._send({ type: 'workflow-git-gate', gate: ev.gate });
+    });
+    this._workflowEventUnsubscribers.push(gitGateUnsub);
+
+    const commitExecUnsub = eventBus.on('COMMIT_EXECUTED' as any, (ev: any) => {
+      this._send({ type: 'workflow-committed', commitHash: ev.commitHash });
+    });
+    this._workflowEventUnsubscribers.push(commitExecUnsub);
+
+    const pushExecUnsub = eventBus.on('PUSH_EXECUTED' as any, (ev: any) => {
+      this._send({ type: 'workflow-pushed', remote: ev.remote, branch: ev.branch });
+    });
+    this._workflowEventUnsubscribers.push(pushExecUnsub);
+
+    const inputRequiredUnsub = eventBus.on('USER_INPUT_REQUIRED' as any, (ev: any) => {
+      this._send({
+        type: 'workflow-input-required',
+        sessionId: ev.sessionId,
+        prompt: ev.prompt,
+        options: ev.options,
+      });
+    });
+    this._workflowEventUnsubscribers.push(inputRequiredUnsub);
+
+    const workflowCompleteUnsub = eventBus.on('WORKFLOW_COMPLETE' as any, (ev: any) => {
+      this._send({ type: 'workflow-complete', sessionId: ev.sessionId, summary: ev.summary });
+    });
+    this._workflowEventUnsubscribers.push(workflowCompleteUnsub);
+
+    const workflowBlockedUnsub = eventBus.on('WORKFLOW_BLOCKED' as any, (ev: any) => {
+      this._send({ type: 'workflow-blocked', sessionId: ev.sessionId, reason: ev.reason });
+    });
+    this._workflowEventUnsubscribers.push(workflowBlockedUnsub);
+  }
+
+  // ── Legacy Council pipeline ────────────────────────────────────────────────
 
   private async _runCouncilPipeline(
     prompt: string, originalCode: string, intensity: string
@@ -1883,6 +2188,37 @@ export class TriForgeCouncilPanel {
   @keyframes sp { 0%,100% { opacity: 0.75; } 50% { opacity: 1; } }
   #pmsg { font-size: 11px; color: rgba(255,255,255,0.38); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+  /* Governed workflow phases */
+  .ps.blocked { background: rgba(239,68,68,0.12); color: #ef4444; border-color: rgba(239,68,68,0.3); }
+  #workflow-phase { display: none; padding: 3px 0; }
+  #workflow-phase.active { display: flex; flex-direction: column; gap: 4px; }
+  .wf-role-badge {
+    font-size: 9px; font-weight: 700; padding: 2px 7px; border-radius: 8px;
+    letter-spacing: 0.3px; text-transform: uppercase;
+  }
+  .wf-role-badge[data-role="architect"]   { background: rgba(249,115,22,0.12); color: #f97316; border: 1px solid rgba(249,115,22,0.3); }
+  .wf-role-badge[data-role="precision"]   { background: rgba(16,185,129,0.12); color: #10b981; border: 1px solid rgba(16,185,129,0.3); }
+  .wf-role-badge[data-role="adversarial"] { background: rgba(129,140,248,0.12); color: #818cf8; border: 1px solid rgba(129,140,248,0.3); }
+  .wf-review-entry {
+    font-size: 11px; padding: 3px 8px; margin: 2px 0; border-radius: 3px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .wf-review-entry.approved { border-left: 2px solid #10b981; background: rgba(16,185,129,0.05); }
+  .wf-review-entry.objected { border-left: 2px solid #ef4444; background: rgba(239,68,68,0.05); }
+  .wf-check-badge {
+    font-size: 9px; font-weight: 600; padding: 1px 6px; border-radius: 6px;
+    display: inline-flex; align-items: center; gap: 3px;
+  }
+  .wf-check-badge.pass { background: rgba(16,185,129,0.12); color: #10b981; }
+  .wf-check-badge.fail { background: rgba(239,68,68,0.12); color: #ef4444; }
+  #wf-plan-preview, #wf-code-preview {
+    margin: 6px; padding: 8px 11px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--sec-bg); font-size: 12px;
+  }
+  .wf-file-entry { padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.04); }
+  .wf-file-path { font-family: monospace; font-size: 11px; color: rgba(255,255,255,0.7); }
+  .wf-file-why  { font-size: 11px; color: rgba(255,255,255,0.4); font-style: italic; }
+
   /* Code blocks */
   .cb {
     background: rgba(0,0,0,0.22); border: 1px solid rgba(255,255,255,0.07); border-radius: 4px;
@@ -2051,6 +2387,27 @@ export class TriForgeCouncilPanel {
       </div>
     </div>
     <div id="topbar-row2">
+      <!-- Pipeline mode toggle -->
+      <span style="font-size:10px;color:rgba(255,255,255,0.35);text-transform:uppercase;letter-spacing:0.3px;">Pipeline:</span>
+      <button class="ibtn on" data-pipe="governed" title="Plan-first governed workflow">Governed</button>
+      <button class="ibtn"    data-pipe="legacy" title="Legacy code-first council">Legacy</button>
+      <span style="width:1px;height:16px;background:var(--border);margin:0 4px;"></span>
+      <!-- Execution mode (governed) -->
+      <span id="mode-label" style="font-size:10px;color:rgba(255,255,255,0.35);text-transform:uppercase;letter-spacing:0.3px;">Mode:</span>
+      <button class="ibtn on" data-mode="safe" title="3 rounds, full verification">Safe</button>
+      <button class="ibtn"    data-mode="quick" title="1 round, lint only">Quick</button>
+      <button class="ibtn"    data-mode="trusted" title="3 rounds, auto-commit">Trusted</button>
+      <span style="width:1px;height:16px;background:var(--border);margin:0 4px;"></span>
+      <!-- Workflow action (governed) -->
+      <span id="action-label" style="font-size:10px;color:rgba(255,255,255,0.35);text-transform:uppercase;letter-spacing:0.3px;">Action:</span>
+      <button class="ibtn on" data-action="plan_then_code" title="Full pipeline">Full</button>
+      <button class="ibtn"    data-action="plan_only" title="Plan only">Plan</button>
+      <button class="ibtn"    data-action="review_existing" title="Review existing diff">Review</button>
+      <button class="ibtn"    data-action="prepare_commit" title="Evaluate git gate">Commit</button>
+      <button class="btn-s" id="btn-ctx-toggle" style="font-size:11px;padding:3px 9px;margin-left:auto;">+ Context</button>
+    </div>
+    <!-- Legacy intensity row (hidden in governed mode) -->
+    <div id="topbar-row-intensity" style="display:none;">
       <span style="font-size:10px;color:rgba(255,255,255,0.35);text-transform:uppercase;letter-spacing:0.3px;">Intensity:</span>
       <button class="ibtn on" data-i="adaptive">Adaptive</button>
       <button class="ibtn"    data-i="cooperative">Cooperative</button>
@@ -2058,13 +2415,12 @@ export class TriForgeCouncilPanel {
       <button class="ibtn"    data-i="critical">Critical</button>
       <button class="ibtn"    data-i="ruthless">Ruthless</button>
       <span id="i-auto-lbl" class="i-auto-lbl hidden"></span>
-      <button class="btn-s" id="btn-ctx-toggle" style="font-size:11px;padding:3px 9px;margin-left:auto;">+ Context</button>
     </div>
     <div id="ctx-wrap">
       <label for="ctx-input">Code Context (optional)</label>
       <textarea id="ctx-input" placeholder="Paste the current implementation here&#x2026;"></textarea>
     </div>
-    <!-- Phase steps (shown during run) -->
+    <!-- Phase steps: legacy (shown during run) -->
     <div id="topbar-phase">
       <div class="psteps">
         <span class="ps" data-ph="DRAFTING">Draft</span>
@@ -2074,6 +2430,25 @@ export class TriForgeCouncilPanel {
         <span class="ps" data-ph="COMPLETE">&#x2713; Done</span>
       </div>
       <span id="pmsg"></span>
+    </div>
+    <!-- Phase steps: governed workflow (shown during governed run) -->
+    <div id="workflow-phase" style="display:none;">
+      <div class="psteps">
+        <span class="ps wps" data-wph="intake">Intake</span>
+        <span class="ps wps" data-wph="plan_draft">Plan</span>
+        <span class="ps wps" data-wph="plan_review">Review</span>
+        <span class="ps wps" data-wph="plan_approved">Locked</span>
+        <span class="ps wps" data-wph="code_draft">Code</span>
+        <span class="ps wps" data-wph="code_review">Verify</span>
+        <span class="ps wps" data-wph="verifying">Checks</span>
+        <span class="ps wps" data-wph="ready_to_commit">Commit</span>
+        <span class="ps wps" data-wph="pushed">&#x2713; Done</span>
+      </div>
+      <span id="wf-msg" style="font-size:11px;color:rgba(255,255,255,0.38);"></span>
+      <!-- Council role badges -->
+      <div id="wf-roles" style="display:flex;gap:6px;margin-top:4px;"></div>
+      <!-- Council reviews -->
+      <div id="wf-reviews" style="margin-top:4px;"></div>
     </div>
     <!-- Kept for JS show/hide compat (display:none!important) -->
     <div id="s-input"  style="display:none!important;"></div>
@@ -3114,8 +3489,258 @@ window.addEventListener('message', function(e){
       show('s-input');
       const fi=$('task-input'); if(fi){ fi.focus(); }
       break;
+
+    // ── Governed Workflow Messages ────────────────────────────────────────
+    case 'workflow-started':
+      // Show workflow phase bar, hide legacy
+      var tp2=$('topbar-phase'); if(tp2){ tp2.classList.remove('active'); }
+      var wfp=$('workflow-phase'); if(wfp){ wfp.classList.add('active'); }
+      // Clear previous reviews
+      var wfr=$('wf-reviews'); if(wfr){ wfr.innerHTML=''; }
+      // Remove old previews
+      ['wf-plan-preview','wf-code-preview','wf-commit-preview'].forEach(function(id){
+        var el=document.getElementById(id); if(el) el.remove();
+      });
+      showWorkflowRoles(d.roles);
+      updateWorkflowPhase('intake','Starting governed pipeline ('+d.mode+')...');
+      // Switch to active state
+      S.running=true;
+      var ca=$('center-active'),ci=$('center-idle'); if(ca){ca.classList.remove('hidden');} if(ci){ci.classList.add('hidden');}
+      var run=$('btn-run'),abt=$('btn-abort'); if(run){run.style.display='none';} if(abt){abt.style.display='';}
+      break;
+    case 'workflow-phase':
+      updateWorkflowPhase(d.phase, d.message||('Phase: '+d.phase));
+      break;
+    case 'workflow-stage':
+      updateWorkflowPhase(d.stage, d.stage.replace(/_/g,' ')+' (round '+(d.round||1)+')');
+      break;
+    case 'workflow-review':
+      addWorkflowReview(d.provider, d.role, d.approved);
+      break;
+    case 'workflow-plan-approved':
+      updateWorkflowPhase('plan_approved','Plan approved by council');
+      showWorkflowPlanPreview(d.plan, d.reviews, d.round);
+      break;
+    case 'workflow-code-approved':
+      updateWorkflowPhase('ready_to_commit','Code approved');
+      showWorkflowCodePreview(d.files, d.round);
+      break;
+    case 'workflow-scope-drift':
+      toast('Scope drift detected: '+((d.extraFiles||[]).join(', ')),false);
+      break;
+    case 'workflow-check':
+      // Individual check result
+      break;
+    case 'workflow-verify-complete':
+      if(d.allPassed){
+        updateWorkflowPhase('ready_to_commit','All checks passed');
+      } else {
+        updateWorkflowPhase('verify_failed','Verification failed');
+      }
+      break;
+    case 'workflow-git-gate':
+      showWorkflowCommitPreview(d.gate);
+      break;
+    case 'workflow-committed':
+      toast('Committed: '+(d.commitHash||''),true);
+      updateWorkflowPhase('pushed','Committed successfully');
+      break;
+    case 'workflow-pushed':
+      toast('Pushed to '+(d.remote||'origin')+'/'+(d.branch||''),true);
+      updateWorkflowPhase('pushed','Pushed');
+      break;
+    case 'workflow-input-required':
+      // Phase bar already shows current state
+      break;
+    case 'workflow-complete':
+      updateWorkflowPhase('pushed',d.summary||'Complete');
+      S.running=false;
+      var wrun=$('btn-run'),wabt=$('btn-abort'); if(wrun){wrun.style.display='';} if(wabt){wabt.style.display='none';}
+      break;
+    case 'workflow-blocked':
+      updateWorkflowPhase('blocked',d.reason||'Blocked');
+      S.running=false;
+      var brun=$('btn-run'),babt=$('btn-abort'); if(brun){brun.style.display='';} if(babt){babt.style.display='none';}
+      toast(d.reason||'Workflow blocked.',false);
+      break;
+    case 'workflow-error':
+      toast(d.error||'Workflow error.',false);
+      S.running=false;
+      var erun2=$('btn-run'),eabt2=$('btn-abort'); if(erun2){erun2.style.display='';} if(eabt2){eabt2.style.display='none';}
+      break;
   }
 });
+
+// ── Governed Workflow State ──────────────────────────────────────────────────
+var WF = {
+  pipeline: 'governed',   // 'governed' or 'legacy'
+  mode: 'safe',           // 'quick', 'safe', 'trusted'
+  action: 'plan_then_code', // 'plan_only', 'plan_then_code', 'review_existing', 'prepare_commit'
+  currentPhase: '',
+};
+
+// Pipeline selector
+document.querySelectorAll('[data-pipe]').forEach(function(b){
+  b.addEventListener('click',function(){
+    WF.pipeline = this.dataset.pipe;
+    document.querySelectorAll('[data-pipe]').forEach(function(x){ x.classList.remove('on'); });
+    this.classList.add('on');
+    // Show/hide mode selectors
+    var modeRow = document.querySelectorAll('[data-mode],[data-action],#mode-label,#action-label');
+    var intRow = $('topbar-row-intensity');
+    modeRow.forEach(function(el){ el.style.display = WF.pipeline==='governed' ? '' : 'none'; });
+    if(intRow){ intRow.style.display = WF.pipeline==='legacy' ? 'flex' : 'none'; }
+    send('workflow:setMode',{governed: WF.pipeline==='governed'});
+  });
+});
+
+// Mode selector
+document.querySelectorAll('[data-mode]').forEach(function(b){
+  b.addEventListener('click',function(){
+    WF.mode = this.dataset.mode;
+    document.querySelectorAll('[data-mode]').forEach(function(x){ x.classList.remove('on'); });
+    this.classList.add('on');
+  });
+});
+
+// Action selector
+document.querySelectorAll('[data-action]').forEach(function(b){
+  b.addEventListener('click',function(){
+    WF.action = this.dataset.action;
+    document.querySelectorAll('[data-action]').forEach(function(x){ x.classList.remove('on'); });
+    this.classList.add('on');
+  });
+});
+
+// ── Governed Workflow Phase Updates ─────────────────────────────────────────
+var WORKFLOW_PHASE_ORDER = ['intake','plan_draft','plan_review','plan_approved','code_draft','code_review','verifying','ready_to_commit','pushed'];
+function updateWorkflowPhase(phase, msg) {
+  WF.currentPhase = phase;
+  var wfp = $('workflow-phase');
+  if(!wfp) return;
+  wfp.classList.add('active');
+  var idx = WORKFLOW_PHASE_ORDER.indexOf(phase);
+  document.querySelectorAll('.wps').forEach(function(el, i){
+    var elPhase = el.dataset.wph;
+    var elIdx = WORKFLOW_PHASE_ORDER.indexOf(elPhase);
+    el.classList.remove('active','done','blocked');
+    if(phase === 'blocked') { el.classList.add(elIdx <= idx ? 'blocked' : ''); }
+    else if(elIdx < idx) { el.classList.add('done'); }
+    else if(elIdx === idx) { el.classList.add('active'); }
+  });
+  var wfMsg = $('wf-msg');
+  if(wfMsg && msg) { wfMsg.textContent = msg; }
+}
+
+function showWorkflowRoles(roles) {
+  var container = $('wf-roles');
+  if(!container || !roles) return;
+  container.innerHTML = '';
+  var ROLE_LABELS = {architect:'Architect',precision:'Precision',adversarial:'Adversarial'};
+  roles.forEach(function(r){
+    var badge = document.createElement('span');
+    badge.className = 'wf-role-badge';
+    badge.dataset.role = r.role;
+    badge.textContent = (r.provider||'').toUpperCase() + ' ' + (ROLE_LABELS[r.role]||r.role);
+    container.appendChild(badge);
+  });
+}
+
+function addWorkflowReview(provider, role, approved) {
+  var container = $('wf-reviews');
+  if(!container) return;
+  var entry = document.createElement('div');
+  entry.className = 'wf-review-entry ' + (approved ? 'approved' : 'objected');
+  var ROLE_COLORS = {architect:'#f97316',precision:'#10b981',adversarial:'#818cf8'};
+  entry.innerHTML = '<span style="color:'+(ROLE_COLORS[role]||'#ccc')+';">'+provider+'</span> '
+    + '<span style="font-weight:600;">' + (approved ? 'APPROVED' : 'OBJECTED') + '</span>';
+  container.appendChild(entry);
+}
+
+function showWorkflowPlanPreview(plan, reviews, round) {
+  // Show plan in center panel
+  var center = $('center-panel');
+  if(!center || !plan) return;
+  var existing = document.getElementById('wf-plan-preview');
+  if(existing) existing.remove();
+
+  var div = document.createElement('div');
+  div.id = 'wf-plan-preview';
+  div.innerHTML = '<div style="font-weight:700;font-size:12px;margin-bottom:6px;">Approved Plan (Round '+round+')</div>'
+    + '<div style="font-size:11px;color:rgba(255,255,255,0.6);margin-bottom:8px;">'+plan.summary+'</div>'
+    + '<div style="font-size:10px;text-transform:uppercase;color:rgba(255,255,255,0.35);margin-bottom:4px;">Files to Modify</div>'
+    + (plan.filesToModify||[]).map(function(f){ return '<div class="wf-file-entry"><span class="wf-file-path">'+f+'</span></div>'; }).join('')
+    + '<div style="font-size:10px;text-transform:uppercase;color:rgba(255,255,255,0.35);margin-top:8px;margin-bottom:4px;">Acceptance Criteria</div>'
+    + (plan.acceptanceCriteria||[]).map(function(c){ return '<div style="font-size:11px;padding:2px 0;color:rgba(255,255,255,0.55);">&#x2022; '+c+'</div>'; }).join('')
+    + '<div style="margin-top:10px;display:flex;gap:6px;">'
+    + '<button class="btn-p" id="wf-approve-plan" style="font-size:11px;padding:4px 10px;">Approve Plan</button>'
+    + '<button class="btn-s" id="wf-narrow-plan" style="font-size:11px;padding:4px 10px;">Narrow Scope</button>'
+    + '<button class="btn-s" id="wf-reject-plan" style="font-size:11px;padding:4px 10px;color:#ef4444;">Reject</button>'
+    + '</div>';
+  center.insertBefore(div, center.firstChild);
+
+  // Bind buttons
+  var approveBtn = document.getElementById('wf-approve-plan');
+  if(approveBtn) approveBtn.addEventListener('click', function(){ send('workflow:approvePlan'); });
+  var narrowBtn = document.getElementById('wf-narrow-plan');
+  if(narrowBtn) narrowBtn.addEventListener('click', function(){
+    var inst = prompt('Enter instructions to narrow the plan:');
+    if(inst) send('workflow:narrowPlan',{instructions:inst});
+  });
+  var rejectBtn = document.getElementById('wf-reject-plan');
+  if(rejectBtn) rejectBtn.addEventListener('click', function(){
+    send('workflow:rejectPlan',{reason:'Rejected by user'});
+  });
+}
+
+function showWorkflowCodePreview(files, round) {
+  var center = $('center-panel');
+  if(!center || !files) return;
+  var existing = document.getElementById('wf-code-preview');
+  if(existing) existing.remove();
+
+  var div = document.createElement('div');
+  div.id = 'wf-code-preview';
+  div.innerHTML = '<div style="font-weight:700;font-size:12px;margin-bottom:6px;">Implementation (Round '+round+')</div>'
+    + files.map(function(f){
+      return '<div class="wf-file-entry"><span class="wf-file-path">'+f.filePath+'</span>'
+        + '<div class="wf-file-why">'+f.explanation+'</div></div>';
+    }).join('');
+  center.insertBefore(div, center.firstChild);
+}
+
+function showWorkflowCommitPreview(gate) {
+  var center = $('center-panel');
+  if(!center) return;
+  var existing = document.getElementById('wf-commit-preview');
+  if(existing) existing.remove();
+
+  var div = document.createElement('div');
+  div.id = 'wf-commit-preview';
+  var statusItems = [
+    { label: 'Plan Approved', ok: gate.planApproved },
+    { label: 'Code Approved', ok: gate.codeApproved },
+    { label: 'Checks Green',  ok: gate.checksGreen },
+  ];
+  div.innerHTML = '<div style="font-weight:700;font-size:12px;margin-bottom:6px;">Git Gate</div>'
+    + statusItems.map(function(s){
+      return '<div style="font-size:11px;padding:2px 0;">'
+        + (s.ok ? '<span style="color:#10b981;">&#x2713;</span>' : '<span style="color:#ef4444;">&#x2717;</span>')
+        + ' ' + s.label + '</div>';
+    }).join('')
+    + (gate.commitMessage ? '<div style="font-size:11px;margin-top:6px;padding:6px;background:rgba(0,0,0,0.2);border-radius:4px;font-family:monospace;">'+gate.commitMessage.replace(/\\n/g,'<br>')+'</div>' : '')
+    + (gate.commitReady ? '<div style="margin-top:8px;display:flex;gap:6px;">'
+      + '<button class="btn-p" id="wf-approve-commit" style="font-size:11px;padding:4px 10px;">Commit</button>'
+      + '<button class="btn-s" id="wf-reject-commit" style="font-size:11px;padding:4px 10px;">Skip</button>'
+      + '</div>' : '')
+    + (gate.blockingRisks && gate.blockingRisks.length ? '<div style="color:#ef4444;font-size:11px;margin-top:4px;">Blocked: '+gate.blockingRisks.join(', ')+'</div>' : '');
+  center.insertBefore(div, center.firstChild);
+
+  var commitBtn = document.getElementById('wf-approve-commit');
+  if(commitBtn) commitBtn.addEventListener('click', function(){ send('workflow:approveCommit'); });
+  var skipBtn = document.getElementById('wf-reject-commit');
+  if(skipBtn) skipBtn.addEventListener('click', function(){ send('workflow:rejectCommit'); });
+}
 
 // Button bindings
 $('btn-run')&&$('btn-run').addEventListener('click',function(){
@@ -3123,9 +3748,12 @@ $('btn-run')&&$('btn-run').addEventListener('click',function(){
   if(!p.trim()){ toast('Please describe your task before running the council.'); return; }
   addToHistory(p.trim());
   const al=$('i-auto-lbl'); if(al){ al.textContent=''; al.classList.add('hidden'); }
-  send('council:run',{prompt:p.trim(),context:c.trim(),intensity:S.intensity});
+  send('council:run',{prompt:p.trim(),context:c.trim(),intensity:S.intensity,mode:WF.mode,action:WF.action});
 });
-$('btn-abort')&&$('btn-abort').addEventListener('click',function(){ send('council:abort'); });
+$('btn-abort')&&$('btn-abort').addEventListener('click',function(){
+  if(WF.pipeline==='governed'){ send('workflow:abort'); }
+  else { send('council:abort'); }
+});
 $('btn-bypass')&&$('btn-bypass').addEventListener('click',function(){ send('council:applyDraft'); });
 $('btn-apply')&&$('btn-apply').addEventListener('click',function(){ send('council:apply'); });
 $('btn-esc')&&$('btn-esc').addEventListener('click',function(){ send('council:escalate'); });

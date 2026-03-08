@@ -286,3 +286,23 @@ export type {
   TradeDecisionExplanation, CouncilSummary, RuleSummary,
   BlockedTradeExplanation, GradeBucketSummary, CouncilValueAdded,
 } from './trading/types';
+
+// ── Council Workflow Pipeline ────────────────────────────────────────────────
+export { CouncilWorkflowEngine } from './workflow/CouncilWorkflowEngine';
+export { PlanCouncilService } from './workflow/PlanCouncilService';
+export { CodeCouncilService } from './workflow/CodeCouncilService';
+export { VerificationGateService } from './workflow/VerificationGateService';
+export { GitWorkflowService } from './workflow/GitWorkflowService';
+export { CouncilWorkflowSessionStore } from './workflow/CouncilWorkflowSessionStore';
+export { MODE_CONFIGS } from './workflow/councilWorkflowTypes';
+export type {
+  CouncilWorkflowPhase, ExecutionMode, CouncilWorkflowAction,
+  CouncilRoleType, CouncilRole, WorkflowModeConfig,
+  CouncilPlan, PlanAmendment, PlanObjection, PlanReview, ApprovedPlanSnapshot,
+  ImplementationFile, ImplementationSnapshot,
+  CodeFinding, CodeObjection, CodeReview, ApprovedImplementation,
+  VerificationCheckType, CheckConfig, VerificationCheck, VerificationResult,
+  GitGateState, CommitResult, PushResult, GitStatusInfo,
+  WorkflowIntake, WorkflowHistoryEntry, CouncilWorkflowSession,
+  CouncilWorkflowEventType, CouncilWorkflowEvent, UserInputAction,
+} from './workflow/councilWorkflowTypes';

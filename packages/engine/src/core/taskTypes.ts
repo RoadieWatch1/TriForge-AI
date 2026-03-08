@@ -73,7 +73,17 @@ export type AuditEventType =
   // Agent Safety Guard
   | 'AGENT_BLOCKED'
   // Event Intelligence
-  | 'INTELLIGENCE_INSIGHT';
+  | 'INTELLIGENCE_INSIGHT'
+  // Council Workflow Pipeline
+  | 'WORKFLOW_STARTED' | 'PHASE_CHANGED' | 'USER_INPUT_REQUIRED'
+  | 'WORKFLOW_COMPLETE' | 'WORKFLOW_BLOCKED'
+  | 'PLAN_DRAFT_STARTED' | 'PLAN_REVIEW_SUBMITTED' | 'PLAN_REVISION'
+  | 'PLAN_APPROVED' | 'PLAN_BLOCKED'
+  | 'CODE_DRAFT_STARTED' | 'CODE_REVIEW_SUBMITTED' | 'CODE_REVISION'
+  | 'CODE_APPROVED' | 'CODE_BLOCKED' | 'SCOPE_DRIFT_DETECTED'
+  | 'VERIFICATION_STARTED' | 'CHECK_PASSED' | 'CHECK_FAILED' | 'VERIFICATION_COMPLETE'
+  | 'GIT_GATE_EVALUATED' | 'COMMIT_PREPARED' | 'COMMIT_EXECUTED'
+  | 'PUSH_REQUESTED' | 'PUSH_EXECUTED';
 
 // ── Execution Result (Phase 4) ─────────────────────────────────────────────────
 
@@ -317,4 +327,30 @@ export type EngineEvent =
   // Agent Safety Guard
   | { type: 'AGENT_BLOCKED'; taskId: string; reason: string; count: number }
   // Event Intelligence
-  | { type: 'INTELLIGENCE_INSIGHT'; eventType: string; analysis: string; critique: string };
+  | { type: 'INTELLIGENCE_INSIGHT'; eventType: string; analysis: string; critique: string }
+  // Council Workflow Pipeline
+  | { type: 'WORKFLOW_STARTED';       sessionId: string; mode: string; action: string }
+  | { type: 'PHASE_CHANGED';         sessionId: string; from: string; to: string }
+  | { type: 'USER_INPUT_REQUIRED';   sessionId: string; prompt: string; options?: string[] }
+  | { type: 'WORKFLOW_COMPLETE';     sessionId: string; summary: string }
+  | { type: 'WORKFLOW_BLOCKED';      sessionId: string; reason: string }
+  | { type: 'PLAN_DRAFT_STARTED';    sessionId: string; round: number }
+  | { type: 'PLAN_REVIEW_SUBMITTED'; sessionId: string; provider: string; role: string; approved: boolean }
+  | { type: 'PLAN_REVISION';         sessionId: string; round: number; amendmentCount: number }
+  | { type: 'PLAN_APPROVED';         sessionId: string; planHash: string; approvedBy: string[] }
+  | { type: 'PLAN_BLOCKED';          sessionId: string; reason: string }
+  | { type: 'CODE_DRAFT_STARTED';    sessionId: string; round: number; fileCount: number }
+  | { type: 'CODE_REVIEW_SUBMITTED'; sessionId: string; provider: string; role: string; approved: boolean }
+  | { type: 'CODE_REVISION';         sessionId: string; round: number; revisionCount: number }
+  | { type: 'CODE_APPROVED';         sessionId: string; codeHash: string; approvedBy: string[] }
+  | { type: 'CODE_BLOCKED';          sessionId: string; reason: string }
+  | { type: 'SCOPE_DRIFT_DETECTED';  sessionId: string; extraFiles: string[] }
+  | { type: 'VERIFICATION_STARTED';  sessionId: string; checkCount: number }
+  | { type: 'CHECK_PASSED';          sessionId: string; checkType: string; duration: number }
+  | { type: 'CHECK_FAILED';          sessionId: string; checkType: string; output: string }
+  | { type: 'VERIFICATION_COMPLETE'; sessionId: string; allPassed: boolean }
+  | { type: 'GIT_GATE_EVALUATED';    sessionId: string; gate: Record<string, unknown> }
+  | { type: 'COMMIT_PREPARED';       sessionId: string; message: string; fileCount: number }
+  | { type: 'COMMIT_EXECUTED';       sessionId: string; commitHash: string }
+  | { type: 'PUSH_REQUESTED';        sessionId: string; remote: string; branch: string }
+  | { type: 'PUSH_EXECUTED';         sessionId: string; remote: string; branch: string };
