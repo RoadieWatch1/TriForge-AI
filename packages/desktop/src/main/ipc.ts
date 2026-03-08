@@ -1702,7 +1702,7 @@ VERIFY: [1-3 specific things the user should double-check]
     };
   });
 
-  // ── Forge Engine — Generate Image (DALL-E 3) ──────────────────────────────
+  // ── Forge Engine — Generate Image (DALL-E 3 → Grok fallback) ───────────────
   ipcMain.handle('forgeEngine:generateImage', async (_event, { prompt }: { prompt: string }) => {
     const lic = await store.getLicense();
     const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
@@ -1710,32 +1710,50 @@ VERIFY: [1-3 specific things the user should double-check]
       return { error: lockedError('FORGE_PROFILES') };
     }
 
-    const apiKey = await store.getSecret('triforge.openai.apiKey');
-    if (!apiKey) return { error: 'OpenAI API key not configured. Add it in Settings → API Keys.' };
+    const openAiKey = await store.getSecret('triforge.openai.apiKey');
+    const grokKey   = await store.getSecret('triforge.grok.apiKey');
+    if (!openAiKey && !grokKey) return { error: 'No image API key configured. Add an OpenAI or Grok key in Settings → API Keys.' };
 
-    try {
-      const resp = await fetch('https://api.openai.com/v1/images/generations', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({ model: 'dall-e-3', prompt, n: 1, size: '1024x1024' }),
+    // Try OpenAI first, then fall back to Grok
+    const attempts: Array<{ name: string; url: string; key: string; body: Record<string, unknown> }> = [];
+    if (openAiKey) {
+      attempts.push({
+        name: 'OpenAI', url: 'https://api.openai.com/v1/images/generations', key: openAiKey,
+        body: { model: 'dall-e-3', prompt, n: 1, size: '1024x1024', response_format: 'b64_json' },
       });
-
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({})) as Record<string, unknown>;
-        const msg = (err as any)?.error?.message ?? `Image generation failed (${resp.status})`;
-        return { error: msg };
-      }
-
-      const data = await resp.json() as { data: Array<{ url: string }> };
-      const url = data.data?.[0]?.url;
-      if (!url) return { error: 'No image URL returned from DALL-E.' };
-      return { url };
-    } catch {
-      return { error: 'Image generation failed. Check your OpenAI API key and try again.' };
     }
+    if (grokKey) {
+      attempts.push({
+        name: 'Grok', url: 'https://api.x.ai/v1/images/generations', key: grokKey,
+        body: { model: 'grok-2-image', prompt, n: 1, response_format: 'b64_json' },
+      });
+    }
+
+    let lastError = '';
+    for (const attempt of attempts) {
+      try {
+        const resp = await fetch(attempt.url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${attempt.key}` },
+          body: JSON.stringify(attempt.body),
+          signal: AbortSignal.timeout(120_000),
+        });
+
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({})) as Record<string, unknown>;
+          lastError = (err as any)?.error?.message ?? `${attempt.name} image generation failed (${resp.status})`;
+          continue; // try next provider
+        }
+
+        const data = await resp.json() as { data: Array<{ b64_json: string }> };
+        const b64 = data.data?.[0]?.b64_json;
+        if (!b64) { lastError = `${attempt.name} returned no image data.`; continue; }
+        return { url: `data:image/png;base64,${b64}` };
+      } catch (e) {
+        lastError = e instanceof Error ? e.message : `${attempt.name} image generation failed.`;
+      }
+    }
+    return { error: lastError || 'Image generation failed. Check your API keys and try again.' };
   });
 
   // ── Pro Image Generator ──────────────────────────────────────────────────────
@@ -1766,12 +1784,18 @@ VERIFY: [1-3 specific things the user should double-check]
   });
 
   ipcMain.handle('image:delete', async (_event, id: string) => {
+    const lic  = await store.getLicense();
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('FORGE_PROFILES', tier)) return { error: lockedError('FORGE_PROFILES') };
     const histStore = getImageHistoryStore(_getDataDir());
     histStore.delete(id);
     return { ok: true };
   });
 
-  ipcMain.handle('image:styles', () => {
+  ipcMain.handle('image:styles', async () => {
+    const lic  = await store.getLicense();
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('FORGE_PROFILES', tier)) return { error: lockedError('FORGE_PROFILES') };
     const { STYLE_PRESETS } = require('@triforge/engine');
     return Object.keys(STYLE_PRESETS as Record<string, string>);
   });

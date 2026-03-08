@@ -140,7 +140,16 @@ export function createGeneratorRouter(
 
     async generate(options: GenerateImageOptions): Promise<GeneratedImage[]> {
       if (openAiKey) {
-        return generateWithOpenAI(openAiKey, options);
+        try {
+          return await generateWithOpenAI(openAiKey, options);
+        } catch (err) {
+          // Fall back to Grok if available
+          if (grokKey) {
+            console.warn(`[GeneratorRouter] OpenAI failed, falling back to Grok: ${err instanceof Error ? err.message : err}`);
+            return generateWithGrok(grokKey, options);
+          }
+          throw err;
+        }
       }
       if (grokKey) {
         return generateWithGrok(grokKey, options);
