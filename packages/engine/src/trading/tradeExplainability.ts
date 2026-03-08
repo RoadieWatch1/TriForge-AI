@@ -167,7 +167,7 @@ export function buildTradeDecisionExplanation(input: ExplanationInput): TradeDec
   if (warningCount > 0) {
     keyRisks.push(`${warningCount} rule-engine warning(s)`);
   }
-  if (volatilityRegime === 'high' || volatilityRegime === 'extreme') {
+  if (volatilityRegime === 'high') {
     keyRisks.push(`Elevated volatility regime: ${volatilityRegime}`);
   }
   if (sessionLabel && !FAVORABLE_SESSIONS.includes(sessionLabel)) {
