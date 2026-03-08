@@ -36,6 +36,7 @@ const PRO_CAPS: ReadonlySet<Capability> = new Set<Capability>([
   'EXPORT_TOOLS',
   'APP_ANALYSIS',
   'FINANCE_DASHBOARD',
+  'FINANCE_TRADING',
   'FORGE_PROFILES',
 ]);
 
