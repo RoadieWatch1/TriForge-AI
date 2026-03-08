@@ -560,10 +560,15 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
         {showConnForm && !isConnected && (
           <div style={s.card}>
             <div style={s.cardTitle}>Connect Tradovate</div>
-            <div style={s.noteBox}>Requires a Tradovate account with API access. Use your Tradovate username and password. Partner CID/SEC are optional.</div>
+            <div style={s.noteBox}>
+              Requires a Tradovate account with API access enabled.{' '}
+              To get your API credentials: log in to Tradovate, go to <strong>Settings &rarr; API Access &rarr; Generate API Key</strong>.{' '}
+              Save the <strong>CID</strong> and <strong>Secret</strong> shown after generation.{' '}
+              Use your <strong>dedicated API password</strong> below (not your regular login password).
+            </div>
             <div style={s.row}>
               <Field label="Username"><input style={s.input} value={connCreds.username} onChange={e => setConnCreds(c => ({ ...c, username: e.target.value }))} placeholder="username" autoComplete="off" /></Field>
-              <Field label="Password"><input style={s.input} type="password" value={connCreds.password} onChange={e => setConnCreds(c => ({ ...c, password: e.target.value }))} placeholder="••••••••" /></Field>
+              <Field label="API Password"><input style={s.input} type="password" value={connCreds.password} onChange={e => setConnCreds(c => ({ ...c, password: e.target.value }))} placeholder="dedicated API password" /></Field>
             </div>
             <div style={s.row}>
               <Field label="Mode">
@@ -575,8 +580,8 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
                   ))}
                 </div>
               </Field>
-              <Field label="CID (optional)"><input style={s.input} value={connCreds.cid} onChange={e => setConnCreds(c => ({ ...c, cid: e.target.value }))} placeholder="0" /></Field>
-              <Field label="SEC (optional)"><input style={s.input} type="password" value={connCreds.sec} onChange={e => setConnCreds(c => ({ ...c, sec: e.target.value }))} /></Field>
+              <Field label="CID"><input style={s.input} value={connCreds.cid} onChange={e => setConnCreds(c => ({ ...c, cid: e.target.value }))} placeholder="e.g. 154" /></Field>
+              <Field label="Secret"><input style={s.input} type="password" value={connCreds.sec} onChange={e => setConnCreds(c => ({ ...c, sec: e.target.value }))} placeholder="API secret key" /></Field>
             </div>
             {connError && <div style={s.errorBanner}>{connError}</div>}
             <div style={s.actions}>
