@@ -5134,6 +5134,278 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     },
   );
 
+  // ── Learning Brain IPC ────────────────────────────────────────────────────
+
+  ipcMain.handle('venture:learningProfile', async () => {
+    try {
+      const { LearningOrchestrator } = await import('@triforge/engine');
+      const orchestrator = new LearningOrchestrator(store);
+      await orchestrator.initialize();
+      const biases = orchestrator.getBiasesForScoring();
+      return biases;
+    } catch (err) {
+      return null;
+    }
+  });
+
+  ipcMain.handle('venture:refreshTrends', async () => {
+    try {
+      const { LearningOrchestrator, searchWeb: engineSearchWeb } = await import('@triforge/engine');
+      const orchestrator = new LearningOrchestrator(store);
+      await orchestrator.initialize();
+      await orchestrator.refreshTrends(async (query: string) => {
+        const results = await searchWeb(query);
+        return results.map((r: { title: string; url: string; snippet: string }) => ({
+          id: `signal-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          source: r.url,
+          title: r.title,
+          snippet: r.snippet,
+          publishedAt: Date.now(),
+          relevanceScore: 70,
+          trendVelocity: 'stable' as const,
+        }));
+      });
+      return { ok: true };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ── Expert Workforce IPC ────────────────────────────────────────────────────
+
+  ipcMain.handle('experts:roster', async () => {
+    try {
+      const { ExpertRegistry } = await import('@triforge/engine');
+      const registry = new ExpertRegistry(store);
+      await registry.initialize();
+      const allExperts = registry.getAllExperts();
+      const summary = registry.getRosterSummary();
+      return { roster: allExperts, summary };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('experts:health', async () => {
+    try {
+      const { ExpertRegistry, ExpertRouter, ExpertPerformanceTracker, ExpertWorkforceEngine, ExpertRosterLedger } = await import('@triforge/engine');
+      const registry = new ExpertRegistry(store);
+      await registry.initialize();
+      const tracker = new ExpertPerformanceTracker(store);
+      await tracker.initialize();
+      const ledger = new ExpertRosterLedger(_getDataDir());
+      const router = new ExpertRouter(registry, tracker);
+      const engine = new ExpertWorkforceEngine(registry, router, tracker, ledger, store);
+      const health = engine.getRosterHealth();
+      return { health };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('experts:history', async (_event, since?: number) => {
+    try {
+      const { ExpertRosterLedger } = await import('@triforge/engine');
+      const ledger = new ExpertRosterLedger(_getDataDir());
+      const entries = await ledger.getEntries(since);
+      return { entries };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('experts:bench', async (_event, expertId: string) => {
+    try {
+      const { ExpertRegistry, ExpertRouter, ExpertPerformanceTracker, ExpertWorkforceEngine, ExpertRosterLedger } = await import('@triforge/engine');
+      const registry = new ExpertRegistry(store);
+      await registry.initialize();
+      const tracker = new ExpertPerformanceTracker(store);
+      await tracker.initialize();
+      const ledger = new ExpertRosterLedger(_getDataDir());
+      const router = new ExpertRouter(registry, tracker);
+      const engine = new ExpertWorkforceEngine(registry, router, tracker, ledger, store);
+      const ok = engine.moveToBench(expertId, 'User-requested bench');
+      return { ok };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('experts:restore', async (_event, expertId: string) => {
+    try {
+      const { ExpertRegistry, ExpertRouter, ExpertPerformanceTracker, ExpertWorkforceEngine, ExpertRosterLedger } = await import('@triforge/engine');
+      const registry = new ExpertRegistry(store);
+      await registry.initialize();
+      const tracker = new ExpertPerformanceTracker(store);
+      await tracker.initialize();
+      const ledger = new ExpertRosterLedger(_getDataDir());
+      const router = new ExpertRouter(registry, tracker);
+      const engine = new ExpertWorkforceEngine(registry, router, tracker, ledger, store);
+      const ok = engine.restoreFromBench(expertId);
+      return { ok };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ── Evolution / Performance Hunter IPC ────────────────────────────────────
+
+  ipcMain.handle('evolution:scan', async () => {
+    try {
+      const license = await store.getLicense();
+      const tierVal = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+      if (tierVal !== 'business') {
+        return { error: 'Performance Hunter requires Business tier.' };
+      }
+
+      const { EvolutionOrchestrator } = await import('@triforge/engine');
+      const orchestrator = new EvolutionOrchestrator(store, _getDataDir());
+      await orchestrator.initialize();
+      const report = await orchestrator.runFullScan();
+      return { report };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('evolution:quarantined', async () => {
+    try {
+      const { EvolutionOrchestrator } = await import('@triforge/engine');
+      const orchestrator = new EvolutionOrchestrator(store, _getDataDir());
+      await orchestrator.initialize();
+      const components = orchestrator.getQuarantinedComponents();
+      return { components };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('evolution:restore', async (_event, componentId: string) => {
+    try {
+      const { EvolutionOrchestrator } = await import('@triforge/engine');
+      const orchestrator = new EvolutionOrchestrator(store, _getDataDir());
+      await orchestrator.initialize();
+      const ok = orchestrator.restoreComponent(componentId);
+      return { ok };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('evolution:auditLog', async (_event, since?: number) => {
+    try {
+      const { EvolutionOrchestrator } = await import('@triforge/engine');
+      const orchestrator = new EvolutionOrchestrator(store, _getDataDir());
+      await orchestrator.initialize();
+      const entries = await orchestrator.getAuditLog(since);
+      return { entries };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('evolution:healthReport', async () => {
+    try {
+      const { EvolutionOrchestrator } = await import('@triforge/engine');
+      const orchestrator = new EvolutionOrchestrator(store, _getDataDir());
+      await orchestrator.initialize();
+      const report = orchestrator.getHealthReport();
+      return { report };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ── Adaptive Expert Placement IPC ────────────────────────────────────────
+
+  ipcMain.handle('placement:status', async () => {
+    try {
+      const license = await store.getLicense();
+      const tierVal = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+      if (tierVal !== 'business') {
+        return { error: 'Adaptive Placement requires Business tier.' };
+      }
+
+      const {
+        ExpertLoadTracker, ChipCapacityMonitor,
+        ExpertPlacementEngine, ExpertMigrationManager,
+        ExpertTrafficController, EvolutionAuditLedger,
+      } = await import('@triforge/engine');
+
+      const loadTracker = new ExpertLoadTracker(store);
+      const capacityMonitor = new ChipCapacityMonitor(store);
+      const placementEngine = new ExpertPlacementEngine(loadTracker, capacityMonitor);
+      const ledger = new EvolutionAuditLedger(_getDataDir());
+      const migrationManager = new ExpertMigrationManager(loadTracker, capacityMonitor, ledger);
+      const controller = new ExpertTrafficController(
+        placementEngine, loadTracker, capacityMonitor, migrationManager, ledger,
+      );
+
+      return { report: controller.getPlacementStatus() };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('placement:rebalance', async () => {
+    try {
+      const license = await store.getLicense();
+      const tierVal = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+      if (tierVal !== 'business') {
+        return { error: 'Adaptive Placement requires Business tier.' };
+      }
+
+      const {
+        ExpertLoadTracker, ChipCapacityMonitor,
+        ExpertPlacementEngine, ExpertMigrationManager,
+        ExpertTrafficController, EvolutionAuditLedger,
+      } = await import('@triforge/engine');
+
+      const loadTracker = new ExpertLoadTracker(store);
+      const capacityMonitor = new ChipCapacityMonitor(store);
+      const placementEngine = new ExpertPlacementEngine(loadTracker, capacityMonitor);
+      const ledger = new EvolutionAuditLedger(_getDataDir());
+      const migrationManager = new ExpertMigrationManager(loadTracker, capacityMonitor, ledger);
+      const controller = new ExpertTrafficController(
+        placementEngine, loadTracker, capacityMonitor, migrationManager, ledger,
+      );
+
+      const decisions = controller.runRebalanceCycle();
+      return { decisions };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('placement:report', async () => {
+    try {
+      const license = await store.getLicense();
+      const tierVal = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+      if (tierVal !== 'business') {
+        return { error: 'Adaptive Placement requires Business tier.' };
+      }
+
+      const {
+        ExpertLoadTracker, ChipCapacityMonitor,
+        ExpertPlacementEngine, ExpertMigrationManager,
+        ExpertTrafficController, EvolutionAuditLedger,
+      } = await import('@triforge/engine');
+
+      const loadTracker = new ExpertLoadTracker(store);
+      const capacityMonitor = new ChipCapacityMonitor(store);
+      const placementEngine = new ExpertPlacementEngine(loadTracker, capacityMonitor);
+      const ledger = new EvolutionAuditLedger(_getDataDir());
+      const migrationManager = new ExpertMigrationManager(loadTracker, capacityMonitor, ledger);
+      const controller = new ExpertTrafficController(
+        placementEngine, loadTracker, capacityMonitor, migrationManager, ledger,
+      );
+
+      return { report: controller.getPlacementReport() };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
   // ── Blueprint System ───────────────────────────────────────────────────────
 
   /** Returns all registered blueprint IDs with their names and descriptions. */

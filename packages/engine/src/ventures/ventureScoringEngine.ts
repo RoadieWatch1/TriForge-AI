@@ -43,13 +43,40 @@ export function classifyTrend(signals: MarketSignal[]): TrendClass {
 // ── Score a single candidate ─────────────────────────────────────────────────
 
 /**
+ * Apply learning biases to scoring weights.
+ * Multiplies each weight by the corresponding bias value.
+ * Missing biases default to 1.0 (no change).
+ */
+export function applyLearningBiases(
+  weights: Record<string, number>,
+  biases: Record<string, number>,
+): Record<string, number> {
+  const result: Record<string, number> = {};
+  let total = 0;
+  for (const [key, w] of Object.entries(weights)) {
+    const biased = w * (biases[key] ?? 1.0);
+    result[key] = biased;
+    total += biased;
+  }
+  // Re-normalize so weights still sum to ~1.0
+  if (total > 0) {
+    for (const key of Object.keys(result)) {
+      result[key] = result[key] / total;
+    }
+  }
+  return result;
+}
+
+/**
  * Score a venture candidate against budget and signals.
  * Returns individual dimension scores (0-100) plus a weighted composite.
+ * Optional learningBiases multiplies weights — backward compatible (no biases = no change).
  */
 export function scoreCandidate(
   candidate: VentureCandidate,
   budget: number,
   signals: MarketSignal[],
+  learningBiases?: Record<string, number>,
 ): VentureScores {
   const cat = getCategoryConfig(candidate.category);
 
@@ -63,16 +90,21 @@ export function scoreCandidate(
   const revenuePotential = scoreRevenuePotential(candidate, cat);
   const risk = scoreRisk(cat, budget);
 
+  // Apply learning biases if provided
+  const w = learningBiases
+    ? applyLearningBiases({ ...WEIGHTS } as Record<string, number>, learningBiases)
+    : WEIGHTS;
+
   const composite = Math.round(
-    popularityNow       * WEIGHTS.popularityNow +
-    longevity           * WEIGHTS.longevity +
-    budgetFit           * WEIGHTS.budgetFit +
-    timeToTraction      * WEIGHTS.timeToTraction +
-    remoteWorkFit       * WEIGHTS.remoteWorkFit +
-    dailyPromoFit       * WEIGHTS.dailyPromoFit +
-    (100 - executionComplexity) * WEIGHTS.executionComplexity + // invert: lower complexity = better
-    revenuePotential    * WEIGHTS.revenuePotential +
-    (100 - risk)        * WEIGHTS.risk // invert: lower risk = better
+    popularityNow       * (w.popularityNow ?? WEIGHTS.popularityNow) +
+    longevity           * (w.longevity ?? WEIGHTS.longevity) +
+    budgetFit           * (w.budgetFit ?? WEIGHTS.budgetFit) +
+    timeToTraction      * (w.timeToTraction ?? WEIGHTS.timeToTraction) +
+    remoteWorkFit       * (w.remoteWorkFit ?? WEIGHTS.remoteWorkFit) +
+    dailyPromoFit       * (w.dailyPromoFit ?? WEIGHTS.dailyPromoFit) +
+    (100 - executionComplexity) * (w.executionComplexity ?? WEIGHTS.executionComplexity) +
+    revenuePotential    * (w.revenuePotential ?? WEIGHTS.revenuePotential) +
+    (100 - risk)        * (w.risk ?? WEIGHTS.risk)
   );
 
   return {

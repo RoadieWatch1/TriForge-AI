@@ -1238,6 +1238,48 @@ const api = {
       ipcRenderer.on('venture:progress', handler);
       return () => ipcRenderer.removeListener('venture:progress', handler);
     },
+    learningProfile: () =>
+      ipcRenderer.invoke('venture:learningProfile') as Promise<Record<string, unknown> | null>,
+    refreshTrends: () =>
+      ipcRenderer.invoke('venture:refreshTrends') as Promise<{ ok?: boolean; error?: string }>,
+  },
+
+  // Expert Workforce — dynamic specialist roster under the Council
+  experts: {
+    roster: () =>
+      ipcRenderer.invoke('experts:roster') as Promise<{ roster?: unknown[]; summary?: unknown; error?: string }>,
+    health: () =>
+      ipcRenderer.invoke('experts:health') as Promise<{ health?: unknown; error?: string }>,
+    history: (since?: number) =>
+      ipcRenderer.invoke('experts:history', since) as Promise<{ entries?: unknown[]; error?: string }>,
+    bench: (expertId: string) =>
+      ipcRenderer.invoke('experts:bench', expertId) as Promise<{ ok?: boolean; error?: string }>,
+    restore: (expertId: string) =>
+      ipcRenderer.invoke('experts:restore', expertId) as Promise<{ ok?: boolean; error?: string }>,
+  },
+
+  // Adaptive Expert Placement — lane utilization, hot experts, rebalance
+  placement: {
+    status: () =>
+      ipcRenderer.invoke('placement:status') as Promise<{ report?: unknown; error?: string }>,
+    rebalance: () =>
+      ipcRenderer.invoke('placement:rebalance') as Promise<{ decisions?: unknown[]; error?: string }>,
+    report: () =>
+      ipcRenderer.invoke('placement:report') as Promise<{ report?: string; error?: string }>,
+  },
+
+  // Performance Hunter — component health monitoring and quarantine
+  evolution: {
+    scan: () =>
+      ipcRenderer.invoke('evolution:scan') as Promise<{ report?: unknown; error?: string }>,
+    quarantined: () =>
+      ipcRenderer.invoke('evolution:quarantined') as Promise<{ components?: string[]; error?: string }>,
+    restore: (componentId: string) =>
+      ipcRenderer.invoke('evolution:restore', componentId) as Promise<{ ok?: boolean; error?: string }>,
+    auditLog: (since?: number) =>
+      ipcRenderer.invoke('evolution:auditLog', since) as Promise<{ entries?: unknown[]; error?: string }>,
+    healthReport: () =>
+      ipcRenderer.invoke('evolution:healthReport') as Promise<{ report?: string; error?: string }>,
   },
 };
 

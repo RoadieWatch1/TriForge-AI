@@ -131,6 +131,8 @@ export async function runVentureCouncil(
   budget: number,
   providers: CouncilProvider[],
   onProgress?: OnProgress,
+  learningContext?: string,
+  expertContext?: string,
 ): Promise<VentureProposal> {
   if (providers.length < 1) throw new Error('At least one provider required');
 
@@ -143,19 +145,24 @@ export async function runVentureCouncil(
   const critic = providers[Math.min(1, providers.length - 1)];
   const executor = providers[Math.min(2, providers.length - 1)];
 
+  // ── Build context suffix for learning brain + expert workforce ────────────
+  let contextSuffix = '';
+  if (learningContext) contextSuffix += `\n\nLEARNING CONTEXT:\n${learningContext}`;
+  if (expertContext) contextSuffix += `\n\nEXPERT ANALYSIS:\n${expertContext}`;
+
   // ── Run all 3 in parallel ─────────────────────────────────────────────────
   const [stratResult, critResult, execResult] = await Promise.allSettled([
     strategist.chat([
       { role: 'system', content: 'You are a venture strategist. Return only valid JSON.' },
-      { role: 'user', content: strategistPrompt(top8, budget) },
+      { role: 'user', content: strategistPrompt(top8, budget) + contextSuffix },
     ]),
     critic.chat([
       { role: 'system', content: 'You are a venture risk analyst. Return only valid JSON.' },
-      { role: 'user', content: criticPrompt(top8, budget) },
+      { role: 'user', content: criticPrompt(top8, budget) + contextSuffix },
     ]),
     executor.chat([
       { role: 'system', content: 'You are an aggressive growth executor. Return only valid JSON.' },
-      { role: 'user', content: executorPrompt(top8, budget) },
+      { role: 'user', content: executorPrompt(top8, budget) + contextSuffix },
     ]),
   ]);
 

@@ -402,3 +402,85 @@ export { prepareFilingPacket, summarizeFilingNeed } from './ventures/ventureFili
 
 // Daily pulse
 export { generateDailyPulse, formatPulseForPhone } from './ventures/ventureDailyPulse';
+
+// Scoring engine (learning bias helper)
+export { applyLearningBiases } from './ventures/ventureScoringEngine';
+
+// ── Learning Brain ──────────────────────────────────────────────────────────
+
+export type {
+  LearningSignalType, LearningSignal,
+  VentureDecision, VentureOutcomeRecord,
+  ExpertContributionRecord,
+  LearningProfile, TrendMomentum, TrendSnapshot, TrendData,
+  LearningConfig,
+} from './learning/learningTypes';
+export { DEFAULT_LEARNING_PROFILE, DEFAULT_LEARNING_CONFIG } from './learning/learningTypes';
+export { LearningProfileStore } from './learning/learningProfileStore';
+export { SignalCollector } from './learning/signalCollector';
+export type { PulseMetrics } from './learning/signalCollector';
+export { TrendTracker } from './learning/trendTracker';
+export type { SearchFn } from './learning/trendTracker';
+export {
+  applyUserDecisionBias, applyOutcomeBias, applyTrendBias,
+  applyExpertBias, computeBiases,
+} from './learning/biasEngine';
+export { VentureMemoryGraph } from './learning/ventureMemoryGraph';
+export { LearningOrchestrator } from './learning/learningOrchestrator';
+
+// ── Expert Workforce Engine ─────────────────────────────────────────────────
+
+export type {
+  ExpertRole, ExpertStatus, ExpertProtectionLevel, ExpertPool,
+  ExpertProfile, ExpertTaskResult, ExpertSelectionDecision,
+  ExpertHiringNeed, ExpertReplacementDecision, ExpertPerformanceRecord,
+  RosterSummary, WorkforceHealthReport, RosterLedgerEntry, RosterAction,
+} from './experts/expertTypes';
+export { PROTECTED_EXPERT_ROLES, TASK_TYPE_EXPERT_MAP } from './experts/expertTypes';
+export { ExpertRegistry, isProtectedRole } from './experts/expertRegistry';
+export { ExpertRouter } from './experts/expertRouter';
+export type { ExpertRoutingContext } from './experts/expertRouter';
+export { ExpertPerformanceTracker } from './experts/expertPerformanceTracker';
+export { ExpertWorkforceEngine } from './experts/expertWorkforceEngine';
+export { ExpertRosterLedger } from './experts/expertRosterLedger';
+export { ExpertHiringEngine } from './experts/expertHiringEngine';
+export { ExpertPromotionEngine } from './experts/expertPromotionEngine';
+export type { PromotionDecision } from './experts/expertPromotionEngine';
+export { ExpertBenchManager } from './experts/expertBenchManager';
+export { ExpertReplacementEngine } from './experts/expertReplacementEngine';
+
+// ── Performance Hunter (Evolution Engine) ───────────────────────────────────
+
+export type {
+  ComponentHealthStatus, ComponentRecord,
+  ShadowTestResult, ShadowTestImpact, ShadowTestRecommendation,
+  PerformanceSnapshot, QuarantineAction,
+  EvolutionAction, EvolutionLogEntry,
+  EvolutionReport, EvolutionRecommendation, EvolutionConfig,
+} from './evolution/evolutionTypes';
+export { PROTECTED_CATEGORIES, DEFAULT_EVOLUTION_CONFIG } from './evolution/evolutionTypes';
+export { ComponentUseTracker } from './evolution/componentUseTracker';
+export { HealthScanner } from './evolution/healthScanner';
+export { EvolutionAuditLedger } from './evolution/evolutionAuditLedger';
+export { SafeQuarantineManager } from './evolution/safeQuarantineManager';
+export { ShadowTestRunner } from './evolution/shadowTestRunner';
+export { EvolutionOrchestrator } from './evolution/evolutionOrchestrator';
+export { LearningEvolutionBridge } from './evolution/learningEvolutionBridge';
+export type { UnifiedReport } from './evolution/learningEvolutionBridge';
+
+// ── Adaptive Expert Placement + Dynamic Load Balancing ──────────────────────
+
+export type {
+  LaneId, LaneStatus, LaneProfile,
+  ExpertPlacement, PlacementDecision, PlacementAction,
+  PlacementLedgerEntry, MigrationPlan,
+  PlacementConfig, PlacementReport,
+} from './placement/expertPlacementTypes';
+export { DEFAULT_PLACEMENT_CONFIG, DEFAULT_LANES } from './placement/expertPlacementTypes';
+export { ExpertLoadTracker } from './placement/expertLoadTracker';
+export { ChipCapacityMonitor } from './placement/chipCapacityMonitor';
+export { ExpertPlacementEngine } from './placement/expertPlacementEngine';
+export { ExpertMigrationManager } from './placement/expertMigrationManager';
+export { ExpertTrafficController } from './placement/expertTrafficController';
+export { PlacementLearningBridge } from './placement/placementLearningBridge';
+export type { PlacementReportSection } from './placement/placementLearningBridge';

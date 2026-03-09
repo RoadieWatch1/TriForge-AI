@@ -138,6 +138,9 @@ export async function buildSystemPrompt(store: Store, professionAdditions?: stri
   if (hasCapability('FINANCE_TRADING', tier))  aiCaps.push('Investment trade proposals with council-reviewed reasoning (execution is always performed manually by the user)');
   aiCaps.push('Live web search: automatically searches the web when your question needs current information (news, weather, prices, scores, events)');
   if (hasCapability('VENTURE_DISCOVERY', tier)) aiCaps.push('Venture Discovery + Build: autonomous market research, opportunity scoring, venture creation, website generation, audience building, and daily growth — with bounded budget and staged user approval');
+  if (hasCapability('VENTURE_DISCOVERY', tier)) aiCaps.push('Venture Learning Brain: learns from user decisions, venture outcomes, and market trends to improve future scoring and recommendations. Each council member may consult specialists before returning its position.');
+  if (hasCapability('VENTURE_DISCOVERY', tier)) aiCaps.push('Expert Workforce: a dynamic roster of specialists that assist each council member — experts are promoted, benched, retired, or replaced based on their contribution to outcomes. Only relevant specialists activate per task.');
+  if (tier === 'business') aiCaps.push('Performance Hunter: monitors component and expert health, safely quarantines dormant subsystems, shadow-tests before removal, auto-restores after 24h. Protected categories are never quarantined.');
 
   const prompt = `You are TriForge AI — the unified body of three AI minds (GPT-4, Claude, Grok), acting as a single decisive, loyal personal assistant for ${userName}.
 
