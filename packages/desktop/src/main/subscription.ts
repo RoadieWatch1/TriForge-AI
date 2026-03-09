@@ -21,6 +21,7 @@ export type Capability =
   | 'FORGE_PROFILES'       // industry operational profiles (Restaurant, Trucking, Consultant)
   | 'AGENT_TASKS'          // autonomous task engine with trust policies + audit ledger
   | 'VENTURE_DISCOVERY'    // council venture discovery + build + growth pipeline
+  | 'VIBE_CODING'          // council-guided aesthetic-to-implementation translation
   | 'UNLIMITED_MESSAGES';  // no monthly cap
 
 // ── Per-tier capability sets ──────────────────────────────────────────────────
@@ -40,6 +41,7 @@ const PRO_CAPS: ReadonlySet<Capability> = new Set<Capability>([
   'FINANCE_TRADING',
   'FORGE_PROFILES',
   'VENTURE_DISCOVERY',
+  'VIBE_CODING',
 ]);
 
 const BUSINESS_CAPS: ReadonlySet<Capability> = new Set<Capability>([
@@ -98,6 +100,7 @@ export const CAPABILITY_LABELS: Record<Capability, string> = {
   FORGE_PROFILES:      'Forge Profiles (operational intelligence)',
   AGENT_TASKS:         'Autonomous Task Engine (trust policies + audit ledger)',
   VENTURE_DISCOVERY:   'Venture Discovery + Build + Growth',
+  VIBE_CODING:         'Vibe Coding (aesthetic translation)',
   UNLIMITED_MESSAGES:  'Unlimited messages',
 };
 

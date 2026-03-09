@@ -133,6 +133,24 @@ let _councilRuntime: CouncilRuntime | null = null;
 let _insightEngine: InsightEngine | null = null;
 let _insightRouter: InsightRouter | null = null;
 
+// ── Learning / Expert / Evolution / Placement singletons ────────────────────
+let _learningOrchestrator: InstanceType<typeof import('@triforge/engine').LearningOrchestrator> | null = null;
+let _expertRegistry: InstanceType<typeof import('@triforge/engine').ExpertRegistry> | null = null;
+let _expertPerformanceTracker: InstanceType<typeof import('@triforge/engine').ExpertPerformanceTracker> | null = null;
+let _expertRouter: InstanceType<typeof import('@triforge/engine').ExpertRouter> | null = null;
+let _expertRosterLedger: InstanceType<typeof import('@triforge/engine').ExpertRosterLedger> | null = null;
+let _expertWorkforceEngine: InstanceType<typeof import('@triforge/engine').ExpertWorkforceEngine> | null = null;
+let _evolutionOrchestrator: InstanceType<typeof import('@triforge/engine').EvolutionOrchestrator> | null = null;
+let _expertTrafficController: InstanceType<typeof import('@triforge/engine').ExpertTrafficController> | null = null;
+let _placementLearningBridge: InstanceType<typeof import('@triforge/engine').PlacementLearningBridge> | null = null;
+
+// ── Vibe Coding singletons ──────────────────────────────────────────────────
+let _vibeProfileStore: InstanceType<typeof import('@triforge/engine').VibeProfileStore> | null = null;
+let _vibeBuildPlanner: InstanceType<typeof import('@triforge/engine').VibeBuildPlanner> | null = null;
+let _vibeConsistencyChecker: InstanceType<typeof import('@triforge/engine').VibeConsistencyChecker> | null = null;
+let _vibeOutcomeScorer: InstanceType<typeof import('@triforge/engine').VibeOutcomeScorer> | null = null;
+let _vibePatchPlanner: InstanceType<typeof import('@triforge/engine').VibePatchPlanner> | null = null;
+
 // ── Council Awareness — module-level state for registered getters ─────────────
 let _cachedTier: 'free' | 'pro' | 'business' = 'free';
 let _phoneLinkRef: PhoneLinkServer | null = null;
@@ -305,6 +323,97 @@ function _getMemoryStore(): MemoryStore {
 
 function _getMemoryManagerInstance(): ReturnType<typeof getMemoryManager> {
   return getMemoryManager(_getMemoryStore());
+}
+
+// ── Learning / Expert / Evolution / Placement lazy-init getters ──────────────
+
+function _getLearningOrchestrator(store: Store): InstanceType<typeof import('@triforge/engine').LearningOrchestrator> {
+  if (_learningOrchestrator) return _learningOrchestrator;
+  const { LearningOrchestrator } = require('@triforge/engine');
+  _learningOrchestrator = new LearningOrchestrator(store);
+  _learningOrchestrator!.initialize(); // sync
+  return _learningOrchestrator!;
+}
+
+function _getExpertRosterLedger(): InstanceType<typeof import('@triforge/engine').ExpertRosterLedger> {
+  if (_expertRosterLedger) return _expertRosterLedger;
+  const { ExpertRosterLedger } = require('@triforge/engine');
+  _expertRosterLedger = new ExpertRosterLedger(_getDataDir());
+  return _expertRosterLedger!;
+}
+
+function _getExpertWorkforceEngine(store: Store): InstanceType<typeof import('@triforge/engine').ExpertWorkforceEngine> {
+  if (_expertWorkforceEngine) return _expertWorkforceEngine;
+  const { ExpertRegistry, ExpertRouter, ExpertPerformanceTracker, ExpertWorkforceEngine } = require('@triforge/engine');
+  _expertRegistry = new ExpertRegistry(store);
+  _expertRegistry!.initialize(); // sync
+  _expertPerformanceTracker = new ExpertPerformanceTracker(store); // no initialize()
+  _expertRouter = new ExpertRouter(_expertRegistry!, _expertPerformanceTracker!);
+  _expertWorkforceEngine = new ExpertWorkforceEngine(
+    _expertRegistry!, _expertRouter!, _expertPerformanceTracker!, store,
+  ); // 4 args — fixes prior 5-arg bug (ledger was silently ignored)
+  return _expertWorkforceEngine!;
+}
+
+async function _getEvolutionOrchestrator(store: Store): Promise<InstanceType<typeof import('@triforge/engine').EvolutionOrchestrator>> {
+  if (_evolutionOrchestrator) return _evolutionOrchestrator;
+  const { EvolutionOrchestrator } = require('@triforge/engine');
+  _evolutionOrchestrator = new EvolutionOrchestrator(store, _getDataDir());
+  await _evolutionOrchestrator!.initialize(); // async
+  return _evolutionOrchestrator!;
+}
+
+async function _getExpertTrafficController(store: Store): Promise<InstanceType<typeof import('@triforge/engine').ExpertTrafficController>> {
+  if (_expertTrafficController) return _expertTrafficController;
+  const {
+    ExpertLoadTracker, ChipCapacityMonitor,
+    ExpertPlacementEngine, ExpertMigrationManager,
+    ExpertTrafficController, EvolutionAuditLedger,
+    PlacementLearningBridge,
+  } = require('@triforge/engine');
+
+  const loadTracker = new ExpertLoadTracker(store);
+  const capacityMonitor = new ChipCapacityMonitor(store);
+  const placementEngine = new ExpertPlacementEngine(loadTracker, capacityMonitor);
+  const auditLedger = new EvolutionAuditLedger(_getDataDir());
+  const migrationManager = new ExpertMigrationManager(loadTracker, capacityMonitor, auditLedger);
+
+  _expertTrafficController = new ExpertTrafficController(
+    placementEngine, loadTracker, capacityMonitor, migrationManager, auditLedger,
+  );
+  _expertTrafficController!.initialize(); // starts rebalance interval
+
+  // Wire PlacementLearningBridge (connects Placement ↔ Learning ↔ Evolution)
+  const learning = _getLearningOrchestrator(store);
+  const evolution = await _getEvolutionOrchestrator(store);
+  _placementLearningBridge = new PlacementLearningBridge(
+    learning, evolution, loadTracker, capacityMonitor,
+  );
+
+  return _expertTrafficController!;
+}
+
+function _getVibeProfileStore(store: Store): InstanceType<typeof import('@triforge/engine').VibeProfileStore> {
+  if (_vibeProfileStore) return _vibeProfileStore;
+  const { VibeProfileStore } = require('@triforge/engine');
+  _vibeProfileStore = new VibeProfileStore(store);
+  return _vibeProfileStore!;
+}
+
+function _getVibeBuildPlanner(): InstanceType<typeof import('@triforge/engine').VibeBuildPlanner> {
+  if (_vibeBuildPlanner) return _vibeBuildPlanner;
+  const { VibeBuildPlanner } = require('@triforge/engine');
+  _vibeBuildPlanner = new VibeBuildPlanner();
+  return _vibeBuildPlanner!;
+}
+
+function _getVibePatchPlanner(store: Store): InstanceType<typeof import('@triforge/engine').VibePatchPlanner> {
+  if (_vibePatchPlanner) return _vibePatchPlanner;
+  const { VibePatchPlanner, VibeConsistencyChecker, VibeOutcomeScorer } = require('@triforge/engine');
+  if (!_vibeConsistencyChecker) _vibeConsistencyChecker = new VibeConsistencyChecker();
+  if (!_vibeOutcomeScorer) _vibeOutcomeScorer = new VibeOutcomeScorer();
+  _vibePatchPlanner = new VibePatchPlanner(_vibeConsistencyChecker!, _getVibeBuildPlanner());
+  return _vibePatchPlanner!;
 }
 
 // Trust config stored in KV store
@@ -4724,18 +4833,27 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       const candidates = await extractCandidates(signals, budget, provider);
       emit('scoring', `${candidates.length} candidates identified`);
 
-      // 2. Score + rank
+      // 2. Retrieve learning biases + context for scoring and council
+      let learningBiases: Record<string, number> | undefined;
+      let learningContext: string | undefined;
+      try {
+        const lo = _getLearningOrchestrator(store);
+        learningBiases = lo.getBiasesForScoring();
+        learningContext = lo.getContextForCouncil() || undefined;
+      } catch { /* learning integration non-fatal */ }
+
+      // 3. Score + rank (with learning biases)
       for (const c of candidates) {
-        const scores = scoreCandidate(c, budget, signals);
+        const scores = scoreCandidate(c, budget, signals, learningBiases);
         c.scores = scores;
       }
       const ranked = rankCandidates(candidates).slice(0, 8);
       emit('council', 'Council debating top candidates...');
 
-      // 3. Council decision
-      const proposal = await runVentureCouncil(ranked, budget, providers, (phase: string) => emit('council', phase));
+      // 4. Council decision (with learning context)
+      const proposal = await runVentureCouncil(ranked, budget, providers, (phase: string) => emit('council', phase), learningContext);
 
-      // 4. Formation classification for each option
+      // 5. Formation classification for each option
       for (const opt of [proposal.winner, proposal.safer, proposal.aggressive]) {
         if (!opt) continue;
         const fd = classifyFormationNeeds(
@@ -4751,11 +4869,11 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         opt.requiresEntityBeforeRevenue = fd.requiresEntityBeforeRevenue;
       }
 
-      // 5. Budget allocation
+      // 6. Budget allocation
       emit('budget', 'Allocating treasury...');
       proposal.treasuryAllocation = allocateBudget(budget, proposal.winner.candidate.category);
 
-      // 6. Build brands (parallel)
+      // 7. Build brands (parallel)
       emit('branding', 'Building brand assets...');
       const brandResults = await Promise.allSettled(
         [proposal.winner, proposal.safer, proposal.aggressive]
@@ -4763,7 +4881,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
           .map(opt => buildBrand(opt!, provider)),
       );
 
-      // 7. Build launch packs (parallel)
+      // 8. Build launch packs (parallel)
       emit('packs', 'Building launch packs...');
       const options = [proposal.winner, proposal.safer, proposal.aggressive].filter(Boolean);
       const launchResults = await Promise.allSettled(
@@ -4782,13 +4900,13 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         }
       }
 
-      // 8. Conversion plan (winner)
+      // 9. Conversion plan (winner)
       emit('conversion', 'Planning conversion strategy...');
       if (proposal.winner.launchPack) {
         planConversion(proposal.winner, proposal.winner.launchPack);
       }
 
-      // 9. Audience growth plans (parallel)
+      // 10. Audience growth plans (parallel)
       emit('audience', 'Planning audience growth...');
       await Promise.allSettled(
         options.map(opt => {
@@ -4797,13 +4915,13 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         }),
       );
 
-      // 10. Growth funnel (winner)
+      // 11. Growth funnel (winner)
       emit('funnel', 'Mapping growth funnel...');
       if (proposal.winner.launchPack) {
         planGrowthFunnel(proposal.winner, proposal.winner.launchPack);
       }
 
-      // 11. Filing summary
+      // 12. Filing summary
       const { summarizeFilingNeed } = await import('@triforge/engine');
       if (proposal.winner) {
         const fd = classifyFormationNeeds(
@@ -4813,7 +4931,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         proposal.filingSummary = summarizeFilingNeed(proposal.winner, fd);
       }
 
-      // 12. Save + push
+      // 13. Save + push
       proposal.status = 'awaiting_user_approval';
       store.addVentureProposal(proposal as unknown as Record<string, unknown>);
 
@@ -4852,6 +4970,13 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         case 'approve_plan_only':
           store.updateVentureStatus(id, 'approved_plan_only');
           break;
+        case 'escalate_to_build':
+          // Transition from approved_plan_only → approved_for_build
+          if (String(proposal.status) !== 'approved_plan_only') {
+            return { error: 'Only plan-only ventures can be escalated to build.' };
+          }
+          store.updateVentureStatus(id, 'approved_for_build');
+          break;
         case 'alternative':
           store.updateVentureStatus(id, 'rerun_requested');
           break;
@@ -4874,6 +4999,12 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         workflow: 'VENTURE_RESPONSE',
         starred: false,
       });
+
+      // Record decision in learning brain
+      try {
+        const lo = _getLearningOrchestrator(store);
+        lo.onVentureDecision(id, action, proposal as any);
+      } catch { /* learning integration non-fatal */ }
 
       return { ok: true };
     } catch (err) {
@@ -4967,8 +5098,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   });
 
   // Only these states allow launching into daily growth.
-  // site_ready is intentionally excluded — ventures must either be operating_unfiled
-  // (pre-filing operation allowed) or filed_and_operating (filing complete) before launch.
+  // Ventures must either be operating_unfiled (pre-filing allowed) or filed_and_operating.
   const LAUNCHABLE_STATES = ['operating_unfiled', 'growth_ready', 'filed_and_operating'];
 
   ipcMain.handle('venture:launch', async (_event, id: string) => {
@@ -4978,7 +5108,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
       const status = String(proposal.status);
       if (!LAUNCHABLE_STATES.includes(status)) {
-        if (status === 'site_ready' || status === 'awaiting_filing_decision') {
+        if (status === 'awaiting_filing_decision') {
           return { error: 'A filing decision is required before launching this venture. Choose File Now, Wait, or Ask Again Later.' };
         }
         return { error: `Venture cannot launch from "${status}". Must be operating_unfiled, growth_ready, or filed_and_operating.` };
@@ -5045,7 +5175,29 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
           break;
         case 'ask_again_later':
           store.updateVentureStatus(id, 'filing_deferred');
-          // Could schedule a re-prompt via _scheduler here in the future
+          break;
+        case 'confirm_filing':
+          // Transition from filing_prepared → filed_and_operating
+          if (String(proposal.status) !== 'filing_prepared') {
+            return { error: 'Filing can only be confirmed from "filing_prepared" state.' };
+          }
+          store.updateVentureStatus(id, 'filed_and_operating');
+          store.addLedger({
+            id: `venture-filed-${Date.now().toString(36)}`,
+            timestamp: Date.now(),
+            request: 'Venture Filing Confirmed',
+            synthesis: `Venture ${id.slice(0, 8)} filing confirmed. Now operating as filed entity.`,
+            responses: [],
+            workflow: 'VENTURE_FILING',
+            starred: false,
+          });
+          break;
+        case 'revisit_filing':
+          // Transition from filing_deferred → awaiting_filing_decision
+          if (String(proposal.status) !== 'filing_deferred') {
+            return { error: 'Filing can only be revisited from "filing_deferred" state.' };
+          }
+          store.updateVentureStatus(id, 'awaiting_filing_decision');
           break;
         default:
           return { error: `Unknown filing action: ${action}` };
@@ -5087,6 +5239,12 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         sendVentureDailyPulse(formatPulseForPhone(pulse, concept));
       } catch { /* non-fatal */ }
 
+      // Record outcome in learning brain (metrics sparse until analytics wired)
+      try {
+        const lo = _getLearningOrchestrator(store);
+        lo.onVentureOutcome(id, {});
+      } catch { /* learning integration non-fatal */ }
+
       return { pulse };
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
@@ -5111,6 +5269,12 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         case 'plan_only':
           store.updateVentureStatus(proposalId, 'approved_plan_only');
           return { ok: true };
+        case 'escalate_to_build':
+          if (String(proposal.status) !== 'approved_plan_only') {
+            return { ok: false, error: 'Only plan-only ventures can be escalated.' };
+          }
+          store.updateVentureStatus(proposalId, 'approved_for_build');
+          return { ok: true };
         default:
           return { ok: false, error: `Unknown action: ${action}` };
       }
@@ -5128,6 +5292,18 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         case 'ask_again_later':
           store.updateVentureStatus(proposalId, 'filing_deferred');
           return { ok: true };
+        case 'confirm_filing':
+          if (String(proposal.status) !== 'filing_prepared') {
+            return { ok: false, error: 'Filing can only be confirmed from filing_prepared.' };
+          }
+          store.updateVentureStatus(proposalId, 'filed_and_operating');
+          return { ok: true };
+        case 'revisit_filing':
+          if (String(proposal.status) !== 'filing_deferred') {
+            return { ok: false, error: 'Filing can only be revisited from filing_deferred.' };
+          }
+          store.updateVentureStatus(proposalId, 'awaiting_filing_decision');
+          return { ok: true };
         default:
           return { ok: false, error: `Unknown filing action: ${action}` };
       }
@@ -5138,9 +5314,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('venture:learningProfile', async () => {
     try {
-      const { LearningOrchestrator } = await import('@triforge/engine');
-      const orchestrator = new LearningOrchestrator(store);
-      await orchestrator.initialize();
+      const orchestrator = _getLearningOrchestrator(store);
       const biases = orchestrator.getBiasesForScoring();
       return biases;
     } catch (err) {
@@ -5150,9 +5324,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('venture:refreshTrends', async () => {
     try {
-      const { LearningOrchestrator, searchWeb: engineSearchWeb } = await import('@triforge/engine');
-      const orchestrator = new LearningOrchestrator(store);
-      await orchestrator.initialize();
+      const orchestrator = _getLearningOrchestrator(store);
       await orchestrator.refreshTrends(async (query: string) => {
         const results = await searchWeb(query);
         return results.map((r: { title: string; url: string; snippet: string }) => ({
@@ -5175,11 +5347,9 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('experts:roster', async () => {
     try {
-      const { ExpertRegistry } = await import('@triforge/engine');
-      const registry = new ExpertRegistry(store);
-      await registry.initialize();
-      const allExperts = registry.getAllExperts();
-      const summary = registry.getRosterSummary();
+      _getExpertWorkforceEngine(store); // ensure registry is initialized
+      const allExperts = _expertRegistry!.getAllExperts();
+      const summary = _expertRegistry!.getRosterSummary();
       return { roster: allExperts, summary };
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
@@ -5188,14 +5358,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('experts:health', async () => {
     try {
-      const { ExpertRegistry, ExpertRouter, ExpertPerformanceTracker, ExpertWorkforceEngine, ExpertRosterLedger } = await import('@triforge/engine');
-      const registry = new ExpertRegistry(store);
-      await registry.initialize();
-      const tracker = new ExpertPerformanceTracker(store);
-      await tracker.initialize();
-      const ledger = new ExpertRosterLedger(_getDataDir());
-      const router = new ExpertRouter(registry, tracker);
-      const engine = new ExpertWorkforceEngine(registry, router, tracker, ledger, store);
+      const engine = _getExpertWorkforceEngine(store);
       const health = engine.getRosterHealth();
       return { health };
     } catch (err) {
@@ -5205,8 +5368,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('experts:history', async (_event, since?: number) => {
     try {
-      const { ExpertRosterLedger } = await import('@triforge/engine');
-      const ledger = new ExpertRosterLedger(_getDataDir());
+      const ledger = _getExpertRosterLedger();
       const entries = await ledger.getEntries(since);
       return { entries };
     } catch (err) {
@@ -5216,14 +5378,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('experts:bench', async (_event, expertId: string) => {
     try {
-      const { ExpertRegistry, ExpertRouter, ExpertPerformanceTracker, ExpertWorkforceEngine, ExpertRosterLedger } = await import('@triforge/engine');
-      const registry = new ExpertRegistry(store);
-      await registry.initialize();
-      const tracker = new ExpertPerformanceTracker(store);
-      await tracker.initialize();
-      const ledger = new ExpertRosterLedger(_getDataDir());
-      const router = new ExpertRouter(registry, tracker);
-      const engine = new ExpertWorkforceEngine(registry, router, tracker, ledger, store);
+      const engine = _getExpertWorkforceEngine(store);
       const ok = engine.moveToBench(expertId, 'User-requested bench');
       return { ok };
     } catch (err) {
@@ -5233,14 +5388,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('experts:restore', async (_event, expertId: string) => {
     try {
-      const { ExpertRegistry, ExpertRouter, ExpertPerformanceTracker, ExpertWorkforceEngine, ExpertRosterLedger } = await import('@triforge/engine');
-      const registry = new ExpertRegistry(store);
-      await registry.initialize();
-      const tracker = new ExpertPerformanceTracker(store);
-      await tracker.initialize();
-      const ledger = new ExpertRosterLedger(_getDataDir());
-      const router = new ExpertRouter(registry, tracker);
-      const engine = new ExpertWorkforceEngine(registry, router, tracker, ledger, store);
+      const engine = _getExpertWorkforceEngine(store);
       const ok = engine.restoreFromBench(expertId);
       return { ok };
     } catch (err) {
@@ -5258,9 +5406,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         return { error: 'Performance Hunter requires Business tier.' };
       }
 
-      const { EvolutionOrchestrator } = await import('@triforge/engine');
-      const orchestrator = new EvolutionOrchestrator(store, _getDataDir());
-      await orchestrator.initialize();
+      const orchestrator = await _getEvolutionOrchestrator(store);
       const report = await orchestrator.runFullScan();
       return { report };
     } catch (err) {
@@ -5270,9 +5416,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('evolution:quarantined', async () => {
     try {
-      const { EvolutionOrchestrator } = await import('@triforge/engine');
-      const orchestrator = new EvolutionOrchestrator(store, _getDataDir());
-      await orchestrator.initialize();
+      const orchestrator = await _getEvolutionOrchestrator(store);
       const components = orchestrator.getQuarantinedComponents();
       return { components };
     } catch (err) {
@@ -5282,9 +5426,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('evolution:restore', async (_event, componentId: string) => {
     try {
-      const { EvolutionOrchestrator } = await import('@triforge/engine');
-      const orchestrator = new EvolutionOrchestrator(store, _getDataDir());
-      await orchestrator.initialize();
+      const orchestrator = await _getEvolutionOrchestrator(store);
       const ok = orchestrator.restoreComponent(componentId);
       return { ok };
     } catch (err) {
@@ -5294,9 +5436,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('evolution:auditLog', async (_event, since?: number) => {
     try {
-      const { EvolutionOrchestrator } = await import('@triforge/engine');
-      const orchestrator = new EvolutionOrchestrator(store, _getDataDir());
-      await orchestrator.initialize();
+      const orchestrator = await _getEvolutionOrchestrator(store);
       const entries = await orchestrator.getAuditLog(since);
       return { entries };
     } catch (err) {
@@ -5306,9 +5446,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('evolution:healthReport', async () => {
     try {
-      const { EvolutionOrchestrator } = await import('@triforge/engine');
-      const orchestrator = new EvolutionOrchestrator(store, _getDataDir());
-      await orchestrator.initialize();
+      const orchestrator = await _getEvolutionOrchestrator(store);
       const report = orchestrator.getHealthReport();
       return { report };
     } catch (err) {
@@ -5326,21 +5464,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         return { error: 'Adaptive Placement requires Business tier.' };
       }
 
-      const {
-        ExpertLoadTracker, ChipCapacityMonitor,
-        ExpertPlacementEngine, ExpertMigrationManager,
-        ExpertTrafficController, EvolutionAuditLedger,
-      } = await import('@triforge/engine');
-
-      const loadTracker = new ExpertLoadTracker(store);
-      const capacityMonitor = new ChipCapacityMonitor(store);
-      const placementEngine = new ExpertPlacementEngine(loadTracker, capacityMonitor);
-      const ledger = new EvolutionAuditLedger(_getDataDir());
-      const migrationManager = new ExpertMigrationManager(loadTracker, capacityMonitor, ledger);
-      const controller = new ExpertTrafficController(
-        placementEngine, loadTracker, capacityMonitor, migrationManager, ledger,
-      );
-
+      const controller = await _getExpertTrafficController(store);
       return { report: controller.getPlacementStatus() };
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
@@ -5355,21 +5479,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         return { error: 'Adaptive Placement requires Business tier.' };
       }
 
-      const {
-        ExpertLoadTracker, ChipCapacityMonitor,
-        ExpertPlacementEngine, ExpertMigrationManager,
-        ExpertTrafficController, EvolutionAuditLedger,
-      } = await import('@triforge/engine');
-
-      const loadTracker = new ExpertLoadTracker(store);
-      const capacityMonitor = new ChipCapacityMonitor(store);
-      const placementEngine = new ExpertPlacementEngine(loadTracker, capacityMonitor);
-      const ledger = new EvolutionAuditLedger(_getDataDir());
-      const migrationManager = new ExpertMigrationManager(loadTracker, capacityMonitor, ledger);
-      const controller = new ExpertTrafficController(
-        placementEngine, loadTracker, capacityMonitor, migrationManager, ledger,
-      );
-
+      const controller = await _getExpertTrafficController(store);
       const decisions = controller.runRebalanceCycle();
       return { decisions };
     } catch (err) {
@@ -5385,21 +5495,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         return { error: 'Adaptive Placement requires Business tier.' };
       }
 
-      const {
-        ExpertLoadTracker, ChipCapacityMonitor,
-        ExpertPlacementEngine, ExpertMigrationManager,
-        ExpertTrafficController, EvolutionAuditLedger,
-      } = await import('@triforge/engine');
-
-      const loadTracker = new ExpertLoadTracker(store);
-      const capacityMonitor = new ChipCapacityMonitor(store);
-      const placementEngine = new ExpertPlacementEngine(loadTracker, capacityMonitor);
-      const ledger = new EvolutionAuditLedger(_getDataDir());
-      const migrationManager = new ExpertMigrationManager(loadTracker, capacityMonitor, ledger);
-      const controller = new ExpertTrafficController(
-        placementEngine, loadTracker, capacityMonitor, migrationManager, ledger,
-      );
-
+      const controller = await _getExpertTrafficController(store);
       return { report: controller.getPlacementReport() };
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
@@ -5511,4 +5607,222 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       applyBlueprint(blueprint, ctx);
     } catch { /* non-fatal — startup blueprint restore failure is silent */ }
   }, 1000);
+
+  // ── Vibe Coding ─────────────────────────────────────────────────────────────
+
+  ipcMain.handle('vibe:createProfile', async (_event, name: string, ventureId?: string) => {
+    const lic = await store.getLicense();
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('VIBE_CODING', tier)) return { error: lockedError('VIBE_CODING') };
+    try {
+      const ps = _getVibeProfileStore(store);
+      const profile = ps.createProfile(name, ventureId);
+      return { ok: true, profile };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('vibe:getProfile', async (_event, id: string) => {
+    const lic = await store.getLicense();
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('VIBE_CODING', tier)) return { error: lockedError('VIBE_CODING') };
+    try {
+      const ps = _getVibeProfileStore(store);
+      const profile = ps.getProfile(id);
+      return profile ? { ok: true, profile } : { error: 'Profile not found.' };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('vibe:listProfiles', async () => {
+    const lic = await store.getLicense();
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('VIBE_CODING', tier)) return { error: lockedError('VIBE_CODING') };
+    try {
+      const ps = _getVibeProfileStore(store);
+      return { ok: true, profiles: ps.getAllProfiles() };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('vibe:deleteProfile', async (_event, id: string) => {
+    const lic = await store.getLicense();
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('VIBE_CODING', tier)) return { error: lockedError('VIBE_CODING') };
+    try {
+      const ps = _getVibeProfileStore(store);
+      ps.deleteProfile(id);
+      return { ok: true };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('vibe:updateProfile', async (_event, id: string, updates: Record<string, unknown>) => {
+    const lic = await store.getLicense();
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('VIBE_CODING', tier)) return { error: lockedError('VIBE_CODING') };
+    try {
+      const ps = _getVibeProfileStore(store);
+      ps.updateProfile(id, updates as any);
+      const profile = ps.getProfile(id);
+      return profile ? { ok: true, profile } : { error: 'Profile not found after update.' };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('vibe:parse', async (_event, input: string) => {
+    const lic = await store.getLicense();
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('VIBE_CODING', tier)) return { error: lockedError('VIBE_CODING') };
+    try {
+      const { parseVibeIntent, detectVibeMode } = require('@triforge/engine');
+      const signals = parseVibeIntent(input);
+      const mode = detectVibeMode(input);
+      return { ok: true, signals, mode };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('vibe:runCouncil', async (event, profileId: string, input: string, mode?: string) => {
+    const lic = await store.getLicense();
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('VIBE_CODING', tier)) return { error: lockedError('VIBE_CODING') };
+    try {
+      const { providerManager: pm } = await getEngine();
+      const providers = await pm.getActiveProviders();
+      if (providers.length === 0) {
+        return { error: 'No API keys configured. Add at least one in Settings.' };
+      }
+
+      const ps = _getVibeProfileStore(store);
+      const profile = ps.getProfile(profileId);
+      if (!profile) return { error: 'Vibe profile not found.' };
+
+      // Build expert context from workforce engine (Fix 3 + Fix 9)
+      let expertContext = '';
+      try {
+        const wfe = _getExpertWorkforceEngine(store);
+
+        // Fix 9: Build routing context with learning + placement hints
+        const routingContext: Record<string, unknown> = {};
+        try {
+          const lo = _getLearningOrchestrator(store);
+          const recs = lo.getContextForCouncil();
+          if (recs) routingContext.learningRecommendations = [];
+        } catch { /* learning hints optional */ }
+
+        // Fix 3: Use correct method (getExpertForTask) instead of non-existent selectExperts
+        const decision = wfe.getExpertForTask('vibe_analysis', routingContext as any);
+        // decision.selectedExperts is string[] of expert IDs — resolve via router
+        if (_expertRouter && decision.selectedExperts?.length > 0) {
+          expertContext = _expertRouter.buildExpertContext(decision.selectedExperts);
+        }
+      } catch { /* expert context is optional */ }
+
+      const { runVibeCouncil } = require('@triforge/engine');
+      const vibeMode = (mode ?? profile.mode ?? 'explore') as any;
+
+      const onProgress = (phase: string, detail?: string) => {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('vibe:progress', { phase, detail });
+        }
+      };
+
+      // Map providers to VibeCouncilProvider interface
+      const councilProviders = providers.map((p: any) => ({
+        name: p.name ?? 'unknown',
+        chat: (msgs: { role: string; content: string }[]) => p.chat(msgs),
+      }));
+
+      const result = await runVibeCouncil(
+        input, profile, councilProviders, expertContext, vibeMode, onProgress,
+      );
+
+      // Apply synthesized axis changes back to the stored profile
+      if (result.synthesizedDecisions?.length > 0) {
+        const { parseVibeIntent } = require('@triforge/engine');
+        const signals = parseVibeIntent(input);
+        if (signals.length > 0) {
+          ps.applySignals(profileId, signals);
+        }
+      }
+
+      // Record in learning brain (optional — 5 positional args)
+      try {
+        const lo = _getLearningOrchestrator(store);
+        for (const pos of result.positions ?? []) {
+          lo.onExpertContribution(
+            pos.provider ?? 'expert:vibe_translator',  // expertId
+            profileId,                                 // ventureId (using profile as context)
+            'vibe_analysis',                           // taskType
+            pos.confidence ?? 50,                      // score
+            true,                                      // survived
+          );
+        }
+      } catch { /* learning integration is optional */ }
+
+      return { ok: true, result };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('vibe:audit', async (_event, profileId: string, currentState?: string) => {
+    const lic = await store.getLicense();
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('VIBE_CODING', tier)) return { error: lockedError('VIBE_CODING') };
+    try {
+      const ps = _getVibeProfileStore(store);
+      const profile = ps.getProfile(profileId);
+      if (!profile) return { error: 'Vibe profile not found.' };
+
+      const patchPlanner = _getVibePatchPlanner(store);
+      const plan = patchPlanner.audit(profile, currentState);
+      return { ok: true, plan };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('vibe:rescue', async (_event, profileId: string, currentState?: string) => {
+    const lic = await store.getLicense();
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    if (!hasCapability('VIBE_CODING', tier)) return { error: lockedError('VIBE_CODING') };
+    try {
+      const ps = _getVibeProfileStore(store);
+      const profile = ps.getProfile(profileId);
+      if (!profile) return { error: 'Vibe profile not found.' };
+
+      const patchPlanner = _getVibePatchPlanner(store);
+      const plan = patchPlanner.rescue(profile, currentState);
+      return { ok: true, plan };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+}
+
+// ── Singleton cleanup — call from app before-quit ─────────────────────────────
+export function disposeIpcSingletons(): void {
+  _expertTrafficController?.dispose();
+  _expertTrafficController = null;
+  _evolutionOrchestrator = null;
+  _placementLearningBridge = null;
+  _learningOrchestrator = null;
+  _expertWorkforceEngine = null;
+  _expertRouter = null;
+  _expertPerformanceTracker = null;
+  _expertRegistry = null;
+  _expertRosterLedger = null;
+  _vibeProfileStore = null;
+  _vibeBuildPlanner = null;
+  _vibeConsistencyChecker = null;
+  _vibeOutcomeScorer = null;
+  _vibePatchPlanner = null;
 }

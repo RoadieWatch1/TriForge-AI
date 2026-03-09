@@ -2,7 +2,7 @@ import { app, BrowserWindow, nativeTheme, globalShortcut, Menu, protocol } from 
 import path from 'path';
 import fs from 'fs';
 import { Store } from './store';
-import { setupIpc } from './ipc';
+import { setupIpc, disposeIpcSingletons } from './ipc';
 import { setupTray } from './tray';
 import { setupAutoUpdater } from './updater';
 import { TaskStore, Scheduler, AuditLedger } from '@triforge/engine';
@@ -401,6 +401,7 @@ app.on('activate', () => {
 });
 
 app.on('before-quit', () => {
+  disposeIpcSingletons();
   store?.close();
   // Remove 'close' intercept so app actually quits
   mainWindow?.removeAllListeners('close');

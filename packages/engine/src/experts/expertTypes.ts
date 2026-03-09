@@ -27,7 +27,9 @@ export type ExpertRole =
   | 'contrarian_growth_expert'
   | 'research_verifier'
   | 'execution_planner'
-  | 'compliance_checker';
+  | 'compliance_checker'
+  | 'vibe_translator'
+  | 'ux_consistency_auditor';
 
 // ── Lifecycle states ────────────────────────────────────────────────────────
 
@@ -237,4 +239,7 @@ export const TASK_TYPE_EXPERT_MAP: Record<string, ExpertRole[]> = {
   daily_growth: ['kpi_analyst', 'automation_systems_expert', 'trend_hunter'],
   scoring: ['risk_assessor', 'monetization_strategist', 'kpi_analyst'],
   council_debate: ['execution_planner', 'research_verifier', 'contrarian_growth_expert'],
+  vibe_analysis: ['brand_architect', 'positioning_expert', 'vibe_translator', 'ux_consistency_auditor'],
+  vibe_build: ['landing_page_architect', 'vibe_translator', 'conversion_optimizer', 'ux_consistency_auditor'],
+  vibe_audit: ['ux_consistency_auditor', 'brand_architect', 'vibe_translator'],
 };

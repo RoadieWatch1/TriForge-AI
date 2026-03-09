@@ -207,6 +207,12 @@ function getDefaultRoster(): ExpertProfile[] {
     { role: 'logo_identity_expert', pool: 'shared', name: 'Logo & Identity Expert', protection: 'experimental',
       fragment: 'You design visual identities: logo concepts, color palettes, typography, brand marks.',
       tasks: ['brand_creation'] },
+    { role: 'vibe_translator', pool: 'claude', name: 'Vibe Translator', protection: 'competitive',
+      fragment: 'You translate aesthetic and emotional language into concrete design and implementation decisions. You understand the gap between "feeling" and "building."',
+      tasks: ['vibe_analysis', 'vibe_build'] },
+    { role: 'ux_consistency_auditor', pool: 'gpt', name: 'UX Consistency Auditor', protection: 'competitive',
+      fragment: 'You audit product experiences for consistency. You detect when visual, tonal, or structural elements contradict the intended feel.',
+      tasks: ['vibe_analysis', 'vibe_audit'] },
   ];
 
   return defaults.map(d => ({

@@ -81,7 +81,6 @@ const STATUS_LABELS: Record<string, string> = {
   rejected: 'Rejected',
   rerun_requested: 'Re-run Requested',
   building_site: 'Building Site',
-  site_ready: 'Site Ready',
   operating_unfiled: 'Operating (Unfiled)',
   growth_ready: 'Growth Ready',
   daily_growth_active: 'Growth Active',
@@ -93,14 +92,14 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 const STATUS_DESCRIPTIONS: Record<string, string> = {
+  approved_plan_only: 'Plan approved for reference. You can escalate to a full build at any time.',
   operating_unfiled: 'This venture is operational without formal filing. The Council is running growth and audience capture. You can file later when traction confirms viability.',
   awaiting_filing_decision: 'Site is built. This venture type requires a filing decision before operation can begin. Choose File Now, Wait, or Ask Again Later on the Filing tab.',
-  filing_deferred: 'Filing has been deferred. This venture is operating without formal registration because its type allows pre-filing operation. The Council will re-prompt when filing becomes recommended.',
+  filing_deferred: 'Filing has been deferred. You can revisit the filing decision at any time.',
   filed_and_operating: 'This venture is fully filed and operational. All legal formation steps are complete.',
   daily_growth_active: 'Growth engine is active. The Council is publishing content, capturing audience, and optimizing daily.',
   building_site: 'The Council is building the website, lead capture, and growth plan.',
-  site_ready: 'Site is built but awaiting next step.',
-  filing_prepared: 'Filing packet has been prepared and is ready for your review. Submission requires your explicit authorization.',
+  filing_prepared: 'Filing packet has been prepared and is ready for your review. Confirm filing to proceed, or defer.',
 };
 
 export function VentureDiscovery({ tier }: VentureDiscoveryProps) {
@@ -397,6 +396,9 @@ export function VentureDiscovery({ tier }: VentureDiscoveryProps) {
               {proposal.status === 'approved_for_build' && (
                 <button style={{ ...s.actionBtn, background: '#6366f1' }} onClick={handleBuild}>Build Venture</button>
               )}
+              {proposal.status === 'approved_plan_only' && (
+                <button style={{ ...s.actionBtn, background: '#6366f1' }} onClick={() => handleRespond('escalate_to_build')}>Proceed to Build</button>
+              )}
               {['operating_unfiled', 'growth_ready', 'filed_and_operating'].includes(proposal.status) && (
                 <button style={{ ...s.actionBtn, background: '#22c55e' }} onClick={handleLaunch}>Launch Growth</button>
               )}
@@ -654,13 +656,22 @@ function FilingTab({ option, packet, status, onFilingRespond }: {
         </div>
       )}
       {status === 'filing_deferred' && (
-        <div style={{ marginTop: 12, color: '#94a3b8', fontSize: 13 }}>
-          Filing deferred. The Council will continue operating the venture and re-prompt when recommended.
+        <div style={{ marginTop: 12 }}>
+          <div style={{ color: '#94a3b8', fontSize: 13, marginBottom: 8 }}>
+            Filing deferred. You can revisit the filing decision at any time.
+          </div>
+          <button style={{ ...s.actionBtn, background: '#8b5cf6' }} onClick={() => onFilingRespond('revisit_filing')}>Revisit Filing Decision</button>
         </div>
       )}
       {status === 'filing_prepared' && (
-        <div style={{ marginTop: 12, color: '#22c55e', fontSize: 13 }}>
-          Filing packet prepared and ready for review. Submission requires your explicit authorization.
+        <div style={{ marginTop: 12 }}>
+          <div style={{ color: '#22c55e', fontSize: 13, marginBottom: 8 }}>
+            Filing packet prepared and ready for review. Confirm filing to mark this venture as filed and operating.
+          </div>
+          <div style={{ ...s.actionRow, marginTop: 8 }}>
+            <button style={{ ...s.actionBtn, background: '#22c55e' }} onClick={() => onFilingRespond('confirm_filing')}>Confirm Filing</button>
+            <button style={{ ...s.actionBtn, background: '#64748b' }} onClick={() => onFilingRespond('wait')}>Defer</button>
+          </div>
         </div>
       )}
     </div>
@@ -674,7 +685,6 @@ function statusColor(status: string): string {
     awaiting_user_approval: '#f59e0b',
     approved_for_build: '#3b82f6',
     building_site: '#8b5cf6',
-    site_ready: '#6366f1',
     awaiting_filing_decision: '#f59e0b',
     operating_unfiled: '#22c55e',
     growth_ready: '#22c55e',

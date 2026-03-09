@@ -484,3 +484,24 @@ export { ExpertMigrationManager } from './placement/expertMigrationManager';
 export { ExpertTrafficController } from './placement/expertTrafficController';
 export { PlacementLearningBridge } from './placement/placementLearningBridge';
 export type { PlacementReportSection } from './placement/placementLearningBridge';
+
+// ── Vibe Coding ──────────────────────────────────────────────────────────────
+export type {
+  VibeMode, VibeDimension, VibeSignal, VibeProfile, VibeAnchor,
+  VibeSystemDecision, VibeBuildPlan, VibeComponentTarget, VibeStyleChange, VibeCopyChange,
+  VibeConsistencyResult, VibeConsistencyViolation,
+  VibeOutcomeScore, OutcomeDimension, VibeDecisionRecord,
+  VibePatchPlan, VibePatchIssue, VibePatchFix,
+  VibeCouncilRole, VibeCouncilPosition, VibeProgressPhase,
+  VibeConfig,
+  VibeCouncilProvider, OnVibeProgress, VibeCouncilResult,
+} from './vibe';
+export { DEFAULT_VIBE_CONFIG, DEFAULT_VIBE_AXES, VIBE_DIMENSIONS } from './vibe';
+export { parseVibeIntent, detectVibeMode, isVibeRequest } from './vibe';
+export { VibeProfileStore } from './vibe';
+export { translateVibeToDecisions, translateWithContext, applyGuardrails } from './vibe';
+export { VibeBuildPlanner } from './vibe';
+export { VibeConsistencyChecker } from './vibe';
+export { VibeOutcomeScorer } from './vibe';
+export { runVibeCouncil } from './vibe';
+export { VibePatchPlanner } from './vibe';

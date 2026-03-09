@@ -35,6 +35,7 @@ export type IntentType =
   | 'task_request'          // "check my tasks", "pending approvals"
   | 'desktop_control'       // "open desktop", "bring triforge forward"
   | 'folder_audit'          // "audit this folder", "analyze this codebase"
+  | 'vibe_request'          // "make this feel premium", "vibe check"
   | 'default';
 
 // ── Triforge-native keyword banks (exact phrase or substring match) ───────────
@@ -115,6 +116,16 @@ const FOLDER_AUDIT_KW = [
   'check for issues', 'find issues in', 'what issues are in',
 ];
 
+const VIBE_REQUEST_KW = [
+  'vibe', 'make this feel', 'make it feel', 'give it a', 'look and feel',
+  'premium feel', 'boardroom', 'visual identity', 'brand feel',
+  'vibe check', 'rescue this design', 'audit the vibe', 'refine the look',
+  'explore directions', 'design direction', 'product personality',
+  'more polished', 'more premium', 'more trustworthy', 'more cinematic',
+  'more professional', 'more corporate', 'more playful', 'more minimal',
+  'more bold', 'more confident', 'more stealthy', 'business mood',
+];
+
 // ── Generic keyword banks ─────────────────────────────────────────────────────
 
 const CODING_KW: string[] = [
@@ -171,6 +182,7 @@ export function detectIntentType(message: string): IntentType {
   if (matchesAny(lower, PHONE_REQUEST_KW))         return 'phone_request';
   if (matchesAny(lower, TASK_REQUEST_KW))          return 'task_request';
   if (matchesAny(lower, DESKTOP_CONTROL_KW))       return 'desktop_control';
+  if (matchesAny(lower, VIBE_REQUEST_KW))            return 'vibe_request';
   if (matchesAny(lower, FOLDER_AUDIT_KW))          return 'folder_audit';
 
   // ── Priority 2: Generic reasoning intents ──────────────────────────────────

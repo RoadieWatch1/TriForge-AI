@@ -1281,6 +1281,33 @@ const api = {
     healthReport: () =>
       ipcRenderer.invoke('evolution:healthReport') as Promise<{ report?: string; error?: string }>,
   },
+
+  // Vibe Coding — council-guided aesthetic-to-implementation translation
+  vibe: {
+    createProfile: (name: string, ventureId?: string) =>
+      ipcRenderer.invoke('vibe:createProfile', name, ventureId) as Promise<{ ok?: boolean; profile?: unknown; error?: string }>,
+    getProfile: (id: string) =>
+      ipcRenderer.invoke('vibe:getProfile', id) as Promise<{ ok?: boolean; profile?: unknown; error?: string }>,
+    listProfiles: () =>
+      ipcRenderer.invoke('vibe:listProfiles') as Promise<{ ok?: boolean; profiles?: unknown[]; error?: string }>,
+    deleteProfile: (id: string) =>
+      ipcRenderer.invoke('vibe:deleteProfile', id) as Promise<{ ok?: boolean; error?: string }>,
+    updateProfile: (id: string, updates: Record<string, unknown>) =>
+      ipcRenderer.invoke('vibe:updateProfile', id, updates) as Promise<{ ok?: boolean; profile?: unknown; error?: string }>,
+    parse: (input: string) =>
+      ipcRenderer.invoke('vibe:parse', input) as Promise<{ ok?: boolean; signals?: unknown[]; mode?: string | null; error?: string }>,
+    runCouncil: (profileId: string, input: string, mode?: string) =>
+      ipcRenderer.invoke('vibe:runCouncil', profileId, input, mode) as Promise<{ ok?: boolean; result?: unknown; error?: string }>,
+    audit: (profileId: string, currentState?: string) =>
+      ipcRenderer.invoke('vibe:audit', profileId, currentState) as Promise<{ ok?: boolean; plan?: unknown; error?: string }>,
+    rescue: (profileId: string, currentState?: string) =>
+      ipcRenderer.invoke('vibe:rescue', profileId, currentState) as Promise<{ ok?: boolean; plan?: unknown; error?: string }>,
+    onProgress: (cb: (data: { phase: string; detail?: string }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, data: { phase: string; detail?: string }) => cb(data);
+      ipcRenderer.on('vibe:progress', handler);
+      return () => ipcRenderer.removeListener('vibe:progress', handler);
+    },
+  },
 };
 
 contextBridge.exposeInMainWorld('triforge', api);
