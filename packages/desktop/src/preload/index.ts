@@ -1004,6 +1004,25 @@ const api = {
       ipcRenderer.invoke('browser:close') as Promise<{ ok?: boolean; error?: string }>,
   },
 
+  // Ad Campaign Generation (Council multi-model → drafts → phone approval → post)
+  campaigns: {
+    generateAds: (params: {
+      goal: string;
+      platform: string;
+      count: number;
+      targetAudience?: string;
+      tone?: string;
+      campaignId?: string;
+      loopId?: string;
+    }) => ipcRenderer.invoke('campaigns:generateAds', params) as Promise<{
+      ok?: boolean;
+      campaignId?: string;
+      variants?: Array<{ contentId: string; actionId: string; text: string; platform: string; provider: string }>;
+      pendingApprovalCount?: number;
+      error?: string;
+    }>,
+  },
+
   // Social Media Posting (Twitter, LinkedIn, Reddit, Facebook)
   social: {
     post:  (platform: string, content: string, mediaBase64?: string) =>

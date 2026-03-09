@@ -41,7 +41,8 @@ interface Props {
   liveText?: string;
   /** Council Awareness message shown while thinking but before tokens arrive */
   thinkingMsg?: string;
-  status: 'idle' | 'thinking' | 'responded';
+  status: 'idle' | 'thinking' | 'responded' | 'error';
+  errorMsg?: string;
   agreeing: boolean | null;     // null = neutral, true = agrees, false = disagrees
   thinking: boolean;
   isSelected: boolean;
@@ -55,7 +56,7 @@ interface Props {
 }
 
 export function CouncilSeat({
-  label, color, role, response, liveText, thinkingMsg, status, agreeing, thinking,
+  label, color, role, response, liveText, thinkingMsg, status, errorMsg, agreeing, thinking,
   isSelected, reviewingLabel, listening,
   onAgree, onDisagree, onProposeAlternative, onSelect,
 }: Props) {
@@ -158,7 +159,9 @@ export function CouncilSeat({
                 ? 'rgba(255,255,255,0.3)'
                 : thinking
                   ? color
-                  : 'rgba(255,255,255,0.25)',
+                  : status === 'error'
+                    ? '#ef4444'
+                    : 'rgba(255,255,255,0.25)',
           border: `1px solid ${
             hasResponse && agreeing === true
               ? 'rgba(16,185,129,0.3)'
@@ -175,6 +178,7 @@ export function CouncilSeat({
             : hasResponse && agreeing === true ? 'Agrees'
             : hasResponse && agreeing === false ? 'Disagrees'
             : hasResponse ? 'Neutral'
+            : status === 'error' ? 'Error'
             : 'Idle'}
         </span>
 
@@ -248,7 +252,13 @@ export function CouncilSeat({
           </div>
         )}
 
-        {!thinking && !response && (
+        {!thinking && !response && status === 'error' && errorMsg && (
+          <div style={{ fontSize: 11, color: '#ef4444', fontStyle: 'italic', textAlign: 'center', paddingTop: 16 }}>
+            Failed — {errorMsg.length > 80 ? errorMsg.slice(0, 80) + '...' : errorMsg}
+          </div>
+        )}
+
+        {!thinking && !response && status !== 'error' && (
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.15)', fontStyle: 'italic', textAlign: 'center', paddingTop: 16 }}>
             Awaiting query
           </div>

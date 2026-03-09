@@ -306,3 +306,8 @@ export type {
   WorkflowIntake, WorkflowHistoryEntry, CouncilWorkflowSession,
   CouncilWorkflowEventType, CouncilWorkflowEvent, UserInputAction,
 } from './workflow/councilWorkflowTypes';
+
+// ── Web Search ──────────────────────────────────────────────────────────────
+export { searchWeb }       from './tools/webSearch';
+export type { WebSearchResult } from './tools/webSearch';
+export { needsWebSearch }  from './tools/webSearchDetector';

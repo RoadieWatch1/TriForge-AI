@@ -43,6 +43,9 @@ export interface PairedDevice {
 }
 
 type TaskHandler = (message: string) => Promise<string>;
+type ApprovalHandler = (actionId: string) => Promise<{ ok: boolean; error?: string }>;
+type DiscardHandler  = (actionId: string) => Promise<{ ok: boolean }>;
+type PendingListHandler = () => unknown[];
 
 export class PhoneLinkServer {
   private server: http.Server | null = null;
@@ -51,6 +54,9 @@ export class PhoneLinkServer {
   private pairedDevices: PairedDevice[] = [];   // persistent record
   private updates: RemoteUpdate[] = [];
   private onTask: TaskHandler = async () => 'No task handler registered.';
+  private onApprove: ApprovalHandler | null = null;
+  private onDiscard: DiscardHandler | null = null;
+  private onListPending: PendingListHandler | null = null;
   private devicesFilePath = '';
 
   /** Set the directory where paired_devices.json is stored. Call before start(). */
@@ -66,6 +72,17 @@ export class PhoneLinkServer {
   }
 
   setTaskHandler(fn: TaskHandler) { this.onTask = fn; }
+
+  /** Register handlers for phone-based approval of pending actions. */
+  setApprovalHandler(approve: ApprovalHandler, discard: DiscardHandler): void {
+    this.onApprove = approve;
+    this.onDiscard = discard;
+  }
+
+  /** Register handler that returns the list of pending approval actions. */
+  setPendingListHandler(fn: PendingListHandler): void {
+    this.onListPending = fn;
+  }
 
   async start(): Promise<{ ok: boolean; url?: string; pairToken?: string; pairUrl?: string; qrData?: string; error?: string }> {
     if (this.server?.listening) {
@@ -298,6 +315,42 @@ h1{color:#6366f1}p{color:#94a3b8}code{background:rgba(99,102,241,.15);padding:2p
       const results = this.updates.filter(u => u.timestamp > since);
       res.writeHead(200);
       res.end(JSON.stringify({ updates: results, serverTime: Date.now() }));
+      return;
+    }
+
+    // ── GET /remote/pending — list pending approval actions ────────────────────
+    if (method === 'GET' && url.pathname === '/remote/pending') {
+      const pending = this.onListPending ? this.onListPending() : [];
+      res.writeHead(200);
+      res.end(JSON.stringify({ pending }));
+      return;
+    }
+
+    // ── POST /remote/approve/:id — approve a pending action from phone ──────
+    const approveMatch = url.pathname.match(/^\/remote\/approve\/([a-z0-9-]+)$/i);
+    if (method === 'POST' && approveMatch) {
+      if (!this.onApprove) {
+        res.writeHead(503);
+        res.end(JSON.stringify({ error: 'Approval handler not configured.' }));
+        return;
+      }
+      const result = await this.onApprove(approveMatch[1]);
+      res.writeHead(result.ok ? 200 : 400);
+      res.end(JSON.stringify(result));
+      return;
+    }
+
+    // ── POST /remote/discard/:id — discard a pending action from phone ──────
+    const discardMatch = url.pathname.match(/^\/remote\/discard\/([a-z0-9-]+)$/i);
+    if (method === 'POST' && discardMatch) {
+      if (!this.onDiscard) {
+        res.writeHead(503);
+        res.end(JSON.stringify({ error: 'Discard handler not configured.' }));
+        return;
+      }
+      const result = await this.onDiscard(discardMatch[1]);
+      res.writeHead(200);
+      res.end(JSON.stringify(result));
       return;
     }
 

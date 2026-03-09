@@ -284,6 +284,8 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   const [liveSynthesisText, setLiveSynthesisText]   = useState('');
   // Council Awareness — thinking messages per provider before tokens arrive
   const [providerThinkingMessages, setProviderThinkingMessages] = useState<Record<string, string>>({});
+  const [webSearching, setWebSearching] = useState(false);
+  const [providerErrors, setProviderErrors] = useState<Record<string, string>>({});
   const [gate, setGate] = useState<{ feature: string; neededTier: 'pro' | 'business' } | null>(null);
   const [checkoutUrls, setCheckoutUrls] = useState<{ pro: string; business: string; portal: string }>({ pro: '', business: '', portal: '' });
   const [showQuickActions, setShowQuickActions] = useState(false);
@@ -614,6 +616,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         setLiveProviderTokens({});
         setLiveSynthesisText('');
         setProviderThinkingMessages({});
+        setProviderErrors({});
 
         // Subscribe to streaming council events so CouncilSeat cards type live
         const unsubForge = window.triforge.forge.onUpdate((data) => {
@@ -660,6 +663,13 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
             setProviderThinkingMessages({});
           } else if (data.phase === 'synthesis:token' && data.token) {
             setLiveSynthesisText(prev => prev + data.token);
+          } else if (data.phase === 'provider:error' && data.provider) {
+            const errMsg = (data as any).error ?? 'Failed';
+            setProviderErrors(prev => ({ ...prev, [data.provider!.toLowerCase()]: errMsg }));
+          } else if (data.phase === 'web:search') {
+            setWebSearching(true);
+          } else if (data.phase === 'web:search:done') {
+            setWebSearching(false);
           }
         });
 
@@ -682,6 +692,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         setLiveSynthesisText('');
         setProviderThinkingMessages({});
         setDeliberationPhase(null);
+        setWebSearching(false);
 
         if (result.error && handleGateError(result.error)) { setSending(false); return; }
 
@@ -1243,6 +1254,11 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
               Council Deliberation · {deliberationPhase}
             </div>
           )}
+          {webSearching && (
+            <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', color: '#22d3ee', textTransform: 'uppercase', padding: '4px 12px 2px', opacity: 0.85 }}>
+              Searching the web...
+            </div>
+          )}
           <div style={{ flex: 1 }} />
           {messages.length > 1 && (
             <button style={cs.clearBtn} onClick={clearChat} title="Clear chat">✕ Clear</button>
@@ -1499,6 +1515,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
               liveProviderTokens={liveProviderTokens}
               liveSynthesisText={liveSynthesisText || undefined}
               providerThinkingMessages={providerThinkingMessages}
+              providerErrors={providerErrors}
               listening={councilListening}
             />
           ) : (

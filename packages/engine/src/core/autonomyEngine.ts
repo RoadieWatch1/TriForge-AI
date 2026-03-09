@@ -192,13 +192,14 @@ export class AutonomyEngine {
 
   // ── Pending Action Approval (TASK 6) ──────────────────────────────────────────
 
-  listPendingActions(): Array<{ id: string; actionType: string; workflowId: string; workflowName: string; queuedAt: number }> {
+  listPendingActions(): Array<{ id: string; actionType: string; workflowId: string; workflowName: string; queuedAt: number; params: Record<string, unknown> }> {
     return Array.from(this.pendingActions.entries()).map(([id, p]) => ({
       id,
       actionType: p.action.type,
       workflowId: p.workflowId,
       workflowName: p.workflowName,
       queuedAt: p.queuedAt,
+      params: p.action.params,
     }));
   }
 
@@ -217,14 +218,21 @@ export class AutonomyEngine {
       return { ok: false, error: 'Pending action has expired (>24h).' };
     }
 
-    // Re-validate through enforcePolicy — remote/phone approval cannot bypass the guard
+    // Re-validate through enforcePolicy — hard-blocked actions cannot proceed even with approval.
+    // Approval-gated actions (requiresApproval: true) are allowed to proceed since the user
+    // explicitly approved them — that's the entire purpose of the approval queue.
     const recheck = this.enforcePolicy(pending.action);
     if (!recheck.allowed) {
-      const reason = 'reason' in recheck ? recheck.reason : 'policy_changed';
-      this._ledger.log('ACTION_BLOCKED', {
-        metadata: { workflowId: pending.workflowId, workflowName: pending.workflowName, actionType: pending.action.type, actionId, reason: `recheck:${reason}` },
-      }).catch(() => {});
-      return { ok: false, error: `Action blocked by current policy: ${reason}` };
+      const isApprovalGated = 'requiresApproval' in recheck && (recheck as { requiresApproval?: boolean }).requiresApproval;
+      if (!isApprovalGated) {
+        // Hard block — policy forbids this even with approval
+        const reason = 'reason' in recheck ? (recheck as { reason: string }).reason : 'policy_changed';
+        this._ledger.log('ACTION_BLOCKED', {
+          metadata: { workflowId: pending.workflowId, workflowName: pending.workflowName, actionType: pending.action.type, actionId, reason: `recheck:${reason}` },
+        }).catch(() => {});
+        return { ok: false, error: `Action blocked by current policy: ${reason}` };
+      }
+      // Approval-gated — user approved it, proceed
     }
 
     this.pendingActions.delete(actionId);
@@ -396,7 +404,7 @@ export class AutonomyEngine {
     return { allowed: true };
   }
 
-  private async queueForApproval(action: WorkflowAction, trigger: EngineEvent, wf: WorkflowDefinition): Promise<void> {
+  async queueForApproval(action: WorkflowAction, trigger: EngineEvent, wf: WorkflowDefinition): Promise<string> {
     const actionId = crypto.randomUUID();
     this.pendingActions.set(actionId, {
       action, trigger,
@@ -424,6 +432,7 @@ export class AutonomyEngine {
       workflowName: wf.name,
       actionType: action.type,
     });
+    return actionId;
   }
 
   private async executeActionDirect(action: WorkflowAction, trigger: EngineEvent): Promise<void> {

@@ -50,6 +50,7 @@ function isConfigured(cap: CapabilityDescriptor, s: SystemStateSnapshot): boolea
     case 'provider.ollama':          return s.providers.ollama;
     case 'council.consensus':
     case 'council.deliberate':       return providerCount >= 2;
+    case 'web.search':               return true;  // always available (DuckDuckGo, no key needed)
     case 'image.generate':           return s.imageReady;
     case 'voice.tts':
     case 'voice.wake':
@@ -75,6 +76,13 @@ function isConfigured(cap: CapabilityDescriptor, s: SystemStateSnapshot): boolea
     case 'insight.proactive':
     case 'insight.event':            return anyProvider;
     case 'social.twitter':           return s.twitterConfigured;
+    case 'trading.tradeDesk':
+    case 'trading.liveAdvisor':      return anyProvider;
+    case 'trading.shadow':
+    case 'trading.analytics':
+    case 'trading.refinement':
+    case 'trading.explainability':   return s.tradingConnected;
+    case 'trading.promotion':        return s.tradingConnected && s.tradingMode !== 'off';
     default:                         return true;
   }
 }
@@ -93,6 +101,13 @@ function configuredReason(cap: CapabilityDescriptor, s: SystemStateSnapshot): st
       return `${cap.name} (not paired — open Phone Link to pair)`;
     case 'social.twitter':
       return `${cap.name} (Twitter credentials not set in Settings)`;
+    case 'trading.shadow':
+    case 'trading.analytics':
+    case 'trading.refinement':
+    case 'trading.explainability':
+      return `${cap.name} (Tradovate not connected — open Live Trade Advisor to connect)`;
+    case 'trading.promotion':
+      return `${cap.name} (shadow trading not active — enable shadow trading first)`;
     case 'forge.profiles':
     case 'forge.blueprint':
     case 'mission.engineering':
@@ -119,7 +134,7 @@ function configuredReason(cap: CapabilityDescriptor, s: SystemStateSnapshot): st
  *   5. Behavioral rule — prevents hallucination on capability questions
  */
 export function buildCouncilAwarenessAddendum(snapshot: SystemStateSnapshot): string {
-  const { tier, providers, permissions, autonomyRunning, autonomyWorkflowCount } = snapshot;
+  const { tier, providers, permissions, autonomyRunning, autonomyWorkflowCount, tradingConnected, tradingMode } = snapshot;
 
   const activeNames = (Object.entries(providers) as [string, boolean][])
     .filter(([, v]) => v)
@@ -157,6 +172,8 @@ export function buildCouncilAwarenessAddendum(snapshot: SystemStateSnapshot): st
       `Voice auth: ${snapshot.voiceAuthConfigured ? 'configured' : 'not set'}`,
     `Autonomy: ${autonomyRunning ? `running (${autonomyWorkflowCount} workflows)` : 'disabled'} | ` +
       `Pending approvals: ${snapshot.pendingApprovals} | Pending tasks: ${snapshot.pendingTasks}`,
+    `Trading: ${tradingConnected ? `connected (mode: ${tradingMode})` : 'not connected'} | ` +
+      `Shadow: ${tradingMode !== 'off' ? tradingMode : 'disabled'}`,
     `Permissions: Files=${permissions.files ? '✓' : '✗'} ` +
       `Browser=${permissions.browser ? '✓' : '✗'} ` +
       `Printer=${permissions.printer ? '✓' : '✗'} ` +

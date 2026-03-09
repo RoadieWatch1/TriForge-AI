@@ -31,6 +31,7 @@ type MailGetter        = () => boolean;
 type TwitterGetter     = () => boolean;
 type PermissionsGetter = () => { files: boolean; browser: boolean; printer: boolean; email: boolean };
 type VoiceAuthGetter   = () => boolean;
+type TradingGetter     = () => { connected: boolean; mode: 'off' | 'shadow' | 'paper' | 'guarded_live_candidate' };
 
 // ── Service class ─────────────────────────────────────────────────────────────
 
@@ -48,6 +49,7 @@ class SystemStateServiceClass {
   private _getTwitter:     TwitterGetter     = () => false;
   private _getPermissions: PermissionsGetter = () => ({ files: false, browser: false, printer: false, email: false });
   private _getVoiceAuth:   VoiceAuthGetter   = () => false;
+  private _getTrading:     TradingGetter     = () => ({ connected: false, mode: 'off' });
 
   // ── Registration API (called once at startup from desktop/main/ipc.ts) ──────
 
@@ -64,6 +66,7 @@ class SystemStateServiceClass {
   registerTwitterGetter(fn: TwitterGetter):          void { this._getTwitter     = fn; }
   registerPermissionsGetter(fn: PermissionsGetter):  void { this._getPermissions = fn; }
   registerVoiceAuthGetter(fn: VoiceAuthGetter):      void { this._getVoiceAuth   = fn; }
+  registerTradingGetter(fn: TradingGetter):          void { this._getTrading     = fn; }
 
   // ── Snapshot ─────────────────────────────────────────────────────────────────
 
@@ -76,6 +79,7 @@ class SystemStateServiceClass {
       this._getProviders().catch(() => ({ openai: false, claude: false, grok: false, ollama: false })),
       Promise.resolve(this._getAutonomy()),
     ]);
+    const trading = this._getTrading();
 
     return {
       timestamp:            Date.now(),
@@ -93,6 +97,8 @@ class SystemStateServiceClass {
       mailConfigured:       this._getMail(),
       twitterConfigured:    this._getTwitter(),
       permissions:          this._getPermissions(),
+      tradingConnected:     trading.connected,
+      tradingMode:          trading.mode,
     };
   }
 }

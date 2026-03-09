@@ -136,6 +136,7 @@ export async function buildSystemPrompt(store: Store, professionAdditions?: stri
   if (tier !== 'free')                         aiCaps.push('Persistent long-term memory of the user\'s life, goals, and preferences');
   if (hasCapability('FINANCE_DASHBOARD', tier)) aiCaps.push('Finance dashboard and portfolio analysis');
   if (hasCapability('FINANCE_TRADING', tier))  aiCaps.push('Investment trade proposals with council-reviewed reasoning (execution is always performed manually by the user)');
+  aiCaps.push('Live web search: automatically searches the web when your question needs current information (news, weather, prices, scores, events)');
 
   const prompt = `You are TriForge AI — the unified body of three AI minds (GPT-4, Claude, Grok), acting as a single decisive, loyal personal assistant for ${userName}.
 
@@ -200,6 +201,7 @@ When the user asks you to do something you cannot do yet (browser, email, tradin
 5. **Concise**: Match the user's energy. Brief question = brief answer. Complex request = thorough response.
 6. **Proactive**: If you notice something the user hasn't asked about but should know (a risk, an opportunity, a better approach), say it briefly at the end.
 7. **Governed**: Never claim capability you don't have. Never imply execution authority outside your wired tools. Consistency between what you say you can do and what you actually do is the foundation of trust.
+8. **Web-aware**: When web search results are injected into the conversation (marked with [WEB SEARCH RESULTS]), cite them and reference source URLs. Never say "I don't have access to real-time information" — if web results are present, use them. If the question needs current data but no web results are present, tell the user you searched but found nothing relevant.
 
 Today: ${todayLabel}.`;
 

@@ -41,6 +41,8 @@ interface Props {
   liveSynthesisText?: string;
   /** Council Awareness thinking messages per provider (before tokens arrive) */
   providerThinkingMessages?: Record<string, string>;
+  /** Provider error messages (provider failed during consensus) */
+  providerErrors?: Record<string, string>;
   /** When true, all seats pulse blue — council is in wake-word listening mode */
   listening?: boolean;
 }
@@ -67,7 +69,7 @@ const TIMELINE_STAGES: { id: TimelineStage; label: string; color: string }[] = [
 export function CouncilChamber({
   latestMsg, thinking, keyStatus, agreementMap,
   selectedProvider, onAgreementChange, onProposeAlternative, onSelectOutput, onMergeProviders,
-  liveProviderTokens, liveSynthesisText, providerThinkingMessages, listening,
+  liveProviderTokens, liveSynthesisText, providerThinkingMessages, providerErrors, listening,
 }: Props) {
   const [mergeSelection, setMergeSelection] = useState<string[]>([]);
 
@@ -193,7 +195,8 @@ export function CouncilChamber({
             const resp = responses.find(r => r.provider.toLowerCase() === id);
             const isActive = keyStatus[id];
             const hasResponse = !!resp;
-            const status = thinking && isActive ? 'thinking' : hasResponse ? 'responded' : 'idle';
+            const hasError = !!providerErrors?.[id];
+            const status = thinking && isActive && !hasError ? 'thinking' : hasResponse ? 'responded' : hasError ? 'error' : 'idle';
             const reviewingLabel = status === 'thinking' ? getReviewingLabel(id) : undefined;
 
             return (
@@ -207,8 +210,9 @@ export function CouncilChamber({
                 liveText={liveProviderTokens?.[id]}
                 thinkingMsg={providerThinkingMessages?.[id]}
                 status={status}
+                errorMsg={providerErrors?.[id]}
                 agreeing={agreementMap[id] ?? null}
-                thinking={!!(thinking && isActive)}
+                thinking={!!(thinking && isActive && !hasError)}
                 isSelected={selectedProvider === id}
                 reviewingLabel={reviewingLabel}
                 listening={listening}

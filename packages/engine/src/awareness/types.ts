@@ -18,7 +18,8 @@ export type CapabilityCategory =
   | 'forge'
   | 'tasks'
   | 'social'
-  | 'insight';
+  | 'insight'
+  | 'trading';
 
 /**
  * Static descriptor for a single Triforge capability.
@@ -73,6 +74,10 @@ export interface SystemStateSnapshot {
     printer: boolean;
     email: boolean;
   };
+  /** Tradovate broker is connected and live data is flowing */
+  tradingConnected: boolean;
+  /** Current shadow trading operation mode */
+  tradingMode: 'off' | 'shadow' | 'paper' | 'guarded_live_candidate';
 }
 
 /**

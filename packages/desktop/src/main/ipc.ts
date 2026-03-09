@@ -49,7 +49,7 @@ import { getToolExecutor, newRequestId } from '../core/tools/toolExecutor';
 import { healthMonitor } from '../core/health/healthMonitor';
 import { MemoryStore } from '../core/memory/memoryStore';
 import { getMemoryManager } from '../core/memory/memoryManager';
-import { ImageService, getImageHistoryStore, systemStateService, buildCouncilAwarenessAddendum, buildLiveTradeAdvice, buildTradeLevels } from '@triforge/engine';
+import { ImageService, getImageHistoryStore, systemStateService, buildCouncilAwarenessAddendum, buildLiveTradeAdvice, buildTradeLevels, searchWeb, needsWebSearch } from '@triforge/engine';
 import type { CouncilVote } from '@triforge/engine';
 
 import { ResultStore } from './resultStore';
@@ -432,6 +432,12 @@ export function setupIpc(store: Store): void {
   systemStateService.registerMailGetter(() => _cachedMailConfigured);
   systemStateService.registerTwitterGetter(() => _cachedTwitterConfigured);
   systemStateService.registerVoiceAuthGetter(() => false); // voice passphrase auth removed
+  systemStateService.registerTradingGetter(() => {
+    const connected = tradovateService.status().connected;
+    const state = shadowTradingController.getState();
+    const mode = state.enabled ? shadowTradingController.getOperationMode() : 'off';
+    return { connected, mode: mode as 'off' | 'shadow' | 'paper' | 'guarded_live_candidate' };
+  });
 
   // ── Native Intent Router — shared across all three chat handlers ──────────
   const nativeRouter = new NativeIntentRouter({
@@ -498,6 +504,58 @@ export function setupIpc(store: Store): void {
       _getDataDir(),
     );
     _autonomyEngine.start();
+
+    // Register post_social handler — executed when an approved action fires
+    _autonomyEngine.registerActionHandler('post_social', async (params) => {
+      const platform   = String(params['platform']  ?? 'twitter');
+      const content    = String(params['content']   ?? '');
+      const contentId  = String(params['contentId'] ?? '');
+      const mediaBase64 = params['mediaBase64'] as string | undefined;
+
+      if (!content) throw new Error('post_social: content is empty');
+
+      const poster = new SocialPoster(_getCredentialManager(store));
+      const result = await poster.post(platform, content, mediaBase64);
+
+      if (!result.ok) throw new Error(`post_social failed: ${result.error}`);
+
+      // Update ContentStore draft → published
+      if (contentId) {
+        const { ContentStore } = await import('@triforge/engine');
+        const contentStore = new ContentStore(_getDataDir());
+        contentStore.update(contentId, { status: 'published', publishedAt: Date.now() });
+      }
+
+      // Emit event for value engine tracking
+      eventBus.emit({
+        type: 'TWEET_POSTED',
+        taskId: contentId || 'campaign-ad',
+        stepId: `campaign-post-${Date.now()}`,
+        tweetId: result.postId ?? '',
+        url: result.url ?? '',
+        paperMode: false,
+      });
+
+      // Notify phone that ad was posted
+      sendRemoteUpdate(`Ad posted to ${platform}: "${content.slice(0, 100)}..."`, contentId || 'campaign');
+    });
+
+    // Bridge: when post_social actions are queued for approval, push preview to phone
+    eventBus.onAny((ev: import('@triforge/engine').EngineEvent) => {
+      if (ev.type !== 'WORKFLOW_APPROVAL_PENDING') return;
+      const e = ev as { actionId?: string; actionType?: string };
+      if (e.actionType !== 'post_social' || !e.actionId) return;
+
+      const pending = _autonomyEngine?.listPendingActions().find(p => p.id === e.actionId);
+      if (!pending) return;
+
+      const content  = String(pending.params?.['content'] ?? '');
+      const platform = String(pending.params?.['platform'] ?? 'social');
+      sendRemoteUpdate(
+        `[APPROVAL NEEDED] ${platform} ad:\n"${content.slice(0, 200)}"\n\nAction ID: ${e.actionId}`,
+        e.actionId,
+      );
+    });
   }
 
   // ── Profession Engine init ────────────────────────────────────────────────────
@@ -741,14 +799,25 @@ export function setupIpc(store: Store): void {
       return { error: 'MESSAGE_LIMIT_REACHED', tier: tierVal };
     }
 
-    // Native intent routing — image, mission, task, phone, desktop before LLM
+    // Skip native intent routing in consensus path — Think Tank should always
+    // deliberate across all providers. Native routing stays in chat:conversation.
     const snapshotC = await systemStateService.snapshot();
-    const nativeResultC = await nativeRouter.route(message, snapshotC);
-    if (nativeResultC) {
-      if (nativeResultC.ok || nativeResultC.status === 'requires_approval' || nativeResultC.status === 'already_active') {
-        store.incrementMessageCount();
+
+    // ── Pre-flight web search ─────────────────────────────────────────────────
+    let webSearchPerformed = false;
+    if (needsWebSearch(message)) {
+      if (!event.sender.isDestroyed())
+        event.sender.send('forge:update', { phase: 'web:search', query: message });
+      const webResults = await searchWeb(message, 5);
+      if (webResults.length > 0) {
+        webSearchPerformed = true;
+        const webContext = webResults
+          .map((r, i) => `[${i + 1}] ${r.title}\n${r.snippet}\nSource: ${r.url}`)
+          .join('\n\n');
+        message = `[WEB SEARCH RESULTS — live data retrieved just now]\n${webContext}\n[END WEB SEARCH RESULTS]\n\nUser question: ${message}`;
+        if (!event.sender.isDestroyed())
+          event.sender.send('forge:update', { phase: 'web:search:done', resultCount: webResults.length });
       }
-      return { synthesis: nativeResultC.message, responses: [], nativeResult: nativeResultC };
     }
 
     // Validate + normalise intensity
@@ -936,6 +1005,12 @@ export function setupIpc(store: Store): void {
           : String((result as PromiseRejectedResult).reason),
       }));
 
+    // Notify renderer about failed providers so UI can show error instead of "idle"
+    for (const fp of failedProviders) {
+      if (!event.sender.isDestroyed())
+        event.sender.send('forge:update', { phase: 'provider:error', provider: fp.provider, error: fp.error });
+    }
+
     if (responses.length === 0) {
       const details = failedProviders.map(f => `${f.provider}: ${f.error}`).join('; ');
       return { error: `All providers failed. ${details}` };
@@ -1107,6 +1182,21 @@ VERIFY: [1-3 specific things the user should double-check]
         store.incrementMessageCount();
       }
       return { synthesis: nativeResultV.message, responses: [], nativeResult: nativeResultV };
+    }
+
+    // ── Pre-flight web search ─────────────────────────────────────────────────
+    if (needsWebSearch(message)) {
+      if (!event.sender.isDestroyed())
+        event.sender.send('forge:update', { phase: 'web:search', query: message });
+      const webResults = await searchWeb(message, 5);
+      if (webResults.length > 0) {
+        const webContext = webResults
+          .map((r, i) => `[${i + 1}] ${r.title}\n${r.snippet}\nSource: ${r.url}`)
+          .join('\n\n');
+        message = `[WEB SEARCH RESULTS — live data retrieved just now]\n${webContext}\n[END WEB SEARCH RESULTS]\n\nUser question: ${message}`;
+        if (!event.sender.isDestroyed())
+          event.sender.send('forge:update', { phase: 'web:search:done', resultCount: webResults.length });
+      }
     }
 
     updateTaskContext(message);
@@ -3524,6 +3614,143 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     } catch (err) { return { error: String(err) }; }
   });
 
+  // ── Ad Campaign Generation (with phone approval) ──────────────────────────
+
+  ipcMain.handle('campaigns:generateAds', async (event, params: {
+    goal: string;
+    platform: string;
+    count: number;
+    targetAudience?: string;
+    tone?: string;
+    campaignId?: string;
+    loopId?: string;
+  }) => {
+    const tierVal = await _agentTier();
+    if (!hasCapability('THINK_TANK', tierVal)) return { error: lockedError('THINK_TANK') };
+
+    const { goal, platform, count: rawCount, targetAudience, tone, campaignId, loopId } = params;
+    if (!goal?.trim()) return { error: 'goal is required' };
+    const count = Math.max(1, Math.min(rawCount || 3, 5));
+    const validPlatform = ['twitter', 'linkedin', 'reddit', 'facebook'].includes(platform) ? platform : 'twitter';
+    const toneLabel = tone || 'professional';
+
+    const { providerManager: pm } = await getEngine();
+    const providers = await pm.getActiveProviders();
+    if (providers.length === 0) return { error: 'No API keys configured.' };
+
+    const genCampaignId = campaignId || `campaign_${Date.now()}`;
+
+    // Build ad-generation prompt
+    const adPrompt = [
+      `Generate exactly ${count} unique advertising post variants for the platform "${validPlatform}".`,
+      `Goal: ${goal.trim()}`,
+      targetAudience ? `Target audience: ${targetAudience}` : '',
+      `Tone: ${toneLabel}`,
+      `Platform constraints: ${validPlatform === 'twitter' ? 'Max 280 characters per post.' : validPlatform === 'linkedin' ? 'Max 3000 characters. Professional tone.' : validPlatform === 'reddit' ? 'Authentic community-friendly voice. Max 500 characters.' : 'Engaging social copy. Max 500 characters.'}`,
+      '',
+      'Return a JSON array of objects, each with: { "text": "...", "hashtags": "..." }',
+      'Return ONLY the JSON array, no markdown fences or other text.',
+    ].filter(Boolean).join('\n');
+
+    // Parallel generation across all providers
+    const settled = await Promise.allSettled(
+      providers.map(async (p) => {
+        const msgs = [
+          { role: 'system', content: `You are an expert digital marketer. Generate ad copy variants as requested. Return ONLY a valid JSON array.` },
+          { role: 'user', content: adPrompt },
+        ];
+        const resp = await p.chat(msgs);
+        return { provider: p.name, raw: resp };
+      })
+    );
+
+    // Collect and deduplicate ad variants from all providers
+    const allVariants: Array<{ text: string; hashtags?: string; provider: string }> = [];
+    const seenTexts = new Set<string>();
+
+    for (const result of settled) {
+      if (result.status !== 'fulfilled') continue;
+      const { provider, raw } = result.value;
+      try {
+        // Extract JSON array from response (strip markdown fences if present)
+        let jsonStr = raw.trim();
+        const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (fenceMatch) jsonStr = fenceMatch[1].trim();
+        // Try to find array brackets
+        const arrStart = jsonStr.indexOf('[');
+        const arrEnd = jsonStr.lastIndexOf(']');
+        if (arrStart !== -1 && arrEnd !== -1) jsonStr = jsonStr.slice(arrStart, arrEnd + 1);
+
+        const parsed = JSON.parse(jsonStr) as Array<{ text?: string; hashtags?: string }>;
+        if (!Array.isArray(parsed)) continue;
+
+        for (const item of parsed) {
+          const txt = String(item.text ?? '').trim();
+          if (!txt || seenTexts.has(txt.toLowerCase())) continue;
+          seenTexts.add(txt.toLowerCase());
+          allVariants.push({ text: txt, hashtags: item.hashtags, provider });
+        }
+      } catch { /* skip unparseable responses */ }
+    }
+
+    // Take up to `count` variants
+    const finalVariants = allVariants.slice(0, count);
+
+    if (finalVariants.length === 0) {
+      return { error: 'All providers failed to generate valid ad variants.' };
+    }
+
+    // Save each as draft in ContentStore and queue for phone approval
+    const { ContentStore } = await import('@triforge/engine');
+    const contentStore = new ContentStore(_getDataDir());
+    const variantResults: Array<{ contentId: string; actionId: string; text: string; platform: string; provider: string }> = [];
+
+    for (const variant of finalVariants) {
+      const fullText = variant.hashtags
+        ? `${variant.text}\n${variant.hashtags}`
+        : variant.text;
+
+      // Save draft
+      const draft = contentStore.create({
+        loopId: loopId || genCampaignId,
+        campaignId: genCampaignId,
+        type: validPlatform === 'twitter' ? 'tweet' : 'post',
+        content: fullText,
+        status: 'draft',
+        platform: validPlatform,
+      });
+
+      // Queue for approval via AutonomyEngine
+      const actionId = await _autonomyEngine!.queueForApproval(
+        {
+          type: 'post_social',
+          params: {
+            platform: validPlatform,
+            content: fullText,
+            contentId: draft.id,
+          },
+        },
+        'campaign-ad-generation',
+        `Ad Campaign: ${goal.slice(0, 60)}`,
+      );
+
+      variantResults.push({
+        contentId: draft.id,
+        actionId,
+        text: fullText,
+        platform: validPlatform,
+        provider: variant.provider,
+      });
+    }
+
+    return {
+      ok: true,
+      campaignId: genCampaignId,
+      variants: variantResults,
+      pendingApprovalCount: variantResults.length,
+    };
+  });
+
   // ── Phase 6: Growth Engine — Leads ────────────────────────────────────────
 
   ipcMain.handle('growth:listLeads', async (_e, loopId?: string) => {
@@ -3958,6 +4185,21 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   // Wire councilBus → paired device notifications
   initCouncilNotify(phoneLinkServer);
+
+  // Wire phone approval/discard handlers to AutonomyEngine
+  phoneLinkServer.setApprovalHandler(
+    async (actionId: string) => {
+      if (!_autonomyEngine) return { ok: false, error: 'AutonomyEngine not ready' };
+      return _autonomyEngine.executeApprovedAction(actionId);
+    },
+    async (actionId: string) => {
+      if (!_autonomyEngine) return { ok: false };
+      return { ok: _autonomyEngine.discardPendingAction(actionId) };
+    },
+  );
+  phoneLinkServer.setPendingListHandler(() => {
+    return _autonomyEngine?.listPendingActions() ?? [];
+  });
 
   // ── Hot Council Mode — pre-warm providers at startup ─────────────────────────
   if (providerManager) {
