@@ -99,15 +99,19 @@ function buildFilingSummaryText(proposal: VentureProposal): string {
   const fs = proposal.filingSummary;
   const w = proposal.winner;
 
-  if (fs.recommended) {
-    return `Filing is recommended before launch. ${fs.reason} Urgency: ${fs.urgency}.`;
+  switch (fs.recommendation) {
+    case 'file_now':
+      return `Filing is recommended before launch. ${fs.reason} Urgency: ${fs.urgency}.`;
+    case 'wait':
+      if (w.canOperateBeforeFiling) {
+        return `This venture can operate before formal filing. ${fs.reason} You can file later when traction confirms the venture is worth formalizing.`;
+      }
+      return `Filing can wait. ${fs.reason}`;
+    case 'not_needed_yet':
+      return `Filing is not needed yet. ${fs.reason} The Council will re-prompt when filing becomes relevant.`;
+    default:
+      return fs.reason;
   }
-
-  if (w.canOperateBeforeFiling) {
-    return `This venture can operate before formal filing. ${fs.reason} You can file later when traction confirms the venture is worth formalizing.`;
-  }
-
-  return fs.reason;
 }
 
 function truncate(text: string, max: number): string {

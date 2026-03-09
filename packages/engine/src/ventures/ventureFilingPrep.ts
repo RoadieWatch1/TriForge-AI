@@ -43,7 +43,7 @@ export function summarizeFilingNeed(
   formationDecision: FormationDecision,
 ): FilingSummary {
   return {
-    recommended: formationDecision.recommendation === 'file_now',
+    recommendation: formationDecision.recommendation,
     urgency: formationDecision.urgency,
     reason: formationDecision.reason,
   };

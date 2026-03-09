@@ -4937,30 +4937,39 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       const funnel = planGrowthFunnel(winner as never, launchPack as never);
       const first30 = await generateFirst30Days(winner as never, launchPack as never, funnel, provider);
 
-      // Update proposal
+      // Update proposal with build artifacts
+      const canOperateBefore = Boolean(winner.canOperateBeforeFiling);
+      const postBuildStatus = canOperateBefore ? 'operating_unfiled' : 'awaiting_filing_decision';
+
       store.updateVentureProposal(id, {
-        status: 'site_ready',
+        status: postBuildStatus,
         siteBuild,
         first30DaysPlan: first30,
       });
 
-      // Determine next state
-      const canOperateBefore = Boolean(winner.canOperateBeforeFiling);
-      if (canOperateBefore) {
-        store.updateVentureStatus(id, 'operating_unfiled');
-      }
-
+      // Notify with state-accurate messaging
       try {
         const { sendVentureBuildUpdate } = await import('./councilNotify');
-        sendVentureBuildUpdate(id, 'Site ready — venture is operational');
+        if (canOperateBefore) {
+          sendVentureBuildUpdate(id, 'Site built — venture is operating (unfiled). Filing can be done later.');
+        } else {
+          sendVentureBuildUpdate(id, 'Site built — filing decision required before operation.');
+        }
       } catch { /* non-fatal */ }
 
-      emit('build_done', 'Build complete');
+      emit('build_done', canOperateBefore
+        ? 'Build complete — venture is now operating (unfiled)'
+        : 'Build complete — filing decision required before operation');
       return { ok: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
     }
   });
+
+  // Only these states allow launching into daily growth.
+  // site_ready is intentionally excluded — ventures must either be operating_unfiled
+  // (pre-filing operation allowed) or filed_and_operating (filing complete) before launch.
+  const LAUNCHABLE_STATES = ['operating_unfiled', 'growth_ready', 'filed_and_operating'];
 
   ipcMain.handle('venture:launch', async (_event, id: string) => {
     try {
@@ -4968,8 +4977,11 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       if (!proposal) return { error: 'Proposal not found.' };
 
       const status = String(proposal.status);
-      if (!['site_ready', 'operating_unfiled', 'growth_ready'].includes(status)) {
-        return { error: 'Venture must be site_ready or operating before launching.' };
+      if (!LAUNCHABLE_STATES.includes(status)) {
+        if (status === 'site_ready' || status === 'awaiting_filing_decision') {
+          return { error: 'A filing decision is required before launching this venture. Choose File Now, Wait, or Ask Again Later.' };
+        }
+        return { error: `Venture cannot launch from "${status}". Must be operating_unfiled, growth_ready, or filed_and_operating.` };
       }
 
       store.updateVentureStatus(id, 'daily_growth_active');
@@ -4978,7 +4990,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         id: `venture-launch-${Date.now().toString(36)}`,
         timestamp: Date.now(),
         request: 'Venture Launch',
-        synthesis: `Venture ${id.slice(0, 8)} launched into daily growth mode.`,
+        synthesis: `Venture ${id.slice(0, 8)} launched into daily growth mode from ${status}.`,
         responses: [],
         workflow: 'VENTURE_LAUNCH',
         starred: false,

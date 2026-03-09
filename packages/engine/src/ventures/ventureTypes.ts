@@ -300,8 +300,10 @@ export interface FilingPacket {
   preparedDocuments: string[];
 }
 
+export type FilingRecommendation = 'file_now' | 'wait' | 'not_needed_yet';
+
 export interface FilingSummary {
-  recommended: boolean;
+  recommendation: FilingRecommendation;
   urgency: 'now' | 'soon' | 'later';
   reason: string;
 }

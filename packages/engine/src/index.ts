@@ -326,7 +326,7 @@ export type {
   TreasuryAllocation, VentureProposal,
   GrowthFunnel, First30DaysPlan, DailyPulse,
   ConversionPlan,
-  FilingPacket, FilingSummary, FormationDecision,
+  FilingPacket, FilingSummary, FilingRecommendation, FormationDecision,
   FounderProfile, OperatorPolicy,
   AudienceGoal, LeadCaptureAsset, SubscriberSegment, OwnedAudienceMetrics,
   VentureCategoryConfig, BrandAssets, SignupFlow, VentureProposalView,

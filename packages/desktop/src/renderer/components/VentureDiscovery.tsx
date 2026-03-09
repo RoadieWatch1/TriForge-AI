@@ -44,7 +44,7 @@ interface VentureProposal {
     adPromoRunway: number; reserve: number; maxDailyPromoSpend: number; rationale: string;
   };
   councilRationale: string;
-  filingSummary?: { recommended: boolean; urgency: string; reason: string };
+  filingSummary?: { recommendation: 'file_now' | 'wait' | 'not_needed_yet'; urgency: string; reason: string };
   siteBuild?: unknown;
   first30DaysPlan?: {
     first7DaysActions: string[]; first14DaysGoals: string[];
@@ -76,7 +76,7 @@ const CATEGORY_LABELS: Record<string, string> = {
 const STATUS_LABELS: Record<string, string> = {
   discovery_complete: 'Discovery Complete',
   awaiting_user_approval: 'Awaiting Approval',
-  approved_for_build: 'Approved',
+  approved_for_build: 'Approved for Build',
   approved_plan_only: 'Plan Only',
   rejected: 'Rejected',
   rerun_requested: 'Re-run Requested',
@@ -85,11 +85,22 @@ const STATUS_LABELS: Record<string, string> = {
   operating_unfiled: 'Operating (Unfiled)',
   growth_ready: 'Growth Ready',
   daily_growth_active: 'Growth Active',
-  awaiting_filing_decision: 'Filing Decision',
+  awaiting_filing_decision: 'Filing Decision Required',
   filing_deferred: 'Filing Deferred',
   filing_prepared: 'Filing Prepared',
   filing_submitted: 'Filing Submitted',
   filed_and_operating: 'Filed & Operating',
+};
+
+const STATUS_DESCRIPTIONS: Record<string, string> = {
+  operating_unfiled: 'This venture is operational without formal filing. The Council is running growth and audience capture. You can file later when traction confirms viability.',
+  awaiting_filing_decision: 'Site is built. This venture type requires a filing decision before operation can begin. Choose File Now, Wait, or Ask Again Later on the Filing tab.',
+  filing_deferred: 'Filing has been deferred. This venture is operating without formal registration because its type allows pre-filing operation. The Council will re-prompt when filing becomes recommended.',
+  filed_and_operating: 'This venture is fully filed and operational. All legal formation steps are complete.',
+  daily_growth_active: 'Growth engine is active. The Council is publishing content, capturing audience, and optimizing daily.',
+  building_site: 'The Council is building the website, lead capture, and growth plan.',
+  site_ready: 'Site is built but awaiting next step.',
+  filing_prepared: 'Filing packet has been prepared and is ready for your review. Submission requires your explicit authorization.',
 };
 
 export function VentureDiscovery({ tier }: VentureDiscoveryProps) {
@@ -386,7 +397,7 @@ export function VentureDiscovery({ tier }: VentureDiscoveryProps) {
               {proposal.status === 'approved_for_build' && (
                 <button style={{ ...s.actionBtn, background: '#6366f1' }} onClick={handleBuild}>Build Venture</button>
               )}
-              {['site_ready', 'operating_unfiled', 'growth_ready'].includes(proposal.status) && (
+              {['operating_unfiled', 'growth_ready', 'filed_and_operating'].includes(proposal.status) && (
                 <button style={{ ...s.actionBtn, background: '#22c55e' }} onClick={handleLaunch}>Launch Growth</button>
               )}
             </div>
@@ -402,6 +413,11 @@ export function VentureDiscovery({ tier }: VentureDiscoveryProps) {
                 </button>
               )}
             </div>
+            {STATUS_DESCRIPTIONS[proposal.status] && (
+              <div style={s.statusDescription}>
+                {STATUS_DESCRIPTIONS[proposal.status]}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -659,6 +675,7 @@ function statusColor(status: string): string {
     approved_for_build: '#3b82f6',
     building_site: '#8b5cf6',
     site_ready: '#6366f1',
+    awaiting_filing_decision: '#f59e0b',
     operating_unfiled: '#22c55e',
     growth_ready: '#22c55e',
     daily_growth_active: '#10b981',
@@ -736,4 +753,5 @@ const s: Record<string, React.CSSProperties> = {
   statusRow: { display: 'flex', alignItems: 'center', gap: 12, marginTop: 16 },
   statusBadge: { padding: '3px 10px', borderRadius: 4, fontSize: 11, fontWeight: 700, color: '#fff' },
   newDiscoverBtn: { background: 'transparent', border: '1px solid #2a2a3e', color: '#94a3b8', padding: '4px 14px', borderRadius: 6, cursor: 'pointer', fontSize: 12 },
+  statusDescription: { marginTop: 8, padding: '10px 14px', background: '#15151f', border: '1px solid #1e1e32', borderRadius: 6, fontSize: 12, color: '#94a3b8', lineHeight: 1.5 },
 };
