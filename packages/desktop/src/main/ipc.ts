@@ -926,13 +926,23 @@ export function setupIpc(store: Store): void {
           });
         }
         let text = '';
-        await p.chatStream(roleMsgs, (chunk: string) => {
-          text += chunk;
-          if (!event.sender.isDestroyed())
-            event.sender.send('forge:update', { phase: 'provider:token', provider: p.name, token: chunk });
-        });
+        try {
+          await p.chatStream(roleMsgs, (chunk: string) => {
+            text += chunk;
+            if (!event.sender.isDestroyed())
+              event.sender.send('forge:update', { phase: 'provider:token', provider: p.name, token: chunk });
+          });
+        } catch (streamErr) {
+          // If tokens were already streamed, preserve the partial response instead of rejecting
+          if (text.length > 0) {
+            console.warn(`[TriForge] ${p.name} stream interrupted after ${text.length} chars — preserving partial response.`, streamErr);
+          } else {
+            throw streamErr; // No content received — propagate the error
+          }
+        }
         completedCount++;
-        event.sender.send('forge:update', { phase: 'provider:complete', provider: p.name, completedCount, total: providers.length });
+        if (!event.sender.isDestroyed())
+          event.sender.send('forge:update', { phase: 'provider:complete', provider: p.name, completedCount, total: providers.length });
 
         // Fast-First: strip confidence tag for clean draft display
         const displayText = text.replace(/\[\[CONFIDENCE:\s*\d+%?\]\]/i, '').trim();
@@ -1007,6 +1017,7 @@ export function setupIpc(store: Store): void {
 
     // Notify renderer about failed providers so UI can show error instead of "idle"
     for (const fp of failedProviders) {
+      console.error(`[TriForge] Council provider "${fp.provider}" failed:`, fp.error);
       if (!event.sender.isDestroyed())
         event.sender.send('forge:update', { phase: 'provider:error', provider: fp.provider, error: fp.error });
     }
@@ -4666,6 +4677,450 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   ipcMain.handle('memory:graph', () => {
     return _getMemoryManagerInstance().getGraph().toJSON();
   });
+
+  // ── Venture Discovery + Build ─────────────────────────────────────────────
+
+  ipcMain.handle('venture:discover', async (event, budget: number) => {
+    try {
+      const license = await store.getLicense();
+      const tierVal = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+      if (!hasCapability('VENTURE_DISCOVERY', tierVal)) {
+        return { error: lockedError('VENTURE_DISCOVERY'), tier: tierVal };
+      }
+
+      // Pro 30-day trial check
+      if (tierVal === 'pro') {
+        let trialStart = store.getVentureTrialStart();
+        if (!trialStart) {
+          trialStart = Date.now();
+          store.setVentureTrialStart(trialStart);
+        }
+        if (Date.now() - trialStart > 30 * 86_400_000) {
+          return { error: 'Venture Discovery trial expired. Upgrade to Business for unlimited access.', tier: tierVal };
+        }
+      }
+
+      const { providerManager: pm } = await getEngine();
+      const providers = await pm.getActiveProviders();
+      if (providers.length === 0) {
+        return { error: 'No API keys configured. Add at least one in Settings.' };
+      }
+
+      const emit = (phase: string, detail?: string) => {
+        if (!event.sender.isDestroyed()) event.sender.send('venture:progress', { phase, detail });
+      };
+
+      // 1. Research
+      emit('researching', 'Scanning live market signals...');
+      const { researchMarket, extractCandidates, scoreCandidate, rankCandidates,
+              runVentureCouncil, allocateBudget, buildBrand, buildLaunchPack,
+              planConversion, planAudienceGrowth, planGrowthFunnel,
+              classifyFormationNeeds, formatForPhone, formatForDesktop } = await import('@triforge/engine');
+
+      const signals = await researchMarket(budget);
+      emit('extracting', `Found ${signals.length} market signals`);
+
+      const provider = providers[0];
+      const candidates = await extractCandidates(signals, budget, provider);
+      emit('scoring', `${candidates.length} candidates identified`);
+
+      // 2. Score + rank
+      for (const c of candidates) {
+        const scores = scoreCandidate(c, budget, signals);
+        c.scores = scores;
+      }
+      const ranked = rankCandidates(candidates).slice(0, 8);
+      emit('council', 'Council debating top candidates...');
+
+      // 3. Council decision
+      const proposal = await runVentureCouncil(ranked, budget, providers, (phase: string) => emit('council', phase));
+
+      // 4. Formation classification for each option
+      for (const opt of [proposal.winner, proposal.safer, proposal.aggressive]) {
+        if (!opt) continue;
+        const fd = classifyFormationNeeds(
+          opt.candidate.category,
+          opt.launchPack?.monetizationPath ?? '',
+          opt.launchPack,
+        );
+        opt.formationMode = fd.canOperateBefore ? 'test_mode_unfiled' : 'file_on_approval';
+        opt.canOperateBeforeFiling = fd.canOperateBefore;
+        opt.filingRecommendation = fd.recommendation;
+        opt.filingUrgency = fd.urgency;
+        opt.filingReason = fd.reason;
+        opt.requiresEntityBeforeRevenue = fd.requiresEntityBeforeRevenue;
+      }
+
+      // 5. Budget allocation
+      emit('budget', 'Allocating treasury...');
+      proposal.treasuryAllocation = allocateBudget(budget, proposal.winner.candidate.category);
+
+      // 6. Build brands (parallel)
+      emit('branding', 'Building brand assets...');
+      const brandResults = await Promise.allSettled(
+        [proposal.winner, proposal.safer, proposal.aggressive]
+          .filter(Boolean)
+          .map(opt => buildBrand(opt!, provider)),
+      );
+
+      // 7. Build launch packs (parallel)
+      emit('packs', 'Building launch packs...');
+      const options = [proposal.winner, proposal.safer, proposal.aggressive].filter(Boolean);
+      const launchResults = await Promise.allSettled(
+        options.map((opt, i) => {
+          const brand = brandResults[i]?.status === 'fulfilled' ? brandResults[i].value : undefined;
+          return buildLaunchPack(opt!, brand ?? {
+            brandName: opt!.candidate.concept,
+            tagline: '', logoConceptDescription: '', colorDirection: '', brandVoice: '',
+            positioning: '', homepageHeroCopy: '',
+          }, provider);
+        }),
+      );
+      for (let i = 0; i < options.length; i++) {
+        if (launchResults[i]?.status === 'fulfilled') {
+          options[i]!.launchPack = (launchResults[i] as PromiseFulfilledResult<unknown>).value as typeof options[0]['launchPack'];
+        }
+      }
+
+      // 8. Conversion plan (winner)
+      emit('conversion', 'Planning conversion strategy...');
+      if (proposal.winner.launchPack) {
+        planConversion(proposal.winner, proposal.winner.launchPack);
+      }
+
+      // 9. Audience growth plans (parallel)
+      emit('audience', 'Planning audience growth...');
+      await Promise.allSettled(
+        options.map(opt => {
+          if (opt?.launchPack) planAudienceGrowth(opt, opt.launchPack);
+          return Promise.resolve();
+        }),
+      );
+
+      // 10. Growth funnel (winner)
+      emit('funnel', 'Mapping growth funnel...');
+      if (proposal.winner.launchPack) {
+        planGrowthFunnel(proposal.winner, proposal.winner.launchPack);
+      }
+
+      // 11. Filing summary
+      const { summarizeFilingNeed } = await import('@triforge/engine');
+      if (proposal.winner) {
+        const fd = classifyFormationNeeds(
+          proposal.winner.candidate.category,
+          proposal.winner.launchPack?.monetizationPath ?? '',
+        );
+        proposal.filingSummary = summarizeFilingNeed(proposal.winner, fd);
+      }
+
+      // 12. Save + push
+      proposal.status = 'awaiting_user_approval';
+      store.addVentureProposal(proposal as unknown as Record<string, unknown>);
+
+      store.addLedger({
+        id: `venture-${proposal.id}`,
+        timestamp: Date.now(),
+        request: `Venture Discovery: $${budget} budget`,
+        synthesis: `Proposed: ${proposal.winner.candidate.concept} (${proposal.winner.candidate.category}). Confidence: ${proposal.winner.confidenceScore}%. Formation: ${proposal.winner.formationMode}.`,
+        responses: [],
+        workflow: 'VENTURE_PROPOSAL',
+        starred: false,
+      });
+
+      // Push to phone
+      try {
+        const { sendVentureProposal } = await import('./councilNotify');
+        sendVentureProposal(formatForPhone(proposal));
+      } catch { /* phone not paired — non-fatal */ }
+
+      emit('done', 'Proposal ready');
+      return { proposal: formatForDesktop(proposal) };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('venture:respond', async (_event, id: string, action: string) => {
+    try {
+      const proposal = store.getVentureProposal(id);
+      if (!proposal) return { error: 'Proposal not found.' };
+
+      switch (action) {
+        case 'approve':
+          store.updateVentureStatus(id, 'approved_for_build');
+          break;
+        case 'approve_plan_only':
+          store.updateVentureStatus(id, 'approved_plan_only');
+          break;
+        case 'alternative':
+          store.updateVentureStatus(id, 'rerun_requested');
+          break;
+        case 'hold':
+          // No status change
+          break;
+        case 'reject':
+          store.updateVentureStatus(id, 'rejected');
+          break;
+        default:
+          return { error: `Unknown action: ${action}` };
+      }
+
+      store.addLedger({
+        id: `venture-respond-${Date.now().toString(36)}`,
+        timestamp: Date.now(),
+        request: `Venture Response: ${action}`,
+        synthesis: `User responded "${action}" to venture proposal ${id.slice(0, 8)}.`,
+        responses: [],
+        workflow: 'VENTURE_RESPONSE',
+        starred: false,
+      });
+
+      return { ok: true };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('venture:build', async (event, id: string) => {
+    try {
+      const proposal = store.getVentureProposal(id) as Record<string, unknown> | undefined;
+      if (!proposal) return { error: 'Proposal not found.' };
+      if (proposal.status !== 'approved_for_build') return { error: 'Proposal must be approved before building.' };
+
+      const { providerManager: pm } = await getEngine();
+      const providers = await pm.getActiveProviders();
+      if (providers.length === 0) return { error: 'No API keys configured.' };
+
+      const provider = providers[0];
+      const winner = proposal.winner as Record<string, unknown>;
+      const launchPack = winner.launchPack as Record<string, unknown> | undefined;
+
+      const emit = (phase: string, detail?: string) => {
+        if (!event.sender.isDestroyed()) event.sender.send('venture:progress', { phase, detail });
+      };
+
+      store.updateVentureStatus(id, 'building_site');
+      emit('building_site', 'Planning website...');
+
+      const { planSite, generateSite, buildCaptureComponent, buildLeadMagnet,
+              buildSignupFlow, generateFirst30Days, planGrowthFunnel,
+              planConversion } = await import('@triforge/engine');
+
+      // Plan site
+      const brand = {
+        brandName: String(launchPack?.brandName ?? (winner.candidate && (winner.candidate as Record<string,unknown>).concept) ?? 'Venture'),
+        tagline: String(launchPack?.tagline ?? ''),
+        colorDirection: String(launchPack?.colorDirection ?? ''),
+        brandVoice: String(launchPack?.brandVoice ?? ''),
+      };
+
+      const conversionPlan = planConversion(winner as never, launchPack as never);
+      const sitePlan = planSite(winner as never, launchPack as never, conversionPlan, brand as never);
+
+      emit('generating_site', 'Generating website pages...');
+      const siteBuild = await generateSite(sitePlan, provider, (phase: string) => emit('site_gen', phase));
+
+      // Build lead capture
+      emit('lead_capture', 'Building lead capture...');
+      const captureType = String((launchPack?.leadCapturePlan && (launchPack.leadCapturePlan as Record<string,unknown>).captureType) ?? 'email_signup');
+      buildCaptureComponent(captureType, brand.brandName);
+
+      // Lead magnet
+      emit('lead_magnet', 'Creating lead magnet...');
+      await buildLeadMagnet(winner as never, brand as never, provider);
+
+      // Signup flow
+      buildSignupFlow(captureType, brand as never);
+
+      // First 30 days
+      emit('planning_30days', 'Generating 30-day plan...');
+      const funnel = planGrowthFunnel(winner as never, launchPack as never);
+      const first30 = await generateFirst30Days(winner as never, launchPack as never, funnel, provider);
+
+      // Update proposal
+      store.updateVentureProposal(id, {
+        status: 'site_ready',
+        siteBuild,
+        first30DaysPlan: first30,
+      });
+
+      // Determine next state
+      const canOperateBefore = Boolean(winner.canOperateBeforeFiling);
+      if (canOperateBefore) {
+        store.updateVentureStatus(id, 'operating_unfiled');
+      }
+
+      try {
+        const { sendVentureBuildUpdate } = await import('./councilNotify');
+        sendVentureBuildUpdate(id, 'Site ready — venture is operational');
+      } catch { /* non-fatal */ }
+
+      emit('build_done', 'Build complete');
+      return { ok: true };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('venture:launch', async (_event, id: string) => {
+    try {
+      const proposal = store.getVentureProposal(id);
+      if (!proposal) return { error: 'Proposal not found.' };
+
+      const status = String(proposal.status);
+      if (!['site_ready', 'operating_unfiled', 'growth_ready'].includes(status)) {
+        return { error: 'Venture must be site_ready or operating before launching.' };
+      }
+
+      store.updateVentureStatus(id, 'daily_growth_active');
+
+      store.addLedger({
+        id: `venture-launch-${Date.now().toString(36)}`,
+        timestamp: Date.now(),
+        request: 'Venture Launch',
+        synthesis: `Venture ${id.slice(0, 8)} launched into daily growth mode.`,
+        responses: [],
+        workflow: 'VENTURE_LAUNCH',
+        starred: false,
+      });
+
+      return { ok: true };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('venture:filingRespond', async (_event, id: string, action: string) => {
+    try {
+      const proposal = store.getVentureProposal(id);
+      if (!proposal) return { error: 'Proposal not found.' };
+
+      switch (action) {
+        case 'file_now': {
+          store.updateVentureStatus(id, 'filing_prepared');
+          // Prepare filing packet
+          const { providerManager: pm } = await getEngine();
+          const providers = await pm.getActiveProviders();
+          const provider = providers.length > 0 ? providers[0] : undefined;
+          const { prepareFilingPacket } = await import('@triforge/engine');
+          const founderProfile = store.getFounderProfile() ?? {};
+          const filingPacket = await prepareFilingPacket(
+            proposal.winner as never,
+            founderProfile as never,
+            provider,
+          );
+          store.updateVentureProposal(id, { filingPacket });
+
+          store.addLedger({
+            id: `venture-filing-${Date.now().toString(36)}`,
+            timestamp: Date.now(),
+            request: 'Venture Filing Prepared',
+            synthesis: `Filing packet prepared for venture ${id.slice(0, 8)}. Entity: ${filingPacket.entityType}. EIN ready: ${filingPacket.einReady}. State filing ready: ${filingPacket.stateFilingReady}.`,
+            responses: [],
+            workflow: 'VENTURE_FILING',
+            starred: false,
+          });
+
+          try {
+            const { sendVentureFilingPrompt } = await import('./councilNotify');
+            sendVentureFilingPrompt(id, `Entity: ${filingPacket.entityType}, EIN Ready: ${filingPacket.einReady}`);
+          } catch { /* non-fatal */ }
+
+          break;
+        }
+        case 'wait':
+          store.updateVentureStatus(id, 'filing_deferred');
+          break;
+        case 'ask_again_later':
+          store.updateVentureStatus(id, 'filing_deferred');
+          // Could schedule a re-prompt via _scheduler here in the future
+          break;
+        default:
+          return { error: `Unknown filing action: ${action}` };
+      }
+
+      return { ok: true };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('venture:list', () => {
+    return store.getVentureProposals();
+  });
+
+  ipcMain.handle('venture:get', (_event, id: string) => {
+    return store.getVentureProposal(id) ?? null;
+  });
+
+  ipcMain.handle('venture:dailyPulse', async (_event, id: string) => {
+    try {
+      const proposal = store.getVentureProposal(id);
+      if (!proposal) return { error: 'Proposal not found.' };
+
+      const { providerManager: pm } = await getEngine();
+      const providers = await pm.getActiveProviders();
+      const provider = providers.length > 0 ? providers[0] : undefined;
+
+      const { generateDailyPulse, formatPulseForPhone } = await import('@triforge/engine');
+      const pulse = await generateDailyPulse(proposal as never, {}, provider);
+
+      const concept = String(
+        ((proposal.winner as Record<string, unknown>)?.candidate &&
+        ((proposal.winner as Record<string, unknown>).candidate as Record<string, unknown>).concept) ?? 'Venture'
+      );
+
+      try {
+        const { sendVentureDailyPulse } = await import('./councilNotify');
+        sendVentureDailyPulse(formatPulseForPhone(pulse, concept));
+      } catch { /* non-fatal */ }
+
+      return { pulse };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ── Wire venture phone link handlers ──────────────────────────────────────
+
+  phoneLinkServer.setVentureHandlers(
+    async (proposalId: string, action: string) => {
+      const proposal = store.getVentureProposal(proposalId);
+      if (!proposal) return { ok: false, error: 'Proposal not found.' };
+      switch (action.toLowerCase()) {
+        case 'approve':
+          store.updateVentureStatus(proposalId, 'approved_for_build');
+          return { ok: true };
+        case 'reject':
+          store.updateVentureStatus(proposalId, 'rejected');
+          return { ok: true };
+        case 'hold':
+          return { ok: true };
+        case 'plan_only':
+          store.updateVentureStatus(proposalId, 'approved_plan_only');
+          return { ok: true };
+        default:
+          return { ok: false, error: `Unknown action: ${action}` };
+      }
+    },
+    async (proposalId: string, action: string) => {
+      const proposal = store.getVentureProposal(proposalId);
+      if (!proposal) return { ok: false, error: 'Proposal not found.' };
+      switch (action.toLowerCase()) {
+        case 'file_now':
+          store.updateVentureStatus(proposalId, 'filing_prepared');
+          return { ok: true };
+        case 'wait':
+          store.updateVentureStatus(proposalId, 'filing_deferred');
+          return { ok: true };
+        case 'ask_again_later':
+          store.updateVentureStatus(proposalId, 'filing_deferred');
+          return { ok: true };
+        default:
+          return { ok: false, error: `Unknown filing action: ${action}` };
+      }
+    },
+  );
 
   // ── Blueprint System ───────────────────────────────────────────────────────
 

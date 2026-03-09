@@ -47,6 +47,9 @@ type ApprovalHandler = (actionId: string) => Promise<{ ok: boolean; error?: stri
 type DiscardHandler  = (actionId: string) => Promise<{ ok: boolean }>;
 type PendingListHandler = () => unknown[];
 
+type VentureRespondHandler = (proposalId: string, action: string) => Promise<{ ok: boolean; error?: string }>;
+type VentureFilingHandler = (proposalId: string, action: string) => Promise<{ ok: boolean; error?: string }>;
+
 export class PhoneLinkServer {
   private server: http.Server | null = null;
   private pairToken       = '';
@@ -57,6 +60,8 @@ export class PhoneLinkServer {
   private onApprove: ApprovalHandler | null = null;
   private onDiscard: DiscardHandler | null = null;
   private onListPending: PendingListHandler | null = null;
+  private onVentureRespond: VentureRespondHandler | null = null;
+  private onVentureFiling: VentureFilingHandler | null = null;
   private devicesFilePath = '';
 
   /** Set the directory where paired_devices.json is stored. Call before start(). */
@@ -82,6 +87,12 @@ export class PhoneLinkServer {
   /** Register handler that returns the list of pending approval actions. */
   setPendingListHandler(fn: PendingListHandler): void {
     this.onListPending = fn;
+  }
+
+  /** Register handlers for venture proposal response and filing decision. */
+  setVentureHandlers(respond: VentureRespondHandler, filing: VentureFilingHandler): void {
+    this.onVentureRespond = respond;
+    this.onVentureFiling = filing;
   }
 
   async start(): Promise<{ ok: boolean; url?: string; pairToken?: string; pairUrl?: string; qrData?: string; error?: string }> {
@@ -350,6 +361,40 @@ h1{color:#6366f1}p{color:#94a3b8}code{background:rgba(99,102,241,.15);padding:2p
       }
       const result = await this.onDiscard(discardMatch[1]);
       res.writeHead(200);
+      res.end(JSON.stringify(result));
+      return;
+    }
+
+    // ── POST /remote/venture/:id/respond — approve/reject a venture proposal ──
+    const ventureRespondMatch = url.pathname.match(/^\/remote\/venture\/([a-z0-9-]+)\/respond$/i);
+    if (method === 'POST' && ventureRespondMatch) {
+      if (!this.onVentureRespond) {
+        res.writeHead(503);
+        res.end(JSON.stringify({ error: 'Venture handler not configured.' }));
+        return;
+      }
+      const body = await this._readBody(req);
+      let action = '';
+      try { action = (JSON.parse(body) as { action?: string }).action ?? ''; } catch { action = body.trim(); }
+      const result = await this.onVentureRespond(ventureRespondMatch[1], action);
+      res.writeHead(result.ok ? 200 : 400);
+      res.end(JSON.stringify(result));
+      return;
+    }
+
+    // ── POST /remote/venture/:id/filing — filing decision from phone ────────
+    const ventureFilingMatch = url.pathname.match(/^\/remote\/venture\/([a-z0-9-]+)\/filing$/i);
+    if (method === 'POST' && ventureFilingMatch) {
+      if (!this.onVentureFiling) {
+        res.writeHead(503);
+        res.end(JSON.stringify({ error: 'Venture filing handler not configured.' }));
+        return;
+      }
+      const body = await this._readBody(req);
+      let action = '';
+      try { action = (JSON.parse(body) as { action?: string }).action ?? ''; } catch { action = body.trim(); }
+      const result = await this.onVentureFiling(ventureFilingMatch[1], action);
+      res.writeHead(result.ok ? 200 : 400);
       res.end(JSON.stringify(result));
       return;
     }

@@ -1087,9 +1087,12 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     ? [...messages].reverse().find(m => m.role === 'assistant' && !m.streaming)
     : null;
   // Content shown in right panel for thinktank mode
+  const failedMatch = latestConsensusMsg?.failedProviders?.find(f => f.provider.toLowerCase() === selectedProvider);
   const finalContent: string | null = latestConsensusMsg
     ? (selectedProvider && selectedProvider !== 'merge')
-      ? (latestConsensusMsg.consensusResponses?.find(r => r.provider.toLowerCase() === selectedProvider)?.text ?? latestConsensusMsg.content)
+      ? failedMatch
+        ? `**${PROVIDER_LABELS[selectedProvider] ?? selectedProvider} failed to respond.**\n\n${failedMatch.error}`
+        : (latestConsensusMsg.consensusResponses?.find(r => r.provider.toLowerCase() === selectedProvider)?.text ?? latestConsensusMsg.content)
       : latestConsensusMsg.content
     : null;
 
@@ -1591,6 +1594,19 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
                           onClick={() => setSelectedProvider(pid)}
                         >
                           {PROVIDER_LABELS[pid] ?? r.provider}
+                        </button>
+                      );
+                    })}
+                    {latestConsensusMsg.failedProviders?.map(f => {
+                      const pid = f.provider.toLowerCase();
+                      return (
+                        <button
+                          key={pid}
+                          style={{ ...cs.copyBtn, opacity: 0.5, ...(selectedProvider === pid ? { color: '#ef4444', borderColor: 'rgba(239,68,68,0.4)' } : {}) }}
+                          onClick={() => setSelectedProvider(pid)}
+                          title={f.error}
+                        >
+                          {PROVIDER_LABELS[pid] ?? f.provider}
                         </button>
                       );
                     })}

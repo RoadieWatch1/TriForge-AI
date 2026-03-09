@@ -60,6 +60,10 @@ interface StoreData {
   shadowStrategyConfig?: ShadowStrategyConfig;
   tradingOperationMode?: TradingOperationMode;
   promotionGuardrails?: Record<string, unknown>;
+  // Venture Discovery
+  ventureProposals?: Array<Record<string, unknown>>;
+  ventureTrialStart?: number;
+  founderProfile?: Record<string, unknown>;
 }
 
 function emptyData(): StoreData {
@@ -396,6 +400,50 @@ export class Store implements StorageAdapter {
   }
   setPromotionGuardrails(guardrails: Record<string, unknown>): void {
     this.data.promotionGuardrails = guardrails;
+    this.save();
+  }
+
+  // ── Venture Discovery ──────────────────────────────────────────────────────
+
+  addVentureProposal(proposal: Record<string, unknown>): void {
+    if (!this.data.ventureProposals) this.data.ventureProposals = [];
+    this.data.ventureProposals.push(proposal);
+    this.save();
+  }
+
+  getVentureProposals(): Array<Record<string, unknown>> {
+    return this.data.ventureProposals ?? [];
+  }
+
+  getVentureProposal(id: string): Record<string, unknown> | undefined {
+    return (this.data.ventureProposals ?? []).find(p => p.id === id);
+  }
+
+  updateVentureStatus(id: string, status: string): void {
+    const p = (this.data.ventureProposals ?? []).find(p => p.id === id);
+    if (p) { p.status = status; this.save(); }
+  }
+
+  updateVentureProposal(id: string, updates: Record<string, unknown>): void {
+    const p = (this.data.ventureProposals ?? []).find(p => p.id === id);
+    if (p) { Object.assign(p, updates); this.save(); }
+  }
+
+  getVentureTrialStart(): number | undefined {
+    return this.data.ventureTrialStart;
+  }
+
+  setVentureTrialStart(timestamp: number): void {
+    this.data.ventureTrialStart = timestamp;
+    this.save();
+  }
+
+  getFounderProfile(): Record<string, unknown> | undefined {
+    return this.data.founderProfile;
+  }
+
+  setFounderProfile(profile: Record<string, unknown>): void {
+    this.data.founderProfile = profile;
     this.save();
   }
 

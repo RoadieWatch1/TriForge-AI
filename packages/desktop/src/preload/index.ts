@@ -1214,6 +1214,31 @@ const api = {
     deactivate: () =>
       ipcRenderer.invoke('blueprint:deactivate') as Promise<{ ok?: boolean; error?: string }>,
   },
+
+  // Venture Discovery + Build — autonomous market research, opportunity scoring, and venture creation
+  venture: {
+    discover: (budget: number) =>
+      ipcRenderer.invoke('venture:discover', budget) as Promise<{ proposal?: unknown; error?: string; tier?: string }>,
+    respond: (id: string, action: string) =>
+      ipcRenderer.invoke('venture:respond', id, action) as Promise<{ ok?: boolean; error?: string }>,
+    build: (id: string) =>
+      ipcRenderer.invoke('venture:build', id) as Promise<{ ok?: boolean; error?: string }>,
+    launch: (id: string) =>
+      ipcRenderer.invoke('venture:launch', id) as Promise<{ ok?: boolean; error?: string }>,
+    filingRespond: (id: string, action: string) =>
+      ipcRenderer.invoke('venture:filingRespond', id, action) as Promise<{ ok?: boolean; error?: string }>,
+    list: () =>
+      ipcRenderer.invoke('venture:list') as Promise<Array<Record<string, unknown>>>,
+    get: (id: string) =>
+      ipcRenderer.invoke('venture:get', id) as Promise<Record<string, unknown> | null>,
+    dailyPulse: (id: string) =>
+      ipcRenderer.invoke('venture:dailyPulse', id) as Promise<{ pulse?: unknown; error?: string }>,
+    onProgress: (cb: (data: { phase: string; detail?: string }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, data: { phase: string; detail?: string }) => cb(data);
+      ipcRenderer.on('venture:progress', handler);
+      return () => ipcRenderer.removeListener('venture:progress', handler);
+    },
+  },
 };
 
 contextBridge.exposeInMainWorld('triforge', api);

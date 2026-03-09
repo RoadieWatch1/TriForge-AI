@@ -49,3 +49,28 @@ export function sendCouncilSuggestion(suggestion: string): void {
 export function sendResponseReady(summary: string): void {
   sendRemoteUpdate(`Response ready: ${summary.slice(0, 160)}`, 'response');
 }
+
+// ── Venture Discovery notifications ──────────────────────────────────────────
+
+/** Push a formatted venture proposal to paired devices. */
+export function sendVentureProposal(formattedText: string): void {
+  sendRemoteUpdate(formattedText, 'venture:proposal');
+}
+
+/** Push a venture build progress update. */
+export function sendVentureBuildUpdate(proposalId: string, phase: string): void {
+  sendRemoteUpdate(`Venture ${proposalId.slice(0, 8)}: ${phase}`, 'venture:build');
+}
+
+/** Push a filing decision prompt. */
+export function sendVentureFilingPrompt(proposalId: string, summary: string): void {
+  sendRemoteUpdate(
+    `FILING DECISION NEEDED\n${summary}\n\nReply: FILE NOW | WAIT | ASK AGAIN LATER\nPOST /remote/venture/${proposalId}/filing`,
+    'venture:filing',
+  );
+}
+
+/** Push a daily pulse summary. */
+export function sendVentureDailyPulse(pulseText: string): void {
+  sendRemoteUpdate(pulseText, 'venture:pulse');
+}

@@ -18,6 +18,7 @@ import { InboxMode } from './modes/InboxMode';
 import { AutomationMode } from './modes/AutomationMode';
 import { HustleMode } from './modes/HustleMode';
 import { PhoneLink } from './components/PhoneLink';
+import { VentureDiscovery } from './components/VentureDiscovery';
 import { TradeDesk } from './components/TradeDesk';
 import { LiveTradeAdvisor } from './components/LiveTradeAdvisor';
 import { TrianglePresence } from './components/TrianglePresence';
@@ -52,7 +53,7 @@ type Screen =
   | 'chat' | 'settings' | 'memory' | 'ledger' | 'plan' | 'builder'
   | 'profiles' | 'missioncontrol' | 'agenthq'
   | 'dashboard' | 'operator' | 'world' | 'files' | 'inbox' | 'automation' | 'hustle'
-  | 'forge' | 'phonelink' | 'tradeDesk' | 'liveTradeAdvisor';
+  | 'forge' | 'phonelink' | 'tradeDesk' | 'liveTradeAdvisor' | 'ventures';
 
 const LOCK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -319,6 +320,7 @@ export function App() {
           <NavBtn icon="⊟" label="Inbox"    active={screen === 'inbox'}          onClick={() => setScreen('inbox')} />
           <NavBtn icon="∞" label="Automate" active={screen === 'automation'}     onClick={() => setScreen('automation')} />
           <NavBtn icon="◇" label="Hustle"   active={screen === 'hustle'}         onClick={() => setScreen('hustle')} />
+          <NavBtn icon="◆" label="Ventures" active={screen === 'ventures'}       onClick={() => setScreen('ventures')} />
           {/* Divider */}
           <div style={styles.navDivider} />
           <NavBtn icon="⊞" label="Builder"  active={screen === 'builder'}        onClick={() => setScreen('builder')} />
@@ -340,6 +342,7 @@ export function App() {
           {screen === 'inbox'      && <InboxMode      onNavigate={s => setScreen(s as Screen)} />}
           {screen === 'automation' && <AutomationMode onNavigate={s => setScreen(s as Screen)} />}
           {screen === 'hustle'     && <HustleMode     onNavigate={s => setScreen(s as Screen)} />}
+          {screen === 'ventures'  && <VentureDiscovery tier={tier} />}
           {screen === 'tradeDesk'        && <TradeDesk         onBack={() => setScreen('hustle')} />}
           {screen === 'liveTradeAdvisor' && <LiveTradeAdvisor   onBack={() => setScreen('hustle')} />}
           {screen === 'chat' && (

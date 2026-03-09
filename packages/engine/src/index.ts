@@ -311,3 +311,94 @@ export type {
 export { searchWeb }       from './tools/webSearch';
 export type { WebSearchResult } from './tools/webSearch';
 export { needsWebSearch }  from './tools/webSearchDetector';
+
+// ── Venture Discovery + Build + Growth ──────────────────────────────────────
+
+// Types
+export type {
+  VentureCategory, TrendClass, VentureMode, VentureFormationMode,
+  ProposalStatus, ActionGateLevel,
+  MarketSignal, VentureScores, VentureCandidate,
+  SiteType, WebsitePlan, SitePage, SiteSection, SiteBuild,
+  CaptureType, CaptureComponent,
+  LeadCapturePlan, FollowerGrowthPlan,
+  LaunchPack, VentureOption,
+  TreasuryAllocation, VentureProposal,
+  GrowthFunnel, First30DaysPlan, DailyPulse,
+  ConversionPlan,
+  FilingPacket, FilingSummary, FormationDecision,
+  FounderProfile, OperatorPolicy,
+  AudienceGoal, LeadCaptureAsset, SubscriberSegment, OwnedAudienceMetrics,
+  VentureCategoryConfig, BrandAssets, SignupFlow, VentureProposalView,
+} from './ventures/ventureTypes';
+
+// Catalog
+export { VENTURE_CATALOG, getCategoryConfig, getCategoriesForBudget } from './ventures/ventureCatalog';
+
+// Scoring
+export { scoreCandidate, classifyTrend, rankCandidates } from './ventures/ventureScoringEngine';
+
+// Research
+export { researchMarket, extractCandidates } from './ventures/ventureResearchEngine';
+
+// Formation classifier
+export { classifyFormationNeeds } from './ventures/ventureFormationClassifier';
+
+// Council flow
+export { runVentureCouncil } from './ventures/ventureCouncilFlow';
+
+// Treasury
+export { allocateBudget } from './ventures/ventureTreasury';
+
+// Proposal formatter
+export { formatForPhone, formatForDesktop } from './ventures/ventureProposalFormatter';
+
+// Brand builder
+export { buildBrand } from './ventures/ventureBrandBuilder';
+
+// LaunchPack builder
+export { buildLaunchPack } from './ventures/ventureLaunchPackBuilder';
+
+// Conversion planner
+export { planConversion } from './ventures/ventureConversionPlanner';
+
+// Site generation
+export type { SitePlan, PagePlan, CapturePointPlan, GeneratedPage } from './ventures/site/ventureSiteTypes';
+export { planSite } from './ventures/site/ventureSitePlanner';
+export { generateSite, renderPageToHTML } from './ventures/site/ventureSiteGenerator';
+export { generatePageContent } from './ventures/site/ventureSiteContentBuilder';
+export { buildCaptureComponent, getRecommendedFields } from './ventures/site/ventureLeadCaptureBuilder';
+
+// Audience growth
+export type {
+  ContentCalendarEntry, AudienceSegmentTarget, LeadMagnetAsset,
+  NurtureStep, NurtureSequence, GrowthSnapshot,
+} from './ventures/audience/audienceTypes';
+export { planAudienceGrowth } from './ventures/audience/audienceGrowthPlan';
+export type { ExtendedGrowthPlan } from './ventures/audience/audienceGrowthPlan';
+export { buildLeadMagnet } from './ventures/audience/leadMagnetBuilder';
+export { buildSignupFlow } from './ventures/audience/signupFlowBuilder';
+
+// Growth funnel
+export { planGrowthFunnel } from './ventures/ventureGrowthFunnel';
+
+// First 30 days
+export { generateFirst30Days } from './ventures/ventureFirst30Days';
+
+// Founder authority
+export type {
+  VentureActionCategory, VentureAction, GateDecision,
+} from './ventures/founderAuthority/founderAuthorityTypes';
+export { DEFAULT_OPERATOR_POLICY } from './ventures/founderAuthority/founderAuthorityTypes';
+export { FounderAuthorityVault } from './ventures/founderAuthority/founderAuthorityVault';
+export { classifyAction, canAutoExecute, getGateDecision } from './ventures/founderAuthority/operatorPolicyEngine';
+export {
+  getRegisteredAction, getActionsForCategory, getLegalAuthActions,
+  getAutonomousActions, listActionIds,
+} from './ventures/founderAuthority/actionGateClassifier';
+
+// Filing prep
+export { prepareFilingPacket, summarizeFilingNeed } from './ventures/ventureFilingPrep';
+
+// Daily pulse
+export { generateDailyPulse, formatPulseForPhone } from './ventures/ventureDailyPulse';
