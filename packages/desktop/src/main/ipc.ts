@@ -140,9 +140,15 @@ let _expertPerformanceTracker: InstanceType<typeof import('@triforge/engine').Ex
 let _expertRouter: InstanceType<typeof import('@triforge/engine').ExpertRouter> | null = null;
 let _expertRosterLedger: InstanceType<typeof import('@triforge/engine').ExpertRosterLedger> | null = null;
 let _expertWorkforceEngine: InstanceType<typeof import('@triforge/engine').ExpertWorkforceEngine> | null = null;
+let _expertHiringEngine: InstanceType<typeof import('@triforge/engine').ExpertHiringEngine> | null = null;
+let _expertPromotionEngine: InstanceType<typeof import('@triforge/engine').ExpertPromotionEngine> | null = null;
+let _expertReplacementEngine: InstanceType<typeof import('@triforge/engine').ExpertReplacementEngine> | null = null;
 let _evolutionOrchestrator: InstanceType<typeof import('@triforge/engine').EvolutionOrchestrator> | null = null;
 let _expertTrafficController: InstanceType<typeof import('@triforge/engine').ExpertTrafficController> | null = null;
 let _placementLearningBridge: InstanceType<typeof import('@triforge/engine').PlacementLearningBridge> | null = null;
+// LearningEvolutionBridge — deferred (Fix 14): bridge has internal issues
+// (accesses private _registry, wrong field paths on RosterHealthSummary).
+// Wiring it now would cause runtime errors. Defer until bridge internals are fixed.
 
 // ── Vibe Coding singletons ──────────────────────────────────────────────────
 let _vibeProfileStore: InstanceType<typeof import('@triforge/engine').VibeProfileStore> | null = null;
@@ -344,14 +350,22 @@ function _getExpertRosterLedger(): InstanceType<typeof import('@triforge/engine'
 
 function _getExpertWorkforceEngine(store: Store): InstanceType<typeof import('@triforge/engine').ExpertWorkforceEngine> {
   if (_expertWorkforceEngine) return _expertWorkforceEngine;
-  const { ExpertRegistry, ExpertRouter, ExpertPerformanceTracker, ExpertWorkforceEngine } = require('@triforge/engine');
+  const { ExpertRegistry, ExpertRouter, ExpertPerformanceTracker, ExpertWorkforceEngine,
+          ExpertHiringEngine, ExpertPromotionEngine, ExpertReplacementEngine } = require('@triforge/engine');
   _expertRegistry = new ExpertRegistry(store);
   _expertRegistry!.initialize(); // sync
   _expertPerformanceTracker = new ExpertPerformanceTracker(store); // no initialize()
   _expertRouter = new ExpertRouter(_expertRegistry!, _expertPerformanceTracker!);
   _expertWorkforceEngine = new ExpertWorkforceEngine(
     _expertRegistry!, _expertRouter!, _expertPerformanceTracker!, store,
-  ); // 4 args — fixes prior 5-arg bug (ledger was silently ignored)
+  );
+
+  // Fix 7: Wire lifecycle engines (hiring, promotion, replacement)
+  const ledger = _getExpertRosterLedger();
+  _expertHiringEngine = new ExpertHiringEngine(_expertRegistry!, _expertPerformanceTracker!, ledger, store);
+  _expertPromotionEngine = new ExpertPromotionEngine(_expertRegistry!, _expertPerformanceTracker!, ledger);
+  _expertReplacementEngine = new ExpertReplacementEngine(_expertRegistry!, _expertPerformanceTracker!, ledger);
+
   return _expertWorkforceEngine!;
 }
 
@@ -389,6 +403,7 @@ async function _getExpertTrafficController(store: Store): Promise<InstanceType<t
   _placementLearningBridge = new PlacementLearningBridge(
     learning, evolution, loadTracker, capacityMonitor,
   );
+  _placementLearningBridge!.initialize(); // Fix 8: was missing — registers placement lanes in evolution tracker
 
   return _expertTrafficController!;
 }
@@ -4900,25 +4915,32 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         }
       }
 
-      // 9. Conversion plan (winner)
+      // 9. Conversion plan (winner) — persist on proposal (Fix 5)
       emit('conversion', 'Planning conversion strategy...');
       if (proposal.winner.launchPack) {
-        planConversion(proposal.winner, proposal.winner.launchPack);
+        (proposal as any).conversionPlan = planConversion(proposal.winner, proposal.winner.launchPack);
       }
 
-      // 10. Audience growth plans (parallel)
+      // 10. Audience growth plans (parallel) — persist on proposal (Fix 5)
       emit('audience', 'Planning audience growth...');
-      await Promise.allSettled(
+      const growthResults = await Promise.allSettled(
         options.map(opt => {
-          if (opt?.launchPack) planAudienceGrowth(opt, opt.launchPack);
-          return Promise.resolve();
+          if (opt?.launchPack) return Promise.resolve(planAudienceGrowth(opt, opt.launchPack));
+          return Promise.resolve(undefined);
         }),
       );
+      const audienceGrowthPlans: Record<string, unknown> = {};
+      for (let i = 0; i < options.length; i++) {
+        if (growthResults[i]?.status === 'fulfilled' && (growthResults[i] as PromiseFulfilledResult<unknown>).value) {
+          audienceGrowthPlans[options[i]!.candidate.id] = (growthResults[i] as PromiseFulfilledResult<unknown>).value;
+        }
+      }
+      (proposal as any).audienceGrowthPlans = audienceGrowthPlans;
 
-      // 11. Growth funnel (winner)
+      // 11. Growth funnel (winner) — persist on proposal (Fix 5)
       emit('funnel', 'Mapping growth funnel...');
       if (proposal.winner.launchPack) {
-        planGrowthFunnel(proposal.winner, proposal.winner.launchPack);
+        (proposal as any).growthFunnel = planGrowthFunnel(proposal.winner, proposal.winner.launchPack);
       }
 
       // 12. Filing summary
@@ -5051,24 +5073,24 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       emit('generating_site', 'Generating website pages...');
       const siteBuild = await generateSite(sitePlan, provider, (phase: string) => emit('site_gen', phase));
 
-      // Build lead capture
+      // Build lead capture — persist result (Fix 5)
       emit('lead_capture', 'Building lead capture...');
       const captureType = String((launchPack?.leadCapturePlan && (launchPack.leadCapturePlan as Record<string,unknown>).captureType) ?? 'email_signup');
-      buildCaptureComponent(captureType, brand.brandName);
+      const captureComponent = buildCaptureComponent(captureType, brand.brandName);
 
-      // Lead magnet
+      // Lead magnet — persist result (Fix 5)
       emit('lead_magnet', 'Creating lead magnet...');
-      await buildLeadMagnet(winner as never, brand as never, provider);
+      const leadMagnet = await buildLeadMagnet(winner as never, brand as never, provider);
 
-      // Signup flow
-      buildSignupFlow(captureType, brand as never);
+      // Signup flow — persist result (Fix 5)
+      const signupFlow = buildSignupFlow(captureType, brand as never);
 
       // First 30 days
       emit('planning_30days', 'Generating 30-day plan...');
       const funnel = planGrowthFunnel(winner as never, launchPack as never);
       const first30 = await generateFirst30Days(winner as never, launchPack as never, funnel, provider);
 
-      // Update proposal with build artifacts
+      // Update proposal with ALL build artifacts (Fix 5)
       const canOperateBefore = Boolean(winner.canOperateBeforeFiling);
       const postBuildStatus = canOperateBefore ? 'operating_unfiled' : 'awaiting_filing_decision';
 
@@ -5076,6 +5098,11 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         status: postBuildStatus,
         siteBuild,
         first30DaysPlan: first30,
+        captureComponent,
+        leadMagnet,
+        signupFlow,
+        growthFunnel: funnel,
+        conversionPlan: conversionPlan,
       });
 
       // Notify with state-accurate messaging
@@ -5391,6 +5418,62 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       const engine = _getExpertWorkforceEngine(store);
       const ok = engine.restoreFromBench(expertId);
       return { ok };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ── Expert Maintenance IPC (Fix 7: wires hiring, promotion, replacement) ──
+
+  ipcMain.handle('experts:maintenance', async () => {
+    try {
+      const engine = _getExpertWorkforceEngine(store);
+
+      // Step 1: Run base workforce evaluation + auto-apply safe actions
+      const report = engine.runMaintenanceCycle();
+
+      // Step 2: Promote eligible trial experts
+      const promoted: string[] = [];
+      if (_expertPromotionEngine) {
+        try {
+          promoted.push(..._expertPromotionEngine.promoteEligible());
+        } catch { /* promotion non-fatal */ }
+      }
+
+      // Step 3: Evaluate and execute replacements
+      const replaced: string[] = [];
+      if (_expertReplacementEngine) {
+        try {
+          const decisions = _expertReplacementEngine.evaluateAllForReplacement();
+          for (const d of decisions) {
+            if (d.confidence >= 75 && _expertReplacementEngine.executeReplacement(d)) {
+              replaced.push(d.outgoingExpertId);
+            }
+          }
+        } catch { /* replacement non-fatal */ }
+      }
+
+      // Step 4: Evaluate hiring needs (advisory — creates candidates but does not auto-promote)
+      const hiringNeeds: unknown[] = [];
+      if (_expertHiringEngine) {
+        try {
+          const needs = _expertHiringEngine.evaluateHiringNeeds();
+          for (const need of needs) {
+            if (need.confidence >= 80) {
+              _expertHiringEngine.createCandidate(need);
+              hiringNeeds.push(need);
+            }
+          }
+        } catch { /* hiring non-fatal */ }
+      }
+
+      return {
+        ok: true,
+        report,
+        promoted,
+        replaced,
+        hiringNeeds,
+      };
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
     }
@@ -5810,12 +5893,16 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
 // ── Singleton cleanup — call from app before-quit ─────────────────────────────
 export function disposeIpcSingletons(): void {
-  _expertTrafficController?.dispose();
+  _expertTrafficController?.dispose();  // clears rebalance interval
   _expertTrafficController = null;
+  _evolutionOrchestrator?.dispose();    // Fix 10: unsubscribes EventBus listener in ComponentUseTracker
   _evolutionOrchestrator = null;
   _placementLearningBridge = null;
   _learningOrchestrator = null;
   _expertWorkforceEngine = null;
+  _expertHiringEngine = null;
+  _expertPromotionEngine = null;
+  _expertReplacementEngine = null;
   _expertRouter = null;
   _expertPerformanceTracker = null;
   _expertRegistry = null;

@@ -1256,6 +1256,8 @@ const api = {
       ipcRenderer.invoke('experts:bench', expertId) as Promise<{ ok?: boolean; error?: string }>,
     restore: (expertId: string) =>
       ipcRenderer.invoke('experts:restore', expertId) as Promise<{ ok?: boolean; error?: string }>,
+    maintenance: () =>
+      ipcRenderer.invoke('experts:maintenance') as Promise<{ ok?: boolean; report?: unknown; promoted?: string[]; replaced?: string[]; hiringNeeds?: unknown[]; error?: string }>,
   },
 
   // Adaptive Expert Placement — lane utilization, hot experts, rebalance

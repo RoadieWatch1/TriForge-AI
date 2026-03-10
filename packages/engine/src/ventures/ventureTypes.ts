@@ -243,6 +243,16 @@ export interface VentureProposal {
   treasuryAllocation: TreasuryAllocation;
   councilRationale: string;
   filingSummary: FilingSummary;
+  // Build artifacts — persisted during discover and build phases
+  conversionPlan?: ConversionPlan;
+  growthFunnel?: GrowthFunnel;
+  audienceGrowthPlans?: Record<string, FollowerGrowthPlan>;
+  siteBuild?: SiteBuild;
+  first30DaysPlan?: First30DaysPlan;
+  captureComponent?: CaptureComponent;
+  leadMagnet?: Record<string, unknown>;
+  signupFlow?: SignupFlow;
+  filingPacket?: FilingPacket;
 }
 
 // ── Growth funnel ────────────────────────────────────────────────────────────

@@ -63,6 +63,7 @@ export class ComponentUseTracker {
   trackUsage(componentId: string, name: string, category: string): void {
     const record = this._getOrCreate(componentId, name, category);
     record.useCount++;
+    record.useCountLast30Days++;  // Fix 6: also increment 30-day counter
     record.lastUsed = Date.now();
     this._records.set(componentId, record);
     this._save();
@@ -72,6 +73,7 @@ export class ComponentUseTracker {
     const record = this._records.get(componentId);
     if (!record) return;
     record.errorCount++;
+    record.errorCountLast30Days++;  // Fix 6: also increment 30-day counter
     this._records.set(componentId, record);
     this._save();
   }
@@ -121,13 +123,12 @@ export class ComponentUseTracker {
   recalculate30DayMetrics(): void {
     const cutoff = Date.now() - THIRTY_DAYS_MS;
     for (const record of this._records.values()) {
-      // Approximate: if last used within 30 days, count toward recent
-      if (record.lastUsed >= cutoff) {
-        // Keep existing 30-day counts (they accumulate via trackUsage)
-      } else {
+      if (record.lastUsed < cutoff) {
+        // Component hasn't been used in 30+ days — zero out rolling counts
         record.useCountLast30Days = 0;
         record.errorCountLast30Days = 0;
       }
+      // Active components keep their 30-day counts (accumulated by trackUsage/trackError)
     }
     this._save();
   }
