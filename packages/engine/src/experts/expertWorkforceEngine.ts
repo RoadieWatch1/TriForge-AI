@@ -10,6 +10,7 @@ import { isProtectedRole } from './expertRegistry';
 import type { ExpertRouter } from './expertRouter';
 import type { ExpertPerformanceTracker } from './expertPerformanceTracker';
 import type {
+  ExpertProfile,
   ExpertSelectionDecision, ExpertRoutingContext,
   ExpertHiringNeed, ExpertReplacementDecision,
   WorkforceHealthReport, WorkforceRecommendation,
@@ -31,6 +32,16 @@ export class ExpertWorkforceEngine {
 
   initialize(): void {
     this._registry.initialize();
+  }
+
+  // ── Public expert queries (delegates to registry) ───────────────────────
+
+  getAllExperts(): ExpertProfile[] {
+    return this._registry.getAllExperts();
+  }
+
+  getExpert(id: string): ExpertProfile | undefined {
+    return this._registry.getExpert(id);
   }
 
   // ── Task routing (delegates to router) ────────────────────────────────────

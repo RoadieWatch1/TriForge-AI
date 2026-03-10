@@ -70,21 +70,17 @@ export class LearningEvolutionBridge {
 
   initialize(): void {
     // Register expert components in evolution tracker for health monitoring
-    const roster = this._experts.getRosterHealth();
-    if (roster) {
-      const registry = this._experts.registry;
-      const allExperts = registry.getAllExperts();
-      for (const expert of allExperts) {
-        this._evolution.registerComponent(
-          `expert:${expert.id}`,
-          expert.name,
-          'expert_workforce',
-          {
-            linkedExpertId: expert.id,
-            isProtected: expert.protectionLevel === 'protected',
-          },
-        );
-      }
+    const allExperts = this._experts.getAllExperts();
+    for (const expert of allExperts) {
+      this._evolution.registerComponent(
+        `expert:${expert.id}`,
+        expert.name,
+        'expert_workforce',
+        {
+          linkedExpertId: expert.id,
+          isProtected: expert.protectionLevel === 'protected',
+        },
+      );
     }
   }
 
@@ -193,11 +189,11 @@ export class LearningEvolutionBridge {
         hotCategories: recommendations.slice(0, 5),
       },
       experts: {
-        total: health.total,
-        active: health.active,
-        trial: health.trial,
-        watchlist: health.watchlist,
-        bench: health.bench,
+        total: health.summary.total,
+        active: health.summary.active,
+        trial: health.summary.trial,
+        watchlist: health.summary.watchlist,
+        bench: health.summary.bench,
       },
       evolution: {
         totalComponents: evolutionReport.totalComponents,
@@ -227,7 +223,15 @@ export class LearningEvolutionBridge {
     this._learning.runDecay();
 
     // 2. Expert workforce maintenance
-    const expertResult = this._experts.runMaintenanceCycle();
+    const maintenanceReport = this._experts.runMaintenanceCycle();
+
+    // Collect lifecycle actions from recommendations
+    const watchlisted: string[] = [];
+    const benched: string[] = [];
+    for (const rec of maintenanceReport.recommendations) {
+      if (rec.action === 'watchlist') watchlisted.push(rec.expertId);
+      if (rec.action === 'bench') benched.push(rec.expertId);
+    }
 
     // 3. Evolution auto-maintenance
     const evolutionResult = this._evolution.autoMaintenance();
@@ -243,16 +247,16 @@ export class LearningEvolutionBridge {
       }
 
       // Add to watchlist if not already
-      const expert = this._experts.registry.getExpert(expertId);
+      const expert = this._experts.getExpert(expertId);
       if (expert && expert.status === 'active') {
         this._experts.moveToWatchlist(expertId, 'Flagged dormant by Performance Hunter');
-        expertResult.watchlisted.push(expertId);
+        watchlisted.push(expertId);
       }
     }
 
     return {
       learningDecay: true,
-      expertMaintenance: expertResult,
+      expertMaintenance: { watchlisted, benched },
       evolutionMaintenance: evolutionResult,
     };
   }

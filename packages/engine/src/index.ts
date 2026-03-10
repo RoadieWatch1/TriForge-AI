@@ -439,13 +439,13 @@ export type {
 export { PROTECTED_EXPERT_ROLES, TASK_TYPE_EXPERT_MAP } from './experts/expertTypes';
 export { ExpertRegistry, isProtectedRole } from './experts/expertRegistry';
 export { ExpertRouter } from './experts/expertRouter';
-export type { ExpertRoutingContext } from './experts/expertRouter';
+export type { ExpertRoutingContext } from './experts/expertTypes';
 export { ExpertPerformanceTracker } from './experts/expertPerformanceTracker';
 export { ExpertWorkforceEngine } from './experts/expertWorkforceEngine';
 export { ExpertRosterLedger } from './experts/expertRosterLedger';
 export { ExpertHiringEngine } from './experts/expertHiringEngine';
 export { ExpertPromotionEngine } from './experts/expertPromotionEngine';
-export type { PromotionDecision } from './experts/expertPromotionEngine';
+export type { PromotionDecision as ExpertPromotionDecision } from './experts/expertPromotionEngine';
 export { ExpertBenchManager } from './experts/expertBenchManager';
 export { ExpertReplacementEngine } from './experts/expertReplacementEngine';
 

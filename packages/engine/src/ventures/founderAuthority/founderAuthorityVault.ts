@@ -22,9 +22,9 @@ export class FounderAuthorityVault {
   async load(): Promise<void> {
     if (this.loaded) return;
     try {
-      const raw = await this.storage.get(VAULT_KEY);
-      if (raw) {
-        this.profile = JSON.parse(raw) as FounderProfile;
+      const raw = this.storage.get<FounderProfile>(VAULT_KEY, {} as FounderProfile);
+      if (raw && typeof raw === 'object') {
+        this.profile = raw;
       }
     } catch {
       // Start with empty profile
@@ -75,7 +75,7 @@ export class FounderAuthorityVault {
 
   private async persist(): Promise<void> {
     try {
-      await this.storage.set(VAULT_KEY, JSON.stringify(this.profile));
+      await this.storage.update(VAULT_KEY, this.profile);
     } catch {
       // Silent fail — vault is best-effort persistence
     }

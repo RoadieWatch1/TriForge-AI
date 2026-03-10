@@ -186,9 +186,9 @@ export class PlacementLearningBridge {
 
     // Track errors
     if (placement.failureRate > 0.2) {
-      tracker.trackError(componentId, new Error(
+      tracker.trackError(componentId,
         `Expert ${expertId} failure rate: ${(placement.failureRate * 100).toFixed(0)}%`,
-      ));
+      );
     }
   }
 

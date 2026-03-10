@@ -25,7 +25,7 @@ export { ExpertRegistry, isProtectedRole } from './expertRegistry';
 
 // Router
 export { ExpertRouter } from './expertRouter';
-export type { ExpertRoutingContext } from './expertRouter';
+export type { ExpertRoutingContext } from './expertTypes';
 
 // Performance tracking
 export { ExpertPerformanceTracker } from './expertPerformanceTracker';

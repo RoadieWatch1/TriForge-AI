@@ -189,7 +189,7 @@ export async function runVentureCouncil(
 
   // ── Filing summary based on winner ────────────────────────────────────────
   const filingSummary: FilingSummary = {
-    recommended: winnerOption.filingRecommendation === 'file_now',
+    recommendation: winnerOption.filingRecommendation,
     urgency: winnerOption.filingUrgency,
     reason: winnerOption.filingReason,
   };
