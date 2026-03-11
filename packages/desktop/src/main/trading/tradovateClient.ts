@@ -143,7 +143,7 @@ export interface TradovateAccountState {
 
 // ── Phase 2: OHLC bars + indicators ─────────────────────────────────────────
 
-interface OhlcBar {
+export interface OhlcBar {
   timestamp: number;   // bar open time (ms)
   open: number;
   high: number;
@@ -927,6 +927,15 @@ export class TradovateClient {
     } catch (err) {
       console.warn(`[TradovateClient] Historical bar fetch failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  /** Return copies of accumulated OHLC bars for all timeframes. */
+  getBars(): { bars1m: OhlcBar[]; bars5m: OhlcBar[]; bars15m: OhlcBar[] } {
+    return {
+      bars1m:  [...this._accumulator['_bars1m']],
+      bars5m:  [...this._accumulator['_bars5m']],
+      bars15m: [...this._accumulator['_bars15m']],
+    };
   }
 
   disconnect(): void {

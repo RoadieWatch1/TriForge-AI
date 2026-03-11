@@ -287,6 +287,26 @@ export type {
   BlockedTradeExplanation, GradeBucketSummary, CouncilValueAdded,
 } from './trading/types';
 
+// ── Level-to-Level Trading Engine (Shadow Simulator) ────────────────────────
+export {
+  LEVEL_TYPES, LEVEL_QUALITY_WEIGHTS,
+  ROUTE_QUALITY_WEIGHTS,
+  CONFIRMATION_TYPES, CONFIRMATION_WEIGHTS,
+  LEVEL_BLOCK_REASONS,
+  deriveScoreBand,
+} from './trading/levels/types';
+export type {
+  LevelType, LevelStrength, LevelGrade,
+  LevelQualityFactors, PriceLevel,
+  RouteDirection, RouteQualityFactors, Route, PathPrediction,
+  ConfirmationType, ConfirmationSignal, ConfirmationFactors, ConfirmationScore,
+  WatchState, WatchAlert,
+  NewsTier, NewsEvent, SessionContext,
+  TradeScoreBand, TradeScore, TradeIntent,
+  LevelMap, NormalizedBar, NormalizedMarketData,
+  JournalEntry, WeightAdjustment, SessionRegime, LevelBlockReason,
+} from './trading/levels/types';
+
 // ── Council Workflow Pipeline ────────────────────────────────────────────────
 export { CouncilWorkflowEngine } from './workflow/CouncilWorkflowEngine';
 export { PlanCouncilService } from './workflow/PlanCouncilService';

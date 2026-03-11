@@ -10,6 +10,21 @@ import {
   SetupGradeBadge, CouncilLiveTradeCard, BlockedTradeCards,
   UserComparisonPanel, TrustDashboardPanel, GradeAnalyticsPanel,
 } from './TrustComponents';
+import { LevelMapPanel } from './trading/LevelMapPanel';
+import { RoutePanel } from './trading/RoutePanel';
+import { WatchPanel } from './trading/WatchPanel';
+import { ReviewedIntentsPanel } from './trading/ReviewedIntentsPanel';
+import { SessionContextPanel } from './trading/SessionContextPanel';
+import { SimulatorPositionsPanel } from './trading/SimulatorPositionsPanel';
+import { JournalPanel } from './trading/JournalPanel';
+import { ExpectancyPanel } from './trading/ExpectancyPanel';
+import { CalibrationPanel } from './trading/CalibrationPanel';
+import { NewsCalendarPanel } from './trading/NewsCalendarPanel';
+import { SessionRegimePanel } from './trading/SessionRegimePanel';
+import { ShadowTradeCard } from './trading/ShadowTradeCard';
+import { CouncilDecisionPanel } from './trading/CouncilDecisionPanel';
+import { CouncilEffectivenessPanel } from './trading/CouncilEffectivenessPanel';
+import { AdvisoryTargetPanel } from './trading/AdvisoryTargetPanel';
 
 // ── Local type mirrors (engine types, no direct import) ───────────────────────
 
@@ -279,6 +294,27 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
   const [councilValueAdded, setCouncilValueAdded] = useState<any | null>(null);
   const [showBlockedTrades, setShowBlockedTrades] = useState(false);
 
+  // Level Engine Inspector state
+  const [inspectorTab, setInspectorTab] = useState<'simulator' | 'levels' | 'decisions' | 'positions' | 'journal'>('simulator');
+  const [levelMap, setLevelMap] = useState<any>(null);
+  const [pathPrediction, setPathPrediction] = useState<any>(null);
+  const [watches, setWatches] = useState<any[]>([]);
+  const [reviewedIntents, setReviewedIntents] = useState<any[]>([]);
+  const [sessionContext, setSessionContext] = useState<any>(null);
+  const [simPositions, setSimPositions] = useState<{ open: any[]; closed: any[]; orders: any[] }>({ open: [], closed: [], orders: [] });
+  const [simulatorState, setSimulatorState] = useState<any>(null);
+
+  // Journal / Analytics state
+  const [journalEntries, setJournalEntries] = useState<any[]>([]);
+  const [expectancySummary, setExpectancySummary] = useState<any>(null);
+  const [expectancyDimension, setExpectancyDimension] = useState<string>('levelType');
+  const [calibrationSuggestions, setCalibrationSuggestions] = useState<any[]>([]);
+  const [journalFilterSymbol, setJournalFilterSymbol] = useState('');
+  const [journalFilterOutcome, setJournalFilterOutcome] = useState('');
+  const [councilEffectSummary, setCouncilEffectSummary] = useState<any>(null);
+  const [advisoryTargetSummary, setAdvisoryTargetSummary] = useState<any>(null);
+  const expectancyDimRef = useRef(expectancyDimension);
+
   // ── Tradovate account + proposed setup ─────────────────────────────────────
   const [accountState, setAccountState]   = useState<TradovateAccountState | null>(null);
   const [proposedSetup, setProposedSetup] = useState<ProposedTradeSetup | null>(null);
@@ -308,16 +344,42 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
     stopPolling();
     const tick = async () => {
       try {
-        const [snapRes, shadowState, acctRes, setupRes] = await Promise.all([
+        const [snapRes, shadowState, acctRes, setupRes, simStateRes, levelMapRes, predRes, watchesRes, reviewedRes, sessionRes, posBookRes, journalRes, expectancyRes, weightsRes, councilEffRes, advisoryTargetRes] = await Promise.all([
           window.triforge.trading.tradovateSnapshot(sym),
           window.triforge.trading.shadowState(),
           (window.triforge.trading as any).tradovateAccountState?.() ?? Promise.resolve(null),
           (window.triforge.trading as any).buildTradeLevels?.(sym) ?? Promise.resolve(null),
+          (window.triforge.trading as any).simulatorStateGet?.() ?? Promise.resolve(null),
+          (window.triforge.trading as any).levelMapGet?.() ?? Promise.resolve(null),
+          (window.triforge.trading as any).pathPredictionGet?.() ?? Promise.resolve(null),
+          (window.triforge.trading as any).watchesGet?.() ?? Promise.resolve(null),
+          (window.triforge.trading as any).reviewedIntentsGet?.() ?? Promise.resolve(null),
+          (window.triforge.trading as any).sessionContextGet?.() ?? Promise.resolve(null),
+          (window.triforge.trading as any).positionBookGet?.() ?? Promise.resolve(null),
+          (window.triforge.trading as any).journalEntriesGet?.({ limit: 50 }) ?? Promise.resolve(null),
+          (window.triforge.trading as any).journalExpectancyGet?.(expectancyDimRef.current) ?? Promise.resolve(null),
+          (window.triforge.trading as any).journalWeightsGet?.() ?? Promise.resolve(null),
+          (window.triforge.trading as any).journalExpectancyGet?.('councilConsensus') ?? Promise.resolve(null),
+          (window.triforge.trading as any).journalAdvisoryTargetsGet?.() ?? Promise.resolve(null),
         ]);
         if (snapRes.snapshot) setSnapshot(snapRes.snapshot as LiveSnapshot);
         setShadow(shadowState as ShadowAccountState);
         if (acctRes?.state) setAccountState(acctRes.state as TradovateAccountState);
         if (setupRes?.setup) setProposedSetup(setupRes.setup as ProposedTradeSetup);
+        // Level engine inspector state
+        if (simStateRes?.state) setSimulatorState(simStateRes.state);
+        if (levelMapRes?.levelMap) setLevelMap(levelMapRes.levelMap);
+        if (predRes?.prediction) setPathPrediction(predRes.prediction);
+        if (watchesRes?.watches) setWatches(watchesRes.watches);
+        if (reviewedRes?.reviewed) setReviewedIntents(reviewedRes.reviewed);
+        if (sessionRes?.session) setSessionContext(sessionRes.session);
+        if (posBookRes) setSimPositions({ open: posBookRes.open ?? [], closed: posBookRes.closed ?? [], orders: posBookRes.orders ?? [] });
+        // Journal / analytics state
+        if (journalRes?.entries) setJournalEntries(journalRes.entries);
+        if (expectancyRes?.summary) setExpectancySummary(expectancyRes.summary);
+        if (weightsRes?.suggestions) setCalibrationSuggestions(weightsRes.suggestions);
+        if (councilEffRes?.summary) setCouncilEffectSummary(councilEffRes.summary);
+        if (advisoryTargetRes?.summary) setAdvisoryTargetSummary(advisoryTargetRes.summary);
       } catch { /* ignore */ }
     };
     tick();
@@ -556,6 +618,137 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
       </div>
 
       <div style={s.body}>
+        {/* ── Level Engine Inspector Tab Bar ── */}
+        {simulatorState?.active && (
+          <div style={s.card}>
+            <div style={s.segmented}>
+              {(['simulator', 'levels', 'decisions', 'positions', 'journal'] as const).map(tab => (
+                <button key={tab} style={{ ...s.seg, ...(inspectorTab === tab ? s.segActive : {}) }}
+                  onClick={() => setInspectorTab(tab)}>
+                  {{ simulator: 'Simulator', levels: 'Level Map', decisions: 'Decisions', positions: 'Positions', journal: 'Journal' }[tab]}
+                </button>
+              ))}
+            </div>
+            <SessionContextPanel session={sessionContext} />
+            {/* News block banner — prominent when entries are blocked */}
+            {simulatorState?.newsRiskContext?.blocked && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)', borderRadius: 6, padding: '6px 12px' }}>
+                <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '0.08em', color: '#f87171', background: 'rgba(248,113,113,0.15)', border: '1px solid rgba(248,113,113,0.3)', borderRadius: 3, padding: '1px 6px', flexShrink: 0 }}>NEWS BLOCK</span>
+                <span style={{ fontSize: 10, color: '#f87171', lineHeight: 1.4 }}>{simulatorState.newsRiskContext.reason}</span>
+              </div>
+            )}
+            {/* Regime badge — compact inline when regime is active */}
+            {simulatorState?.regimeContext?.current && (() => {
+              const rCfg: Record<string, { label: string; color: string; bg: string }> = {
+                open_drive: { label: 'OPEN DRIVE', color: '#fb923c', bg: 'rgba(251,146,60,0.1)' },
+                trend:      { label: 'TREND',      color: '#34d399', bg: 'rgba(52,211,153,0.1)' },
+                range:      { label: 'RANGE',      color: '#60a5fa', bg: 'rgba(96,165,250,0.1)' },
+                reversal:   { label: 'REVERSAL',   color: '#f87171', bg: 'rgba(248,113,113,0.1)' },
+                expansion:  { label: 'EXPANSION',  color: '#c084fc', bg: 'rgba(192,132,252,0.1)' },
+                drift:      { label: 'DRIFT',      color: 'rgba(255,255,255,0.4)', bg: 'rgba(255,255,255,0.04)' },
+              };
+              const rc = simulatorState.regimeContext.current;
+              const cfg = rCfg[rc.regime] ?? rCfg.drift;
+              return (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '0.06em', color: cfg.color, background: cfg.bg, border: `1px solid ${cfg.color}40`, borderRadius: 3, padding: '1px 6px' }}>
+                    {cfg.label}
+                  </span>
+                  <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>{Math.round(rc.confidence)}%</span>
+                </div>
+              );
+            })()}
+            {/* Route strip — compact current route summary */}
+            {pathPrediction?.primaryRoute && (() => {
+              const r = pathPrediction.primaryRoute;
+              const dirColor = r.direction === 'up' ? '#34d399' : '#f87171';
+              const dirArrow = r.direction === 'up' ? '\u2191' : '\u2193';
+              return (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '4px 0' }}>
+                  <span style={{ fontSize: 10, fontWeight: 800, color: dirColor }}>{dirArrow}</span>
+                  <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.5)' }}>
+                    {r.fromLevel?.type?.replace(/_/g, ' ') ?? 'Current'} @ {r.fromLevel?.price?.toFixed(2) ?? '—'}
+                  </span>
+                  <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.25)' }}>{'\u2192'}</span>
+                  <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.5)' }}>
+                    {r.toLevel?.type?.replace(/_/g, ' ') ?? 'Target'} @ {r.toLevel?.price?.toFixed(2) ?? '—'}
+                  </span>
+                  <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.25)', marginLeft: 'auto' }}>
+                    Q:{Math.round(r.qualityScore ?? 0)} | {r.distancePoints?.toFixed(1) ?? '—'}pts
+                  </span>
+                </div>
+              );
+            })()}
+            {simulatorState?.blockedReason && (
+              <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', fontStyle: 'italic' }}>
+                Engine: {simulatorState.blockedReason}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Level Map tab ── */}
+        {simulatorState?.active && inspectorTab === 'levels' && (
+          <>
+            <LevelMapPanel levelMap={levelMap} />
+            <RoutePanel prediction={pathPrediction} />
+            <WatchPanel watches={watches} />
+            <NewsCalendarPanel newsContext={simulatorState?.newsRiskContext ?? null} />
+            <SessionRegimePanel regimeContext={simulatorState?.regimeContext ?? null} />
+          </>
+        )}
+
+        {/* ── Decisions tab ── */}
+        {simulatorState?.active && inspectorTab === 'decisions' && (
+          <>
+            <CouncilDecisionPanel reviewed={reviewedIntents} />
+            <ReviewedIntentsPanel reviewed={reviewedIntents} />
+          </>
+        )}
+
+        {/* ── Positions tab ── */}
+        {simulatorState?.active && inspectorTab === 'positions' && (
+          <SimulatorPositionsPanel open={simPositions.open} closed={simPositions.closed} orders={simPositions.orders} />
+        )}
+
+        {/* ── Journal tab ── */}
+        {simulatorState?.active && inspectorTab === 'journal' && (
+          <>
+            <JournalPanel
+              entries={journalEntries}
+              filterSymbol={journalFilterSymbol}
+              filterOutcome={journalFilterOutcome}
+              onFilterSymbolChange={setJournalFilterSymbol}
+              onFilterOutcomeChange={setJournalFilterOutcome}
+            />
+            <ExpectancyPanel
+              summary={expectancySummary}
+              dimension={expectancyDimension as any}
+              onDimensionChange={d => { setExpectancyDimension(d); expectancyDimRef.current = d; }}
+            />
+            <CouncilEffectivenessPanel summary={councilEffectSummary} />
+            <AdvisoryTargetPanel summary={advisoryTargetSummary} />
+            <CalibrationPanel suggestions={calibrationSuggestions} />
+          </>
+        )}
+
+        {/* ── Simulator tab (existing content) ── */}
+        {(inspectorTab === 'simulator' || !simulatorState?.active) && <>
+
+        {/* ── Active / Recent Trade Card ── */}
+        {simulatorState?.active && (() => {
+          // Show most recent pending intent or most recent reviewed intent
+          const pending = simulatorState.pendingIntents?.[0];
+          const recent = reviewedIntents[0];
+          if (pending) {
+            return <ShadowTradeCard intent={pending} outcome="pending" />;
+          }
+          if (recent?.intent?.score) {
+            return <ShadowTradeCard intent={recent.intent} outcome={recent.outcome} reason={recent.reason} />;
+          }
+          return null;
+        })()}
+
         {/* ── Connection form ── */}
         {showConnForm && !isConnected && (
           <div style={s.card}>
@@ -960,6 +1153,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
             )}
           </div>
         )}
+        </>}
       </div>
     </div>
   );

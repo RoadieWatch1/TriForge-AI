@@ -37,6 +37,9 @@ import type {
   SetupGrade, TradeDecisionExplanation,
 } from '@triforge/engine';
 import { DEFAULT_PROMOTION_GUARDRAILS, computeSetupGrade, computeAgreementLabel, buildTradeDecisionExplanation } from '@triforge/engine';
+import { TriForgeShadowSimulator } from './shadow/TriForgeShadowSimulator';
+import { TradovateMarketDataAdapter } from './market/TradovateMarketDataAdapter';
+import { MarketSnapshotStore } from './market/MarketSnapshotStore';
 
 // ── Council review callback type ──────────────────────────────────────────────
 // Injected from ipc.ts after engine init. Runs the 3-AI vote in the main process.
@@ -100,6 +103,14 @@ class ShadowTradingControllerClass {
   private _lastEmittedBlock = new Map<string, number>();
   private _strategyConfig: ShadowStrategyConfig = {};
 
+  // ── Level-to-Level Engine (Phase 1 skeleton) ──────────────────────────
+  private readonly _simulator = new TriForgeShadowSimulator();
+  private readonly _marketAdapter = new TradovateMarketDataAdapter();
+  private readonly _snapshotStore = new MarketSnapshotStore();
+
+  /** Get the level-to-level simulator instance (for IPC accessors). */
+  getSimulator(): TriForgeShadowSimulator { return this._simulator; }
+
   // ── Phase 6: Promotion workflow state ─────────────────────────────────────
   private _operationMode: TradingOperationMode = 'shadow';
   private _promotionGuardrails: PromotionGuardrails = { paper: { ...DEFAULT_PROMOTION_GUARDRAILS.paper }, guardedLiveCandidate: { ...DEFAULT_PROMOTION_GUARDRAILS.guardedLiveCandidate } };
@@ -122,6 +133,10 @@ class ShadowTradingControllerClass {
    *  called once after engine init. Without this, no shadow trades will open. */
   setCouncilFn(fn: CouncilReviewFn): void {
     this._councilFn = fn;
+    // Wire the simulator's dependencies
+    this._simulator.setCouncilFn(fn);
+    this._simulator.setProvider(this._marketAdapter);
+    this._marketAdapter.setSnapshotStore(this._snapshotStore);
   }
 
   /** Get the current strategy config (Phase 4). Returns a copy. */
@@ -134,12 +149,14 @@ class ShadowTradingControllerClass {
     this._resetDailyIfNeeded();
     this._state.enabled = true;
     this._state.paused  = false;
+    if (this._strategyConfig.useLevelEngine) this._simulator.activate();
     this._startEvalLoop();
   }
 
   disable(): void {
     this._state.enabled = false;
     this._state.paused  = false;
+    this._simulator.deactivate();
     this._stopEvalLoop();
   }
 
@@ -325,6 +342,18 @@ class ShadowTradingControllerClass {
   private async _evaluateEntry(): Promise<void> {
     // Phase 6: Block new evaluations while a manual confirmation is pending
     if (this._pendingTrade) return;
+
+    // ── Level-to-Level engine path ───────────────────────────────────────────
+    // When useLevelEngine=true, the new simulator is authoritative. It runs
+    // its own analysis pipeline, council review, and simulated execution.
+    // The legacy pipeline below is skipped entirely — no competing entries.
+    if (this._strategyConfig.useLevelEngine) {
+      await this._simulator.evalTick();
+      // The simulator handles everything internally: analysis, council
+      // review, and execution through ShadowOrderEngine. Regardless of
+      // whether it produced a trade or not, the level engine is in charge.
+      return;
+    }
 
     const snap = tradovateService.getLastSnapshot();
 

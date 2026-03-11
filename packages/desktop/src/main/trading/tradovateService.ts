@@ -5,7 +5,7 @@
 // Returned by getTradovateService() — call once after Store is ready.
 
 import type { Store } from '../store';
-import { TradovateClient, type TradovateCredentials, type TradovateAccountState } from './tradovateClient';
+import { TradovateClient, type TradovateCredentials, type TradovateAccountState, type OhlcBar } from './tradovateClient';
 import type { LiveTradeSnapshot } from '@triforge/engine';
 
 const CRED_KEY_USER = 'tradovate.username';
@@ -127,6 +127,12 @@ class TradovateService {
   getLastSnapshot(): LiveTradeSnapshot | null {
     if (!this.activeSymbol) return null;
     return this.client.getSnapshot(this.activeSymbol);
+  }
+
+  /** Return copies of accumulated OHLC bars from the active subscription. */
+  getBars(): { bars1m: OhlcBar[]; bars5m: OhlcBar[]; bars15m: OhlcBar[] } | null {
+    if (!this.activeSymbol || !this.client.isConnected) return null;
+    return this.client.getBars();
   }
 
   // ── Account state (REST) ──────────────────────────────────────────────────────

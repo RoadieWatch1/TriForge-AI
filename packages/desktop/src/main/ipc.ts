@@ -24,6 +24,12 @@ import { NativeIntentRouter } from './nativeIntentRouter';
 import { tradovateService } from './trading/tradovateService';
 import { shadowTradingController } from './trading/shadowTradingController';
 import type { CouncilReviewResult } from './trading/shadowTradingController';
+import { buildCouncilContext } from './trading/council/CouncilTradeReviewContext';
+import { STRUCTURE_AGENT_ROLE, STRUCTURE_AGENT_SYSTEM, buildStructureAgentPrompt } from './trading/council/StructureAgentPrompt';
+import { RISK_AGENT_ROLE, RISK_AGENT_SYSTEM, buildRiskAgentPrompt } from './trading/council/RiskAgentPrompt';
+import { COUNTER_CASE_AGENT_ROLE, COUNTER_CASE_AGENT_SYSTEM, buildCounterCaseAgentPrompt } from './trading/council/CounterCaseAgentPrompt';
+import { computeExpectancy, computeAdvisoryTargetAnalytics, type BucketDimension } from './trading/learning/PerformanceAnalytics';
+import { calibrateWeights } from './trading/learning/SetupWeightCalibrator';
 import { shadowAnalyticsStore } from './trading/shadowAnalyticsStore';
 import { PaperEngine } from './trading/paperEngine';
 import { SensorManager } from './sensors/index';
@@ -3181,6 +3187,144 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     return { ok: true };
   });
 
+  // ── Level-to-Level Simulator State Accessors ───────────────────────────────
+  // Safe to call regardless of useLevelEngine — returns null/empty when inactive.
+
+  ipcMain.handle('trading:levelMap:get', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { levelMap: null, error: lockedError('FINANCE_TRADING') };
+    try {
+      const sim = shadowTradingController.getSimulator();
+      return { levelMap: sim.getLevelMap() ?? null };
+    } catch { return { levelMap: null }; }
+  });
+
+  ipcMain.handle('trading:watches:get', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { watches: [], error: lockedError('FINANCE_TRADING') };
+    try {
+      const sim = shadowTradingController.getSimulator();
+      return { watches: sim.getWatches() };
+    } catch { return { watches: [] }; }
+  });
+
+  ipcMain.handle('trading:pathPrediction:get', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { prediction: null, error: lockedError('FINANCE_TRADING') };
+    try {
+      const sim = shadowTradingController.getSimulator();
+      return { prediction: sim.getPathPrediction() ?? null };
+    } catch { return { prediction: null }; }
+  });
+
+  ipcMain.handle('trading:pendingIntents:get', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { intents: [], error: lockedError('FINANCE_TRADING') };
+    try {
+      const sim = shadowTradingController.getSimulator();
+      return { intents: sim.getPendingIntents() };
+    } catch { return { intents: [] }; }
+  });
+
+  ipcMain.handle('trading:blockedEvaluations:get', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { blocked: [], error: lockedError('FINANCE_TRADING') };
+    try {
+      const sim = shadowTradingController.getSimulator();
+      return { blocked: sim.getBlockedEvaluations() };
+    } catch { return { blocked: [] }; }
+  });
+
+  ipcMain.handle('trading:reviewedIntents:get', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { reviewed: [], error: lockedError('FINANCE_TRADING') };
+    try {
+      const sim = shadowTradingController.getSimulator();
+      // Strip non-serializable fields (OrderResult contains class instances).
+      // Return plain objects only.
+      const reviewed = sim.getReviewedIntents().map(r => ({
+        intent: r.intent,
+        outcome: r.outcome,
+        reviewedAt: r.reviewedAt,
+        reason: r.reason,
+        councilApproved: r.councilResult?.approved ?? null,
+        councilVotes: r.councilResult?.votes ?? null,
+        councilBlockedReason: r.councilResult?.blockedReason ?? null,
+        executionSuccess: r.orderResult?.success ?? null,
+        executionRejectReason: r.orderResult?.rejectReason ?? null,
+      }));
+      return { reviewed };
+    } catch { return { reviewed: [] }; }
+  });
+
+  ipcMain.handle('trading:sessionContext:get', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { session: null, error: lockedError('FINANCE_TRADING') };
+    try {
+      const sim = shadowTradingController.getSimulator();
+      return { session: sim.getSessionContext() ?? null };
+    } catch { return { session: null }; }
+  });
+
+  ipcMain.handle('trading:positionBook:get', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { open: [], closed: [], orders: [], error: lockedError('FINANCE_TRADING') };
+    try {
+      const sim = shadowTradingController.getSimulator();
+      const book = sim.getPositionBook();
+      return {
+        open: book.getOpenPositions(),
+        closed: book.getClosedPositions(),
+        orders: book.getPendingOrders(),
+      };
+    } catch { return { open: [], closed: [], orders: [] }; }
+  });
+
+  ipcMain.handle('trading:simulatorState:get', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { state: null, error: lockedError('FINANCE_TRADING') };
+    try {
+      const sim = shadowTradingController.getSimulator();
+      return { state: sim.getState() };
+    } catch { return { state: null }; }
+  });
+
+  // ── Journal / Analytics IPC Handlers ────────────────────────────────────
+
+  ipcMain.handle('trading:journal:entries', async (_e, opts?: {
+    symbol?: string; since?: number; limit?: number; outcome?: 'win' | 'loss' | 'breakeven';
+  }) => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { entries: [], error: lockedError('FINANCE_TRADING') };
+    try {
+      const sim = shadowTradingController.getSimulator();
+      const entries = sim.getJournalStore().query(opts);
+      return { entries };
+    } catch { return { entries: [] }; }
+  });
+
+  ipcMain.handle('trading:journal:expectancy', async (_e, dimension?: string) => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { summary: null, error: lockedError('FINANCE_TRADING') };
+    try {
+      const sim = shadowTradingController.getSimulator();
+      const entries = sim.getJournalStore().loadAll();
+      const dim = (dimension ?? 'levelType') as BucketDimension;
+      const summary = computeExpectancy(entries, dim);
+      return { summary };
+    } catch { return { summary: null }; }
+  });
+
+  ipcMain.handle('trading:journal:advisoryTargets', async (_e, dimension?: string) => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { summary: null, error: lockedError('FINANCE_TRADING') };
+    try {
+      const sim = shadowTradingController.getSimulator();
+      const entries = sim.getJournalStore().loadAll();
+      const dim = (dimension ?? 'scoreBand') as BucketDimension;
+      const summary = computeAdvisoryTargetAnalytics(entries, dim);
+      return { summary };
+    } catch { return { summary: null }; }
+  });
+
+  ipcMain.handle('trading:journal:weights', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { suggestions: [], error: lockedError('FINANCE_TRADING') };
+    try {
+      const sim = shadowTradingController.getSimulator();
+      const entries = sim.getJournalStore().loadAll();
+      const suggestions = calibrateWeights(entries);
+      return { suggestions };
+    } catch { return { suggestions: [] }; }
+  });
+
   // Load persisted strategy config on startup
   {
     const savedConfig = store.getShadowStrategyConfig();
@@ -3260,15 +3404,31 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   };
 
   function _parseCouncilVote(provider: string, text: string): CouncilVote {
-    const voteLine   = text.match(/VOTE:\s*(TAKE|WAIT|REJECT)/i);
-    const confLine   = text.match(/CONFIDENCE:\s*(\d+)/i);
-    const reasonLine = text.match(/REASON:\s*(.+)/i);
-    return {
-      provider,
-      vote:       (voteLine?.[1]?.toUpperCase() as 'TAKE' | 'WAIT' | 'REJECT') ?? 'WAIT',
-      confidence: confLine ? Math.min(100, Math.max(0, parseInt(confLine[1], 10))) : 50,
-      reason:     reasonLine?.[1]?.trim() ?? 'No reason given.',
-    };
+    // Normalize: strip markdown bold/italic markers, collapse whitespace,
+    // handle ** and __ wrappers around labels that LLMs sometimes add.
+    const cleaned = text
+      .replace(/\*\*/g, '')      // **bold**
+      .replace(/__/g, '')        // __underline__
+      .replace(/\*/g, '')        // *italic*
+      .replace(/^#+\s*/gm, '')   // markdown headers
+      .replace(/`/g, '');        // inline code ticks
+
+    // VOTE — accept TAKE/WAIT/REJECT, tolerant of extra whitespace and colon variants
+    const voteLine = cleaned.match(/VOTE\s*[:=\-]\s*(TAKE|WAIT|REJECT)/i);
+    const vote: 'TAKE' | 'WAIT' | 'REJECT' =
+      (voteLine?.[1]?.toUpperCase() as 'TAKE' | 'WAIT' | 'REJECT') ?? 'WAIT';
+
+    // CONFIDENCE — accept "75", "75%", "75/100", tolerant of extra whitespace
+    const confLine = cleaned.match(/CONFIDENCE\s*[:=\-]\s*(\d+)\s*(?:%|\/\s*100)?/i);
+    const confidence = confLine
+      ? Math.min(100, Math.max(0, parseInt(confLine[1], 10)))
+      : 50;
+
+    // REASON — everything after REASON label to end of line
+    const reasonLine = cleaned.match(/REASON\s*[:=\-]\s*(.+)/i);
+    const reason = reasonLine?.[1]?.trim() ?? 'No reason given.';
+
+    return { provider, vote, confidence, reason };
   }
 
   function _buildTradeVotePrompt(setup: any, snap: any, symbol: string): string {
@@ -3315,17 +3475,48 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       };
     }
 
-    const votePrompt = _buildTradeVotePrompt(setup, snap, symbol);
+    // ── Build prompts: specialized (level engine) or generic (legacy) ──
+    const simulator = shadowTradingController.getSimulator();
+    const currentIntent = simulator.getCurrentReviewIntent();
+    let levelCtx: ReturnType<typeof buildCouncilContext> | null = null;
+    if (currentIntent) {
+      levelCtx = buildCouncilContext(
+        simulator, currentIntent,
+        snap.lastPrice ?? 0,
+        snap.trend5m ?? snap.trend ?? 'unknown',
+        snap.trend15m ?? 'unknown',
+        snap.highOfDay ?? 0,
+        snap.lowOfDay ?? 0,
+      );
+    }
+
+    // Per-seat specialized roles and prompts (level-to-level mode)
+    const LEVEL_ROLES: Record<string, { role: string; system: string; prompt: (ctx: NonNullable<typeof levelCtx>) => string }> = {
+      openai: { role: STRUCTURE_AGENT_ROLE, system: STRUCTURE_AGENT_SYSTEM, prompt: buildStructureAgentPrompt },
+      claude: { role: RISK_AGENT_ROLE, system: RISK_AGENT_SYSTEM, prompt: buildRiskAgentPrompt },
+      grok:   { role: COUNTER_CASE_AGENT_ROLE, system: COUNTER_CASE_AGENT_SYSTEM, prompt: buildCounterCaseAgentPrompt },
+    };
 
     const settled = await Promise.allSettled(
       seatEntries.map(async (seat) => {
-        const councilRole = COUNCIL_ROLES[seat.name];
+        let systemContent: string;
+        let userContent: string;
+
+        if (levelCtx && LEVEL_ROLES[seat.name]) {
+          // Level-to-level specialized prompts
+          const levelRole = LEVEL_ROLES[seat.name];
+          systemContent = levelRole.system;
+          userContent = levelRole.prompt(levelCtx);
+        } else {
+          // Legacy generic prompts
+          const councilRole = COUNCIL_ROLES[seat.name];
+          systemContent = `You are the ${councilRole.role} on the TriForge Trading Council. ${councilRole.instruction} Respond only in the exact format requested.`;
+          userContent = _buildTradeVotePrompt(setup, snap, symbol);
+        }
+
         const msgs = [
-          {
-            role: 'system',
-            content: `You are the ${councilRole.role} on the TriForge Trading Council. ${councilRole.instruction} Respond only in the exact format requested.`,
-          },
-          { role: 'user', content: votePrompt },
+          { role: 'system', content: systemContent },
+          { role: 'user', content: userContent },
         ];
         const text = await seat.provider.chat(msgs as { role: string; content: string }[]);
         return { provider: seat.name, text };

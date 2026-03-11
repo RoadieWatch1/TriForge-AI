@@ -350,6 +350,9 @@ export interface ShadowStrategyConfig {
   maxWarningsAllowed?: number;
   /** Preferred symbols — empty/undefined = all allowed. */
   preferredSymbols?: ShadowSymbol[];
+  /** When true, use the level-to-level engine instead of the legacy pipeline.
+   *  Defaults to false for backward compatibility. */
+  useLevelEngine?: boolean;
 }
 
 // ── Phase 5: Strategy Readiness ──────────────────────────────────────────────

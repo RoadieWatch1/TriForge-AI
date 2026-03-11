@@ -528,6 +528,34 @@ const api = {
       ipcRenderer.invoke('trading:gradeSummary') as Promise<{ summary?: unknown[]; error?: string }>,
     councilValueAdded: () =>
       ipcRenderer.invoke('trading:councilValueAdded') as Promise<{ analysis?: unknown; error?: string }>,
+
+    // Level-to-Level Simulator State
+    levelMapGet: () =>
+      ipcRenderer.invoke('trading:levelMap:get') as Promise<{ levelMap?: unknown; error?: string }>,
+    watchesGet: () =>
+      ipcRenderer.invoke('trading:watches:get') as Promise<{ watches?: unknown[]; error?: string }>,
+    pathPredictionGet: () =>
+      ipcRenderer.invoke('trading:pathPrediction:get') as Promise<{ prediction?: unknown; error?: string }>,
+    pendingIntentsGet: () =>
+      ipcRenderer.invoke('trading:pendingIntents:get') as Promise<{ intents?: unknown[]; error?: string }>,
+    blockedEvaluationsGet: () =>
+      ipcRenderer.invoke('trading:blockedEvaluations:get') as Promise<{ blocked?: unknown[]; error?: string }>,
+    reviewedIntentsGet: () =>
+      ipcRenderer.invoke('trading:reviewedIntents:get') as Promise<{ reviewed?: unknown[]; error?: string }>,
+    sessionContextGet: () =>
+      ipcRenderer.invoke('trading:sessionContext:get') as Promise<{ session?: unknown; error?: string }>,
+    positionBookGet: () =>
+      ipcRenderer.invoke('trading:positionBook:get') as Promise<{ open?: unknown[]; closed?: unknown[]; orders?: unknown[]; error?: string }>,
+    simulatorStateGet: () =>
+      ipcRenderer.invoke('trading:simulatorState:get') as Promise<{ state?: unknown; error?: string }>,
+    journalEntriesGet: (opts?: { symbol?: string; since?: number; limit?: number; outcome?: string }) =>
+      ipcRenderer.invoke('trading:journal:entries', opts) as Promise<{ entries?: unknown[]; error?: string }>,
+    journalExpectancyGet: (dimension?: string) =>
+      ipcRenderer.invoke('trading:journal:expectancy', dimension) as Promise<{ summary?: unknown; error?: string }>,
+    journalWeightsGet: () =>
+      ipcRenderer.invoke('trading:journal:weights') as Promise<{ suggestions?: unknown[]; error?: string }>,
+    journalAdvisoryTargetsGet: (dimension?: string) =>
+      ipcRenderer.invoke('trading:journal:advisoryTargets', dimension) as Promise<{ summary?: unknown; error?: string }>,
   },
 
   // Scheduler (recurring + once jobs)
