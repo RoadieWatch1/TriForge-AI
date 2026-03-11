@@ -132,9 +132,15 @@ export function TradeDesk({ onBack }: { onBack: () => void }) {
   const [paperBalance, setPaperBalance] = useState<number>(10_000);
   const [engineState, setEngineState]   = useState<PaperEngineState | null>(null);
   const [closingId, setClosingId]       = useState<string | null>(null);
+  const [featureLocked, setFeatureLocked] = useState<string | null>(null);
 
   const refreshState = useCallback(() => {
     window.triforge.wallet.paperState().then(res => {
+      if (res.error && typeof res.error === 'string' && res.error.startsWith('FEATURE_LOCKED')) {
+        setFeatureLocked(res.error);
+        return;
+      }
+      setFeatureLocked(null);
       const s = res.state as PaperEngineState | undefined;
       if (s) {
         setEngineState(s);
@@ -249,6 +255,13 @@ export function TradeDesk({ onBack }: { onBack: () => void }) {
           <span style={s.balanceValue}>${paperBalance.toLocaleString()}</span>
         </div>
       </div>
+
+      {/* Feature locked banner */}
+      {featureLocked && (
+        <div style={{ background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)', borderRadius: 6, padding: '12px 16px', marginBottom: 16, fontSize: 12, color: '#f87171', lineHeight: 1.6 }}>
+          Trading features require a Pro subscription. Upgrade in Settings to unlock the Trade Desk.
+        </div>
+      )}
 
       {submitted ? (
         <ConfirmationCard trade={submitted} onNewTrade={handleReset} />
