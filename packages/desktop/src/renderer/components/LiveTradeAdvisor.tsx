@@ -337,7 +337,10 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
       setIsConnected(status.connected);
       setAccountMode(status.accountMode);
       setShadow(shadowState as ShadowAccountState);
-      if (status.connected) startPolling(symbol);
+      const ss = shadowState as ShadowAccountState;
+      // Start polling if Tradovate is connected OR shadow trading is enabled
+      // (simulated data mode still needs polling for simulator state, trades, etc.)
+      if (status.connected || ss.enabled) startPolling(symbol);
       else setSnapshot({ connected: false, accountMode: 'unknown', symbol });
     }).catch(() => {
       setSnapshot({ connected: false, accountMode: 'unknown', symbol });
@@ -403,7 +406,8 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
     setCouncilReview(null);
     // Notify backend so both simulated and Tradovate providers sync to new symbol
     (window.triforge.trading as any).shadowSetSymbol?.(sym);
-    if (isConnected) startPolling(sym);
+    // Restart polling on symbol change (works for both Tradovate and simulated)
+    if (isConnected || shadow?.enabled) startPolling(sym);
   };
 
   // ── Shadow analytics fetch (Phase 3 + 4) ─────────────────────────────────────
@@ -554,8 +558,12 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
     try {
       if (shadow.enabled) {
         await window.triforge.trading.shadowDisable();
+        // Stop polling if Tradovate is also not connected
+        if (!isConnected) stopPolling();
       } else {
         await window.triforge.trading.shadowEnable();
+        // Start polling for simulator state even without Tradovate
+        startPolling(symbol);
       }
       const state = await window.triforge.trading.shadowState();
       setShadow(state as ShadowAccountState);
