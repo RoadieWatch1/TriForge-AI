@@ -381,8 +381,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
     stopPolling();
     const tick = async () => {
       try {
-        const [snapRes, shadowState, acctRes, setupRes, simStateRes, levelMapRes, predRes, watchesRes, reviewedRes, sessionRes, posBookRes, journalRes, expectancyRes, weightsRes, councilEffRes, advisoryTargetRes, mktStateRes, blockedEvalsRes] = await Promise.all([
-          window.triforge.trading.tradovateSnapshot(sym),
+        const [shadowState, acctRes, setupRes, simStateRes, levelMapRes, predRes, watchesRes, reviewedRes, sessionRes, posBookRes, journalRes, expectancyRes, weightsRes, councilEffRes, advisoryTargetRes, mktStateRes, blockedEvalsRes] = await Promise.all([
           window.triforge.trading.shadowState(),
           (window.triforge.trading as any).tradovateAccountState?.() ?? Promise.resolve(null),
           (window.triforge.trading as any).buildTradeLevels?.(sym) ?? Promise.resolve(null),
@@ -401,8 +400,12 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           (window.triforge.trading as any).marketState?.() ?? Promise.resolve(null),
           (window.triforge.trading as any).blockedEvaluationsGet?.() ?? Promise.resolve(null),
         ]);
-        if (snapRes.snapshot) setSnapshot(snapRes.snapshot as LiveSnapshot);
-        if (mktStateRes?.marketState) setMarketState(mktStateRes.marketState as MarketStatePayload);
+        // marketState is the single source of truth for snapshot + bars + source
+        if (mktStateRes?.marketState) {
+          const ms = mktStateRes.marketState as MarketStatePayload;
+          setMarketState(ms);
+          if (ms.snapshot) setSnapshot(ms.snapshot);
+        }
         setShadow(shadowState as ShadowAccountState);
         if (acctRes?.state) setAccountState(acctRes.state as TradovateAccountState);
         if (setupRes?.setup) setProposedSetup(setupRes.setup as ProposedTradeSetup);
