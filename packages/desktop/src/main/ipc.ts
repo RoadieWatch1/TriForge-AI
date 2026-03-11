@@ -8,7 +8,7 @@ import { execSync } from 'child_process';
 import { Store, LedgerEntry, ForgeScore } from './store';
 import { transcribeAudio, textToSpeechStream } from './voice';
 import { validateLicense, loadLicense, deactivateLicense, LEMONSQUEEZY } from './license';
-import { isAtMessageLimit, hasCapability, lockedError, getMemoryLimit, TIERS } from './subscription';
+import { isAtMessageLimit, hasCapability, lockedError, getMemoryLimit, TIERS, tradingTrialStatus } from './subscription';
 import { hashPin, verifyPin, isValidPin } from './auth';
 import { buildSystemPrompt } from './systemPrompt';
 import { getProfile, listProfiles } from './profiles';
@@ -2925,6 +2925,11 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   }) => {
     if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
     return tradovateService.connect(creds);
+  });
+
+  // Trading trial status — always available so UI can show banner.
+  ipcMain.handle('trading:trialStatus', () => {
+    return tradingTrialStatus();
   });
 
   // Always available — user must be able to see and clear connection status.

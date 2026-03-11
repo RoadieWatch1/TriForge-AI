@@ -26,7 +26,38 @@ export type Capability =
 
 // ── Per-tier capability sets ──────────────────────────────────────────────────
 
-const FREE_CAPS: ReadonlySet<Capability> = new Set<Capability>([]);
+// Trading trial: free users get full trading capabilities for 30 days from first launch.
+// After the trial window closes, trading features require Pro tier.
+const TRADING_TRIAL_DAYS = 30;
+const TRADING_TRIAL_START = new Date('2026-03-10T00:00:00Z').getTime(); // v1.17.0 release date
+const TRADING_TRIAL_END   = TRADING_TRIAL_START + TRADING_TRIAL_DAYS * 24 * 60 * 60 * 1000;
+
+const _tradingTrialActive = (): boolean => Date.now() < TRADING_TRIAL_END;
+
+const FREE_CAPS_BASE: Capability[] = [];
+const FREE_CAPS_TRIAL: Capability[] = ['FINANCE_DASHBOARD', 'FINANCE_TRADING'];
+
+function _buildFreeCaps(): ReadonlySet<Capability> {
+  return new Set<Capability>([
+    ...FREE_CAPS_BASE,
+    ...(_tradingTrialActive() ? FREE_CAPS_TRIAL : []),
+  ]);
+}
+
+// Re-evaluated on each capability check via hasCapability()
+let _freeCapsCache: ReadonlySet<Capability> | null = null;
+let _freeCapsCacheTime = 0;
+function _getFreeCaps(): ReadonlySet<Capability> {
+  // Refresh cache every 60 seconds to pick up trial expiry
+  if (!_freeCapsCache || Date.now() - _freeCapsCacheTime > 60_000) {
+    _freeCapsCache = _buildFreeCaps();
+    _freeCapsCacheTime = Date.now();
+  }
+  return _freeCapsCache;
+}
+
+// Static alias for non-trial code paths
+const FREE_CAPS: ReadonlySet<Capability> = _buildFreeCaps();
 
 const PRO_CAPS: ReadonlySet<Capability> = new Set<Capability>([
   'MULTI_PROVIDER',
@@ -65,6 +96,8 @@ export const TIER_CAPABILITIES: Record<Tier, ReadonlySet<Capability>> = {
 
 /** Returns true if the given tier has the given capability. */
 export function hasCapability(cap: Capability, tier: Tier): boolean {
+  // For free tier, use dynamic caps that include time-limited trials
+  if (tier === 'free') return _getFreeCaps().has(cap);
   return TIER_CAPABILITIES[tier].has(cap);
 }
 
@@ -168,4 +201,14 @@ export function messageQuota(used: number, tier: Tier): string {
   const limit = TIERS[tier].maxMessagesPerMonth;
   if (limit === Infinity) return '∞';
   return `${Math.max(0, limit - used)} remaining`;
+}
+
+/** Trading trial status for UI display. */
+export function tradingTrialStatus(): { active: boolean; daysRemaining: number; endsAt: string } {
+  const remaining = Math.max(0, Math.ceil((TRADING_TRIAL_END - Date.now()) / (24 * 60 * 60 * 1000)));
+  return {
+    active: _tradingTrialActive(),
+    daysRemaining: remaining,
+    endsAt: new Date(TRADING_TRIAL_END).toISOString(),
+  };
 }

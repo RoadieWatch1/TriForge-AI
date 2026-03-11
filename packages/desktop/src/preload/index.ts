@@ -442,6 +442,12 @@ const api = {
       sec?: string;
     }) =>
       ipcRenderer.invoke('trading:tradovateConnect', creds) as Promise<{ ok?: boolean; error?: string }>,
+    trialStatus: () =>
+      ipcRenderer.invoke('trading:trialStatus') as Promise<{
+        active: boolean;
+        daysRemaining: number;
+        endsAt: string;
+      }>,
     tradovateStatus: () =>
       ipcRenderer.invoke('trading:tradovateStatus') as Promise<{
         connected: boolean;

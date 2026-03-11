@@ -315,6 +315,9 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
   const [advisoryTargetSummary, setAdvisoryTargetSummary] = useState<any>(null);
   const expectancyDimRef = useRef(expectancyDimension);
 
+  // ── Trading trial ──────────────────────────────────────────────────────────
+  const [trialStatus, setTrialStatus] = useState<{ active: boolean; daysRemaining: number } | null>(null);
+
   // ── Tradovate account + proposed setup ─────────────────────────────────────
   const [accountState, setAccountState]   = useState<TradovateAccountState | null>(null);
   const [proposedSetup, setProposedSetup] = useState<ProposedTradeSetup | null>(null);
@@ -322,6 +325,10 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
   // ── Init ─────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
+    // Load trial status
+    (window.triforge.trading as any).trialStatus?.().then((ts: any) => {
+      if (ts) setTrialStatus(ts);
+    }).catch(() => {});
     // Load initial status
     Promise.all([
       window.triforge.trading.tradovateStatus(),
@@ -612,6 +619,14 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           }
         </div>
       </div>
+
+      {/* ── Trading Trial Banner ── */}
+      {trialStatus?.active && (
+        <div style={s.trialBanner}>
+          Trading features are free for {trialStatus.daysRemaining} more day{trialStatus.daysRemaining !== 1 ? 's' : ''}.
+          All trading capabilities are unlocked during the trial period.
+        </div>
+      )}
 
       <div style={s.disclaimer}>
         No live orders are placed by this feature. Shadow trades use virtual funds only. Always confirm inside Tradovate.
@@ -1886,6 +1901,7 @@ const s: Record<string, React.CSSProperties> = {
   badgeShadow:   { fontSize: 9, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#a78bfa', background: 'rgba(167,139,250,0.1)', border: '1px solid rgba(167,139,250,0.25)', borderRadius: 4, padding: '2px 7px' },
   badgeConn:     { fontSize: 10, fontWeight: 600, border: '1px solid', borderRadius: 4, padding: '2px 8px' },
   headerActions: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 },
+  trialBanner:   { fontSize: 11, color: '#34d399', background: 'rgba(52,211,153,0.08)', border: '1px solid rgba(52,211,153,0.2)', borderRadius: 6, padding: '8px 12px', lineHeight: 1.5, fontWeight: 600 },
   disclaimer:    { fontSize: 11, color: 'rgba(255,255,255,0.3)', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: 6, padding: '8px 12px', marginBottom: 16, lineHeight: 1.5 },
   body:          { display: 'flex', flexDirection: 'column', gap: 14 },
   card:          { background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 10, padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 12 },
