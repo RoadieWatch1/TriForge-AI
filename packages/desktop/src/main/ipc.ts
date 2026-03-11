@@ -2943,6 +2943,11 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     return { snapshot };
   });
 
+  // Unified market state: snapshot + bars + source in one payload.
+  ipcMain.handle('trading:marketState', async () => {
+    return { marketState: shadowTradingController.getMarketState() };
+  });
+
   // Always available — user must be able to disconnect regardless of tier.
   ipcMain.handle('trading:tradovateDisconnect', async () => {
     await tradovateService.forget();

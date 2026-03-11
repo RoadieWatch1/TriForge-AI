@@ -457,6 +457,8 @@ const api = {
       }>,
     tradovateSnapshot: (symbol: string) =>
       ipcRenderer.invoke('trading:tradovateSnapshot', symbol) as Promise<{ snapshot?: unknown }>,
+    marketState: () =>
+      ipcRenderer.invoke('trading:marketState') as Promise<{ marketState?: unknown }>,
     tradovateDisconnect: () =>
       ipcRenderer.invoke('trading:tradovateDisconnect') as Promise<{ ok?: boolean }>,
     tradovateAccountState: () =>

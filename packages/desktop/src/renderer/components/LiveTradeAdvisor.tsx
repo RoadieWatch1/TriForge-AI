@@ -25,8 +25,28 @@ import { ShadowTradeCard } from './trading/ShadowTradeCard';
 import { CouncilDecisionPanel } from './trading/CouncilDecisionPanel';
 import { CouncilEffectivenessPanel } from './trading/CouncilEffectivenessPanel';
 import { AdvisoryTargetPanel } from './trading/AdvisoryTargetPanel';
+import { CandlestickChart } from './trading/CandlestickChart';
+import { MarketDataStrip } from './trading/MarketDataStrip';
+import { PipelineStatusPanel } from './trading/PipelineStatusPanel';
 
 // ── Local type mirrors (engine types, no direct import) ───────────────────────
+
+interface OhlcBar {
+  timestamp: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+interface MarketStatePayload {
+  snapshot: LiveSnapshot | null;
+  bars: { bars1m: OhlcBar[]; bars5m: OhlcBar[]; bars15m: OhlcBar[] } | null;
+  source: 'tradovate' | 'simulated';
+  connected: boolean;
+  symbol: string | null;
+}
 
 type TradeAdviceVerdict = 'buy' | 'wait' | 'skip' | 'reduce_size' | 'missing_confirmation';
 type TradeAdviceConfidence = 'low' | 'medium' | 'high';
@@ -304,6 +324,13 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
   const [simPositions, setSimPositions] = useState<{ open: any[]; closed: any[]; orders: any[] }>({ open: [], closed: [], orders: [] });
   const [simulatorState, setSimulatorState] = useState<any>(null);
 
+  // Chart state
+  const [marketState, setMarketState] = useState<MarketStatePayload | null>(null);
+  const [chartTimeframe, setChartTimeframe] = useState<'1m' | '5m' | '15m'>('5m');
+
+  // Pipeline visibility state
+  const [blockedEvals, setBlockedEvals] = useState<any[]>([]);
+
   // Journal / Analytics state
   const [journalEntries, setJournalEntries] = useState<any[]>([]);
   const [expectancySummary, setExpectancySummary] = useState<any>(null);
@@ -354,7 +381,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
     stopPolling();
     const tick = async () => {
       try {
-        const [snapRes, shadowState, acctRes, setupRes, simStateRes, levelMapRes, predRes, watchesRes, reviewedRes, sessionRes, posBookRes, journalRes, expectancyRes, weightsRes, councilEffRes, advisoryTargetRes] = await Promise.all([
+        const [snapRes, shadowState, acctRes, setupRes, simStateRes, levelMapRes, predRes, watchesRes, reviewedRes, sessionRes, posBookRes, journalRes, expectancyRes, weightsRes, councilEffRes, advisoryTargetRes, mktStateRes, blockedEvalsRes] = await Promise.all([
           window.triforge.trading.tradovateSnapshot(sym),
           window.triforge.trading.shadowState(),
           (window.triforge.trading as any).tradovateAccountState?.() ?? Promise.resolve(null),
@@ -371,8 +398,11 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           (window.triforge.trading as any).journalWeightsGet?.() ?? Promise.resolve(null),
           (window.triforge.trading as any).journalExpectancyGet?.('councilConsensus') ?? Promise.resolve(null),
           (window.triforge.trading as any).journalAdvisoryTargetsGet?.() ?? Promise.resolve(null),
+          (window.triforge.trading as any).marketState?.() ?? Promise.resolve(null),
+          (window.triforge.trading as any).blockedEvaluationsGet?.() ?? Promise.resolve(null),
         ]);
         if (snapRes.snapshot) setSnapshot(snapRes.snapshot as LiveSnapshot);
+        if (mktStateRes?.marketState) setMarketState(mktStateRes.marketState as MarketStatePayload);
         setShadow(shadowState as ShadowAccountState);
         if (acctRes?.state) setAccountState(acctRes.state as TradovateAccountState);
         if (setupRes?.setup) setProposedSetup(setupRes.setup as ProposedTradeSetup);
@@ -390,6 +420,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
         if (weightsRes?.suggestions) setCalibrationSuggestions(weightsRes.suggestions);
         if (councilEffRes?.summary) setCouncilEffectSummary(councilEffRes.summary);
         if (advisoryTargetRes?.summary) setAdvisoryTargetSummary(advisoryTargetRes.summary);
+        if (blockedEvalsRes?.blocked) setBlockedEvals(blockedEvalsRes.blocked);
       } catch { /* ignore */ }
     };
     tick();
@@ -762,12 +793,91 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           </>
         )}
 
-        {/* ── Simulator tab (existing content) ── */}
+        {/* ── Simulator tab (chart-first layout) ── */}
         {(inspectorTab === 'simulator' || !simulatorState?.active) && <>
 
-        {/* ── Active / Recent Trade Card ── */}
+        {/* ── 1. Candlestick Chart + Market Strip ── */}
+        {marketState?.bars ? (
+          <div style={s.card}>
+            <CandlestickChart
+              bars={chartTimeframe === '1m' ? marketState.bars.bars1m : chartTimeframe === '5m' ? marketState.bars.bars5m : marketState.bars.bars15m}
+              timeframe={chartTimeframe}
+              onTimeframeChange={setChartTimeframe}
+              currentPrice={snapshot?.lastPrice}
+              symbol={marketState.symbol ?? symbol}
+              source={marketState.source}
+              feedFreshnessMs={snapshot?.feedFreshnessMs}
+              tradeOverlay={shadow?.openTrades?.[0] ? {
+                entryPrice: shadow.openTrades[0].entryPrice,
+                stopPrice: shadow.openTrades[0].stopPrice,
+                targetPrice: shadow.openTrades[0].targetPrice,
+                side: shadow.openTrades[0].side,
+              } : null}
+            />
+            <MarketDataStrip
+              lastPrice={snapshot?.lastPrice}
+              bidPrice={snapshot?.bidPrice}
+              askPrice={snapshot?.askPrice}
+              highOfDay={snapshot?.highOfDay}
+              lowOfDay={snapshot?.lowOfDay}
+              trend={snapshot?.trend}
+              feedFreshnessMs={snapshot?.feedFreshnessMs}
+              source={marketState.source}
+            />
+          </div>
+        ) : (
+          /* Fallback: text-based market card when no bar data yet */
+          <div style={s.card}>
+            <div style={{ ...s.cardTitle, gap: 8 }}>
+              Live Market — {symbol}
+              {isConnected && snapshot?.lastPrice && <span style={s.liveDot} />}
+              {snapshot?.feedFreshnessMs !== undefined && (
+                <span style={{ fontSize: 9, color: snapshot.feedFreshnessMs > 8000 ? '#f87171' : snapshot.feedFreshnessMs > 4000 ? '#fbbf24' : 'rgba(255,255,255,0.2)', marginLeft: 'auto' }}>
+                  {snapshot.feedFreshnessMs < 1000 ? '<1s' : `${(snapshot.feedFreshnessMs / 1000).toFixed(0)}s`} ago
+                </span>
+              )}
+            </div>
+            {!isConnected ? (
+              <div style={s.statusNote}>
+                <span style={s.statusDot} />
+                {shadow?.enabled
+                  ? 'Running on simulated market data. Connect Tradovate above for live market feed (optional).'
+                  : 'Not connected — rule-based advice works with manual levels. Click Connect Tradovate above to enable live data.'}
+              </div>
+            ) : !snapshot?.lastPrice ? (
+              <div style={s.statusNote}>
+                <span style={{ ...s.statusDot, background: '#fbbf24' }} />
+                Connected — waiting for first price tick on {symbol}. Market may be closed or symbol unsupported.
+              </div>
+            ) : (
+              <div style={s.metricsRow}>
+                <Metric label="Last"  value={snapshot.lastPrice.toFixed(2)} />
+                <Metric label="Bid"   value={snapshot.bidPrice   !== undefined ? snapshot.bidPrice.toFixed(2)   : '—'} dim />
+                <Metric label="Ask"   value={snapshot.askPrice   !== undefined ? snapshot.askPrice.toFixed(2)   : '—'} dim />
+                <Metric label="High"  value={snapshot.highOfDay  !== undefined ? snapshot.highOfDay.toFixed(2)  : '—'} />
+                <Metric label="Low"   value={snapshot.lowOfDay   !== undefined ? snapshot.lowOfDay.toFixed(2)   : '—'} />
+                <Metric label="Trend" value={snapshot.trend ? snapshot.trend.toUpperCase() : '—'} highlight={snapshot.trend === 'up'} dimRed={snapshot.trend === 'down'} />
+              </div>
+            )}
+            {snapshot?.warning && <div style={s.snapshotWarning}>{snapshot.warning}</div>}
+          </div>
+        )}
+
+        {/* ── 2. Pipeline Status (always visible when simulator active) ── */}
+        <PipelineStatusPanel
+          simulatorState={simulatorState}
+          levelMap={levelMap}
+          pathPrediction={pathPrediction}
+          watches={watches}
+          sessionContext={sessionContext}
+          reviewedIntents={reviewedIntents}
+          blockedEvaluations={blockedEvals}
+          snapshot={snapshot}
+          shadow={shadow}
+        />
+
+        {/* ── 3. Active / Recent Trade Card ── */}
         {simulatorState?.active && (() => {
-          // Show most recent pending intent or most recent reviewed intent
           const pending = simulatorState.pendingIntents?.[0];
           const recent = reviewedIntents[0];
           if (pending) {
@@ -779,104 +889,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           return null;
         })()}
 
-        {/* ── Connection form ── */}
-        {showConnForm && !isConnected && (
-          <div style={s.card}>
-            <div style={s.cardTitle}>Connect Tradovate</div>
-            <div style={s.noteBox}>
-              Requires a Tradovate account with API access enabled.{' '}
-              To get your API credentials: log in to Tradovate, go to <strong>Settings &rarr; API Access &rarr; Generate API Key</strong>.{' '}
-              Save the <strong>CID</strong> and <strong>Secret</strong> shown after generation.{' '}
-              Use your <strong>dedicated API password</strong> below (not your regular login password).
-            </div>
-            <div style={s.row}>
-              <Field label="Username"><input style={s.input} value={connCreds.username} onChange={e => setConnCreds(c => ({ ...c, username: e.target.value }))} placeholder="username" autoComplete="off" /></Field>
-              <Field label="API Password"><input style={s.input} type="password" value={connCreds.password} onChange={e => setConnCreds(c => ({ ...c, password: e.target.value }))} placeholder="dedicated API password" /></Field>
-            </div>
-            <div style={s.row}>
-              <Field label="Mode">
-                <div style={s.segmented}>
-                  {(['simulation', 'live'] as const).map(m => (
-                    <button key={m} style={{ ...s.seg, ...(connCreds.accountMode === m ? s.segActive : {}) }} onClick={() => setConnCreds(c => ({ ...c, accountMode: m }))}>
-                      {m === 'simulation' ? 'Simulation' : 'Live'}
-                    </button>
-                  ))}
-                </div>
-              </Field>
-              <Field label="CID"><input style={s.input} value={connCreds.cid} onChange={e => setConnCreds(c => ({ ...c, cid: e.target.value }))} placeholder="e.g. 154" /></Field>
-              <Field label="Secret"><input style={s.input} type="password" value={connCreds.sec} onChange={e => setConnCreds(c => ({ ...c, sec: e.target.value }))} placeholder="API secret key" /></Field>
-            </div>
-            {connError && <div style={s.errorBanner}>{connError}</div>}
-            <div style={s.actions}>
-              <button style={{ ...s.btn, ...s.btnPrimary, opacity: connecting ? 0.5 : 1 }} disabled={connecting} onClick={handleConnect}>
-                {connecting ? 'Connecting...' : 'Connect'}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* ── Tradovate Account Summary ── */}
-        {isConnected && accountState && (
-          <div style={s.card}>
-            <div style={s.cardTitle}>
-              Tradovate Account — {accountState.accountName}
-              <span style={{ ...s.simBadge, marginLeft: 'auto', color: accountState.accountMode === 'live' ? '#f87171' : '#a78bfa' }}>
-                {accountState.accountMode === 'live' ? 'LIVE' : 'SIM'}
-              </span>
-            </div>
-            <div style={s.metricsRow}>
-              <Metric label="Cash"        value={`$${accountState.cashBalance.toFixed(0)}`} />
-              <Metric label="Buying Power" value={`$${accountState.buyingPower.toFixed(0)}`} />
-              <Metric label="Open P/L"    value={`${accountState.openPnl >= 0 ? '+' : ''}$${accountState.openPnl.toFixed(0)}`} highlight={accountState.openPnl > 0} dimRed={accountState.openPnl < 0} />
-              <Metric label="Total P/L"   value={`${accountState.totalPnl >= 0 ? '+' : ''}$${accountState.totalPnl.toFixed(0)}`} highlight={accountState.totalPnl > 0} dimRed={accountState.totalPnl < 0} />
-              <Metric label="Positions"   value={String(accountState.positions.length)} />
-              <Metric label="Orders"      value={String(accountState.workingOrders.length)} />
-            </div>
-            {accountState.positions.length > 0 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 2 }}>
-                <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'rgba(255,255,255,0.25)', marginBottom: 2 }}>Open Positions</div>
-                {accountState.positions.map(p => (
-                  <div key={p.symbol} style={s.acctRow}>
-                    <span style={{ fontWeight: 700, color: p.netPos > 0 ? '#34d399' : '#f87171' }}>{p.netPos > 0 ? '▲' : '▼'} {p.symbol}</span>
-                    <span style={s.acctDetail}>×{Math.abs(p.netPos)} @ {p.avgPrice.toFixed(2)}</span>
-                    <span style={{ ...s.acctDetail, color: p.openPnl >= 0 ? '#34d399' : '#f87171', marginLeft: 'auto' }}>{p.openPnl >= 0 ? '+' : ''}${p.openPnl.toFixed(0)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-            {accountState.workingOrders.length > 0 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 2 }}>
-                <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'rgba(255,255,255,0.25)', marginBottom: 2 }}>Working Orders</div>
-                {accountState.workingOrders.map(o => (
-                  <div key={o.orderId} style={s.acctRow}>
-                    <span style={{ fontWeight: 700, color: o.side === 'Buy' ? '#34d399' : '#f87171' }}>{o.side === 'Buy' ? '▲' : '▼'} {o.symbol}</span>
-                    <span style={s.acctDetail}>{o.orderType} ×{o.qty}{o.limitPrice ? ` @ ${o.limitPrice.toFixed(2)}` : ''}</span>
-                    <span style={{ ...s.acctDetail, marginLeft: 'auto' }}>{o.status}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ── Balance + risk ── */}
-        <div style={s.card}>
-          <div style={s.cardTitle}>Account Settings</div>
-          <div style={s.row}>
-            <Field label="Balance ($)">
-              <input style={s.input} type="number" value={balance} onChange={e => { setBalance(e.target.value); setAdvice(null); }} placeholder="25000" />
-            </Field>
-            <Field label="Risk %">
-              <input style={{ ...s.input, width: 80 }} type="number" min="0.1" max="5" step="0.25" value={riskPct} onChange={e => { setRiskPct(e.target.value); setAdvice(null); }} />
-            </Field>
-            <div style={s.derivedMetric}>
-              <span style={s.derivedLabel}>Max Risk $</span>
-              <span style={s.derivedValue}>${maxRiskDollars.toFixed(0)}</span>
-            </div>
-          </div>
-        </div>
-
-        {/* ── Shadow Trading Mode ── */}
+        {/* ── 3. Shadow Trading Controls ── */}
         <div style={{ ...s.card, borderColor: shadow?.enabled ? 'rgba(167,139,250,0.25)' : 'rgba(255,255,255,0.07)' }}>
           <div style={{ ...s.cardTitle, justifyContent: 'space-between' }}>
             <span style={{ color: shadow?.enabled ? '#a78bfa' : undefined }}>Shadow Trading Mode</span>
@@ -898,7 +911,9 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           </div>
 
           <p style={s.shadowDesc}>
-            Triforge trades beside you using <strong style={{ color: '#a78bfa' }}>virtual funds</strong> — watching live context, applying its own discipline, and showing every move transparently. SIM ONLY. No real orders are placed.
+            {shadow?.enabled
+              ? 'TriForge autonomous sim trading — virtual funds only.'
+              : 'Triforge trades beside you using virtual funds — watching live context, applying its own discipline, and showing every move transparently. SIM ONLY. No real orders are placed.'}
           </p>
 
           {/* Data source notice */}
@@ -974,31 +989,104 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           )}
         </div>
 
-        {/* ── Open shadow positions (Phase 7: CouncilLiveTradeCard) ── */}
-        {shadow?.enabled && shadow.openTrades.length > 0 && shadow.openTrades.map(t => (
-          <CouncilLiveTradeCard key={t.id} trade={t as any} currentPrice={snapshot?.lastPrice} />
-        ))}
-
-        {/* ── User comparison (Phase 7) ── */}
-        {shadow?.enabled && shadow.openTrades.some(t => t.symbol === symbol) && (
-          <UserComparisonPanel matchedTrade={shadow.openTrades.find(t => t.symbol === symbol) as any} />
-        )}
-
-        {/* ── Blocked trade candidates (Phase 7) ── */}
-        {shadow?.enabled && blockedExplanations.length > 0 && (
+        {/* ── 4. Tradovate Account Summary ── */}
+        {isConnected && accountState && (
           <div style={s.card}>
-            <div style={{ ...s.cardTitle, justifyContent: 'space-between' }}>
-              <span>Recent Blocked Candidates <span style={s.simBadge}>SIM</span></span>
-              <button style={{ ...s.btn, ...s.btnGhost, fontSize: 10, padding: '3px 8px' }}
-                onClick={() => setShowBlockedTrades(v => !v)}>
-                {showBlockedTrades ? 'Collapse' : `Show ${blockedExplanations.length}`}
-              </button>
+            <div style={s.cardTitle}>
+              Tradovate Account — {accountState.accountName}
+              <span style={{ ...s.simBadge, marginLeft: 'auto', color: accountState.accountMode === 'live' ? '#f87171' : '#a78bfa' }}>
+                {accountState.accountMode === 'live' ? 'LIVE' : 'SIM'}
+              </span>
             </div>
-            {showBlockedTrades && <BlockedTradeCards explanations={blockedExplanations as any} />}
+            <div style={s.metricsRow}>
+              <Metric label="Cash"        value={`$${accountState.cashBalance.toFixed(0)}`} />
+              <Metric label="Buying Power" value={`$${accountState.buyingPower.toFixed(0)}`} />
+              <Metric label="Open P/L"    value={`${accountState.openPnl >= 0 ? '+' : ''}$${accountState.openPnl.toFixed(0)}`} highlight={accountState.openPnl > 0} dimRed={accountState.openPnl < 0} />
+              <Metric label="Total P/L"   value={`${accountState.totalPnl >= 0 ? '+' : ''}$${accountState.totalPnl.toFixed(0)}`} highlight={accountState.totalPnl > 0} dimRed={accountState.totalPnl < 0} />
+              <Metric label="Positions"   value={String(accountState.positions.length)} />
+              <Metric label="Orders"      value={String(accountState.workingOrders.length)} />
+            </div>
+            {accountState.positions.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 2 }}>
+                <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'rgba(255,255,255,0.25)', marginBottom: 2 }}>Open Positions</div>
+                {accountState.positions.map(p => (
+                  <div key={p.symbol} style={s.acctRow}>
+                    <span style={{ fontWeight: 700, color: p.netPos > 0 ? '#34d399' : '#f87171' }}>{p.netPos > 0 ? '▲' : '▼'} {p.symbol}</span>
+                    <span style={s.acctDetail}>×{Math.abs(p.netPos)} @ {p.avgPrice.toFixed(2)}</span>
+                    <span style={{ ...s.acctDetail, color: p.openPnl >= 0 ? '#34d399' : '#f87171', marginLeft: 'auto' }}>{p.openPnl >= 0 ? '+' : ''}${p.openPnl.toFixed(0)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {accountState.workingOrders.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 2 }}>
+                <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'rgba(255,255,255,0.25)', marginBottom: 2 }}>Working Orders</div>
+                {accountState.workingOrders.map(o => (
+                  <div key={o.orderId} style={s.acctRow}>
+                    <span style={{ fontWeight: 700, color: o.side === 'Buy' ? '#34d399' : '#f87171' }}>{o.side === 'Buy' ? '▲' : '▼'} {o.symbol}</span>
+                    <span style={s.acctDetail}>{o.orderType} ×{o.qty}{o.limitPrice ? ` @ ${o.limitPrice.toFixed(2)}` : ''}</span>
+                    <span style={{ ...s.acctDetail, marginLeft: 'auto' }}>{o.status}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
-        {/* ── Symbol selector (always visible) ── */}
+        {/* ── 5. Connection form ── */}
+        {showConnForm && !isConnected && (
+          <div style={s.card}>
+            <div style={s.cardTitle}>Connect Tradovate</div>
+            <div style={s.noteBox}>
+              Requires a Tradovate account with API access enabled.{' '}
+              To get your API credentials: log in to Tradovate, go to <strong>Settings &rarr; API Access &rarr; Generate API Key</strong>.{' '}
+              Save the <strong>CID</strong> and <strong>Secret</strong> shown after generation.{' '}
+              Use your <strong>dedicated API password</strong> below (not your regular login password).
+            </div>
+            <div style={s.row}>
+              <Field label="Username"><input style={s.input} value={connCreds.username} onChange={e => setConnCreds(c => ({ ...c, username: e.target.value }))} placeholder="username" autoComplete="off" /></Field>
+              <Field label="API Password"><input style={s.input} type="password" value={connCreds.password} onChange={e => setConnCreds(c => ({ ...c, password: e.target.value }))} placeholder="dedicated API password" /></Field>
+            </div>
+            <div style={s.row}>
+              <Field label="Mode">
+                <div style={s.segmented}>
+                  {(['simulation', 'live'] as const).map(m => (
+                    <button key={m} style={{ ...s.seg, ...(connCreds.accountMode === m ? s.segActive : {}) }} onClick={() => setConnCreds(c => ({ ...c, accountMode: m }))}>
+                      {m === 'simulation' ? 'Simulation' : 'Live'}
+                    </button>
+                  ))}
+                </div>
+              </Field>
+              <Field label="CID"><input style={s.input} value={connCreds.cid} onChange={e => setConnCreds(c => ({ ...c, cid: e.target.value }))} placeholder="e.g. 154" /></Field>
+              <Field label="Secret"><input style={s.input} type="password" value={connCreds.sec} onChange={e => setConnCreds(c => ({ ...c, sec: e.target.value }))} placeholder="API secret key" /></Field>
+            </div>
+            {connError && <div style={s.errorBanner}>{connError}</div>}
+            <div style={s.actions}>
+              <button style={{ ...s.btn, ...s.btnPrimary, opacity: connecting ? 0.5 : 1 }} disabled={connecting} onClick={handleConnect}>
+                {connecting ? 'Connecting...' : 'Connect'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── 6. Account Settings ── */}
+        <div style={s.card}>
+          <div style={s.cardTitle}>Account Settings</div>
+          <div style={s.row}>
+            <Field label="Balance ($)">
+              <input style={s.input} type="number" value={balance} onChange={e => { setBalance(e.target.value); setAdvice(null); }} placeholder="25000" />
+            </Field>
+            <Field label="Risk %">
+              <input style={{ ...s.input, width: 80 }} type="number" min="0.1" max="5" step="0.25" value={riskPct} onChange={e => { setRiskPct(e.target.value); setAdvice(null); }} />
+            </Field>
+            <div style={s.derivedMetric}>
+              <span style={s.derivedLabel}>Max Risk $</span>
+              <span style={s.derivedValue}>${maxRiskDollars.toFixed(0)}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* ── 7. Symbol selector / Your Setup ── */}
         <div style={s.card}>
           <div style={s.cardTitle}>{shadow?.enabled ? 'Watched Symbol' : 'Your Setup'}</div>
           <div style={s.row}>
@@ -1007,7 +1095,6 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
                 {SUPPORTED_SYMBOLS.map(sym => <option key={sym} value={sym}>{sym}</option>)}
               </select>
             </Field>
-            {/* Direction, Entry, Stop, Target, Thesis — only for manual advisory mode */}
             {!shadow?.enabled && (
               <Field label="Direction">
                 <div style={s.segmented}>
@@ -1034,7 +1121,17 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           )}
         </div>
 
-        {/* ── Comparison panel (manual mode only — when user has entered levels to compare) ── */}
+        {/* ── 8. Open shadow positions (Phase 7: CouncilLiveTradeCard) ── */}
+        {shadow?.enabled && shadow.openTrades.length > 0 && shadow.openTrades.map(t => (
+          <CouncilLiveTradeCard key={t.id} trade={t as any} currentPrice={snapshot?.lastPrice} />
+        ))}
+
+        {/* ── 9. User comparison (Phase 7) ── */}
+        {shadow?.enabled && shadow.openTrades.some(t => t.symbol === symbol) && (
+          <UserComparisonPanel matchedTrade={shadow.openTrades.find(t => t.symbol === symbol) as any} />
+        )}
+
+        {/* ── Comparison panel (manual mode only) ── */}
         {!shadow?.enabled && shadow?.openTrades?.some(t => t.symbol === symbol) && (entry || stop || target) && (
           <ComparisonPanel
             symbol={symbol}
@@ -1046,54 +1143,19 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           />
         )}
 
-        {/* ── Live market panel ── */}
-        <div style={s.card}>
-          <div style={{ ...s.cardTitle, gap: 8 }}>
-            Live Market — {symbol}
-            {isConnected && snapshot?.lastPrice && <span style={s.liveDot} />}
-            {snapshot?.feedFreshnessMs !== undefined && (
-              <span style={{ fontSize: 9, color: snapshot.feedFreshnessMs > 8000 ? '#f87171' : snapshot.feedFreshnessMs > 4000 ? '#fbbf24' : 'rgba(255,255,255,0.2)', marginLeft: 'auto' }}>
-                {snapshot.feedFreshnessMs < 1000 ? '<1s' : `${(snapshot.feedFreshnessMs / 1000).toFixed(0)}s`} ago
-              </span>
-            )}
+        {/* ── 10. Blocked trade candidates (Phase 7) ── */}
+        {shadow?.enabled && blockedExplanations.length > 0 && (
+          <div style={s.card}>
+            <div style={{ ...s.cardTitle, justifyContent: 'space-between' }}>
+              <span>Recent Blocked Candidates <span style={s.simBadge}>SIM</span></span>
+              <button style={{ ...s.btn, ...s.btnGhost, fontSize: 10, padding: '3px 8px' }}
+                onClick={() => setShowBlockedTrades(v => !v)}>
+                {showBlockedTrades ? 'Collapse' : `Show ${blockedExplanations.length}`}
+              </button>
+            </div>
+            {showBlockedTrades && <BlockedTradeCards explanations={blockedExplanations as any} />}
           </div>
-          {!isConnected ? (
-            <div style={s.statusNote}>
-              <span style={s.statusDot} />
-              {shadow?.enabled
-                ? 'Running on simulated market data. Connect Tradovate above for live market feed (optional).'
-                : 'Not connected — rule-based advice works with manual levels. Click Connect Tradovate above to enable live data.'}
-            </div>
-          ) : !snapshot?.lastPrice ? (
-            <div style={s.statusNote}>
-              <span style={{ ...s.statusDot, background: '#fbbf24' }} />
-              Connected — waiting for first price tick on {symbol}. Market may be closed or symbol unsupported.
-            </div>
-          ) : snapshot.feedFreshnessMs !== undefined && snapshot.feedFreshnessMs > 8000 ? (
-            <>
-              <div style={{ ...s.statusNote, color: '#f87171' }}>
-                <span style={{ ...s.statusDot, background: '#f87171' }} />
-                Feed stale ({(snapshot.feedFreshnessMs / 1000).toFixed(0)}s) — last known price shown. Advice may be outdated.
-              </div>
-              <div style={s.metricsRow}>
-                <Metric label="Last"  value={snapshot.lastPrice.toFixed(2)} dim />
-                <Metric label="High"  value={snapshot.highOfDay  !== undefined ? snapshot.highOfDay.toFixed(2)  : '—'} dim />
-                <Metric label="Low"   value={snapshot.lowOfDay   !== undefined ? snapshot.lowOfDay.toFixed(2)   : '—'} dim />
-                <Metric label="Trend" value={snapshot.trend ? snapshot.trend.toUpperCase() : '—'} dim />
-              </div>
-            </>
-          ) : (
-            <div style={s.metricsRow}>
-              <Metric label="Last"  value={snapshot.lastPrice.toFixed(2)} />
-              <Metric label="Bid"   value={snapshot.bidPrice   !== undefined ? snapshot.bidPrice.toFixed(2)   : '—'} dim />
-              <Metric label="Ask"   value={snapshot.askPrice   !== undefined ? snapshot.askPrice.toFixed(2)   : '—'} dim />
-              <Metric label="High"  value={snapshot.highOfDay  !== undefined ? snapshot.highOfDay.toFixed(2)  : '—'} />
-              <Metric label="Low"   value={snapshot.lowOfDay   !== undefined ? snapshot.lowOfDay.toFixed(2)   : '—'} />
-              <Metric label="Trend" value={snapshot.trend ? snapshot.trend.toUpperCase() : '—'} highlight={snapshot.trend === 'up'} dimRed={snapshot.trend === 'down'} />
-            </div>
-          )}
-          {snapshot?.warning && <div style={s.snapshotWarning}>{snapshot.warning}</div>}
-        </div>
+        )}
 
         {/* ── Proposed setup from engine (manual mode only) ── */}
         {!shadow?.enabled && proposedSetup && proposedSetup.setupType !== 'none' && (
@@ -1134,7 +1196,6 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
         {/* ── Manual advisory controls (hidden when shadow trading is active) ── */}
         {!shadow?.enabled && (
           <>
-            {/* ── Get advice ── */}
             <div style={s.actions}>
               <button
                 style={{ ...s.btn, ...s.btnPrimary, opacity: adviceLoading ? 0.5 : 1, minWidth: 160 }}
@@ -1144,8 +1205,6 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
                 {adviceLoading ? 'Analyzing...' : 'Get Fast Verdict'}
               </button>
             </div>
-
-            {/* ── Advice result ── */}
             {advice && (
               <VerdictCard
                 advice={advice}
@@ -1162,7 +1221,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           </>
         )}
 
-        {/* ── Shadow trade history ── */}
+        {/* ── 11. Shadow trade history ── */}
         {shadow?.enabled && shadow.closedTrades.length > 0 && (
           <div style={s.card}>
             <div style={{ ...s.cardTitle, justifyContent: 'space-between' }}>
@@ -1182,7 +1241,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           </div>
         )}
 
-        {/* ── Shadow Analytics (Phase 3) ── */}
+        {/* ── 12. Shadow Analytics (Phase 3) ── */}
         {shadow?.enabled && shadow.closedTrades.length >= 3 && (
           <div style={s.card}>
             <div style={{ ...s.cardTitle, justifyContent: 'space-between' }}>

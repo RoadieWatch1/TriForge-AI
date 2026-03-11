@@ -131,6 +131,21 @@ class ShadowTradingControllerClass {
   /** Get the level-to-level simulator instance (for IPC accessors). */
   getSimulator(): TriForgeShadowSimulator { return this._simulator; }
 
+  /** Get OHLC bars from the active market data provider. */
+  getBars() { return this._getActiveProvider().getBars(); }
+
+  /** Unified market state: snapshot + bars + source in one payload. */
+  getMarketState() {
+    const provider = this._getActiveProvider();
+    return {
+      snapshot: provider.getSnapshot(),
+      bars: provider.getBars(),
+      source: this._marketAdapter.isConnected() ? 'tradovate' as const : 'simulated' as const,
+      connected: provider.isConnected(),
+      symbol: provider.activeSymbol(),
+    };
+  }
+
   // ── Phase 6: Promotion workflow state ─────────────────────────────────────
   private _operationMode: TradingOperationMode = 'shadow';
   private _promotionGuardrails: PromotionGuardrails = { paper: { ...DEFAULT_PROMOTION_GUARDRAILS.paper }, guardedLiveCandidate: { ...DEFAULT_PROMOTION_GUARDRAILS.guardedLiveCandidate } };
