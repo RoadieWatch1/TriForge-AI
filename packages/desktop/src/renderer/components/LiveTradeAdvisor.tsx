@@ -886,6 +886,14 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
             Triforge trades beside you using <strong style={{ color: '#a78bfa' }}>virtual funds</strong> — watching live context, applying its own discipline, and showing every move transparently. SIM ONLY. No real orders are placed.
           </p>
 
+          {/* Connection requirement notice */}
+          {!isConnected && (
+            <div style={{ background: 'rgba(96,165,250,0.08)', border: '1px solid rgba(96,165,250,0.2)', borderRadius: 6, padding: '10px 14px', fontSize: 11, color: '#60a5fa', lineHeight: 1.6 }}>
+              <strong>Tradovate connection required.</strong> Shadow trading needs real-time market data to detect levels, score setups, and take trades.
+              Click <strong>Connect Tradovate</strong> above to start.
+            </div>
+          )}
+
           {shadow?.enabled && (
             <>
               {/* Shadow account stats */}
@@ -975,44 +983,51 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           </div>
         )}
 
-        {/* ── Symbol + setup ── */}
+        {/* ── Symbol selector (always visible) ── */}
         <div style={s.card}>
-          <div style={s.cardTitle}>Your Setup</div>
+          <div style={s.cardTitle}>{shadow?.enabled ? 'Watched Symbol' : 'Your Setup'}</div>
           <div style={s.row}>
             <Field label="Symbol">
               <select style={s.select} value={symbol} onChange={e => handleSymbolChange(e.target.value)}>
                 {SUPPORTED_SYMBOLS.map(sym => <option key={sym} value={sym}>{sym}</option>)}
               </select>
             </Field>
-            <Field label="Direction">
-              <div style={s.segmented}>
-                {(['long', 'short'] as const).map(d => (
-                  <button key={d} style={{ ...s.seg, ...(side === d ? (d === 'long' ? s.segLong : s.segShort) : {}) }} onClick={() => { setSide(d); setAdvice(null); }}>
-                    {d === 'long' ? '▲ Long' : '▼ Short'}
-                  </button>
-                ))}
+            {/* Direction, Entry, Stop, Target, Thesis — only for manual advisory mode */}
+            {!shadow?.enabled && (
+              <Field label="Direction">
+                <div style={s.segmented}>
+                  {(['long', 'short'] as const).map(d => (
+                    <button key={d} style={{ ...s.seg, ...(side === d ? (d === 'long' ? s.segLong : s.segShort) : {}) }} onClick={() => { setSide(d); setAdvice(null); }}>
+                      {d === 'long' ? '▲ Long' : '▼ Short'}
+                    </button>
+                  ))}
+                </div>
+              </Field>
+            )}
+          </div>
+          {!shadow?.enabled && (
+            <>
+              <div style={s.row}>
+                <Field label="Entry"><input style={s.input} type="number" placeholder="0.00" value={entry} onChange={e => { setEntry(e.target.value); setAdvice(null); }} /></Field>
+                <Field label="Stop"><input style={s.input} type="number" placeholder="0.00" value={stop} onChange={e => { setStop(e.target.value); setAdvice(null); }} /></Field>
+                <Field label="Target"><input style={s.input} type="number" placeholder="0.00" value={target} onChange={e => { setTarget(e.target.value); setAdvice(null); }} /></Field>
               </div>
-            </Field>
-          </div>
-          <div style={s.row}>
-            <Field label="Entry"><input style={s.input} type="number" placeholder="0.00" value={entry} onChange={e => { setEntry(e.target.value); setAdvice(null); }} /></Field>
-            <Field label="Stop"><input style={s.input} type="number" placeholder="0.00" value={stop} onChange={e => { setStop(e.target.value); setAdvice(null); }} /></Field>
-            <Field label="Target"><input style={s.input} type="number" placeholder="0.00" value={target} onChange={e => { setTarget(e.target.value); setAdvice(null); }} /></Field>
-          </div>
-          <Field label="Thesis">
-            <textarea style={s.textarea} rows={2} placeholder="Entry catalyst, structure, invalidation..." value={thesis} onChange={e => { setThesis(e.target.value); setAdvice(null); }} />
-          </Field>
+              <Field label="Thesis">
+                <textarea style={s.textarea} rows={2} placeholder="Entry catalyst, structure, invalidation..." value={thesis} onChange={e => { setThesis(e.target.value); setAdvice(null); }} />
+              </Field>
+            </>
+          )}
         </div>
 
-        {/* ── Comparison panel ── */}
-        {shadow?.enabled && shadow.openTrades.some(t => t.symbol === symbol) && (entry || stop || target) && (
+        {/* ── Comparison panel (manual mode only — when user has entered levels to compare) ── */}
+        {!shadow?.enabled && shadow?.openTrades?.some(t => t.symbol === symbol) && (entry || stop || target) && (
           <ComparisonPanel
             symbol={symbol}
             userSide={side}
             userEntry={parseFloat(entry) || undefined}
             userStop={parseFloat(stop) || undefined}
             userTarget={parseFloat(target) || undefined}
-            shadowTrade={shadow.openTrades.find(t => t.symbol === symbol)!}
+            shadowTrade={shadow!.openTrades.find(t => t.symbol === symbol)!}
           />
         )}
 
@@ -1063,8 +1078,8 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           {snapshot?.warning && <div style={s.snapshotWarning}>{snapshot.warning}</div>}
         </div>
 
-        {/* ── Proposed setup from engine ── */}
-        {proposedSetup && proposedSetup.setupType !== 'none' && (
+        {/* ── Proposed setup from engine (manual mode only) ── */}
+        {!shadow?.enabled && proposedSetup && proposedSetup.setupType !== 'none' && (
           <div style={{ ...s.card, borderColor: 'rgba(96,165,250,0.2)' }}>
             <div style={{ ...s.cardTitle, justifyContent: 'space-between' }}>
               <span style={{ color: '#60a5fa' }}>Proposed Setup — {symbol}</span>
@@ -1099,30 +1114,35 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           </div>
         )}
 
-        {/* ── Get advice ── */}
-        <div style={s.actions}>
-          <button
-            style={{ ...s.btn, ...s.btnPrimary, opacity: adviceLoading ? 0.5 : 1, minWidth: 160 }}
-            disabled={adviceLoading}
-            onClick={handleGetAdvice}
-          >
-            {adviceLoading ? 'Analyzing...' : 'Get Fast Verdict'}
-          </button>
-        </div>
+        {/* ── Manual advisory controls (hidden when shadow trading is active) ── */}
+        {!shadow?.enabled && (
+          <>
+            {/* ── Get advice ── */}
+            <div style={s.actions}>
+              <button
+                style={{ ...s.btn, ...s.btnPrimary, opacity: adviceLoading ? 0.5 : 1, minWidth: 160 }}
+                disabled={adviceLoading}
+                onClick={handleGetAdvice}
+              >
+                {adviceLoading ? 'Analyzing...' : 'Get Fast Verdict'}
+              </button>
+            </div>
 
-        {/* ── Advice result ── */}
-        {advice && (
-          <VerdictCard
-            advice={advice}
-            onCouncilReview={handleCouncilReview}
-            councilLoading={councilLoading}
-          />
-        )}
-        {councilReview && (
-          <div style={s.card}>
-            <div style={s.cardTitle}>Council Review</div>
-            <div style={s.councilText}>{councilReview}</div>
-          </div>
+            {/* ── Advice result ── */}
+            {advice && (
+              <VerdictCard
+                advice={advice}
+                onCouncilReview={handleCouncilReview}
+                councilLoading={councilLoading}
+              />
+            )}
+            {councilReview && (
+              <div style={s.card}>
+                <div style={s.cardTitle}>Council Review</div>
+                <div style={s.councilText}>{councilReview}</div>
+              </div>
+            )}
+          </>
         )}
 
         {/* ── Shadow trade history ── */}
