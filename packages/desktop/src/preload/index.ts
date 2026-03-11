@@ -492,6 +492,8 @@ const api = {
       ipcRenderer.invoke('trading:shadowFlatten') as Promise<{ ok?: boolean }>,
     shadowUpdateSettings: (settings: unknown) =>
       ipcRenderer.invoke('trading:shadowUpdateSettings', settings) as Promise<{ ok?: boolean }>,
+    shadowSetSymbol: (symbol: string) =>
+      ipcRenderer.invoke('trading:shadowSetSymbol', symbol) as Promise<{ ok?: boolean }>,
     // Phase 3: Shadow Analytics
     shadowAnalyticsSummary: () =>
       ipcRenderer.invoke('trading:shadowAnalyticsSummary') as Promise<{ summary?: unknown; error?: string }>,

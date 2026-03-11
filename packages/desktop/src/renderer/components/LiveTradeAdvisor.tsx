@@ -401,6 +401,8 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
     setSymbol(sym);
     setAdvice(null);
     setCouncilReview(null);
+    // Notify backend so both simulated and Tradovate providers sync to new symbol
+    (window.triforge.trading as any).shadowSetSymbol?.(sym);
     if (isConnected) startPolling(sym);
   };
 
@@ -597,6 +599,11 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           <div style={s.badges}>
             <span style={s.badgeAdvisory}>Advisory Only</span>
             {shadow?.enabled && <span style={s.badgeShadow}>Shadow Trading Active</span>}
+            {shadow?.enabled && (shadow as any).isSimulated && (
+              <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' as const, color: '#a78bfa', background: 'rgba(167,139,250,0.1)', border: '1px solid rgba(167,139,250,0.25)', borderRadius: 4, padding: '2px 7px' }}>
+                Simulated Data
+              </span>
+            )}
             {promotionStatus && promotionStatus.currentMode === 'paper' && (
               <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' as const, color: '#3b82f6', background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.25)', borderRadius: 4, padding: '2px 7px' }}>
                 Paper (Simulated)
@@ -886,11 +893,11 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
             Triforge trades beside you using <strong style={{ color: '#a78bfa' }}>virtual funds</strong> — watching live context, applying its own discipline, and showing every move transparently. SIM ONLY. No real orders are placed.
           </p>
 
-          {/* Connection requirement notice */}
-          {!isConnected && (
-            <div style={{ background: 'rgba(96,165,250,0.08)', border: '1px solid rgba(96,165,250,0.2)', borderRadius: 6, padding: '10px 14px', fontSize: 11, color: '#60a5fa', lineHeight: 1.6 }}>
-              <strong>Tradovate connection required.</strong> Shadow trading needs real-time market data to detect levels, score setups, and take trades.
-              Click <strong>Connect Tradovate</strong> above to start.
+          {/* Data source notice */}
+          {shadow?.enabled && !isConnected && (
+            <div style={{ background: 'rgba(167,139,250,0.08)', border: '1px solid rgba(167,139,250,0.2)', borderRadius: 6, padding: '10px 14px', fontSize: 11, color: '#a78bfa', lineHeight: 1.6 }}>
+              <strong>Simulated Market Data</strong> — TriForge is generating realistic price action for practice trading.
+              Connect Tradovate above for live market data (optional).
             </div>
           )}
 
@@ -1045,7 +1052,9 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           {!isConnected ? (
             <div style={s.statusNote}>
               <span style={s.statusDot} />
-              Not connected — rule-based advice works with manual levels. Click <strong>Connect Tradovate</strong> above to enable live data.
+              {shadow?.enabled
+                ? 'Running on simulated market data. Connect Tradovate above for live market feed (optional).'
+                : 'Not connected — rule-based advice works with manual levels. Click Connect Tradovate above to enable live data.'}
             </div>
           ) : !snapshot?.lastPrice ? (
             <div style={s.statusNote}>

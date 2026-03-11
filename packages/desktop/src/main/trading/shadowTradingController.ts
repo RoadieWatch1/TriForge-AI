@@ -5,9 +5,17 @@
 //
 // Architecture:
 //   - Runs an eval loop every EVAL_INTERVAL_MS in the main process.
-//   - Gets live price data from tradovateService (already connected).
+//   - Gets market data from the active provider (Tradovate if connected,
+//     SimulatedMarketDataProvider otherwise).
 //   - Calls buildLiveTradeAdvice (pure rule engine) to validate setups.
 //   - Manages a shadow account: virtual balance, open/closed positions, daily limits.
+//
+// Provider-switch note (v1):
+//   When switching between simulated and Tradovate mid-session, existing open
+//   positions in ShadowPositionBook are preserved. The new price source becomes
+//   authoritative for mark-to-market and exit triggers. Positions entered at a
+//   simulated price may be exited at a real price (or vice versa). No seamless
+//   continuity is guaranteed across provider switches.
 //
 // Autonomous setup generation (v1):
 //   - Long  when trend='up':   entry=lastPrice, stop=entry−N, target=entry+2N  (2:1 R:R)
@@ -39,6 +47,8 @@ import type {
 import { DEFAULT_PROMOTION_GUARDRAILS, computeSetupGrade, computeAgreementLabel, buildTradeDecisionExplanation } from '@triforge/engine';
 import { TriForgeShadowSimulator } from './shadow/TriForgeShadowSimulator';
 import { TradovateMarketDataAdapter } from './market/TradovateMarketDataAdapter';
+import { SimulatedMarketDataProvider } from './market/SimulatedMarketDataProvider';
+import type { IMarketDataProvider } from './market/MarketDataProvider';
 import { MarketSnapshotStore } from './market/MarketSnapshotStore';
 
 // ── Council review callback type ──────────────────────────────────────────────
@@ -106,7 +116,17 @@ class ShadowTradingControllerClass {
   // ── Level-to-Level Engine (Phase 1 skeleton) ──────────────────────────
   private readonly _simulator = new TriForgeShadowSimulator();
   private readonly _marketAdapter = new TradovateMarketDataAdapter();
+  private readonly _simulatedAdapter = new SimulatedMarketDataProvider();
   private readonly _snapshotStore = new MarketSnapshotStore();
+
+  /**
+   * Returns the active market data provider.
+   * Prefers Tradovate if connected; falls back to simulated provider.
+   */
+  private _getActiveProvider(): IMarketDataProvider {
+    if (this._marketAdapter.isConnected()) return this._marketAdapter;
+    return this._simulatedAdapter;
+  }
 
   /** Get the level-to-level simulator instance (for IPC accessors). */
   getSimulator(): TriForgeShadowSimulator { return this._simulator; }
@@ -135,7 +155,7 @@ class ShadowTradingControllerClass {
     this._councilFn = fn;
     // Wire the simulator's dependencies
     this._simulator.setCouncilFn(fn);
-    this._simulator.setProvider(this._marketAdapter);
+    this._simulator.setProvider(this._getActiveProvider());
     this._marketAdapter.setSnapshotStore(this._snapshotStore);
   }
 
@@ -149,6 +169,23 @@ class ShadowTradingControllerClass {
     this._resetDailyIfNeeded();
     this._state.enabled = true;
     this._state.paused  = false;
+
+    // If Tradovate is not connected, force level engine on — the legacy
+    // pipeline hardcodes tradovateService calls and cannot use the simulated
+    // provider. The level engine path uses the IMarketDataProvider interface.
+    if (!this._marketAdapter.isConnected() && !this._strategyConfig.useLevelEngine) {
+      this._strategyConfig = { ...this._strategyConfig, useLevelEngine: true };
+    }
+
+    // Subscribe simulated provider to the active symbol (Tradovate symbol if
+    // available, otherwise default to MNQ for micro-contract affordability)
+    const tvSymbol = tradovateService.status().symbol;
+    const sym = tvSymbol ?? 'MNQ';
+    this._simulatedAdapter.subscribe(sym);
+
+    // Set the correct provider based on current connection state
+    this._simulator.setProvider(this._getActiveProvider());
+
     if (this._strategyConfig.useLevelEngine) this._simulator.activate();
     this._startEvalLoop();
   }
@@ -189,6 +226,18 @@ class ShadowTradingControllerClass {
     this._state.settings = { ...this._state.settings, ...partial };
   }
 
+  /**
+   * Centralized symbol change — updates both simulated and Tradovate providers.
+   * Same-symbol guard: does nothing if both providers are already on this symbol.
+   */
+  setActiveSymbol(symbol: string): void {
+    const simSame = this._simulatedAdapter.activeSymbol() === symbol;
+    const tvSame = this._marketAdapter.activeSymbol() === symbol;
+    if (simSame && tvSame) return;
+    if (!simSame) this._simulatedAdapter.subscribe(symbol);
+    if (!tvSame) this._marketAdapter.subscribe(symbol);
+  }
+
   getState(): ShadowAccountState {
     this._updateUnrealizedPnl();
     return JSON.parse(JSON.stringify(this._state)) as ShadowAccountState;
@@ -196,7 +245,9 @@ class ShadowTradingControllerClass {
 
   /** Force-close all open trades at current price (e.g., end of session). */
   flattenAll(): void {
-    const snap = tradovateService.getLastSnapshot();
+    // Use active provider price — works with both Tradovate and simulated data
+    const provider = this._getActiveProvider();
+    const snap = provider.getSnapshot();
     const price = snap?.lastPrice;
     for (const t of [...this._state.openTrades]) {
       this._closeTrade(t, price ?? t.entryPrice, 'manual');
@@ -327,7 +378,14 @@ class ShadowTradingControllerClass {
   private async _evalTick(): Promise<void> {
     this._resetDailyIfNeeded();
 
-    // 1. Check existing open positions first
+    // Re-check active provider each tick — Tradovate may have connected or
+    // disconnected mid-session. The new price source becomes authoritative
+    // for ongoing mark-to-market and exit triggers on existing positions.
+    this._simulator.setProvider(this._getActiveProvider());
+
+    // 1. Check existing open positions first (legacy path — uses Tradovate
+    //    snapshot directly; when level engine is active, exits are handled
+    //    by TriForgeShadowSimulator._checkExits() instead)
     const snap = tradovateService.getLastSnapshot();
     if (snap?.lastPrice !== undefined) {
       this._checkExitsOnSnapshot(snap);
@@ -753,7 +811,9 @@ class ShadowTradingControllerClass {
   // ── Unrealized P/L update ────────────────────────────────────────────────────
 
   private _updateUnrealizedPnl(): void {
-    const snap = tradovateService.getLastSnapshot();
+    // Use active provider price — works with both Tradovate and simulated data
+    const provider = this._getActiveProvider();
+    const snap = provider.getSnapshot();
     if (!snap?.lastPrice) return;
     const price = snap.lastPrice;
     for (const trade of this._state.openTrades) {

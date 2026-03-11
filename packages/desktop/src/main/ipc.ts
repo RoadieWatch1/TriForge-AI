@@ -2981,8 +2981,10 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   // ── Shadow Trading ────────────────────────────────────────────────────────────
 
   ipcMain.handle('trading:shadowState', async () => {
-    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return shadowTradingController.getState();
-    return shadowTradingController.getState();
+    const state = shadowTradingController.getState();
+    // Attach isSimulated flag so the UI knows which data source is active
+    const isSimulated = !tradovateService.status().connected && state.enabled;
+    return { ...state, isSimulated };
   });
 
   ipcMain.handle('trading:shadowEnable', async () => {
@@ -3018,6 +3020,12 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   ipcMain.handle('trading:shadowFlatten', async () => {
     if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
     shadowTradingController.flattenAll();
+    return { ok: true };
+  });
+
+  ipcMain.handle('trading:shadowSetSymbol', async (_e, symbol: string) => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { error: lockedError('FINANCE_TRADING') };
+    shadowTradingController.setActiveSymbol(symbol);
     return { ok: true };
   });
 
