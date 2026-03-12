@@ -1,7 +1,8 @@
 // ── CandlestickChart.tsx ─────────────────────────────────────────────────────
 //
 // Canvas-based candlestick chart with volume histogram, price axis,
-// time axis, current price line, and trade level overlays.
+// time axis, current price line, trade level overlays, crosshair,
+// hover OHLC HUD, level map overlays, and event markers.
 // No external dependencies — pure HTML5 Canvas rendering.
 
 import React, { useRef, useState, useEffect, useCallback } from 'react';
@@ -24,6 +25,20 @@ interface TradeLevelOverlay {
   side: 'long' | 'short';
 }
 
+interface ChartLevel {
+  price: number;
+  type: string;
+  strength: number;
+  grade?: string;
+}
+
+interface ChartEvent {
+  timestamp: number;
+  type: 'approved' | 'rejected';
+  side?: string;
+  price?: number;
+}
+
 interface CandlestickChartProps {
   bars: OhlcBar[];
   timeframe: '1m' | '5m' | '15m';
@@ -33,6 +48,8 @@ interface CandlestickChartProps {
   source?: 'tradovate' | 'simulated';
   feedFreshnessMs?: number;
   tradeOverlay?: TradeLevelOverlay | null;
+  levels?: ChartLevel[];
+  events?: ChartEvent[];
   height?: number;
 }
 
@@ -63,6 +80,12 @@ const COL = {
   badge:      'rgba(255,255,255,0.06)',
   badgeText:  'rgba(255,255,255,0.35)',
   noData:     'rgba(255,255,255,0.15)',
+  crosshair:  'rgba(255,255,255,0.15)',
+  hudBg:      'rgba(0,0,0,0.75)',
+  hudText:    'rgba(255,255,255,0.6)',
+  levelDemand:'rgba(52,211,153,0.18)',
+  levelSupply:'rgba(248,113,113,0.18)',
+  levelOther: 'rgba(96,165,250,0.15)',
 };
 
 // ── Drawing helpers ─────────────────────────────────────────────────────────
@@ -110,6 +133,50 @@ function niceStep(range: number, steps: number): number {
   return nice * mag;
 }
 
+function triangle(ctx: CanvasRenderingContext2D, cx: number, cy: number, size: number, up: boolean, color: string) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  if (up) {
+    ctx.moveTo(cx, cy - size);
+    ctx.lineTo(cx - size * 0.7, cy + size * 0.4);
+    ctx.lineTo(cx + size * 0.7, cy + size * 0.4);
+  } else {
+    ctx.moveTo(cx, cy + size);
+    ctx.lineTo(cx - size * 0.7, cy - size * 0.4);
+    ctx.lineTo(cx + size * 0.7, cy - size * 0.4);
+  }
+  ctx.closePath();
+  ctx.fill();
+}
+
+/** Find nearest visible bar index for a given timestamp. */
+function nearestBarIdx(visible: OhlcBar[], ts: number): number | null {
+  if (visible.length === 0 || !ts) return null;
+  let bestIdx = 0;
+  let bestDist = Math.abs(visible[0].timestamp - ts);
+  for (let i = 1; i < visible.length; i++) {
+    const d = Math.abs(visible[i].timestamp - ts);
+    if (d < bestDist) { bestIdx = i; bestDist = d; }
+  }
+  return bestIdx;
+}
+
+// ── Level type color ────────────────────────────────────────────────────────
+
+function levelColor(type: string): string {
+  const t = type.toLowerCase();
+  if (t.includes('demand') || t.includes('support') || t.includes('swing_low')) return COL.levelDemand;
+  if (t.includes('supply') || t.includes('resistance') || t.includes('swing_high')) return COL.levelSupply;
+  return COL.levelOther;
+}
+
+function levelTextColor(type: string): string {
+  const t = type.toLowerCase();
+  if (t.includes('demand') || t.includes('support') || t.includes('swing_low')) return 'rgba(52,211,153,0.4)';
+  if (t.includes('supply') || t.includes('resistance') || t.includes('swing_high')) return 'rgba(248,113,113,0.4)';
+  return 'rgba(96,165,250,0.35)';
+}
+
 // ── Main draw ───────────────────────────────────────────────────────────────
 
 function draw(
@@ -122,6 +189,11 @@ function draw(
   symbol: string | undefined,
   source: string | undefined,
   freshnessMs: number | undefined,
+  levels: ChartLevel[] | undefined,
+  events: ChartEvent[] | undefined,
+  hoverIdx: number | null,
+  mouseX: number | null,
+  mouseY: number | null,
 ) {
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = COL.bg;
@@ -169,12 +241,20 @@ function draw(
     ctx.fillText(t, bx + 4, by + 11.5);
   }
 
-  // ── No data fallback ──────────────────────────────────────────────────
+  // ── No data fallback (draw shell first) ─────────────────────────────────
   if (bars.length === 0) {
-    ctx.font = '12px monospace';
+    // Draw empty grid shell
+    ctx.strokeStyle = COL.grid;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([]);
+    for (let i = 1; i <= GRID_LINES; i++) {
+      const y = (chartH / (GRID_LINES + 1)) * i;
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(chartW, y); ctx.stroke();
+    }
+    ctx.font = '11px monospace';
     ctx.fillStyle = COL.noData;
     ctx.textAlign = 'center';
-    ctx.fillText('Waiting for market data...', w / 2, h / 2);
+    ctx.fillText('Waiting for market data...', chartW / 2, chartH / 2);
     ctx.textAlign = 'start';
     return;
   }
@@ -183,8 +263,8 @@ function draw(
   const visible = bars.length > MAX_VISIBLE ? bars.slice(-MAX_VISIBLE) : bars;
   const n = visible.length;
   const barW = chartW / n;
-  const bodyW = barW * (1 - BAR_PAD);
-  const bodyOff = (barW - bodyW) / 2;
+  const baseBodyW = barW * (1 - BAR_PAD);
+  const bodyOff = (barW - baseBodyW) / 2;
 
   // ── Price range ───────────────────────────────────────────────────────
   let pMin = Infinity, pMax = -Infinity;
@@ -192,7 +272,6 @@ function draw(
     if (b.low < pMin) pMin = b.low;
     if (b.high > pMax) pMax = b.high;
   }
-  // Include overlay levels in range
   if (overlay) {
     pMin = Math.min(pMin, overlay.stopPrice, overlay.targetPrice, overlay.entryPrice);
     pMax = Math.max(pMax, overlay.stopPrice, overlay.targetPrice, overlay.entryPrice);
@@ -200,6 +279,13 @@ function draw(
   if (currentPrice !== undefined) {
     pMin = Math.min(pMin, currentPrice);
     pMax = Math.max(pMax, currentPrice);
+  }
+  // Include levels in range
+  if (levels) {
+    for (const lv of levels) {
+      if (lv.price >= pMin * 0.995 && lv.price <= pMax * 1.005) continue; // already in range
+      // Only widen range slightly for nearby levels
+    }
   }
   const pPad = (pMax - pMin) * 0.06 || 1;
   pMin -= pPad;
@@ -233,6 +319,31 @@ function draw(
   }
   ctx.textAlign = 'start';
 
+  // ── Level overlays (behind candles) ─────────────────────────────────────
+  if (levels && levels.length > 0) {
+    ctx.save();
+    ctx.font = '8px monospace';
+    for (const lv of levels) {
+      const y = priceY(lv.price);
+      if (y < -10 || y > chartH + 10) continue;
+      const col = levelColor(lv.type);
+      const txtCol = levelTextColor(lv.type);
+      // Dashed line
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 4]);
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(chartW, y); ctx.stroke();
+      // Small label on right
+      const label = lv.type.replace(/_/g, ' ').slice(0, 8).toUpperCase();
+      ctx.fillStyle = txtCol;
+      ctx.textAlign = 'right';
+      ctx.fillText(`${label} ${lv.price.toFixed(0)}`, chartW - 4, y - 3);
+    }
+    ctx.setLineDash([]);
+    ctx.textAlign = 'start';
+    ctx.restore();
+  }
+
   // ── Candlesticks ──────────────────────────────────────────────────────
   for (let i = 0; i < n; i++) {
     const b = visible[i];
@@ -240,6 +351,7 @@ function draw(
     const cx = x + barW / 2;
     const isUp = b.close >= b.open;
     const color = isUp ? COL.up : COL.down;
+    const isLast = i === n - 1;
 
     const wickTop = priceY(b.high);
     const wickBot = priceY(b.low);
@@ -247,9 +359,13 @@ function draw(
     const bodyBot = priceY(isUp ? b.open : b.close);
     const bodyH = Math.max(bodyBot - bodyTop, 1);
 
+    // Last candle emphasis: slightly wider and brighter
+    const bw = isLast ? baseBodyW * 1.15 : baseBodyW;
+    const bo = isLast ? (barW - bw) / 2 : bodyOff;
+
     // Wick
     ctx.strokeStyle = color;
-    ctx.lineWidth = 1;
+    ctx.lineWidth = isLast ? 1.5 : 1;
     ctx.setLineDash([]);
     ctx.beginPath();
     ctx.moveTo(cx, wickTop);
@@ -258,13 +374,14 @@ function draw(
 
     // Body
     if (isUp) {
-      ctx.fillStyle = color + 'cc';
-      ctx.fillRect(x + bodyOff, bodyTop, bodyW, bodyH);
+      ctx.fillStyle = isLast ? color + 'ee' : color + 'cc';
+      ctx.fillRect(x + bo, bodyTop, bw, bodyH);
       ctx.strokeStyle = color;
-      ctx.strokeRect(x + bodyOff, bodyTop, bodyW, bodyH);
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + bo, bodyTop, bw, bodyH);
     } else {
-      ctx.fillStyle = color;
-      ctx.fillRect(x + bodyOff, bodyTop, bodyW, bodyH);
+      ctx.fillStyle = isLast ? color : color + 'ee';
+      ctx.fillRect(x + bo, bodyTop, bw, bodyH);
     }
   }
 
@@ -275,7 +392,22 @@ function draw(
     const vh = (b.volume / vMax) * volH;
     const isUp = b.close >= b.open;
     ctx.fillStyle = isUp ? COL.volUp : COL.volDown;
-    ctx.fillRect(x + bodyOff, volTop + volH - vh, bodyW, vh);
+    ctx.fillRect(x + bodyOff, volTop + volH - vh, baseBodyW, vh);
+  }
+
+  // ── Event markers (approved/rejected) ─────────────────────────────────
+  if (events && events.length > 0) {
+    for (const ev of events) {
+      const idx = nearestBarIdx(visible, ev.timestamp);
+      if (idx === null) continue;
+      const bar = visible[idx];
+      const cx = idx * barW + barW / 2;
+      if (ev.type === 'approved') {
+        triangle(ctx, cx, priceY(bar.low) + 8, 5, true, COL.up + '90');
+      } else if (ev.type === 'rejected') {
+        triangle(ctx, cx, priceY(bar.high) - 8, 5, false, COL.down + '90');
+      }
+    }
   }
 
   // ── Time axis ─────────────────────────────────────────────────────────
@@ -296,17 +428,10 @@ function draw(
     const targY  = priceY(overlay.targetPrice);
 
     // Zone fills
-    if (overlay.side === 'long') {
-      ctx.fillStyle = 'rgba(52,211,153,0.04)';
-      ctx.fillRect(0, Math.min(entryY, targY), chartW, Math.abs(targY - entryY));
-      ctx.fillStyle = 'rgba(248,113,113,0.04)';
-      ctx.fillRect(0, Math.min(entryY, stopY), chartW, Math.abs(stopY - entryY));
-    } else {
-      ctx.fillStyle = 'rgba(52,211,153,0.04)';
-      ctx.fillRect(0, Math.min(entryY, targY), chartW, Math.abs(targY - entryY));
-      ctx.fillStyle = 'rgba(248,113,113,0.04)';
-      ctx.fillRect(0, Math.min(entryY, stopY), chartW, Math.abs(stopY - entryY));
-    }
+    ctx.fillStyle = 'rgba(52,211,153,0.04)';
+    ctx.fillRect(0, Math.min(entryY, targY), chartW, Math.abs(targY - entryY));
+    ctx.fillStyle = 'rgba(248,113,113,0.04)';
+    ctx.fillRect(0, Math.min(entryY, stopY), chartW, Math.abs(stopY - entryY));
 
     // Lines + labels
     dashedLine(ctx, 0, entryY, chartW, entryY, COL.entry);
@@ -324,6 +449,70 @@ function draw(
     const y = priceY(currentPrice);
     dashedLine(ctx, 0, y, chartW, y, COL.priceLine, 1);
     priceLabel(ctx, chartW + 2, y, currentPrice.toFixed(2), COL.priceLine, '#fff');
+  }
+
+  // ── Crosshair ─────────────────────────────────────────────────────────
+  if (mouseX !== null && mouseY !== null && mouseX < chartW && mouseY < chartH + volH + gapH) {
+    // Vertical line
+    dashedLine(ctx, mouseX, 0, mouseX, chartH + gapH + volH, COL.crosshair, 0.5);
+    // Horizontal line
+    dashedLine(ctx, 0, mouseY, chartW, mouseY, COL.crosshair, 0.5);
+
+    // Price label at crosshair Y
+    if (mouseY <= chartH) {
+      const crossPrice = pMin + (1 - mouseY / chartH) * pRange;
+      ctx.font = '9px monospace';
+      const label = crossPrice.toFixed(2);
+      const lw = ctx.measureText(label).width + 8;
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx.fillRect(chartW + 1, mouseY - 7, lw, 14);
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      ctx.textAlign = 'left';
+      ctx.fillText(label, chartW + 5, mouseY + 3);
+      ctx.textAlign = 'start';
+    }
+
+    // Time label at crosshair X
+    const barIdx = Math.min(Math.max(0, Math.floor(mouseX / barW)), n - 1);
+    if (barIdx < n) {
+      const timeLabel = formatTime(visible[barIdx].timestamp);
+      ctx.font = '9px monospace';
+      const tw = ctx.measureText(timeLabel).width + 8;
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx.fillRect(mouseX - tw / 2, h - TIME_AXIS_H, tw, 14);
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      ctx.textAlign = 'center';
+      ctx.fillText(timeLabel, mouseX, h - TIME_AXIS_H + 10);
+      ctx.textAlign = 'start';
+    }
+  }
+
+  // ── Hover OHLC HUD ────────────────────────────────────────────────────
+  if (hoverIdx !== null && hoverIdx >= 0 && hoverIdx < n) {
+    const b = visible[hoverIdx];
+    const lines = [
+      `O ${b.open.toFixed(2)}`,
+      `H ${b.high.toFixed(2)}`,
+      `L ${b.low.toFixed(2)}`,
+      `C ${b.close.toFixed(2)}`,
+      `V ${b.volume}`,
+    ];
+    ctx.font = '9px monospace';
+    const maxW = Math.max(...lines.map(l => ctx.measureText(l).width));
+    const hudW = maxW + 12;
+    const hudH = lines.length * 13 + 8;
+    const hudX = 8;
+    const hudY = 32;
+
+    ctx.fillStyle = COL.hudBg;
+    ctx.beginPath();
+    ctx.roundRect(hudX, hudY, hudW, hudH, 3);
+    ctx.fill();
+
+    ctx.fillStyle = COL.hudText;
+    for (let i = 0; i < lines.length; i++) {
+      ctx.fillText(lines[i], hudX + 6, hudY + 14 + i * 13);
+    }
   }
 }
 
@@ -357,11 +546,18 @@ export function CandlestickChart({
   source,
   feedFreshnessMs,
   tradeOverlay,
+  levels,
+  events,
   height = 340,
 }: CandlestickChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [measuredW, setMeasuredW] = useState(600);
+
+  // Mouse tracking for crosshair + hover
+  const mousePosRef = useRef<{ x: number; y: number } | null>(null);
+  const hoverIdxRef = useRef<number | null>(null);
+  const rafRef = useRef<number | null>(null);
 
   // Responsive width
   useEffect(() => {
@@ -377,8 +573,8 @@ export function CandlestickChart({
     return () => ro.disconnect();
   }, []);
 
-  // Render
-  const render = useCallback(() => {
+  // Render function
+  const renderChart = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -389,10 +585,50 @@ export function CandlestickChart({
     canvas.height = Math.round(height * dpr);
     ctx.scale(dpr, dpr);
 
-    draw(ctx, measuredW, height, bars, currentPrice, tradeOverlay, symbol, source, feedFreshnessMs);
-  }, [bars, currentPrice, tradeOverlay, measuredW, height, symbol, source, feedFreshnessMs]);
+    const mp = mousePosRef.current;
+    draw(
+      ctx, measuredW, height, bars, currentPrice, tradeOverlay,
+      symbol, source, feedFreshnessMs,
+      levels, events,
+      hoverIdxRef.current,
+      mp ? mp.x : null,
+      mp ? mp.y : null,
+    );
+  }, [bars, currentPrice, tradeOverlay, measuredW, height, symbol, source, feedFreshnessMs, levels, events]);
 
-  useEffect(() => { render(); }, [render]);
+  useEffect(() => { renderChart(); }, [renderChart]);
+
+  // Mouse handlers (use rAF for smooth crosshair)
+  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    mousePosRef.current = { x, y };
+
+    // Compute hover bar index
+    const chartW = measuredW - PRICE_AXIS_W;
+    const visible = bars.length > MAX_VISIBLE ? bars.slice(-MAX_VISIBLE) : bars;
+    const barW = visible.length > 0 ? chartW / visible.length : 1;
+    const idx = Math.floor(x / barW);
+    hoverIdxRef.current = idx >= 0 && idx < visible.length ? idx : null;
+
+    // Debounce with rAF
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(renderChart);
+  }, [bars, measuredW, renderChart]);
+
+  const handleMouseLeave = useCallback(() => {
+    mousePosRef.current = null;
+    hoverIdxRef.current = null;
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(renderChart);
+  }, [renderChart]);
+
+  // Cleanup rAF on unmount
+  useEffect(() => {
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, []);
 
   return (
     <div ref={containerRef} style={sty.wrap}>
@@ -409,7 +645,9 @@ export function CandlestickChart({
       </div>
       <canvas
         ref={canvasRef}
-        style={{ width: measuredW, height, display: 'block', borderRadius: 6 }}
+        style={{ width: measuredW, height, display: 'block', borderRadius: 6, cursor: 'crosshair' }}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={handleMouseLeave}
       />
     </div>
   );

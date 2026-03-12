@@ -1,15 +1,13 @@
 // ── PipelineStatusPanel.tsx ──────────────────────────────────────────────────
 //
-// Surfaces the full trading pipeline state so the Simulator tab never feels
-// empty. Shows: eval activity, session/regime, path prediction, level map
-// summary, watch progress, blocked evaluations, and pipeline stage diagram.
-//
-// All data is already polled every 2s in LiveTradeAdvisor — this component
-// just renders it visually instead of hiding it behind other tabs.
+// 3-tier engine intelligence panel:
+//   Tier 1 — Signal summary (always visible, single line)
+//   Tier 2 — Key metrics row (always visible)
+//   Tier 3 — Diagnostics (collapsed by default)
 
 import React, { useState } from 'react';
 
-// ── Types (mirrors — no engine imports) ─────────────────────────────────────
+// ── Types ───────────────────────────────────────────────────────────────────
 
 interface PipelineStatusPanelProps {
   simulatorState: any;
@@ -23,7 +21,7 @@ interface PipelineStatusPanelProps {
   shadow: { enabled: boolean; paused: boolean; openTrades: any[]; closedTrades: any[]; tradesToday: number; blockedReason?: string; lastEvalAt?: number } | null;
 }
 
-// ── Styles ──────────────────────────────────────────────────────────────────
+// ── Colors ──────────────────────────────────────────────────────────────────
 
 const c = {
   up: '#34d399', down: '#f87171', blue: '#60a5fa', yellow: '#fbbf24',
@@ -31,22 +29,52 @@ const c = {
   dimBg: 'rgba(255,255,255,0.03)', border: 'rgba(255,255,255,0.07)',
 };
 
+// ── Styles ──────────────────────────────────────────────────────────────────
+
 const st = {
   panel: {
-    display: 'flex', flexDirection: 'column' as const, gap: 10,
-    background: c.dimBg, border: `1px solid ${c.border}`, borderRadius: 10,
-    padding: '14px 16px',
+    display: 'flex', flexDirection: 'column' as const, gap: 8,
+    background: c.dimBg, border: `1px solid ${c.border}`, borderRadius: 6,
+    padding: '10px 14px',
   },
+  signalRow: {
+    display: 'flex', alignItems: 'center' as const, gap: 8,
+    padding: '2px 0', borderBottom: '1px solid rgba(255,255,255,0.04)',
+  },
+  signalText: {
+    fontSize: 11, fontWeight: 700 as const, lineHeight: 1.4,
+  },
+  signalHint: {
+    fontSize: 9, color: 'rgba(255,255,255,0.2)', marginLeft: 'auto' as const,
+    flexShrink: 0 as const,
+  },
+  metricsRow: {
+    display: 'flex', gap: 12, flexWrap: 'wrap' as const, alignItems: 'center' as const,
+    padding: '2px 0',
+  },
+  chip: {
+    fontSize: 8, fontWeight: 700 as const, letterSpacing: '0.04em',
+    borderRadius: 3, padding: '2px 6px', flexShrink: 0 as const,
+  },
+  nextTrigger: {
+    fontSize: 9, color: 'rgba(96,165,250,0.5)', fontStyle: 'italic' as const,
+    marginLeft: 'auto' as const,
+  },
+  diagToggle: {
+    background: 'none', border: 'none', color: 'rgba(255,255,255,0.2)',
+    fontSize: 9, fontWeight: 700 as const, cursor: 'pointer', padding: '2px 6px',
+    letterSpacing: '0.04em',
+  },
+  divider: {
+    height: 1, background: 'rgba(255,255,255,0.04)',
+  },
+  // Diagnostics section styles
   sectionTitle: {
     fontSize: 9, fontWeight: 800 as const, textTransform: 'uppercase' as const,
     letterSpacing: '0.08em', color: 'rgba(255,255,255,0.25)', marginBottom: 2,
   },
   row: {
     display: 'flex', gap: 12, flexWrap: 'wrap' as const, alignItems: 'center' as const,
-  },
-  chip: {
-    fontSize: 9, fontWeight: 700 as const, letterSpacing: '0.06em',
-    borderRadius: 3, padding: '2px 7px', flexShrink: 0 as const,
   },
   metric: {
     display: 'flex', flexDirection: 'column' as const, gap: 1, minWidth: 60,
@@ -92,58 +120,41 @@ const st = {
 // ── Pipeline stages ─────────────────────────────────────────────────────────
 
 const PIPELINE_STAGES = [
-  { key: 'market',     label: 'MARKET' },
-  { key: 'session',    label: 'SESSION' },
-  { key: 'levels',     label: 'LEVELS' },
-  { key: 'path',       label: 'PATH' },
-  { key: 'watches',    label: 'WATCHES' },
-  { key: 'decision',   label: 'DECISION' },
-  { key: 'council',    label: 'COUNCIL' },
-  { key: 'execution',  label: 'EXECUTE' },
+  { key: 'market',    label: 'MARKET' },
+  { key: 'session',   label: 'SESSION' },
+  { key: 'levels',    label: 'LEVELS' },
+  { key: 'path',      label: 'PATH' },
+  { key: 'watches',   label: 'WATCHES' },
+  { key: 'decision',  label: 'DECISION' },
+  { key: 'council',   label: 'COUNCIL' },
+  { key: 'execution', label: 'EXECUTE' },
 ];
 
 function getPipelineProgress(sim: any, levelMap: any, pathPrediction: any, watches: any[], reviewed: any[], shadow: any) {
   const stages: Record<string, 'pass' | 'active' | 'blocked' | 'idle'> = {};
-
-  // Market: pass if simulator is active and has data
   stages.market = sim?.active ? 'pass' : 'idle';
-
-  // Session: pass if session context exists
   stages.session = sim?.active ? 'pass' : 'idle';
-
-  // Levels: pass if level map built
   stages.levels = levelMap?.levels?.length > 0 ? 'pass' : sim?.active ? 'blocked' : 'idle';
-
-  // Path: pass if prediction exists, blocked if no clear path
   if (pathPrediction?.primaryRoute) stages.path = 'pass';
   else if (sim?.active && levelMap?.levels?.length > 0) stages.path = 'blocked';
   else stages.path = 'idle';
-
-  // Watches: pass if any confirmed, active if any watching/confirming, blocked if none
   const confirmed = watches.filter((w: any) => w.state === 'confirmed');
   const watching = watches.filter((w: any) => w.state === 'watching' || w.state === 'confirming');
   if (confirmed.length > 0) stages.watches = 'pass';
   else if (watching.length > 0) stages.watches = 'active';
   else if (stages.path === 'pass') stages.watches = 'blocked';
   else stages.watches = 'idle';
-
-  // Decision: pass if recent intent exists
   const hasRecentIntent = reviewed.length > 0 && (Date.now() - (reviewed[0]?.reviewedAt ?? 0)) < 120_000;
   if (hasRecentIntent) stages.decision = 'pass';
   else if (stages.watches === 'pass') stages.decision = 'active';
   else stages.decision = 'idle';
-
-  // Council: pass if approved, blocked if rejected
   if (reviewed[0]?.outcome === 'approved') stages.council = 'pass';
   else if (reviewed[0]?.outcome === 'rejected') stages.council = 'blocked';
   else if (stages.decision === 'pass') stages.council = 'active';
   else stages.council = 'idle';
-
-  // Execution: pass if trade open
   if (shadow?.openTrades?.length > 0) stages.execution = 'pass';
   else if (stages.council === 'pass') stages.execution = 'active';
   else stages.execution = 'idle';
-
   return stages;
 }
 
@@ -154,15 +165,97 @@ function stageColor(state: 'pass' | 'active' | 'blocked' | 'idle') {
   return { bg: 'rgba(255,255,255,0.03)', color: 'rgba(255,255,255,0.15)' };
 }
 
+// ── Signal summary ──────────────────────────────────────────────────────────
+
+function computeSignalSummary(
+  stages: Record<string, string>,
+  watches: any[],
+  reviewed: any[],
+  blockedReason: string | null,
+  pathPrediction: any,
+  shadow: any,
+): { text: string; color: string; hint: string } {
+  // 1. Trade open
+  if (shadow?.openTrades?.length > 0) {
+    const t = shadow.openTrades[0];
+    const uPnl = t.unrealizedPnl !== undefined ? ` (${t.unrealizedPnl >= 0 ? '+' : ''}$${t.unrealizedPnl.toFixed(0)})` : '';
+    return { text: `${t.side.toUpperCase()} ${t.symbol} open at ${t.entryPrice.toFixed(2)}${uPnl}`, color: c.up, hint: 'POSITION OPEN' };
+  }
+  // 2. Approved intent
+  if (reviewed[0]?.outcome === 'approved' && reviewed[0]?.intent) {
+    const ri = reviewed[0].intent;
+    return { text: `Council APPROVED ${ri.side} ${ri.symbol ?? ''}`, color: c.up, hint: 'APPROVED' };
+  }
+  // 3. Confirmed watch
+  const conf = watches.find((w: any) => w.state === 'confirmed');
+  if (conf) {
+    const price = conf.levelPrice ?? conf.level?.price;
+    return { text: `Watch CONFIRMED at ${price?.toFixed(2) ?? '—'}`, color: c.up, hint: 'CONFIRMED' };
+  }
+  // 4. Blocked
+  if (blockedReason) {
+    return { text: blockedReason, color: c.down, hint: 'BLOCKED' };
+  }
+  // 5. Active watches
+  const active = watches.filter((w: any) => w.state === 'watching' || w.state === 'confirming');
+  if (active.length > 0) {
+    const best = active.reduce((b: any, w: any) => (w.confirmationScore ?? 0) > (b?.confirmationScore ?? 0) ? w : b, null);
+    const pct = best?.confirmationScore ?? 0;
+    return { text: `Monitoring ${active.length} level approach${active.length > 1 ? 'es' : ''} (best: ${pct}%)`, color: c.blue, hint: 'WATCHING' };
+  }
+  // 6. Path available
+  if (pathPrediction?.primaryRoute) {
+    const r = pathPrediction.primaryRoute;
+    const dir = r.direction === 'up' ? 'UP' : 'DOWN';
+    const tgt = r.toLevel?.price?.toFixed(2) ?? '—';
+    return { text: `Path predicts ${dir} to ${tgt}`, color: c.blue, hint: 'PATH' };
+  }
+  // 7. Idle
+  return { text: 'Engine scanning for opportunities', color: c.muted, hint: 'SCANNING' };
+}
+
+// ── Next trigger ────────────────────────────────────────────────────────────
+
+function computeNextTrigger(
+  stages: Record<string, string>,
+  watches: any[],
+  reviewed: any[],
+  blockedReason: string | null,
+  sessionContext: any,
+): string {
+  if (blockedReason) {
+    const r = blockedReason.toLowerCase();
+    if (r.includes('session')) return 'Wait for prime window';
+    if (r.includes('news')) return 'News embargo to expire';
+    if (r.includes('daily_loss') || r.includes('max_loss')) return 'Resume tomorrow';
+    if (r.includes('max_trades')) return 'Trade limit — resume tomorrow';
+    if (r.includes('manual')) return 'Confirm or reject pending trade';
+    if (r.includes('cool')) return 'Cooldown active';
+    if (r.includes('paused')) return 'Resume trading';
+    return 'Condition change needed';
+  }
+  if (stages.execution === 'active') return 'Execution pending';
+  if (stages.council === 'active') return 'Council review in progress';
+  if (stages.decision === 'active') return 'Intent generation pending';
+  const confirming = watches.find((w: any) => w.state === 'confirming');
+  if (confirming) {
+    const pct = confirming.confirmationScore ?? 0;
+    return `Confirmation at ${pct}% (need 80%)`;
+  }
+  if (stages.watches === 'active') return 'Watching for level test';
+  if (stages.watches === 'blocked') return 'Approaching level would create watch';
+  if (stages.path === 'blocked') return 'Need clear path between levels';
+  if (stages.levels === 'blocked') return 'Level map building';
+  if (sessionContext && !sessionContext.isActive) return 'Wait for session open';
+  return '';
+}
+
 // ── Regime config ───────────────────────────────────────────────────────────
 
 const regimeStyles: Record<string, { color: string }> = {
-  open_drive: { color: c.orange },
-  trend:      { color: c.up },
-  range:      { color: c.blue },
-  reversal:   { color: c.down },
-  expansion:  { color: c.purple },
-  drift:      { color: c.muted },
+  open_drive: { color: c.orange }, trend: { color: c.up },
+  range: { color: c.blue }, reversal: { color: c.down },
+  expansion: { color: c.purple }, drift: { color: c.muted },
 };
 
 // ── Component ───────────────────────────────────────────────────────────────
@@ -178,190 +271,179 @@ export function PipelineStatusPanel({
   snapshot,
   shadow,
 }: PipelineStatusPanelProps) {
-  const [showBlocked, setShowBlocked] = useState(false);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
 
   if (!sim?.active) return null;
 
   const stages = getPipelineProgress(sim, levelMap, pathPrediction, watches, reviewedIntents, shadow);
+  const blockedReason = shadow?.blockedReason || sim?.blockedReason;
+  const signal = computeSignalSummary(stages, watches, reviewedIntents, blockedReason, pathPrediction, shadow);
+  const nextTrigger = computeNextTrigger(stages, watches, reviewedIntents, blockedReason, sessionContext);
+
   const regime = sim?.regimeContext?.current;
   const rCfg = regime ? regimeStyles[regime.regime] ?? regimeStyles.drift : null;
-  const pred = pathPrediction?.primaryRoute;
-  const levelCount = levelMap?.levels?.length ?? 0;
-  const brokenCount = levelMap?.levels?.filter((l: any) => l.broken)?.length ?? 0;
-  const activeLevelCount = levelCount - brokenCount;
-  const watchingCount = watches.filter((w: any) => w.state === 'watching' || w.state === 'confirming').length;
-  const confirmedCount = watches.filter((w: any) => w.state === 'confirmed').length;
-  const blockedReason = shadow?.blockedReason || sim?.blockedReason;
-  const tickCount = sim?.tickCount ?? 0;
-  const lastTick = sim?.lastTickAt;
-
-  // Session info
   const sessionWindow = sessionContext?.windowLabel ?? sim?.sessionContext?.windowLabel;
   const sessionScore = sessionContext?.sessionScore ?? sim?.sessionContext?.sessionScore;
-
-  // Best watch confirmation score
   const bestWatch = watches.reduce((best: any, w: any) =>
     (w.confirmationScore ?? 0) > (best?.confirmationScore ?? 0) ? w : best, null);
 
   return (
     <div style={st.panel}>
-      {/* ── Pipeline Stage Diagram ── */}
-      <div>
-        <div style={st.sectionTitle}>Engine Pipeline</div>
-        <div style={st.pipeRow}>
-          {PIPELINE_STAGES.map((stage, i) => {
-            const state = stages[stage.key];
-            const sc = stageColor(state);
-            return (
-              <React.Fragment key={stage.key}>
-                {i > 0 && <span style={st.pipeArrow}>{'\u25B8'}</span>}
-                <span style={{ ...st.pipeStage, background: sc.bg, color: sc.color }}>
-                  {stage.label}
-                </span>
-              </React.Fragment>
-            );
-          })}
-          {/* Eval counter */}
-          <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.15)', marginLeft: 'auto' }}>
-            Cycle {tickCount}{lastTick ? ` \u00b7 ${new Date(lastTick).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` : ''}
-          </span>
-        </div>
+      {/* ── Tier 1: Signal Summary ── */}
+      <div style={st.signalRow}>
+        <span style={{ ...st.signalText, color: signal.color }}>{signal.text}</span>
+        <span style={st.signalHint}>{signal.hint}</span>
       </div>
 
-      {/* ── Engine Snapshot: session, regime, path ── */}
-      <div style={st.row}>
-        {/* Session window */}
+      {/* ── Tier 2: Key Metrics Row ── */}
+      <div style={st.metricsRow}>
+        {/* Session */}
         {sessionWindow && (
           <span style={{
             ...st.chip,
-            background: sessionScore != null && sessionScore >= 60 ? 'rgba(52,211,153,0.1)' : 'rgba(255,255,255,0.04)',
+            background: sessionScore != null && sessionScore >= 60 ? 'rgba(52,211,153,0.08)' : 'rgba(255,255,255,0.04)',
             color: sessionScore != null && sessionScore >= 60 ? c.up : c.muted,
           }}>
-            {sessionWindow.replace(/_/g, ' ')}{sessionScore != null ? ` (${sessionScore})` : ''}
+            {sessionWindow.replace(/_/g, ' ')}{sessionScore != null ? ` ${sessionScore}` : ''}
           </span>
         )}
 
         {/* Regime */}
         {regime && rCfg && (
-          <span style={{ ...st.chip, background: rCfg.color + '15', color: rCfg.color }}>
+          <span style={{ ...st.chip, background: rCfg.color + '12', color: rCfg.color }}>
             {regime.regime.replace(/_/g, ' ').toUpperCase()} {Math.round(regime.confidence)}%
           </span>
         )}
 
-        {/* Path prediction */}
-        {pred ? (
+        {/* Best confidence */}
+        {bestWatch && bestWatch.confirmationScore != null && (
           <span style={{
             ...st.chip,
-            background: (pred.direction === 'up' ? c.up : c.down) + '12',
-            color: pred.direction === 'up' ? c.up : c.down,
+            background: (bestWatch.confirmationScore >= 80 ? c.up : bestWatch.confirmationScore >= 50 ? c.yellow : c.blue) + '12',
+            color: bestWatch.confirmationScore >= 80 ? c.up : bestWatch.confirmationScore >= 50 ? c.yellow : c.blue,
           }}>
-            {pred.direction === 'up' ? '\u2191' : '\u2193'}{' '}
-            {pred.toLevel?.type?.replace(/_/g, ' ') ?? 'target'} @ {pred.toLevel?.price?.toFixed(2) ?? '—'}
-            {pred.qualityScore != null ? ` Q${Math.round(pred.qualityScore)}` : ''}
-          </span>
-        ) : sim?.active && (
-          <span style={{ ...st.chip, background: 'rgba(255,255,255,0.03)', color: 'rgba(255,255,255,0.18)' }}>
-            No clear path
+            Conf {bestWatch.confirmationScore}%
           </span>
         )}
 
-        {/* News block */}
-        {sim?.newsRiskContext?.blocked && (
-          <span style={{ ...st.chip, background: 'rgba(248,113,113,0.1)', color: c.down }}>
-            NEWS BLOCK
-          </span>
-        )}
-      </div>
-
-      {/* ── Level Map + Watch Summary ── */}
-      <div style={st.row}>
-        {/* Level count */}
-        <div style={st.metric}>
-          <span style={st.metricLabel}>Levels</span>
-          <span style={{ ...st.metricValue, color: activeLevelCount > 0 ? 'rgba(255,255,255,0.7)' : c.muted }}>
-            {activeLevelCount}{brokenCount > 0 ? ` / ${brokenCount}b` : ''}
-          </span>
-        </div>
-
-        {/* Watch status */}
-        <div style={st.metric}>
-          <span style={st.metricLabel}>Watches</span>
-          <span style={{
-            ...st.metricValue,
-            color: confirmedCount > 0 ? c.up : watchingCount > 0 ? c.blue : c.muted,
-          }}>
-            {confirmedCount > 0 ? `${confirmedCount} confirmed` :
-             watchingCount > 0 ? `${watchingCount} active` : 'none'}
-          </span>
-        </div>
-
-        {/* Best confirmation progress */}
-        {bestWatch && (bestWatch.state === 'watching' || bestWatch.state === 'confirming') && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1, minWidth: 100 }}>
-            <span style={st.metricLabel}>
-              Confirmation {bestWatch.confirmationScore ?? 0}%
-            </span>
-            <div style={st.watchBar}>
-              <div style={{
-                ...st.watchFill,
-                width: `${Math.min(bestWatch.confirmationScore ?? 0, 100)}%`,
-                background: (bestWatch.confirmationScore ?? 0) >= 80 ? c.up : (bestWatch.confirmationScore ?? 0) >= 50 ? c.yellow : c.blue,
-              }} />
-            </div>
-          </div>
-        )}
-
-        {/* Recent council outcome */}
+        {/* Council alignment */}
         {reviewedIntents[0] && (
-          <div style={st.metric}>
-            <span style={st.metricLabel}>Last Council</span>
-            <span style={{
-              ...st.metricValue, fontSize: 11,
-              color: reviewedIntents[0].outcome === 'approved' ? c.up :
-                     reviewedIntents[0].outcome === 'rejected' ? c.down : c.muted,
-            }}>
-              {reviewedIntents[0].outcome?.toUpperCase() ?? '—'}
-            </span>
-          </div>
+          <span style={{
+            ...st.chip,
+            background: reviewedIntents[0].outcome === 'approved' ? 'rgba(52,211,153,0.08)' :
+                         reviewedIntents[0].outcome === 'rejected' ? 'rgba(248,113,113,0.08)' : 'rgba(255,255,255,0.04)',
+            color: reviewedIntents[0].outcome === 'approved' ? c.up :
+                   reviewedIntents[0].outcome === 'rejected' ? c.down : c.muted,
+          }}>
+            {reviewedIntents[0].outcome?.toUpperCase() ?? '—'}
+          </span>
         )}
 
-        {/* P&L summary even when no position */}
-        {sim?.pnlSummary && (sim.pnlSummary.closedPositionCount > 0) && (
-          <div style={st.metric}>
-            <span style={st.metricLabel}>Session P&L</span>
-            <span style={{
-              ...st.metricValue, fontSize: 11,
-              color: sim.pnlSummary.totalPnLDollars >= 0 ? c.up : c.down,
-            }}>
-              {sim.pnlSummary.totalPnLDollars >= 0 ? '+' : ''}${sim.pnlSummary.totalPnLDollars.toFixed(0)}
-              <span style={{ fontSize: 9, color: c.muted, marginLeft: 4 }}>
-                {sim.pnlSummary.winCount}W / {sim.pnlSummary.lossCount}L
-              </span>
-            </span>
-          </div>
-        )}
+        {/* Next trigger */}
+        {nextTrigger && <span style={st.nextTrigger}>{nextTrigger}</span>}
       </div>
 
-      {/* ── Blocked Reason (expanded) ── */}
-      {blockedReason && (
-        <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)', lineHeight: 1.5, fontStyle: 'italic' }}>
-          {blockedReason}
-        </div>
-      )}
+      {/* ── Diagnostics toggle ── */}
+      <div style={{ display: 'flex', alignItems: 'center' }}>
+        <button style={st.diagToggle} onClick={() => setShowDiagnostics(v => !v)}>
+          {showDiagnostics ? 'Hide Diagnostics' : 'Diagnostics'}
+        </button>
+      </div>
 
-      {/* ── Blocked Evaluations (why decisions were rejected) ── */}
-      {blockedEvaluations.length > 0 && (
+      {/* ── Tier 3: Diagnostics (collapsed) ── */}
+      {showDiagnostics && <>
+        <div style={st.divider} />
+
+        {/* Pipeline stage diagram */}
         <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ ...st.sectionTitle, marginBottom: 0 }}>
-              Blocked Decisions ({blockedEvaluations.length})
+          <div style={st.sectionTitle}>Pipeline Stages</div>
+          <div style={st.pipeRow}>
+            {PIPELINE_STAGES.map((stage, i) => {
+              const state = stages[stage.key];
+              const sc = stageColor(state);
+              return (
+                <React.Fragment key={stage.key}>
+                  {i > 0 && <span style={st.pipeArrow}>{'\u25B8'}</span>}
+                  <span style={{ ...st.pipeStage, background: sc.bg, color: sc.color }}>
+                    {stage.label}
+                  </span>
+                </React.Fragment>
+              );
+            })}
+            <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.15)', marginLeft: 'auto' }}>
+              Cycle {sim?.tickCount ?? 0}
             </span>
-            <button style={st.expandBtn} onClick={() => setShowBlocked(v => !v)}>
-              {showBlocked ? 'Hide' : 'Show'}
-            </button>
           </div>
-          {showBlocked && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}>
+        </div>
+
+        {/* Engine snapshot chips */}
+        <div style={st.row}>
+          {pathPrediction?.primaryRoute && (() => {
+            const pred = pathPrediction.primaryRoute;
+            return (
+              <span style={{
+                ...st.chip,
+                background: (pred.direction === 'up' ? c.up : c.down) + '12',
+                color: pred.direction === 'up' ? c.up : c.down,
+              }}>
+                {pred.direction === 'up' ? '\u2191' : '\u2193'}{' '}
+                {pred.toLevel?.type?.replace(/_/g, ' ') ?? 'target'} @ {pred.toLevel?.price?.toFixed(2) ?? '—'}
+                {pred.qualityScore != null ? ` Q${Math.round(pred.qualityScore)}` : ''}
+              </span>
+            );
+          })()}
+          {sim?.newsRiskContext?.blocked && (
+            <span style={{ ...st.chip, background: 'rgba(248,113,113,0.1)', color: c.down }}>NEWS BLOCK</span>
+          )}
+        </div>
+
+        {/* Level + Watch detail */}
+        <div style={st.row}>
+          <div style={st.metric}>
+            <span style={st.metricLabel}>Levels</span>
+            <span style={{ ...st.metricValue, color: (levelMap?.levels?.length ?? 0) > 0 ? 'rgba(255,255,255,0.7)' : c.muted }}>
+              {(levelMap?.levels?.filter((l: any) => !l.broken)?.length ?? 0)}{(levelMap?.levels?.filter((l: any) => l.broken)?.length ?? 0) > 0 ? ` / ${levelMap.levels.filter((l: any) => l.broken).length}b` : ''}
+            </span>
+          </div>
+          <div style={st.metric}>
+            <span style={st.metricLabel}>Watches</span>
+            <span style={{
+              ...st.metricValue,
+              color: watches.some((w: any) => w.state === 'confirmed') ? c.up :
+                     watches.some((w: any) => w.state === 'watching' || w.state === 'confirming') ? c.blue : c.muted,
+            }}>
+              {watches.filter((w: any) => w.state === 'confirmed').length > 0
+                ? `${watches.filter((w: any) => w.state === 'confirmed').length} confirmed`
+                : watches.filter((w: any) => w.state === 'watching' || w.state === 'confirming').length > 0
+                  ? `${watches.filter((w: any) => w.state === 'watching' || w.state === 'confirming').length} active`
+                  : 'none'}
+            </span>
+          </div>
+          {sim?.pnlSummary && sim.pnlSummary.closedPositionCount > 0 && (
+            <div style={st.metric}>
+              <span style={st.metricLabel}>Session P&L</span>
+              <span style={{ ...st.metricValue, fontSize: 11, color: sim.pnlSummary.totalPnLDollars >= 0 ? c.up : c.down }}>
+                {sim.pnlSummary.totalPnLDollars >= 0 ? '+' : ''}${sim.pnlSummary.totalPnLDollars.toFixed(0)}
+                <span style={{ fontSize: 9, color: c.muted, marginLeft: 4 }}>
+                  {sim.pnlSummary.winCount}W / {sim.pnlSummary.lossCount}L
+                </span>
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Blocked reason */}
+        {blockedReason && (
+          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)', lineHeight: 1.5, fontStyle: 'italic' }}>
+            {blockedReason}
+          </div>
+        )}
+
+        {/* Blocked evaluations */}
+        {blockedEvaluations.length > 0 && (
+          <div>
+            <div style={st.sectionTitle}>Blocked Decisions ({blockedEvaluations.length})</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
               {blockedEvaluations.slice(0, 5).map((be: any, i: number) => (
                 <div key={i} style={st.blockCard}>
                   <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 3 }}>
@@ -378,9 +460,7 @@ export function PipelineStatusPanel({
                   </div>
                   {be.reasons?.length > 0 ? (
                     be.reasons.map((r: string, j: number) => (
-                      <div key={j} style={{ color: 'rgba(255,255,255,0.4)', paddingLeft: 8 }}>
-                        {'\u2022'} {r}
-                      </div>
+                      <div key={j} style={{ color: 'rgba(255,255,255,0.4)', paddingLeft: 8 }}>{'\u2022'} {r}</div>
                     ))
                   ) : be.reason ? (
                     <div style={{ color: 'rgba(255,255,255,0.4)', paddingLeft: 8 }}>{'\u2022'} {be.reason}</div>
@@ -388,53 +468,50 @@ export function PipelineStatusPanel({
                 </div>
               ))}
             </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Nearby watches detail (when any are active) ── */}
-      {watches.length > 0 && watches.some((w: any) => w.state !== 'rejected') && (
-        <div>
-          <div style={st.sectionTitle}>Watch Alerts</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {watches.filter((w: any) => w.state !== 'rejected').slice(0, 4).map((w: any, i: number) => {
-              const stateColor = w.state === 'confirmed' ? c.up :
-                w.state === 'confirming' ? c.blue :
-                w.state === 'watching' ? c.yellow : c.muted;
-              return (
-                <div key={w.id ?? i} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 10 }}>
-                  <span style={{
-                    ...st.chip, fontSize: 8,
-                    background: stateColor + '15', color: stateColor,
-                  }}>
-                    {(w.state ?? 'idle').toUpperCase()}
-                  </span>
-                  <span style={{ color: 'rgba(255,255,255,0.5)' }}>
-                    {w.levelType?.replace(/_/g, ' ') ?? 'level'} @ {w.levelPrice?.toFixed(2) ?? w.price?.toFixed(2) ?? '—'}
-                  </span>
-                  {w.qualityScore != null && (
-                    <span style={{ fontSize: 9, color: c.muted }}>Q{Math.round(w.qualityScore)}</span>
-                  )}
-                  {w.confirmationScore != null && w.state !== 'confirmed' && (
-                    <div style={{ ...st.watchBar, maxWidth: 60 }}>
-                      <div style={{
-                        ...st.watchFill,
-                        width: `${Math.min(w.confirmationScore, 100)}%`,
-                        background: w.confirmationScore >= 80 ? c.up : w.confirmationScore >= 50 ? c.yellow : c.blue,
-                      }} />
-                    </div>
-                  )}
-                  {w.route?.direction && (
-                    <span style={{ fontSize: 9, color: w.route.direction === 'up' ? c.up : c.down }}>
-                      {w.route.direction === 'up' ? '\u2191' : '\u2193'}
-                    </span>
-                  )}
-                </div>
-              );
-            })}
           </div>
-        </div>
-      )}
+        )}
+
+        {/* Watch alerts */}
+        {watches.length > 0 && watches.some((w: any) => w.state !== 'rejected') && (
+          <div>
+            <div style={st.sectionTitle}>Watch Alerts</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {watches.filter((w: any) => w.state !== 'rejected').slice(0, 4).map((w: any, i: number) => {
+                const stateCol = w.state === 'confirmed' ? c.up :
+                  w.state === 'confirming' ? c.blue :
+                  w.state === 'watching' ? c.yellow : c.muted;
+                return (
+                  <div key={w.id ?? i} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 10 }}>
+                    <span style={{ ...st.chip, fontSize: 8, background: stateCol + '15', color: stateCol }}>
+                      {(w.state ?? 'idle').toUpperCase()}
+                    </span>
+                    <span style={{ color: 'rgba(255,255,255,0.5)' }}>
+                      {w.levelType?.replace(/_/g, ' ') ?? 'level'} @ {w.levelPrice?.toFixed(2) ?? w.price?.toFixed(2) ?? '—'}
+                    </span>
+                    {w.qualityScore != null && (
+                      <span style={{ fontSize: 9, color: c.muted }}>Q{Math.round(w.qualityScore)}</span>
+                    )}
+                    {w.confirmationScore != null && w.state !== 'confirmed' && (
+                      <div style={{ ...st.watchBar, maxWidth: 60 }}>
+                        <div style={{
+                          ...st.watchFill,
+                          width: `${Math.min(w.confirmationScore, 100)}%`,
+                          background: w.confirmationScore >= 80 ? c.up : w.confirmationScore >= 50 ? c.yellow : c.blue,
+                        }} />
+                      </div>
+                    )}
+                    {w.route?.direction && (
+                      <span style={{ fontSize: 9, color: w.route.direction === 'up' ? c.up : c.down }}>
+                        {w.route.direction === 'up' ? '\u2191' : '\u2193'}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </>}
     </div>
   );
 }

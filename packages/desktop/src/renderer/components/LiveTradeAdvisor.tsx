@@ -28,6 +28,7 @@ import { AdvisoryTargetPanel } from './trading/AdvisoryTargetPanel';
 import { CandlestickChart } from './trading/CandlestickChart';
 import { MarketDataStrip } from './trading/MarketDataStrip';
 import { PipelineStatusPanel } from './trading/PipelineStatusPanel';
+import { TradeThesisPanel } from './trading/TradeThesisPanel';
 
 // ── Local type mirrors (engine types, no direct import) ───────────────────────
 
@@ -76,6 +77,12 @@ interface LiveSnapshot {
   trend?: 'up' | 'down' | 'range' | 'unknown';
   feedFreshnessMs?: number;
   warning?: string;
+  atr5m?: number;
+  vwap?: number;
+  trend5m?: string;
+  trend15m?: string;
+  sessionLabel?: string;
+  volatilityRegime?: string;
 }
 
 interface ShadowTrade {
@@ -281,7 +288,9 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
 
   // ── Live snapshot ───────────────────────────────────────────────────────────
   const [snapshot, setSnapshot]           = useState<LiveSnapshot | null>(null);
-  const pollRef                           = useRef<ReturnType<typeof setInterval> | null>(null);
+  const fastPollRef                       = useRef<ReturnType<typeof setInterval> | null>(null);
+  const medPollRef                        = useRef<ReturnType<typeof setInterval> | null>(null);
+  const slowPollRef                       = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ── Advice ──────────────────────────────────────────────────────────────────
   const [advice, setAdvice]               = useState<TradeAdviceResult | null>(null);
@@ -379,59 +388,80 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
 
   const startPolling = useCallback((sym: string) => {
     stopPolling();
-    const tick = async () => {
+
+    // FAST LANE (1.5s): price-sensitive + thesis-critical
+    const fastTick = async () => {
       try {
-        const [shadowState, acctRes, setupRes, simStateRes, levelMapRes, predRes, watchesRes, reviewedRes, sessionRes, posBookRes, journalRes, expectancyRes, weightsRes, councilEffRes, advisoryTargetRes, mktStateRes, blockedEvalsRes] = await Promise.all([
+        const [mktStateRes, shadowState, simStateRes, watchesRes, reviewedRes] = await Promise.all([
+          (window.triforge.trading as any).marketState?.() ?? Promise.resolve(null),
           window.triforge.trading.shadowState(),
-          (window.triforge.trading as any).tradovateAccountState?.() ?? Promise.resolve(null),
-          (window.triforge.trading as any).buildTradeLevels?.(sym) ?? Promise.resolve(null),
           (window.triforge.trading as any).simulatorStateGet?.() ?? Promise.resolve(null),
-          (window.triforge.trading as any).levelMapGet?.() ?? Promise.resolve(null),
-          (window.triforge.trading as any).pathPredictionGet?.() ?? Promise.resolve(null),
           (window.triforge.trading as any).watchesGet?.() ?? Promise.resolve(null),
           (window.triforge.trading as any).reviewedIntentsGet?.() ?? Promise.resolve(null),
-          (window.triforge.trading as any).sessionContextGet?.() ?? Promise.resolve(null),
-          (window.triforge.trading as any).positionBookGet?.() ?? Promise.resolve(null),
-          (window.triforge.trading as any).journalEntriesGet?.({ limit: 50 }) ?? Promise.resolve(null),
-          (window.triforge.trading as any).journalExpectancyGet?.(expectancyDimRef.current) ?? Promise.resolve(null),
-          (window.triforge.trading as any).journalWeightsGet?.() ?? Promise.resolve(null),
-          (window.triforge.trading as any).journalExpectancyGet?.('councilConsensus') ?? Promise.resolve(null),
-          (window.triforge.trading as any).journalAdvisoryTargetsGet?.() ?? Promise.resolve(null),
-          (window.triforge.trading as any).marketState?.() ?? Promise.resolve(null),
-          (window.triforge.trading as any).blockedEvaluationsGet?.() ?? Promise.resolve(null),
         ]);
-        // marketState is the single source of truth for snapshot + bars + source
         if (mktStateRes?.marketState) {
           const ms = mktStateRes.marketState as MarketStatePayload;
           setMarketState(ms);
           if (ms.snapshot) setSnapshot(ms.snapshot);
         }
         setShadow(shadowState as ShadowAccountState);
-        if (acctRes?.state) setAccountState(acctRes.state as TradovateAccountState);
-        if (setupRes?.setup) setProposedSetup(setupRes.setup as ProposedTradeSetup);
-        // Level engine inspector state
         if (simStateRes?.state) setSimulatorState(simStateRes.state);
-        if (levelMapRes?.levelMap) setLevelMap(levelMapRes.levelMap);
-        if (predRes?.prediction) setPathPrediction(predRes.prediction);
         if (watchesRes?.watches) setWatches(watchesRes.watches);
         if (reviewedRes?.reviewed) setReviewedIntents(reviewedRes.reviewed);
+      } catch { /* ignore */ }
+    };
+
+    // MEDIUM LANE (4s): engine analysis
+    const medTick = async () => {
+      try {
+        const [levelMapRes, predRes, sessionRes, posBookRes, setupRes, blockedEvalsRes] = await Promise.all([
+          (window.triforge.trading as any).levelMapGet?.() ?? Promise.resolve(null),
+          (window.triforge.trading as any).pathPredictionGet?.() ?? Promise.resolve(null),
+          (window.triforge.trading as any).sessionContextGet?.() ?? Promise.resolve(null),
+          (window.triforge.trading as any).positionBookGet?.() ?? Promise.resolve(null),
+          (window.triforge.trading as any).buildTradeLevels?.(sym) ?? Promise.resolve(null),
+          (window.triforge.trading as any).blockedEvaluationsGet?.() ?? Promise.resolve(null),
+        ]);
+        if (levelMapRes?.levelMap) setLevelMap(levelMapRes.levelMap);
+        if (predRes?.prediction) setPathPrediction(predRes.prediction);
         if (sessionRes?.session) setSessionContext(sessionRes.session);
         if (posBookRes) setSimPositions({ open: posBookRes.open ?? [], closed: posBookRes.closed ?? [], orders: posBookRes.orders ?? [] });
-        // Journal / analytics state
+        if (setupRes?.setup) setProposedSetup(setupRes.setup as ProposedTradeSetup);
+        if (blockedEvalsRes?.blocked) setBlockedEvals(blockedEvalsRes.blocked);
+      } catch { /* ignore */ }
+    };
+
+    // SLOW LANE (12s): journal, analytics, account
+    const slowTick = async () => {
+      try {
+        const [journalRes, expectancyRes, weightsRes, councilEffRes, advisoryTargetRes, acctRes] = await Promise.all([
+          (window.triforge.trading as any).journalEntriesGet?.({ limit: 50 }) ?? Promise.resolve(null),
+          (window.triforge.trading as any).journalExpectancyGet?.(expectancyDimRef.current) ?? Promise.resolve(null),
+          (window.triforge.trading as any).journalWeightsGet?.() ?? Promise.resolve(null),
+          (window.triforge.trading as any).journalExpectancyGet?.('councilConsensus') ?? Promise.resolve(null),
+          (window.triforge.trading as any).journalAdvisoryTargetsGet?.() ?? Promise.resolve(null),
+          (window.triforge.trading as any).tradovateAccountState?.() ?? Promise.resolve(null),
+        ]);
         if (journalRes?.entries) setJournalEntries(journalRes.entries);
         if (expectancyRes?.summary) setExpectancySummary(expectancyRes.summary);
         if (weightsRes?.suggestions) setCalibrationSuggestions(weightsRes.suggestions);
         if (councilEffRes?.summary) setCouncilEffectSummary(councilEffRes.summary);
         if (advisoryTargetRes?.summary) setAdvisoryTargetSummary(advisoryTargetRes.summary);
-        if (blockedEvalsRes?.blocked) setBlockedEvals(blockedEvalsRes.blocked);
+        if (acctRes?.state) setAccountState(acctRes.state as TradovateAccountState);
       } catch { /* ignore */ }
     };
-    tick();
-    pollRef.current = setInterval(tick, 2000);
+
+    // Fire all immediately, then set intervals
+    fastTick(); medTick(); slowTick();
+    fastPollRef.current = setInterval(fastTick, 1500);
+    medPollRef.current = setInterval(medTick, 4000);
+    slowPollRef.current = setInterval(slowTick, 12000);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const stopPolling = useCallback(() => {
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    if (fastPollRef.current) { clearInterval(fastPollRef.current); fastPollRef.current = null; }
+    if (medPollRef.current) { clearInterval(medPollRef.current); medPollRef.current = null; }
+    if (slowPollRef.current) { clearInterval(slowPollRef.current); slowPollRef.current = null; }
   }, []);
 
   const handleSymbolChange = (sym: string) => {
@@ -799,72 +829,102 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
         {/* ── Simulator tab (chart-first layout) ── */}
         {(inspectorTab === 'simulator' || !simulatorState?.active) && <>
 
-        {/* ── 1. Candlestick Chart + Market Strip ── */}
-        {marketState?.bars ? (
-          <div style={s.card}>
-            <CandlestickChart
-              bars={chartTimeframe === '1m' ? marketState.bars.bars1m : chartTimeframe === '5m' ? marketState.bars.bars5m : marketState.bars.bars15m}
-              timeframe={chartTimeframe}
-              onTimeframeChange={setChartTimeframe}
-              currentPrice={snapshot?.lastPrice}
-              symbol={marketState.symbol ?? symbol}
-              source={marketState.source}
-              feedFreshnessMs={snapshot?.feedFreshnessMs}
-              tradeOverlay={shadow?.openTrades?.[0] ? {
-                entryPrice: shadow.openTrades[0].entryPrice,
-                stopPrice: shadow.openTrades[0].stopPrice,
-                targetPrice: shadow.openTrades[0].targetPrice,
-                side: shadow.openTrades[0].side,
-              } : null}
-            />
-            <MarketDataStrip
-              lastPrice={snapshot?.lastPrice}
-              bidPrice={snapshot?.bidPrice}
-              askPrice={snapshot?.askPrice}
-              highOfDay={snapshot?.highOfDay}
-              lowOfDay={snapshot?.lowOfDay}
-              trend={snapshot?.trend}
-              feedFreshnessMs={snapshot?.feedFreshnessMs}
-              source={marketState.source}
-            />
-          </div>
-        ) : (
-          /* Fallback: text-based market card when no bar data yet */
-          <div style={s.card}>
-            <div style={{ ...s.cardTitle, gap: 8 }}>
-              Live Market — {symbol}
-              {isConnected && snapshot?.lastPrice && <span style={s.liveDot} />}
-              {snapshot?.feedFreshnessMs !== undefined && (
-                <span style={{ fontSize: 9, color: snapshot.feedFreshnessMs > 8000 ? '#f87171' : snapshot.feedFreshnessMs > 4000 ? '#fbbf24' : 'rgba(255,255,255,0.2)', marginLeft: 'auto' }}>
-                  {snapshot.feedFreshnessMs < 1000 ? '<1s' : `${(snapshot.feedFreshnessMs / 1000).toFixed(0)}s`} ago
-                </span>
-              )}
-            </div>
-            {!isConnected ? (
-              <div style={s.statusNote}>
-                <span style={s.statusDot} />
-                {shadow?.enabled
-                  ? 'Running on simulated market data. Connect Tradovate above for live market feed (optional).'
-                  : 'Not connected — rule-based advice works with manual levels. Click Connect Tradovate above to enable live data.'}
-              </div>
-            ) : !snapshot?.lastPrice ? (
-              <div style={s.statusNote}>
-                <span style={{ ...s.statusDot, background: '#fbbf24' }} />
-                Connected — waiting for first price tick on {symbol}. Market may be closed or symbol unsupported.
-              </div>
+        {/* ── 1. Hero Area: Chart + Thesis ── */}
+        <div style={s.heroRow}>
+          {/* LEFT: Chart column */}
+          <div style={s.heroChartCol}>
+            {marketState?.bars ? (
+              <>
+                <CandlestickChart
+                  bars={chartTimeframe === '1m' ? marketState.bars.bars1m : chartTimeframe === '5m' ? marketState.bars.bars5m : marketState.bars.bars15m}
+                  timeframe={chartTimeframe}
+                  onTimeframeChange={setChartTimeframe}
+                  currentPrice={snapshot?.lastPrice}
+                  symbol={marketState.symbol ?? symbol}
+                  source={marketState.source}
+                  feedFreshnessMs={snapshot?.feedFreshnessMs}
+                  tradeOverlay={shadow?.openTrades?.[0] ? {
+                    entryPrice: shadow.openTrades[0].entryPrice,
+                    stopPrice: shadow.openTrades[0].stopPrice,
+                    targetPrice: shadow.openTrades[0].targetPrice,
+                    side: shadow.openTrades[0].side,
+                  } : null}
+                  levels={levelMap?.levels?.filter((l: any) => !l.broken).slice(0, 8).map((l: any) => ({
+                    price: l.price, type: l.type, strength: l.strength ?? 50, grade: l.grade,
+                  }))}
+                  events={reviewedIntents.slice(0, 10).map((ri: any) => ({
+                    timestamp: ri.reviewedAt ?? 0,
+                    type: ri.outcome as 'approved' | 'rejected',
+                    side: ri.intent?.side,
+                    price: ri.intent?.entry,
+                  }))}
+                  height={400}
+                />
+                <MarketDataStrip
+                  lastPrice={snapshot?.lastPrice}
+                  bidPrice={snapshot?.bidPrice}
+                  askPrice={snapshot?.askPrice}
+                  highOfDay={snapshot?.highOfDay}
+                  lowOfDay={snapshot?.lowOfDay}
+                  trend={snapshot?.trend}
+                  feedFreshnessMs={snapshot?.feedFreshnessMs}
+                  source={marketState.source}
+                />
+              </>
             ) : (
-              <div style={s.metricsRow}>
-                <Metric label="Last"  value={snapshot.lastPrice.toFixed(2)} />
-                <Metric label="Bid"   value={snapshot.bidPrice   !== undefined ? snapshot.bidPrice.toFixed(2)   : '—'} dim />
-                <Metric label="Ask"   value={snapshot.askPrice   !== undefined ? snapshot.askPrice.toFixed(2)   : '—'} dim />
-                <Metric label="High"  value={snapshot.highOfDay  !== undefined ? snapshot.highOfDay.toFixed(2)  : '—'} />
-                <Metric label="Low"   value={snapshot.lowOfDay   !== undefined ? snapshot.lowOfDay.toFixed(2)   : '—'} />
-                <Metric label="Trend" value={snapshot.trend ? snapshot.trend.toUpperCase() : '—'} highlight={snapshot.trend === 'up'} dimRed={snapshot.trend === 'down'} />
+              /* Fallback: text-based market card when no bar data yet */
+              <div style={{ ...s.card, flex: 1 }}>
+                <div style={{ ...s.cardTitle, gap: 6 }}>
+                  Live Market — {symbol}
+                  {isConnected && snapshot?.lastPrice && <span style={s.liveDot} />}
+                  {snapshot?.feedFreshnessMs !== undefined && (
+                    <span style={{ fontSize: 9, color: snapshot.feedFreshnessMs > 8000 ? '#f87171' : snapshot.feedFreshnessMs > 4000 ? '#fbbf24' : 'rgba(255,255,255,0.2)', marginLeft: 'auto' }}>
+                      {snapshot.feedFreshnessMs < 1000 ? '<1s' : `${(snapshot.feedFreshnessMs / 1000).toFixed(0)}s`} ago
+                    </span>
+                  )}
+                </div>
+                {!isConnected ? (
+                  <div style={s.statusNote}>
+                    <span style={s.statusDot} />
+                    {shadow?.enabled
+                      ? 'Running on simulated market data.'
+                      : 'Not connected — click Connect Tradovate to enable live data.'}
+                  </div>
+                ) : !snapshot?.lastPrice ? (
+                  <div style={s.statusNote}>
+                    <span style={{ ...s.statusDot, background: '#fbbf24' }} />
+                    Connected — waiting for first price tick on {symbol}.
+                  </div>
+                ) : (
+                  <div style={s.metricsRow}>
+                    <Metric label="Last"  value={snapshot.lastPrice.toFixed(2)} />
+                    <Metric label="Bid"   value={snapshot.bidPrice   !== undefined ? snapshot.bidPrice.toFixed(2)   : '—'} dim />
+                    <Metric label="Ask"   value={snapshot.askPrice   !== undefined ? snapshot.askPrice.toFixed(2)   : '—'} dim />
+                    <Metric label="High"  value={snapshot.highOfDay  !== undefined ? snapshot.highOfDay.toFixed(2)  : '—'} />
+                    <Metric label="Low"   value={snapshot.lowOfDay   !== undefined ? snapshot.lowOfDay.toFixed(2)   : '—'} />
+                    <Metric label="Trend" value={snapshot.trend ? snapshot.trend.toUpperCase() : '—'} highlight={snapshot.trend === 'up'} dimRed={snapshot.trend === 'down'} />
+                  </div>
+                )}
+                {snapshot?.warning && <div style={s.snapshotWarning}>{snapshot.warning}</div>}
               </div>
             )}
-            {snapshot?.warning && <div style={s.snapshotWarning}>{snapshot.warning}</div>}
           </div>
-        )}
+
+          {/* RIGHT: Thesis column */}
+          <div style={s.heroThesisCol}>
+            <TradeThesisPanel
+              pathPrediction={pathPrediction}
+              snapshot={snapshot}
+              levelMap={levelMap}
+              proposedSetup={proposedSetup}
+              reviewedIntents={reviewedIntents}
+              watches={watches}
+              shadow={shadow}
+              simulatorState={simulatorState}
+              sessionContext={sessionContext}
+            />
+          </div>
+        </div>
 
         {/* ── 2. Pipeline Status (always visible when simulator active) ── */}
         <PipelineStatusPanel
@@ -2002,9 +2062,12 @@ const s: Record<string, React.CSSProperties> = {
   headerActions: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 },
   trialBanner:   { fontSize: 11, color: '#34d399', background: 'rgba(52,211,153,0.08)', border: '1px solid rgba(52,211,153,0.2)', borderRadius: 6, padding: '8px 12px', lineHeight: 1.5, fontWeight: 600 },
   disclaimer:    { fontSize: 11, color: 'rgba(255,255,255,0.3)', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: 6, padding: '8px 12px', marginBottom: 16, lineHeight: 1.5 },
-  body:          { display: 'flex', flexDirection: 'column', gap: 14 },
-  card:          { background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 10, padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 12 },
-  cardTitle:     { fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'rgba(255,255,255,0.35)', display: 'flex', alignItems: 'center', gap: 8 },
+  body:          { display: 'flex', flexDirection: 'column', gap: 10 },
+  heroRow:       { display: 'flex', gap: 12, alignItems: 'stretch', borderTop: '1px solid rgba(96,165,250,0.15)', paddingTop: 12 },
+  heroChartCol:  { flex: 2, minWidth: 0, display: 'flex', flexDirection: 'column' },
+  heroThesisCol: { flex: 1, minWidth: 300, maxWidth: 380, display: 'flex', flexDirection: 'column', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 6 },
+  card:          { background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 6, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 12 },
+  cardTitle:     { fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'rgba(255,255,255,0.35)', display: 'flex', alignItems: 'center', gap: 6 },
   noteBox:       { fontSize: 11, color: 'rgba(255,255,255,0.4)', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 6, padding: '8px 10px', lineHeight: 1.5 },
   row:           { display: 'flex', gap: 12, flexWrap: 'wrap' },
   input:         { background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, color: 'rgba(255,255,255,0.85)', fontSize: 12, padding: '7px 10px', outline: 'none', width: '100%', boxSizing: 'border-box', fontFamily: 'inherit' },
