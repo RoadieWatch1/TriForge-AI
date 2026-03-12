@@ -816,7 +816,7 @@ const api = {
   // Auto-updater
   updater: {
     check:   () => ipcRenderer.invoke('updater:check') as Promise<void>,
-    install: () => ipcRenderer.invoke('updater:install') as Promise<void>,
+    install: () => ipcRenderer.send('updater:install'),
     onStatus: (cb: (s: { state: string; version?: string; percent?: number; message?: string }) => void): (() => void) => {
       const handler = (_: Electron.IpcRendererEvent, s: { state: string; version?: string; percent?: number; message?: string }) => cb(s);
       ipcRenderer.on('updater:status', handler);
