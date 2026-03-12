@@ -152,6 +152,7 @@ let _expertPromotionEngine: InstanceType<typeof import('@triforge/engine').Exper
 let _expertReplacementEngine: InstanceType<typeof import('@triforge/engine').ExpertReplacementEngine> | null = null;
 let _evolutionOrchestrator: InstanceType<typeof import('@triforge/engine').EvolutionOrchestrator> | null = null;
 let _expertTrafficController: InstanceType<typeof import('@triforge/engine').ExpertTrafficController> | null = null;
+let _expertLoadTracker: InstanceType<typeof import('@triforge/engine').ExpertLoadTracker> | null = null;
 let _placementLearningBridge: InstanceType<typeof import('@triforge/engine').PlacementLearningBridge> | null = null;
 // LearningEvolutionBridge — deferred (Fix 14): bridge has internal issues
 // (accesses private _registry, wrong field paths on RosterHealthSummary).
@@ -394,6 +395,7 @@ async function _getExpertTrafficController(store: Store): Promise<InstanceType<t
   } = require('@triforge/engine');
 
   const loadTracker = new ExpertLoadTracker(store);
+  _expertLoadTracker = loadTracker;
   const capacityMonitor = new ChipCapacityMonitor(store);
   const placementEngine = new ExpertPlacementEngine(loadTracker, capacityMonitor);
   const auditLedger = new EvolutionAuditLedger(_getDataDir());
@@ -1282,6 +1284,22 @@ VERIFY: [1-3 specific things the user should double-check]
     store.incrementMessageCount();
     event.sender.send('forge:update', { phase: 'complete' });
 
+    // Record expert contributions from council providers into learning brain (GAP #3/#6 fix)
+    try {
+      const lo = _getLearningOrchestrator(store);
+      for (const r of responses) {
+        const confMatch = r.text?.match?.(/\[\[CONFIDENCE:\s*(\d+)%?\]\]/i);
+        const score = confMatch ? parseInt(confMatch[1]) : 50;
+        lo.onExpertContribution(
+          `council:${r.provider}`,     // expertId — namespace as council provider
+          'council_debate',            // ventureId context
+          'council_debate',            // taskType
+          score,                       // contribution score
+          true,                        // survived (contributed to synthesis)
+        );
+      }
+    } catch { /* learning integration optional */ }
+
     // Proactive Council: fire-and-forget suggestion evaluation after each response
     ;(async () => {
       try {
@@ -1394,6 +1412,20 @@ VERIFY: [1-3 specific things the user should double-check]
       });
 
       store.incrementMessageCount();
+
+      // Record expert contributions from council conversation into learning brain
+      try {
+        const lo = _getLearningOrchestrator(store);
+        for (const r of (result.responses ?? [])) {
+          lo.onExpertContribution(
+            `council:${r.provider}`,
+            'council_debate',
+            'council_debate',
+            r.confidence ?? 50,
+            true,
+          );
+        }
+      } catch { /* learning integration optional */ }
 
       // Auto-save synthesis as a knowledge graph insight for future context injection
       if (result.synthesis && result.synthesis.length > 80) {
@@ -6010,6 +6042,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
       // Build expert context from workforce engine (Fix 3 + Fix 9)
       let expertContext = '';
+      let _selectedExpertIds: string[] = [];
       try {
         const wfe = _getExpertWorkforceEngine(store);
 
@@ -6017,16 +6050,38 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         const routingContext: Record<string, unknown> = {};
         try {
           const lo = _getLearningOrchestrator(store);
-          const recs = lo.getContextForCouncil();
-          if (recs) routingContext.learningRecommendations = [];
+          const recs = lo.getExpertRecommendations('vibe_analysis');
+          routingContext.learningRecommendations = recs.length > 0 ? recs : [];
         } catch { /* learning hints optional */ }
+        // Placement saturation awareness
+        try {
+          if (_expertTrafficController) {
+            const ps = _expertTrafficController.getPlacementStatus();
+            const saturatedIds = (ps.lanes ?? [])
+              .filter((l: any) => l.utilization >= (l.saturationThreshold ?? 80))
+              .map((l: any) => l.id);
+            if (saturatedIds.length > 0) {
+              routingContext.placementContext = { saturatedLanes: saturatedIds };
+            }
+          }
+        } catch { /* placement hints optional */ }
 
         // Fix 3: Use correct method (getExpertForTask) instead of non-existent selectExperts
         const decision = wfe.getExpertForTask('vibe_analysis', routingContext as any);
         // decision.selectedExperts is string[] of expert IDs — resolve via router
-        if (_expertRouter && decision.selectedExperts?.length > 0) {
-          expertContext = _expertRouter.buildExpertContext(decision.selectedExperts);
+        _selectedExpertIds = decision.selectedExperts ?? [];
+        if (_expertRouter && _selectedExpertIds.length > 0) {
+          expertContext = _expertRouter.buildExpertContext(_selectedExpertIds);
         }
+        // Routing transparency: log the decision + context for diagnostics
+        console.log('[TriForge:MoE] Expert routing decision:', {
+          taskType: 'vibe_analysis',
+          selected: decision.selectedExperts ?? [],
+          skipped: decision.skippedExperts?.length ?? 0,
+          learningRecs: routingContext.learningRecommendations ?? [],
+          saturatedLanes: (routingContext.placementContext as any)?.saturatedLanes ?? [],
+          reason: decision.reason ?? '',
+        });
       } catch { /* expert context is optional */ }
 
       const { runVibeCouncil } = require('@triforge/engine');
@@ -6044,9 +6099,24 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         chat: (msgs: { role: string; content: string }[]) => p.chat(msgs),
       }));
 
+      const _vibeStartMs = Date.now();
       const result = await runVibeCouncil(
         input, profile, councilProviders, expertContext, vibeMode, onProgress,
       );
+      const _vibeRuntimeMs = Date.now() - _vibeStartMs;
+
+      // Record expert invocations into placement load tracker (GAP #2 fix)
+      try {
+        if (_expertLoadTracker && _selectedExpertIds.length > 0) {
+          const perExpertMs = Math.round(_vibeRuntimeMs / _selectedExpertIds.length);
+          const perExpertTokens = Math.round(200 / _selectedExpertIds.length); // estimated
+          for (const eid of _selectedExpertIds) {
+            const placement = _expertLoadTracker.getPlacement(eid);
+            const lane = placement?.currentLane ?? 'shared:primary';
+            _expertLoadTracker.recordInvocation(eid, lane, perExpertMs, perExpertTokens, 0);
+          }
+        }
+      } catch { /* placement tracking optional */ }
 
       // Apply synthesized axis changes back to the stored profile
       if (result.synthesizedDecisions?.length > 0) {
@@ -6116,6 +6186,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 export function disposeIpcSingletons(): void {
   _expertTrafficController?.dispose();  // clears rebalance interval
   _expertTrafficController = null;
+  _expertLoadTracker = null;
   _evolutionOrchestrator?.dispose();    // Fix 10: unsubscribes EventBus listener in ComponentUseTracker
   _evolutionOrchestrator = null;
   _placementLearningBridge = null;
