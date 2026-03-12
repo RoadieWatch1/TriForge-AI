@@ -37,6 +37,7 @@ import { ChartTruthStrip } from './trading/ChartTruthStrip';
 import { CurrentTradeStateCard } from './trading/CurrentTradeStateCard';
 import { DecisionReasonCard } from './trading/DecisionReasonCard';
 import { MarketContextCard } from './trading/MarketContextCard';
+import { ShadowTraderBottomDock } from './trading/ShadowTraderBottomDock';
 
 // ── Local type mirrors (engine types, no direct import) ───────────────────────
 
@@ -440,6 +441,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
   // Chart state
   const [marketState, setMarketState] = useState<MarketStatePayload | null>(null);
   const [chartTimeframe, setChartTimeframe] = useState<'1m' | '5m' | '15m'>('5m');
+  const [dockCollapsed, setDockCollapsed] = useState(false);
 
   // Pipeline visibility state
   const [blockedEvals, setBlockedEvals] = useState<any[]>([]);
@@ -1052,6 +1054,39 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
             <ReliabilityPanel reliability={simulatorState?.signalReliability ?? null} />
           </div>
         </div>
+
+        {/* ── Bottom Dock ── */}
+        <ShadowTraderBottomDock
+          simPositions={simPositions}
+          shadow={shadow}
+          accountState={accountState}
+          reviewedIntents={reviewedIntents}
+          simulatorState={simulatorState}
+          journalEntries={journalEntries}
+          journalFilterSymbol={journalFilterSymbol}
+          journalFilterOutcome={journalFilterOutcome}
+          onFilterSymbolChange={setJournalFilterSymbol}
+          onFilterOutcomeChange={setJournalFilterOutcome}
+          expectancySummary={expectancySummary}
+          expectancyDimension={expectancyDimension}
+          onExpectancyDimensionChange={(d: string) => { setExpectancyDimension(d); expectancyDimRef.current = d; }}
+          councilEffectSummary={councilEffectSummary}
+          advisoryTargetSummary={advisoryTargetSummary}
+          calibrationSuggestions={calibrationSuggestions}
+          setupTrustRecords={setupTrustRecords}
+          activeSetupFamily={simulatorState?.signalReliability ? (reviewedIntents.find((r: any) => r.outcome === 'approved')?.intent?.setupFamily ?? null) : null}
+          activeRegime={simulatorState?.regimeContext?.current?.regime ?? null}
+          blockedEvals={blockedEvals}
+          snapshot={snapshot}
+          levelMap={levelMap}
+          pathPrediction={pathPrediction}
+          watches={watches}
+          sessionContext={sessionContext}
+          blockedEvaluations={blockedEvals}
+          reliability={simulatorState?.signalReliability ?? null}
+          collapsed={dockCollapsed}
+          onToggleCollapsed={() => setDockCollapsed(c => !c)}
+        />
 
         {/* ── 2. Pipeline Status (always visible when simulator active) ── */}
         <PipelineStatusPanel
