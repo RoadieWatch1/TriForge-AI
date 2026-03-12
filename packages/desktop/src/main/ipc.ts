@@ -30,6 +30,7 @@ import { RISK_AGENT_ROLE, RISK_AGENT_SYSTEM, buildRiskAgentPrompt } from './trad
 import { COUNTER_CASE_AGENT_ROLE, COUNTER_CASE_AGENT_SYSTEM, buildCounterCaseAgentPrompt } from './trading/council/CounterCaseAgentPrompt';
 import { computeExpectancy, computeAdvisoryTargetAnalytics, type BucketDimension } from './trading/learning/PerformanceAnalytics';
 import { calibrateWeights } from './trading/learning/SetupWeightCalibrator';
+import { SetupReliabilityStore } from './trading/reliability/SetupReliabilityStore';
 import { shadowAnalyticsStore } from './trading/shadowAnalyticsStore';
 import { PaperEngine } from './trading/paperEngine';
 import { SensorManager } from './sensors/index';
@@ -3341,6 +3342,17 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       const suggestions = calibrateWeights(entries);
       return { suggestions };
     } catch { return { suggestions: [] }; }
+  });
+
+  ipcMain.handle('trading:reliability:setupTrust', async () => {
+    if (!hasCapability('FINANCE_TRADING', await _tradeTier())) return { records: [], error: lockedError('FINANCE_TRADING') };
+    try {
+      const sim = shadowTradingController.getSimulator();
+      const entries = sim.getJournalStore().loadAll();
+      const store = new SetupReliabilityStore();
+      store.recompute(entries);
+      return { records: store.getAll() };
+    } catch { return { records: [] }; }
   });
 
   // Load persisted strategy config on startup

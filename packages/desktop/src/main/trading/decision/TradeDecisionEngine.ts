@@ -41,6 +41,9 @@ import type {
 } from '@triforge/engine';
 import { deriveScoreBand } from '@triforge/engine';
 import { validateRisk, type AccountState, type RiskSettings } from './RiskModel';
+import { classifySetup, type SetupClassification } from '../reliability/SetupQualityEngine';
+import { checkRegimeCompatibility } from '../reliability/RegimeFilterGovernor';
+import type { RegimeContext } from '../learning/SessionRegimeMemory';
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -78,6 +81,8 @@ export interface BlockedEvaluation {
   watchId: string;
   levelLabel: string;
   reasons: string[];
+  /** Setup classification preserved for diagnostics (when blocked by quality). */
+  classification?: SetupClassification;
 }
 
 // ── ID Generator ──────────────────────────────────────────────────────────────
@@ -506,6 +511,7 @@ export function evaluateDecisions(
   riskSettings?: Partial<RiskSettings>,
   config?: Partial<DecisionEngineConfig>,
   levelMap?: LevelMap | null,
+  regimeCtx?: RegimeContext | null,
 ): DecisionResult {
   const cfg = { ...DEFAULT_CONFIG, ...config };
   const intents: TradeIntent[] = [];
@@ -521,6 +527,29 @@ export function evaluateDecisions(
 
     // ── Derive entry / stop / target ────────────────────────────────────
     const derived = _deriveLevels(watch, atr, cfg.stopPaddingAtrMult, allLevels, cfg.maxStopAtrMult);
+
+    // ── Setup quality classification ────────────────────────────────────
+    const classification = classifySetup(watch, session);
+    if (classification.qualityBand === 'rejected' || classification.family === 'unclassified') {
+      blocked.push({
+        watchId: watch.id,
+        levelLabel: watch.level.label,
+        reasons: ['setup_quality_rejected'],
+        classification,
+      });
+      continue;
+    }
+
+    // ── Regime compatibility filter ─────────────────────────────────────
+    const regimeResult = checkRegimeCompatibility(classification.family, regimeCtx ?? null);
+    if (!regimeResult.allowed) {
+      blocked.push({
+        watchId: watch.id,
+        levelLabel: watch.level.label,
+        reasons: ['regime_mismatch'],
+      });
+      continue;
+    }
 
     // ── Hard blockers ───────────────────────────────────────────────────
     const hardBlocks = _checkHardBlockers(watch, data, session, derived, cfg);
@@ -547,7 +576,8 @@ export function evaluateDecisions(
     const band = deriveScoreBand(finalScore);
 
     // ── Score threshold ─────────────────────────────────────────────────
-    if (band === 'no_trade') {
+    // Caution regime raises the bar: B-band trades are blocked (require A+ in caution).
+    if (band === 'no_trade' || (regimeResult.compatibility === 'caution' && band === 'B')) {
       blocked.push({
         watchId: watch.id,
         levelLabel: watch.level.label,
@@ -587,6 +617,9 @@ export function evaluateDecisions(
       route: watch.route,
       watchId: watch.id,
       createdAt: Date.now(),
+      setupFamily: classification.family,
+      setupQualityScore: classification.qualityScore,
+      setupQualityBand: classification.qualityBand,
     };
 
     // ── Advisory targets (T2/T3) — informational only ──────────────────

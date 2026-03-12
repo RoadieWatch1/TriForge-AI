@@ -566,6 +566,8 @@ const api = {
       ipcRenderer.invoke('trading:journal:weights') as Promise<{ suggestions?: unknown[]; error?: string }>,
     journalAdvisoryTargetsGet: (dimension?: string) =>
       ipcRenderer.invoke('trading:journal:advisoryTargets', dimension) as Promise<{ summary?: unknown; error?: string }>,
+    reliabilitySetupTrust: () =>
+      ipcRenderer.invoke('trading:reliability:setupTrust') as Promise<{ records?: unknown[]; error?: string }>,
   },
 
   // Scheduler (recurring + once jobs)

@@ -370,6 +370,12 @@ export interface TradeIntent {
   watchId: string;
   /** When this intent was generated (ms epoch). */
   createdAt: number;
+  /** Setup family classification (from reliability engine). */
+  setupFamily?: string;
+  /** Setup quality score 0-100 (from reliability engine). */
+  setupQualityScore?: number;
+  /** Setup quality band (from reliability engine). */
+  setupQualityBand?: string;
 }
 
 // ── Level Map ───────────────────────────────────────────────────────────────

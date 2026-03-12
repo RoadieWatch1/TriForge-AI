@@ -51,6 +51,12 @@ import { NewsCalendarProvider } from '../news/NewsCalendarProvider';
 import { shouldBlockForNews, getNewsRiskContext, type NewsRiskContext } from '../news/NewsRiskGate';
 import { SessionRegimeMemory, type RegimeContext } from '../learning/SessionRegimeMemory';
 
+// Reliability modules
+import { computeFreshness } from '../reliability/SignalFreshness';
+import { computeReliability, type SignalReliabilityScore, type ReliabilityComponents } from '../reliability/ReliabilityScorer';
+import { checkRegimeCompatibility } from '../reliability/RegimeFilterGovernor';
+import { validateWithGovernor, type GovernorBlock } from '../reliability/ReliabilityGovernor';
+
 // Journal
 import { TradeJournalStore, type ExtendedJournalEntry } from '../learning/TradeJournalStore';
 
@@ -102,6 +108,8 @@ export interface SimulatorState {
   newsRiskContext: NewsRiskContext | null;
   /** Current session regime context (from SessionRegimeMemory). */
   regimeContext: RegimeContext | null;
+  /** Signal reliability score for latest approved intent. */
+  signalReliability: SignalReliabilityScore | null;
 }
 
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -138,6 +146,9 @@ export class TriForgeShadowSimulator {
   private readonly _newsProvider = new NewsCalendarProvider();
   private readonly _regimeMemory = new SessionRegimeMemory();
   private readonly _journalStore = new TradeJournalStore();
+
+  // Feed stale event timestamps (for governor instability check).
+  private _feedStaleEvents: number[] = [];
 
   // Prediction stabilizer state (hysteresis to prevent route flip-flopping).
   // Holds the previous stable direction and tracks how many ticks a new
@@ -258,7 +269,46 @@ export class TriForgeShadowSimulator {
         undefined, // riskSettings
         undefined, // config
         levelMap,  // for structure-based stop placement
+        regimeCtx, // for setup quality + regime filter
       );
+    }
+
+    // ── Step 6b: Feed stale tracking + Governor gate ──────────────────
+    // Track feed stale events for governor instability check
+    if (data.feedFreshnessMs != null && data.feedFreshnessMs > 5000) {
+      this._feedStaleEvents.push(now);
+    }
+    // Prune to 5-minute window
+    const staleWindowStart = now - 300_000;
+    this._feedStaleEvents = this._feedStaleEvents.filter(t => t >= staleWindowStart);
+
+    // Governor gate: validate each intent through reliability governor
+    if (decisionResult.intents.length > 0) {
+      const governed: TradeIntent[] = [];
+      const lastClosed = this._getLastClosedTradeForGovernor();
+      for (const intent of decisionResult.intents) {
+        const gov = validateWithGovernor(
+          intent,
+          accountState,
+          this._state.signalReliability,
+          this._state.reviewedIntents,
+          this._feedStaleEvents.length,
+          lastClosed,
+          undefined,
+          session,
+        );
+        if (gov.allowed) {
+          governed.push(intent);
+        } else {
+          // Preserve structured block categories in diagnostics
+          decisionResult.blocked.push({
+            watchId: intent.watchId,
+            levelLabel: intent.entryLevel.label,
+            reasons: gov.blocks.map(b => `[${b.category}] ${b.code}: ${b.explanation}`),
+          });
+        }
+      }
+      decisionResult.intents = governed;
     }
 
     this._state.pendingIntents = decisionResult.intents;
@@ -289,6 +339,9 @@ export class TriForgeShadowSimulator {
         data,
       );
     }
+
+    // ── Step 10b: Compute reliability for latest approved intent ────────
+    this._computeReliability(data);
 
     // ── Step 11: Set blocked reason or clear it ─────────────────────────
     if (newsCtx.blocked) {
@@ -581,6 +634,14 @@ export class TriForgeShadowSimulator {
         councilAvgConfidence,
         additionalTargets: intent.additionalTargets ?? [],
         scoreBreakdown,
+        setupFamily: intent.setupFamily ?? null,
+        setupQualityScore: intent.setupQualityScore ?? null,
+        setupQualityBand: intent.setupQualityBand ?? null,
+        regimeCompatibility: (() => {
+          const family = (intent.setupFamily ?? 'unclassified') as any;
+          const rc = checkRegimeCompatibility(family, regimeCtx ?? null);
+          return rc.compatibility;
+        })(),
       };
 
       this._journalStore.append(entry);
@@ -695,6 +756,7 @@ export class TriForgeShadowSimulator {
     this._reviewedIntentIds.clear();
     this._reviewedWatchIds.clear();
     this._regimeMemory.reset();
+    this._feedStaleEvents = [];
     this._stableDirection = null;
     this._stablePrediction = null;
     this._flipPersistCount = 0;
@@ -791,6 +853,108 @@ export class TriForgeShadowSimulator {
     return this._stablePrediction;
   }
 
+  // ── Governor Helpers ────────────────────────────────────────────────────
+
+  /**
+   * Get the last closed trade data for slippage cooldown check.
+   */
+  private _getLastClosedTradeForGovernor(): {
+    exitPrice: number; stopPrice: number; targetPrice: number; closedAt: number;
+  } | null {
+    const closed = this._positionBook.getClosedPositions();
+    if (closed.length === 0) return null;
+    const last = closed[closed.length - 1];
+    if (last.exitPrice === undefined || last.closedAt === undefined) return null;
+    return {
+      exitPrice: last.exitPrice,
+      stopPrice: last.stopPrice,
+      targetPrice: last.targetPrice,
+      closedAt: last.closedAt,
+    };
+  }
+
+  // ── Reliability Computation ───────────────────────────────────────────────
+
+  /**
+   * Compute reliability for the latest approved (and still-relevant) intent.
+   * Sets `signalReliability` on state — null when no approved intent exists.
+   */
+  private _computeReliability(data: NormalizedMarketData): void {
+    const latestApproved = this._state.reviewedIntents.find(
+      ri => ri.outcome === 'approved',
+    );
+
+    if (!latestApproved?.intent || !data.currentPrice) {
+      this._state.signalReliability = null;
+      return;
+    }
+
+    const intent = latestApproved.intent;
+    const regimeCtx = this._state.regimeContext;
+
+    // Determine current and intent-time regime
+    const currentRegime = regimeCtx?.current?.regime ?? null;
+    // Intent-time regime: stored in tags or approximated from the reviewed intent
+    const intentRegime = intent.tags?.find(
+      (t: string) => ['open_drive', 'trend', 'range', 'reversal', 'expansion', 'drift'].includes(t),
+    ) ?? null;
+
+    // Regime compatibility for freshness check
+    const family = (intent.setupFamily ?? 'unclassified') as any;
+    const regimeResult = checkRegimeCompatibility(family, regimeCtx ?? null);
+
+    // Compute freshness
+    const freshness = computeFreshness(
+      intent,
+      data.currentPrice,
+      currentRegime,
+      intentRegime,
+      regimeResult.compatibility,
+    );
+
+    // Build reliability components
+    const components: ReliabilityComponents = {
+      setupQuality:      intent.setupQualityScore ?? 50,
+      regimeAlignment:   regimeResult.alignmentScore,
+      signalFreshness:   freshness.freshnessScore,
+      confirmationDepth: intent.score?.confirmationScore ?? 50,
+      routeClarity:      intent.score?.routeScore ?? 50,
+      councilConsensus:  this._councilConsensusScore(latestApproved),
+      feedStability:     this._feedStabilityScore(data),
+      historicalEdge:    50, // default until SetupReliabilityStore is wired (Phase 5)
+    };
+
+    this._state.signalReliability = computeReliability(
+      components,
+      freshness.expired,
+    );
+  }
+
+  /**
+   * Derive council consensus score 0-100 from the review result.
+   */
+  private _councilConsensusScore(review: ReviewedIntent): number {
+    if (!review.councilResult?.votes || review.councilResult.votes.length === 0) return 50;
+    const votes = review.councilResult.votes;
+    const takeCount = votes.filter(v => v.vote === 'TAKE').length;
+    const avgConf = votes.reduce((s, v) => s + v.confidence, 0) / votes.length;
+    // Score: take ratio * avg confidence
+    return Math.round((takeCount / votes.length) * avgConf);
+  }
+
+  /**
+   * Derive feed stability score 0-100 from feed freshness.
+   */
+  private _feedStabilityScore(data: NormalizedMarketData): number {
+    const freshMs = data.feedFreshnessMs;
+    if (freshMs == null || freshMs <= 0) return 90; // no data = assume stable
+    if (freshMs < 1000) return 100;
+    if (freshMs < 3000) return 80;
+    if (freshMs < 5000) return 60;
+    if (freshMs < 10000) return 30;
+    return 10;
+  }
+
   // ── Private ───────────────────────────────────────────────────────────────
 
   private _freshState(): SimulatorState {
@@ -808,6 +972,7 @@ export class TriForgeShadowSimulator {
       reviewedIntents:     [],
       newsRiskContext:      null,
       regimeContext:        null,
+      signalReliability:   null,
     };
   }
 }

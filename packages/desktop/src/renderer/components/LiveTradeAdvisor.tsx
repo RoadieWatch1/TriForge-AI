@@ -29,6 +29,8 @@ import { CandlestickChart } from './trading/CandlestickChart';
 import { MarketDataStrip } from './trading/MarketDataStrip';
 import { PipelineStatusPanel } from './trading/PipelineStatusPanel';
 import { TradeThesisPanel } from './trading/TradeThesisPanel';
+import { ReliabilityPanel } from './trading/ReliabilityPanel';
+import { TrustEvidencePanel } from './trading/TrustEvidencePanel';
 
 // ── Local type mirrors (engine types, no direct import) ───────────────────────
 
@@ -349,6 +351,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
   const [journalFilterOutcome, setJournalFilterOutcome] = useState('');
   const [councilEffectSummary, setCouncilEffectSummary] = useState<any>(null);
   const [advisoryTargetSummary, setAdvisoryTargetSummary] = useState<any>(null);
+  const [setupTrustRecords, setSetupTrustRecords] = useState<any[]>([]);
   const expectancyDimRef = useRef(expectancyDimension);
 
   // ── Trading trial ──────────────────────────────────────────────────────────
@@ -434,13 +437,14 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
     // SLOW LANE (12s): journal, analytics, account
     const slowTick = async () => {
       try {
-        const [journalRes, expectancyRes, weightsRes, councilEffRes, advisoryTargetRes, acctRes] = await Promise.all([
+        const [journalRes, expectancyRes, weightsRes, councilEffRes, advisoryTargetRes, acctRes, trustRes] = await Promise.all([
           (window.triforge.trading as any).journalEntriesGet?.({ limit: 50 }) ?? Promise.resolve(null),
           (window.triforge.trading as any).journalExpectancyGet?.(expectancyDimRef.current) ?? Promise.resolve(null),
           (window.triforge.trading as any).journalWeightsGet?.() ?? Promise.resolve(null),
           (window.triforge.trading as any).journalExpectancyGet?.('councilConsensus') ?? Promise.resolve(null),
           (window.triforge.trading as any).journalAdvisoryTargetsGet?.() ?? Promise.resolve(null),
           (window.triforge.trading as any).tradovateAccountState?.() ?? Promise.resolve(null),
+          (window.triforge.trading as any).reliabilitySetupTrust?.() ?? Promise.resolve(null),
         ]);
         if (journalRes?.entries) setJournalEntries(journalRes.entries);
         if (expectancyRes?.summary) setExpectancySummary(expectancyRes.summary);
@@ -448,6 +452,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
         if (councilEffRes?.summary) setCouncilEffectSummary(councilEffRes.summary);
         if (advisoryTargetRes?.summary) setAdvisoryTargetSummary(advisoryTargetRes.summary);
         if (acctRes?.state) setAccountState(acctRes.state as TradovateAccountState);
+        if (trustRes?.records) setSetupTrustRecords(trustRes.records);
       } catch { /* ignore */ }
     };
 
@@ -923,6 +928,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
               simulatorState={simulatorState}
               sessionContext={sessionContext}
             />
+            <ReliabilityPanel reliability={simulatorState?.signalReliability ?? null} />
           </div>
         </div>
 
@@ -937,7 +943,17 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           blockedEvaluations={blockedEvals}
           snapshot={snapshot}
           shadow={shadow}
+          reliability={simulatorState?.signalReliability ?? null}
         />
+
+        {/* ── Trust Evidence (collapsed by default) ── */}
+        {setupTrustRecords.length > 0 && (
+          <TrustEvidencePanel
+            records={setupTrustRecords}
+            activeSetupFamily={simulatorState?.signalReliability ? (reviewedIntents[0]?.intent?.setupFamily ?? null) : null}
+            activeRegime={simulatorState?.regimeContext?.current?.regime ?? null}
+          />
+        )}
 
         {/* ── 3. Active / Recent Trade Card ── */}
         {simulatorState?.active && (() => {

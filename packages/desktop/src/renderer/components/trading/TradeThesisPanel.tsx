@@ -7,7 +7,7 @@ import React, { useRef, useEffect, useState } from 'react';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type ActionState = 'ACT' | 'WAIT' | 'BLOCKED' | 'STAND_DOWN';
+type ActionState = 'ACT' | 'WAIT' | 'BLOCKED' | 'EXPIRED' | 'STAND_DOWN';
 type BiasDirection = 'LONG' | 'SHORT' | 'NEUTRAL';
 
 interface ThesisSetup {
@@ -109,6 +109,9 @@ function computeThesis(p: TradeThesisProps): ThesisState {
     }
   }
 
+  // ── Reliability check ──
+  const reliability = p.simulatorState?.signalReliability;
+
   // ── Action state ──
   const blockedReason = p.shadow?.blockedReason || p.simulatorState?.blockedReason;
   const hasOpenTrade = (p.shadow?.openTrades?.length ?? 0) > 0;
@@ -127,6 +130,9 @@ function computeThesis(p: TradeThesisProps): ThesisState {
     const uPnl = t.unrealizedPnl !== undefined ? `${t.unrealizedPnl >= 0 ? '+' : ''}$${t.unrealizedPnl.toFixed(0)}` : '';
     actionState = 'ACT';
     contextSentence = `${t.side.toUpperCase()} ${t.symbol} open at ${t.entryPrice.toFixed(2)} ${uPnl}`;
+  } else if (reliability?.expired && !hasOpenTrade) {
+    actionState = 'EXPIRED';
+    contextSentence = `Signal expired: ${reliability.explanation}`;
   } else if (isActionable) {
     actionState = 'ACT';
     contextSentence = `Actionable ${intent.side} setup at ${intent.entry?.toFixed(2)} — council approved`;
@@ -193,10 +199,11 @@ const CLR = {
 };
 
 const ACTION_STYLE: Record<ActionState, { color: string; bg: string }> = {
-  ACT:        { color: CLR.green, bg: 'rgba(52,211,153,0.1)' },
-  WAIT:       { color: CLR.amber, bg: 'rgba(251,191,36,0.08)' },
-  BLOCKED:    { color: CLR.red,   bg: 'rgba(248,113,113,0.08)' },
-  STAND_DOWN: { color: CLR.muted, bg: 'rgba(255,255,255,0.03)' },
+  ACT:        { color: CLR.green,    bg: 'rgba(52,211,153,0.1)' },
+  WAIT:       { color: CLR.amber,    bg: 'rgba(251,191,36,0.08)' },
+  BLOCKED:    { color: CLR.red,      bg: 'rgba(248,113,113,0.08)' },
+  EXPIRED:    { color: '#a78bfa',    bg: 'rgba(167,139,250,0.08)' },
+  STAND_DOWN: { color: CLR.muted,    bg: 'rgba(255,255,255,0.03)' },
 };
 
 const BIAS_STYLE: Record<BiasDirection, { color: string }> = {
@@ -332,6 +339,15 @@ export function TradeThesisPanel(props: TradeThesisProps) {
 
           {/* Meta chips */}
           <div style={st.metaRow}>
+            {reliability?.band && (
+              <span style={{
+                ...st.metaChip,
+                color: reliability.band === 'elite' ? CLR.green : reliability.band === 'qualified' ? CLR.blue : reliability.band === 'watchlist' ? CLR.amber : CLR.red,
+                background: reliability.band === 'elite' ? 'rgba(52,211,153,0.08)' : reliability.band === 'qualified' ? 'rgba(96,165,250,0.08)' : reliability.band === 'watchlist' ? 'rgba(251,191,36,0.08)' : 'rgba(248,113,113,0.08)',
+              }}>
+                {reliability.band.toUpperCase()}
+              </span>
+            )}
             {thesis.setup.confidence && (
               <span style={{
                 ...st.metaChip,

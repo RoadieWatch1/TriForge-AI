@@ -60,7 +60,9 @@ export type BucketDimension =
   | 'symbol'
   | 'scoreBand'
   | 'sessionWindow'
-  | 'councilConsensus';
+  | 'councilConsensus'
+  | 'setupFamily'
+  | 'setupFamilyRegime';
 
 export interface PerformanceSummary {
   /** Overall stats across all entries. */
@@ -168,6 +170,10 @@ function _extractBucketKeys(
       return [entry.sessionLabel];
     case 'councilConsensus':
       return [(entry as any).councilConsensusPattern ?? 'unknown'];
+    case 'setupFamily':
+      return [(entry as any).setupFamily ?? 'unclassified'];
+    case 'setupFamilyRegime':
+      return [`${(entry as any).setupFamily ?? 'unclassified'}:${entry.sessionRegime ?? 'unknown'}`];
     default:
       return ['unknown'];
   }

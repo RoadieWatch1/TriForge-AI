@@ -19,6 +19,7 @@ interface PipelineStatusPanelProps {
   blockedEvaluations: any[];
   snapshot: { lastPrice?: number; trend?: string; feedFreshnessMs?: number } | null;
   shadow: { enabled: boolean; paused: boolean; openTrades: any[]; closedTrades: any[]; tradesToday: number; blockedReason?: string; lastEvalAt?: number } | null;
+  reliability?: any;
 }
 
 // ── Colors ──────────────────────────────────────────────────────────────────
@@ -126,6 +127,7 @@ const PIPELINE_STAGES = [
   { key: 'path',      label: 'PATH' },
   { key: 'watches',   label: 'WATCHES' },
   { key: 'decision',  label: 'DECISION' },
+  { key: 'trust',     label: 'TRUST' },
   { key: 'council',   label: 'COUNCIL' },
   { key: 'execution', label: 'EXECUTE' },
 ];
@@ -148,6 +150,12 @@ function getPipelineProgress(sim: any, levelMap: any, pathPrediction: any, watch
   if (hasRecentIntent) stages.decision = 'pass';
   else if (stages.watches === 'pass') stages.decision = 'active';
   else stages.decision = 'idle';
+  // Trust stage: based on reliability band from simulator state
+  const relBand = sim?.signalReliability?.band;
+  if (relBand === 'elite' || relBand === 'qualified') stages.trust = 'pass';
+  else if (relBand === 'blocked' || relBand === 'watchlist') stages.trust = 'blocked';
+  else if (stages.decision === 'pass') stages.trust = 'active';
+  else stages.trust = 'idle';
   if (reviewed[0]?.outcome === 'approved') stages.council = 'pass';
   else if (reviewed[0]?.outcome === 'rejected') stages.council = 'blocked';
   else if (stages.decision === 'pass') stages.council = 'active';
@@ -270,6 +278,7 @@ export function PipelineStatusPanel({
   blockedEvaluations,
   snapshot,
   shadow,
+  reliability,
 }: PipelineStatusPanelProps) {
   const [showDiagnostics, setShowDiagnostics] = useState(false);
 

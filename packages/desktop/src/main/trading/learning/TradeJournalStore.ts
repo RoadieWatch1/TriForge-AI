@@ -90,6 +90,14 @@ export interface ExtendedJournalEntry extends JournalEntry {
     session: number;
     rr: number;
   } | null;
+  /** Setup family classification (from reliability engine). */
+  setupFamily?: string | null;
+  /** Setup quality score 0-100 (from reliability engine). */
+  setupQualityScore?: number | null;
+  /** Setup quality band (from reliability engine). */
+  setupQualityBand?: string | null;
+  /** Regime compatibility at time of trade. */
+  regimeCompatibility?: string | null;
 }
 
 // ── Constants ───────────────────────────────────────────────────────────────
