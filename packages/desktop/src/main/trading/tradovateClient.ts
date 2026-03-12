@@ -395,6 +395,51 @@ class BarAccumulator {
     return 'normal';
   }
 
+  /**
+   * Return bar arrays including the in-progress (forming) candle.
+   * This is critical for chart display — without it, the chart lags by up to
+   * one full candle period (5 min for 5m, 15 min for 15m).
+   */
+  getBarsWithLive(): { bars1m: OhlcBar[]; bars5m: OhlcBar[]; bars15m: OhlcBar[] } {
+    // Snapshot the current forming 1m bar (if any)
+    const liveBar: OhlcBar | null = this._currentBar
+      ? {
+          timestamp: this._currentBar.minuteKey * 60_000,
+          open:   this._currentBar.open,
+          high:   this._currentBar.high,
+          low:    this._currentBar.low,
+          close:  this._currentBar.close,
+          volume: this._currentBar.volume,
+        }
+      : null;
+
+    // 1m: completed bars + forming bar
+    const bars1m = liveBar ? [...this._bars1m, liveBar] : [...this._bars1m];
+
+    // 5m: completed 5m bars + live partial 5m bar from current bucket
+    const bars5m = [...this._bars5m];
+    if (liveBar) {
+      const liveBucket5m = _floorToTimeframe(liveBar.timestamp, 5);
+      // Gather any completed 1m bars in the same 5m bucket + the forming bar
+      const barsInBucket = bars1m.filter(b => _floorToTimeframe(b.timestamp, 5) === liveBucket5m);
+      if (barsInBucket.length > 0) {
+        bars5m.push(_aggregateBars(barsInBucket));
+      }
+    }
+
+    // 15m: completed 15m bars + live partial 15m bar from current bucket
+    const bars15m = [...this._bars15m];
+    if (liveBar) {
+      const liveBucket15m = _floorToTimeframe(liveBar.timestamp, 15);
+      const barsInBucket = bars1m.filter(b => _floorToTimeframe(b.timestamp, 15) === liveBucket15m);
+      if (barsInBucket.length > 0) {
+        bars15m.push(_aggregateBars(barsInBucket));
+      }
+    }
+
+    return { bars1m, bars5m, bars15m };
+  }
+
   // ── Private helpers ──
 
   private _closeCurrentBar(): void {
@@ -929,13 +974,9 @@ export class TradovateClient {
     }
   }
 
-  /** Return copies of accumulated OHLC bars for all timeframes. */
+  /** Return OHLC bars including the live forming candle for all timeframes. */
   getBars(): { bars1m: OhlcBar[]; bars5m: OhlcBar[]; bars15m: OhlcBar[] } {
-    return {
-      bars1m:  [...this._accumulator['_bars1m']],
-      bars5m:  [...this._accumulator['_bars5m']],
-      bars15m: [...this._accumulator['_bars15m']],
-    };
+    return this._accumulator.getBarsWithLive();
   }
 
   disconnect(): void {

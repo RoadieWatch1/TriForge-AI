@@ -143,6 +143,26 @@ function _aggregate1mBars(bars: OhlcBar[], timeframe: '5m' | '15m'): OhlcBar | n
   };
 }
 
+/** Floor a millisecond timestamp to the start of its N-minute bucket. */
+function _floorToBucket(tsMs: number, minutes: number): number {
+  const msPerBucket = minutes * 60_000;
+  return Math.floor(tsMs / msPerBucket) * msPerBucket;
+}
+
+/** Clock-aligned aggregation: group 1m bars into N-minute buckets by timestamp. */
+function _aggregateByClockTime(bars1m: OhlcBar[], minutes: number): OhlcBar[] {
+  if (bars1m.length === 0) return [];
+  const buckets = new Map<number, OhlcBar[]>();
+  for (const bar of bars1m) {
+    const key = _floorToBucket(bar.timestamp, minutes);
+    let arr = buckets.get(key);
+    if (!arr) { arr = []; buckets.set(key, arr); }
+    arr.push(bar);
+  }
+  const sorted = [...buckets.keys()].sort((a, b) => a - b);
+  return sorted.map(k => _aggregate1mBars(buckets.get(k)!, minutes === 5 ? '5m' : '15m')!).filter(Boolean);
+}
+
 // ── Provider ─────────────────────────────────────────────────────────────────
 
 export class SimulatedMarketDataProvider implements IMarketDataProvider {
@@ -247,11 +267,53 @@ export class SimulatedMarketDataProvider implements IMarketDataProvider {
   getBars(): { bars1m: OhlcBar[]; bars5m: OhlcBar[]; bars15m: OhlcBar[] } | null {
     if (!this._connected) return null;
     this._advance();
-    return {
-      bars1m:  [...this._bars1m],
-      bars5m:  [...this._bars5m],
-      bars15m: [...this._bars15m],
-    };
+
+    // Include the live forming 1m bar so the chart shows the current candle
+    const liveBar: OhlcBar | null = this._currentBar
+      ? {
+          timestamp: this._currentBar.startMs,
+          open:   this._currentBar.open,
+          high:   this._currentBar.high,
+          low:    this._currentBar.low,
+          close:  this._currentBar.close,
+          volume: this._currentBar.volume,
+        }
+      : null;
+
+    const bars1m = liveBar ? [...this._bars1m, liveBar] : [...this._bars1m];
+
+    // Build 5m/15m including the live bar's bucket.
+    // _rebuild*Bars() may already contain a partial bar for the forming bucket —
+    // replace it (not append) to avoid duplicate candles at the chart tail.
+    const bars5m = [...this._bars5m];
+    if (liveBar) {
+      const bucket = _floorToBucket(liveBar.timestamp, 5);
+      const barsInBucket = bars1m.filter(b => _floorToBucket(b.timestamp, 5) === bucket);
+      if (barsInBucket.length > 0) {
+        const partial = _aggregate1mBars(barsInBucket, '5m')!;
+        if (bars5m.length > 0 && _floorToBucket(bars5m[bars5m.length - 1].timestamp, 5) === bucket) {
+          bars5m[bars5m.length - 1] = partial;   // replace stale partial
+        } else {
+          bars5m.push(partial);                   // new bucket
+        }
+      }
+    }
+
+    const bars15m = [...this._bars15m];
+    if (liveBar) {
+      const bucket = _floorToBucket(liveBar.timestamp, 15);
+      const barsInBucket = bars1m.filter(b => _floorToBucket(b.timestamp, 15) === bucket);
+      if (barsInBucket.length > 0) {
+        const partial = _aggregate1mBars(barsInBucket, '15m')!;
+        if (bars15m.length > 0 && _floorToBucket(bars15m[bars15m.length - 1].timestamp, 15) === bucket) {
+          bars15m[bars15m.length - 1] = partial;
+        } else {
+          bars15m.push(partial);
+        }
+      }
+    }
+
+    return { bars1m, bars5m, bars15m };
   }
 
   getNormalizedData(): NormalizedMarketData | null {
@@ -394,7 +456,7 @@ export class SimulatedMarketDataProvider implements IMarketDataProvider {
           low: this._price,
           close: this._price,
           volume: 0,
-          startMs: tickTime,
+          startMs: Math.floor(tickTime / 60_000) * 60_000,
         };
       }
 
@@ -433,7 +495,7 @@ export class SimulatedMarketDataProvider implements IMarketDataProvider {
           low: this._price,
           close: this._price,
           volume: 0,
-          startMs: tickTime,
+          startMs: Math.floor(tickTime / 60_000) * 60_000,
         };
       }
     }
@@ -444,27 +506,11 @@ export class SimulatedMarketDataProvider implements IMarketDataProvider {
   // ── Bar Aggregation ──────────────────────────────────────────────────────
 
   private _rebuild5mBars(): void {
-    const result: OhlcBar[] = [];
-    for (let i = 0; i < this._bars1m.length; i += 5) {
-      const chunk = this._bars1m.slice(i, i + 5);
-      if (chunk.length > 0) {
-        const agg = _aggregate1mBars(chunk, '5m');
-        if (agg) result.push(agg);
-      }
-    }
-    this._bars5m = result.slice(-MAX_5M_BARS);
+    this._bars5m = _aggregateByClockTime(this._bars1m, 5).slice(-MAX_5M_BARS);
   }
 
   private _rebuild15mBars(): void {
-    const result: OhlcBar[] = [];
-    for (let i = 0; i < this._bars1m.length; i += 15) {
-      const chunk = this._bars1m.slice(i, i + 15);
-      if (chunk.length > 0) {
-        const agg = _aggregate1mBars(chunk, '15m');
-        if (agg) result.push(agg);
-      }
-    }
-    this._bars15m = result.slice(-MAX_15M_BARS);
+    this._bars15m = _aggregateByClockTime(this._bars1m, 15).slice(-MAX_15M_BARS);
   }
 
   // ── Indicator Computation ────────────────────────────────────────────────
