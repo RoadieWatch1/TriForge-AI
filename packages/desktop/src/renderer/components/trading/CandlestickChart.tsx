@@ -61,7 +61,6 @@ const CHART_RATIO = 0.74;
 const VOLUME_RATIO = 0.20;
 const GAP_RATIO = 0.06;
 const BAR_PAD = 0.28;
-const MAX_VISIBLE = 80;
 const GRID_LINES = 6;
 
 const COL = {
@@ -264,8 +263,8 @@ function draw(
     return;
   }
 
-  // ── Visible bars ──────────────────────────────────────────────────────
-  const visible = bars.length > MAX_VISIBLE ? bars.slice(-MAX_VISIBLE) : bars;
+  // ── Visible bars (caller pre-slices based on zoom/pan) ──────────────
+  const visible = bars;
   const n = visible.length;
   const barW = chartW / n;
   const baseBodyW = barW * (1 - BAR_PAD);
@@ -415,8 +414,9 @@ function draw(
     }
   }
 
-  // ── Time axis ─────────────────────────────────────────────────────────
-  const labelEvery = Math.max(1, Math.floor(n / 8));
+  // ── Time axis (adaptive label density) ────────────────────────────────
+  const minLabelSpacingPx = 70;
+  const labelEvery = Math.max(1, Math.ceil(minLabelSpacingPx / barW));
   ctx.font = '9px monospace';
   ctx.fillStyle = COL.timeText;
   ctx.textAlign = 'center';
@@ -568,6 +568,32 @@ export function CandlestickChart({
   const hoverIdxRef = useRef<number | null>(null);
   const rafRef = useRef<number | null>(null);
 
+  // Zoom + Pan state
+  const [zoomLevel, setZoomLevel] = useState(80);    // visible bar count
+  const [panOffset, setPanOffset] = useState(0);      // bars from right edge
+  const isDraggingRef = useRef(false);
+  const dragStartXRef = useRef(0);
+  const dragPanStartRef = useRef(0);
+  const prevBarsLenRef = useRef(bars.length);
+
+  // Reset zoom/pan if bars change drastically (>50% difference)
+  useEffect(() => {
+    const prev = prevBarsLenRef.current;
+    const curr = bars.length;
+    if (prev > 0 && curr > 0 && Math.abs(curr - prev) / prev > 0.5) {
+      setPanOffset(0);
+    }
+    prevBarsLenRef.current = curr;
+  }, [bars.length]);
+
+  // Compute visible slice from zoom + pan
+  const totalBars = bars.length;
+  const clampedZoom = Math.min(Math.max(10, zoomLevel), Math.min(300, totalBars || 80));
+  const clampedPan = Math.min(Math.max(0, panOffset), Math.max(0, totalBars - clampedZoom));
+  const endIdx = totalBars - clampedPan;
+  const startIdx = Math.max(0, endIdx - clampedZoom);
+  const visibleBars = bars.slice(startIdx, endIdx);
+
   // Responsive width
   useEffect(() => {
     const el = containerRef.current;
@@ -596,18 +622,42 @@ export function CandlestickChart({
 
     const mp = mousePosRef.current;
     draw(
-      ctx, measuredW, height, bars, currentPrice, tradeOverlay,
+      ctx, measuredW, height, visibleBars, currentPrice, tradeOverlay,
       symbol, source, feedFreshnessMs,
       levels, events,
       hoverIdxRef.current,
       mp ? mp.x : null,
       mp ? mp.y : null,
     );
-  }, [bars, currentPrice, tradeOverlay, measuredW, height, symbol, source, feedFreshnessMs, levels, events]);
+  }, [visibleBars, currentPrice, tradeOverlay, measuredW, height, symbol, source, feedFreshnessMs, levels, events]);
 
   useEffect(() => { renderChart(); }, [renderChart]);
 
-  // Mouse handlers (use rAF for smooth crosshair)
+  // Wheel zoom handler
+  const handleWheel = useCallback((e: React.WheelEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const step = Math.max(1, Math.round(zoomLevel * 0.1));
+    if (e.deltaY > 0) {
+      // Zoom out — show more bars
+      setZoomLevel(z => Math.min(300, z + step));
+    } else {
+      // Zoom in — show fewer bars
+      setZoomLevel(z => Math.max(10, z - step));
+    }
+  }, [zoomLevel]);
+
+  // Pan via drag
+  const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    isDraggingRef.current = true;
+    dragStartXRef.current = e.clientX;
+    dragPanStartRef.current = panOffset;
+  }, [panOffset]);
+
+  const handleMouseUp = useCallback(() => {
+    isDraggingRef.current = false;
+  }, []);
+
+  // Mouse handlers (use rAF for smooth crosshair + pan)
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -615,21 +665,34 @@ export function CandlestickChart({
     const y = e.clientY - rect.top;
     mousePosRef.current = { x, y };
 
+    // Handle drag pan
+    if (isDraggingRef.current) {
+      const dx = e.clientX - dragStartXRef.current;
+      const chartW = measuredW - PRICE_AXIS_W;
+      const barW = visibleBars.length > 0 ? chartW / visibleBars.length : 1;
+      const barDelta = Math.round(dx / barW);
+      const newPan = Math.min(
+        Math.max(0, dragPanStartRef.current + barDelta),
+        Math.max(0, totalBars - clampedZoom),
+      );
+      setPanOffset(newPan);
+    }
+
     // Compute hover bar index
     const chartW = measuredW - PRICE_AXIS_W;
-    const visible = bars.length > MAX_VISIBLE ? bars.slice(-MAX_VISIBLE) : bars;
-    const barW = visible.length > 0 ? chartW / visible.length : 1;
+    const barW = visibleBars.length > 0 ? chartW / visibleBars.length : 1;
     const idx = Math.floor(x / barW);
-    hoverIdxRef.current = idx >= 0 && idx < visible.length ? idx : null;
+    hoverIdxRef.current = idx >= 0 && idx < visibleBars.length ? idx : null;
 
     // Debounce with rAF
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     rafRef.current = requestAnimationFrame(renderChart);
-  }, [bars, measuredW, renderChart]);
+  }, [visibleBars, measuredW, renderChart, totalBars, clampedZoom]);
 
   const handleMouseLeave = useCallback(() => {
     mousePosRef.current = null;
     hoverIdxRef.current = null;
+    isDraggingRef.current = false;
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     rafRef.current = requestAnimationFrame(renderChart);
   }, [renderChart]);
@@ -637,6 +700,11 @@ export function CandlestickChart({
   // Cleanup rAF on unmount
   useEffect(() => {
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, []);
+
+  const handleResetView = useCallback(() => {
+    setZoomLevel(80);
+    setPanOffset(0);
   }, []);
 
   return (
@@ -651,10 +719,14 @@ export function CandlestickChart({
             {tf}
           </button>
         ))}
+        <button style={sty.tfBtn} onClick={handleResetView}>Reset</button>
       </div>
       <canvas
         ref={canvasRef}
-        style={{ width: measuredW, height, display: 'block', borderRadius: 6, cursor: 'crosshair' }}
+        style={{ width: measuredW, height, display: 'block', borderRadius: 6, cursor: isDraggingRef.current ? 'grabbing' : 'crosshair' }}
+        onWheel={handleWheel}
+        onMouseDown={handleMouseDown}
+        onMouseUp={handleMouseUp}
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
       />
