@@ -950,7 +950,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
         {setupTrustRecords.length > 0 && (
           <TrustEvidencePanel
             records={setupTrustRecords}
-            activeSetupFamily={simulatorState?.signalReliability ? (reviewedIntents[0]?.intent?.setupFamily ?? null) : null}
+            activeSetupFamily={simulatorState?.signalReliability ? (reviewedIntents.find(r => r.outcome === 'approved')?.intent?.setupFamily ?? null) : null}
             activeRegime={simulatorState?.regimeContext?.current?.regime ?? null}
           />
         )}

@@ -42,7 +42,8 @@ import type {
 import { deriveScoreBand } from '@triforge/engine';
 import { validateRisk, type AccountState, type RiskSettings } from './RiskModel';
 import { classifySetup, type SetupClassification } from '../reliability/SetupQualityEngine';
-import { checkRegimeCompatibility } from '../reliability/RegimeFilterGovernor';
+import { checkRegimeCompatibility, type TrustLevel } from '../reliability/RegimeFilterGovernor';
+import type { GovernorBlock } from '../reliability/ReliabilityGovernor';
 import type { RegimeContext } from '../learning/SessionRegimeMemory';
 
 // ── Configuration ─────────────────────────────────────────────────────────────
@@ -83,6 +84,8 @@ export interface BlockedEvaluation {
   reasons: string[];
   /** Setup classification preserved for diagnostics (when blocked by quality). */
   classification?: SetupClassification;
+  /** Structured governor blocks preserved for diagnostics. */
+  governorBlocks?: GovernorBlock[];
 }
 
 // ── ID Generator ──────────────────────────────────────────────────────────────
@@ -512,6 +515,7 @@ export function evaluateDecisions(
   config?: Partial<DecisionEngineConfig>,
   levelMap?: LevelMap | null,
   regimeCtx?: RegimeContext | null,
+  empiricalOverrides?: Map<string, TrustLevel>,
 ): DecisionResult {
   const cfg = { ...DEFAULT_CONFIG, ...config };
   const intents: TradeIntent[] = [];
@@ -541,7 +545,7 @@ export function evaluateDecisions(
     }
 
     // ── Regime compatibility filter ─────────────────────────────────────
-    const regimeResult = checkRegimeCompatibility(classification.family, regimeCtx ?? null);
+    const regimeResult = checkRegimeCompatibility(classification.family, regimeCtx ?? null, empiricalOverrides);
     if (!regimeResult.allowed) {
       blocked.push({
         watchId: watch.id,

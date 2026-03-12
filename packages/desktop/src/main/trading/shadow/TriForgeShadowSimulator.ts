@@ -56,6 +56,7 @@ import { computeFreshness } from '../reliability/SignalFreshness';
 import { computeReliability, type SignalReliabilityScore, type ReliabilityComponents } from '../reliability/ReliabilityScorer';
 import { checkRegimeCompatibility } from '../reliability/RegimeFilterGovernor';
 import { validateWithGovernor, type GovernorBlock } from '../reliability/ReliabilityGovernor';
+import { SetupReliabilityStore } from '../reliability/SetupReliabilityStore';
 
 // Journal
 import { TradeJournalStore, type ExtendedJournalEntry } from '../learning/TradeJournalStore';
@@ -146,6 +147,8 @@ export class TriForgeShadowSimulator {
   private readonly _newsProvider = new NewsCalendarProvider();
   private readonly _regimeMemory = new SessionRegimeMemory();
   private readonly _journalStore = new TradeJournalStore();
+  private readonly _reliabilityStore = new SetupReliabilityStore();
+  private _reliabilityStoreDirty = true;
 
   // Feed stale event timestamps (for governor instability check).
   private _feedStaleEvents: number[] = [];
@@ -261,15 +264,18 @@ export class TriForgeShadowSimulator {
     let decisionResult: DecisionResult = { intents: [], blocked: [] };
 
     if (!newsCtx.blocked && watchResult.confirmed.length > 0) {
+      this._ensureReliabilityStore();
+      const empiricalOverrides = this._reliabilityStore.buildEmpiricalOverrides();
       decisionResult = evaluateDecisions(
         watchResult.confirmed,
         data,
         session,
         accountState,
-        undefined, // riskSettings
-        undefined, // config
-        levelMap,  // for structure-based stop placement
-        regimeCtx, // for setup quality + regime filter
+        undefined,           // riskSettings
+        undefined,           // config
+        levelMap,            // for structure-based stop placement
+        regimeCtx,           // for setup quality + regime filter
+        empiricalOverrides,  // for empirical regime compatibility overrides
       );
     }
 
@@ -287,10 +293,12 @@ export class TriForgeShadowSimulator {
       const governed: TradeIntent[] = [];
       const lastClosed = this._getLastClosedTradeForGovernor();
       for (const intent of decisionResult.intents) {
+        // Compute fresh per-candidate reliability (not stale global state)
+        const candidateReliability = this._computeCandidateReliability(intent, data, regimeCtx);
         const gov = validateWithGovernor(
           intent,
           accountState,
-          this._state.signalReliability,
+          candidateReliability,
           this._state.reviewedIntents,
           this._feedStaleEvents.length,
           lastClosed,
@@ -300,11 +308,12 @@ export class TriForgeShadowSimulator {
         if (gov.allowed) {
           governed.push(intent);
         } else {
-          // Preserve structured block categories in diagnostics
+          // Preserve structured governor blocks in diagnostics
           decisionResult.blocked.push({
             watchId: intent.watchId,
             levelLabel: intent.entryLevel.label,
             reasons: gov.blocks.map(b => `[${b.category}] ${b.code}: ${b.explanation}`),
+            governorBlocks: gov.blocks,
           });
         }
       }
@@ -645,6 +654,7 @@ export class TriForgeShadowSimulator {
       };
 
       this._journalStore.append(entry);
+      this._reliabilityStoreDirty = true;
     }
   }
 
@@ -757,6 +767,7 @@ export class TriForgeShadowSimulator {
     this._reviewedWatchIds.clear();
     this._regimeMemory.reset();
     this._feedStaleEvents = [];
+    this._reliabilityStoreDirty = true;
     this._stableDirection = null;
     this._stablePrediction = null;
     this._flipPersistCount = 0;
@@ -853,6 +864,19 @@ export class TriForgeShadowSimulator {
     return this._stablePrediction;
   }
 
+  // ── Reliability Store ─────────────────────────────────────────────────
+
+  /**
+   * Ensure the SetupReliabilityStore is up-to-date with journal entries.
+   * Only recomputes when the journal has changed (dirty flag).
+   */
+  private _ensureReliabilityStore(): void {
+    if (this._reliabilityStoreDirty) {
+      this._reliabilityStore.recompute(this._journalStore.loadAll());
+      this._reliabilityStoreDirty = false;
+    }
+  }
+
   // ── Governor Helpers ────────────────────────────────────────────────────
 
   /**
@@ -894,14 +918,15 @@ export class TriForgeShadowSimulator {
 
     // Determine current and intent-time regime
     const currentRegime = regimeCtx?.current?.regime ?? null;
-    // Intent-time regime: stored in tags or approximated from the reviewed intent
     const intentRegime = intent.tags?.find(
       (t: string) => ['open_drive', 'trend', 'range', 'reversal', 'expansion', 'drift'].includes(t),
     ) ?? null;
 
-    // Regime compatibility for freshness check
+    // Regime compatibility for freshness check (with empirical overrides)
     const family = (intent.setupFamily ?? 'unclassified') as any;
-    const regimeResult = checkRegimeCompatibility(family, regimeCtx ?? null);
+    this._ensureReliabilityStore();
+    const empiricalOverrides = this._reliabilityStore.buildEmpiricalOverrides();
+    const regimeResult = checkRegimeCompatibility(family, regimeCtx ?? null, empiricalOverrides);
 
     // Compute freshness
     const freshness = computeFreshness(
@@ -912,6 +937,15 @@ export class TriForgeShadowSimulator {
       regimeResult.compatibility,
     );
 
+    // Historical edge from SetupReliabilityStore
+    const regime = currentRegime ?? 'unknown';
+    const historicalEdge = this._reliabilityStore.getHistoricalEdge(family, regime);
+    const historicalTrustLevel = this._reliabilityStore.getTrustLevel(family, regime) as any;
+    const historicalRecord = this._reliabilityStore.getAll().find(
+      r => r.setupFamily === family && r.regime === regime,
+    );
+    const historicalSampleTier = (historicalRecord?.sampleTier ?? 'insufficient') as any;
+
     // Build reliability components
     const components: ReliabilityComponents = {
       setupQuality:      intent.setupQualityScore ?? 50,
@@ -921,12 +955,70 @@ export class TriForgeShadowSimulator {
       routeClarity:      intent.score?.routeScore ?? 50,
       councilConsensus:  this._councilConsensusScore(latestApproved),
       feedStability:     this._feedStabilityScore(data),
-      historicalEdge:    50, // default until SetupReliabilityStore is wired (Phase 5)
+      historicalEdge,
     };
 
     this._state.signalReliability = computeReliability(
       components,
       freshness.expired,
+      historicalTrustLevel,
+      historicalSampleTier,
+    );
+  }
+
+  /**
+   * Compute fresh reliability for a candidate intent (used by governor gate).
+   * Unlike _computeReliability() which targets the latest approved intent,
+   * this targets a new candidate intent that hasn't been approved yet.
+   */
+  private _computeCandidateReliability(
+    intent: TradeIntent,
+    data: NormalizedMarketData,
+    regimeCtx: RegimeContext | null,
+  ): SignalReliabilityScore | null {
+    if (!data.currentPrice) return null;
+
+    const currentRegime = regimeCtx?.current?.regime ?? null;
+    const family = (intent.setupFamily ?? 'unclassified') as any;
+
+    this._ensureReliabilityStore();
+    const empiricalOverrides = this._reliabilityStore.buildEmpiricalOverrides();
+    const regimeResult = checkRegimeCompatibility(family, regimeCtx ?? null, empiricalOverrides);
+
+    // For a new candidate, freshness is at peak (just created)
+    const freshness = computeFreshness(
+      intent,
+      data.currentPrice,
+      currentRegime,
+      currentRegime, // intent regime = current regime for new candidates
+      regimeResult.compatibility,
+    );
+
+    // Historical edge from store
+    const regime = currentRegime ?? 'unknown';
+    const historicalEdge = this._reliabilityStore.getHistoricalEdge(family, regime);
+    const historicalTrustLevel = this._reliabilityStore.getTrustLevel(family, regime) as any;
+    const historicalRecord = this._reliabilityStore.getAll().find(
+      r => r.setupFamily === family && r.regime === regime,
+    );
+    const historicalSampleTier = (historicalRecord?.sampleTier ?? 'insufficient') as any;
+
+    const components: ReliabilityComponents = {
+      setupQuality:      intent.setupQualityScore ?? 50,
+      regimeAlignment:   regimeResult.alignmentScore,
+      signalFreshness:   freshness.freshnessScore,
+      confirmationDepth: intent.score?.confirmationScore ?? 50,
+      routeClarity:      intent.score?.routeScore ?? 50,
+      councilConsensus:  50, // no council review yet for candidates
+      feedStability:     this._feedStabilityScore(data),
+      historicalEdge,
+    };
+
+    return computeReliability(
+      components,
+      freshness.expired,
+      historicalTrustLevel,
+      historicalSampleTier,
     );
   }
 
