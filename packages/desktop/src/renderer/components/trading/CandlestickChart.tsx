@@ -207,6 +207,7 @@ function draw(
   hoverIdx: number | null,
   mouseX: number | null,
   mouseY: number | null,
+  timezone: string,
 ) {
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = COL.bg;
@@ -638,6 +639,7 @@ export function CandlestickChart({
       hoverIdxRef.current,
       mp ? mp.x : null,
       mp ? mp.y : null,
+      timezone,
     );
   }, [visibleBars, currentPrice, tradeOverlay, measuredW, height, symbol, source, feedFreshnessMs, levels, events]);
 
