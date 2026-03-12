@@ -115,9 +115,14 @@ function priceLabel(ctx: CanvasRenderingContext2D, x: number, y: number, text: s
 }
 
 function formatTime(ts: number): string {
-  const d = new Date(ts);
-  const h = d.getHours().toString().padStart(2, '0');
-  const m = d.getMinutes().toString().padStart(2, '0');
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(ts));
+  const h = parts.find(p => p.type === 'hour')?.value ?? '00';
+  const m = parts.find(p => p.type === 'minute')?.value ?? '00';
   return `${h}:${m}`;
 }
 
@@ -419,6 +424,10 @@ function draw(
     const x = i * barW + barW / 2;
     ctx.fillText(formatTime(visible[i].timestamp), x, h - 4);
   }
+  // ET timezone indicator
+  ctx.fillStyle = COL.timeText;
+  ctx.textAlign = 'right';
+  ctx.fillText('ET', chartW - 4, h - 4);
   ctx.textAlign = 'start';
 
   // ── Trade level overlays ──────────────────────────────────────────────

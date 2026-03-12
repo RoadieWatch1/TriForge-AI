@@ -416,24 +416,36 @@ class BarAccumulator {
     // 1m: completed bars + forming bar
     const bars1m = liveBar ? [...this._bars1m, liveBar] : [...this._bars1m];
 
-    // 5m: completed 5m bars + live partial 5m bar from current bucket
+    // 5m: completed 5m bars + live partial 5m bar from current bucket.
+    // Replace last bar if it's already in the same bucket to avoid duplicates.
     const bars5m = [...this._bars5m];
     if (liveBar) {
       const liveBucket5m = _floorToTimeframe(liveBar.timestamp, 5);
-      // Gather any completed 1m bars in the same 5m bucket + the forming bar
       const barsInBucket = bars1m.filter(b => _floorToTimeframe(b.timestamp, 5) === liveBucket5m);
       if (barsInBucket.length > 0) {
-        bars5m.push(_aggregateBars(barsInBucket));
+        const live5mBar = _aggregateBars(barsInBucket);
+        const last = bars5m[bars5m.length - 1];
+        if (last && _floorToTimeframe(last.timestamp, 5) === liveBucket5m) {
+          bars5m[bars5m.length - 1] = live5mBar;
+        } else {
+          bars5m.push(live5mBar);
+        }
       }
     }
 
-    // 15m: completed 15m bars + live partial 15m bar from current bucket
+    // 15m: same replace-if-same-bucket pattern
     const bars15m = [...this._bars15m];
     if (liveBar) {
       const liveBucket15m = _floorToTimeframe(liveBar.timestamp, 15);
       const barsInBucket = bars1m.filter(b => _floorToTimeframe(b.timestamp, 15) === liveBucket15m);
       if (barsInBucket.length > 0) {
-        bars15m.push(_aggregateBars(barsInBucket));
+        const live15mBar = _aggregateBars(barsInBucket);
+        const last = bars15m[bars15m.length - 1];
+        if (last && _floorToTimeframe(last.timestamp, 15) === liveBucket15m) {
+          bars15m[bars15m.length - 1] = live15mBar;
+        } else {
+          bars15m.push(live15mBar);
+        }
       }
     }
 
