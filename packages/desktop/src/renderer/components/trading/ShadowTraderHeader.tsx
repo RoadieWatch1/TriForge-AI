@@ -1,0 +1,205 @@
+// ── ShadowTraderHeader.tsx ───────────────────────────────────────────────────
+//
+// Sticky top bar for the Shadow Trader workspace.
+// Shows: symbol, feed source, engine state, one-sentence status, action buttons.
+
+import React from 'react';
+
+// ── Types ────────────────────────────────────────────────────────────────────
+
+type ShadowTraderUiState =
+  | 'DISCONNECTED' | 'READY' | 'RUNNING' | 'PAUSED' | 'BLOCKED' | 'OPEN_POSITION';
+
+interface DerivedDisplayState {
+  uiState: ShadowTraderUiState;
+  sentence: string;
+  sessionLabel: string | null;
+  feedSource: 'Live Tradovate' | 'Simulated';
+}
+
+interface ShadowTraderHeaderProps {
+  symbol: string;
+  displayState: DerivedDisplayState;
+  onStartShadow: () => void;
+  onPauseShadow: () => void;
+  onResumeShadow: () => void;
+  onFlattenStop: () => void;
+  onConnectFeed: () => void;
+  onBack: () => void;
+  shadowEnabled: boolean;
+  shadowPaused: boolean;
+  hasOpenTrades: boolean;
+  lastEvalAt: number | null;
+  shadowToggling: boolean;
+}
+
+// ── State badge colors ──────────────────────────────────────────────────────
+
+const STATE_BADGE: Record<ShadowTraderUiState, { label: string; color: string; bg: string }> = {
+  DISCONNECTED:   { label: 'DISCONNECTED', color: 'rgba(255,255,255,0.35)', bg: 'rgba(255,255,255,0.04)' },
+  READY:          { label: 'READY',        color: '#60a5fa',                bg: 'rgba(96,165,250,0.1)' },
+  RUNNING:        { label: 'RUNNING',      color: '#34d399',                bg: 'rgba(52,211,153,0.1)' },
+  PAUSED:         { label: 'PAUSED',       color: '#fbbf24',                bg: 'rgba(251,191,36,0.1)' },
+  BLOCKED:        { label: 'BLOCKED',      color: '#f87171',                bg: 'rgba(248,113,113,0.1)' },
+  OPEN_POSITION:  { label: 'OPEN',         color: '#c084fc',                bg: 'rgba(192,132,252,0.1)' },
+};
+
+// ── Component ────────────────────────────────────────────────────────────────
+
+export function ShadowTraderHeader({
+  symbol,
+  displayState,
+  onStartShadow,
+  onPauseShadow,
+  onResumeShadow,
+  onFlattenStop,
+  onConnectFeed,
+  onBack,
+  shadowEnabled,
+  shadowPaused,
+  hasOpenTrades,
+  lastEvalAt,
+  shadowToggling,
+}: ShadowTraderHeaderProps) {
+  const badge = STATE_BADGE[displayState.uiState];
+  const feedColor = displayState.feedSource === 'Live Tradovate' ? '#34d399' : '#a78bfa';
+
+  return (
+    <div style={s.bar}>
+      {/* Left cluster */}
+      <div style={s.left}>
+        <button style={s.backBtn} onClick={onBack}>←</button>
+        <span style={s.titleText}>Shadow Trader</span>
+        <span style={s.symbolBadge}>{symbol}</span>
+        <span style={{ ...s.feedBadge, color: feedColor, borderColor: feedColor + '40' }}>
+          {displayState.feedSource === 'Live Tradovate' ? 'LIVE' : 'SIM'}
+        </span>
+        <span style={{ ...s.stateBadge, color: badge.color, background: badge.bg, borderColor: badge.color + '40' }}>
+          {badge.label}
+        </span>
+        {displayState.sessionLabel && (
+          <span style={s.sessionLabel}>{displayState.sessionLabel}</span>
+        )}
+      </div>
+
+      {/* Center: state sentence */}
+      <div style={s.center}>
+        <span style={s.sentence}>{displayState.sentence}</span>
+      </div>
+
+      {/* Right: action buttons */}
+      <div style={s.right}>
+        {displayState.uiState === 'DISCONNECTED' && (
+          <button style={{ ...s.actionBtn, ...s.actionPrimary }} onClick={onConnectFeed}>
+            Connect Feed
+          </button>
+        )}
+        {displayState.uiState === 'READY' && (
+          <button style={{ ...s.actionBtn, ...s.actionPrimary }} onClick={onStartShadow} disabled={shadowToggling}>
+            {shadowToggling ? 'Starting...' : 'Start Shadow'}
+          </button>
+        )}
+        {displayState.uiState === 'RUNNING' && (
+          <button style={{ ...s.actionBtn, ...s.actionWarn }} onClick={onPauseShadow}>
+            Pause New Trades
+          </button>
+        )}
+        {displayState.uiState === 'PAUSED' && (
+          <button style={{ ...s.actionBtn, ...s.actionPrimary }} onClick={onResumeShadow}>
+            Resume
+          </button>
+        )}
+        {displayState.uiState === 'BLOCKED' && (
+          shadowPaused
+            ? <button style={{ ...s.actionBtn, ...s.actionPrimary }} onClick={onResumeShadow}>Resume</button>
+            : <button style={{ ...s.actionBtn, ...s.actionWarn }} onClick={onPauseShadow}>Pause New Trades</button>
+        )}
+        {displayState.uiState === 'OPEN_POSITION' && (
+          <button style={{ ...s.actionBtn, ...s.actionDanger }} onClick={onFlattenStop}>
+            Flatten & Stop
+          </button>
+        )}
+        {shadowEnabled && displayState.uiState !== 'DISCONNECTED' && displayState.uiState !== 'READY' && (
+          <button style={{ ...s.actionBtn, ...s.actionGhost }} onClick={onStartShadow} disabled={shadowToggling}>
+            {shadowToggling ? '...' : 'Stop Shadow'}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Styles ───────────────────────────────────────────────────────────────────
+
+const s: Record<string, React.CSSProperties> = {
+  bar: {
+    position: 'sticky', top: 0, zIndex: 100,
+    background: '#0d0d0f',
+    borderBottom: '1px solid rgba(255,255,255,0.06)',
+    padding: '8px 24px',
+    display: 'flex', alignItems: 'center', gap: 12,
+    minHeight: 44,
+  },
+  left: {
+    display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
+  },
+  center: {
+    flex: 1, minWidth: 0, textAlign: 'center',
+  },
+  right: {
+    display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0,
+  },
+  backBtn: {
+    background: 'none', border: 'none', color: 'rgba(255,255,255,0.4)',
+    fontSize: 14, cursor: 'pointer', padding: '2px 6px',
+  },
+  titleText: {
+    fontSize: 12, fontWeight: 700, color: 'rgba(255,255,255,0.7)',
+    letterSpacing: '0.02em',
+  },
+  symbolBadge: {
+    fontSize: 10, fontWeight: 800, letterSpacing: '0.06em',
+    color: 'rgba(255,255,255,0.6)',
+    background: 'rgba(255,255,255,0.06)',
+    borderRadius: 3, padding: '2px 7px',
+  },
+  feedBadge: {
+    fontSize: 9, fontWeight: 800, letterSpacing: '0.08em',
+    border: '1px solid',
+    borderRadius: 3, padding: '1px 6px',
+  },
+  stateBadge: {
+    fontSize: 9, fontWeight: 800, letterSpacing: '0.08em',
+    border: '1px solid',
+    borderRadius: 3, padding: '1px 6px',
+  },
+  sessionLabel: {
+    fontSize: 9, color: 'rgba(255,255,255,0.25)',
+    letterSpacing: '0.04em',
+  },
+  sentence: {
+    fontSize: 11, color: 'rgba(255,255,255,0.4)',
+    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+  },
+  actionBtn: {
+    fontSize: 10, fontWeight: 700, letterSpacing: '0.04em',
+    borderRadius: 4, padding: '5px 12px', cursor: 'pointer',
+    border: '1px solid', transition: 'opacity 0.12s',
+  },
+  actionPrimary: {
+    color: '#60a5fa', background: 'rgba(96,165,250,0.1)',
+    borderColor: 'rgba(96,165,250,0.3)',
+  },
+  actionWarn: {
+    color: '#fbbf24', background: 'rgba(251,191,36,0.1)',
+    borderColor: 'rgba(251,191,36,0.3)',
+  },
+  actionDanger: {
+    color: '#f87171', background: 'rgba(248,113,113,0.1)',
+    borderColor: 'rgba(248,113,113,0.3)',
+  },
+  actionGhost: {
+    color: 'rgba(255,255,255,0.3)', background: 'none',
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+};

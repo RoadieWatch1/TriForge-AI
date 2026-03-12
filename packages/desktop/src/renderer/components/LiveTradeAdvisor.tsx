@@ -32,6 +32,7 @@ import { TradeThesisPanel } from './trading/TradeThesisPanel';
 import { ReliabilityPanel } from './trading/ReliabilityPanel';
 import { TrustEvidencePanel } from './trading/TrustEvidencePanel';
 import { ShadowTradeToastContainer, type TradeSignalAlert } from './trading/ShadowTradeToast';
+import { ShadowTraderHeader } from './trading/ShadowTraderHeader';
 
 // ── Local type mirrors (engine types, no direct import) ───────────────────────
 
@@ -823,41 +824,22 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
 
   return (
     <div style={s.page}>
-      {/* ── Header ── */}
-      <div style={s.header}>
-        <button style={s.backBtn} onClick={onBack}>← Hustle</button>
-        <div>
-          <h1 style={s.title}>Live Trade Advisor</h1>
-          <div style={s.badges}>
-            <span style={s.badgeAdvisory}>Advisory Only</span>
-            {shadow?.enabled && <span style={s.badgeShadow}>Shadow Trading Active</span>}
-            {shadow?.enabled && (shadow as any).isSimulated && (
-              <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' as const, color: '#a78bfa', background: 'rgba(167,139,250,0.1)', border: '1px solid rgba(167,139,250,0.25)', borderRadius: 4, padding: '2px 7px' }}>
-                Simulated Data
-              </span>
-            )}
-            {promotionStatus && promotionStatus.currentMode === 'paper' && (
-              <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' as const, color: '#3b82f6', background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.25)', borderRadius: 4, padding: '2px 7px' }}>
-                Paper (Simulated)
-              </span>
-            )}
-            {promotionStatus && promotionStatus.currentMode === 'guarded_live_candidate' && (
-              <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' as const, color: '#22c55e', background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.25)', borderRadius: 4, padding: '2px 7px' }}>
-                Guarded Live Candidate (Simulated)
-              </span>
-            )}
-            <span style={{ ...s.badgeConn, color: isConnected ? '#34d399' : 'rgba(255,255,255,0.3)', borderColor: isConnected ? 'rgba(52,211,153,0.3)' : 'rgba(255,255,255,0.1)' }}>
-              {isConnected ? `● ${accountMode === 'live' ? 'LIVE' : 'SIM'}` : '○ Disconnected'}
-            </span>
-          </div>
-        </div>
-        <div style={s.headerActions}>
-          {isConnected
-            ? <button style={{ ...s.btn, ...s.btnGhost, fontSize: 10 }} onClick={handleDisconnect}>Disconnect</button>
-            : <button style={{ ...s.btn, ...s.btnPrimary }} onClick={() => setShowConnForm(v => !v)}>{showConnForm ? 'Cancel' : 'Connect Tradovate'}</button>
-          }
-        </div>
-      </div>
+      {/* ── Sticky Header ── */}
+      <ShadowTraderHeader
+        symbol={symbol}
+        displayState={displayState}
+        onStartShadow={handleShadowToggle}
+        onPauseShadow={handleShadowPauseResume}
+        onResumeShadow={handleShadowPauseResume}
+        onFlattenStop={handleShadowFlatten}
+        onConnectFeed={() => setShowConnForm(v => !v)}
+        onBack={onBack}
+        shadowEnabled={shadow?.enabled ?? false}
+        shadowPaused={shadow?.paused ?? false}
+        hasOpenTrades={(shadow?.openTrades?.length ?? 0) > 0}
+        lastEvalAt={shadow?.lastEvalAt ?? null}
+        shadowToggling={shadowToggling}
+      />
 
       {/* ── Trading Trial Banner ── */}
       {trialStatus?.active && (
