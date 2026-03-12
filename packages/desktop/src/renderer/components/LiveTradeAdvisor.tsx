@@ -324,26 +324,29 @@ function deriveShadowTraderUiState(
     return { uiState: 'READY', sentence: `Market feed active on ${symbol}. Enable Shadow Trading to begin.`, sessionLabel, feedSource };
   }
 
-  // Shadow enabled — check for open positions first
-  if (shadow.openTrades.length > 0) {
-    const t = shadow.openTrades.find(tr => normalizeSymbol(tr.symbol) === normalizeSymbol(symbol)) ?? shadow.openTrades[0];
-    const pnlStr = t.unrealizedPnl !== undefined ? ` (${t.unrealizedPnl >= 0 ? '+' : ''}$${t.unrealizedPnl.toFixed(2)})` : '';
-    return { uiState: 'OPEN_POSITION', sentence: `Open ${t.side.toUpperCase()} on ${t.symbol} @ ${t.entryPrice}${pnlStr}`, sessionLabel, feedSource };
+  // Shadow enabled — check for open position on the CURRENT symbol
+  const tradeOnSymbol = shadow.openTrades.find(tr => normalizeSymbol(tr.symbol) === normalizeSymbol(symbol));
+  if (tradeOnSymbol) {
+    const pnlStr = tradeOnSymbol.unrealizedPnl !== undefined ? ` (${tradeOnSymbol.unrealizedPnl >= 0 ? '+' : ''}$${tradeOnSymbol.unrealizedPnl.toFixed(2)})` : '';
+    return { uiState: 'OPEN_POSITION', sentence: `Open ${tradeOnSymbol.side.toUpperCase()} on ${tradeOnSymbol.symbol} @ ${tradeOnSymbol.entryPrice}${pnlStr}`, sessionLabel, feedSource };
   }
+  // Open trade exists on a DIFFERENT symbol — note it but don't override this symbol's state
+  const otherTrade = shadow.openTrades.length > 0 ? shadow.openTrades[0] : null;
+  const otherTradeNote = otherTrade ? ` (open ${otherTrade.side} on ${otherTrade.symbol})` : '';
 
   // Shadow enabled, paused
   if (shadow.paused) {
-    return { uiState: 'PAUSED', sentence: 'Shadow Trading paused — no new trades will be taken.', sessionLabel, feedSource };
+    return { uiState: 'PAUSED', sentence: `Shadow Trading paused — no new trades will be taken.${otherTradeNote}`, sessionLabel, feedSource };
   }
 
   // Shadow enabled, blocked
   if (shadow.blockedReason || simulatorState?.blockedReason) {
     const reason = shadow.blockedReason || simulatorState?.blockedReason || 'Unknown';
-    return { uiState: 'BLOCKED', sentence: `Blocked: ${reason}`, sessionLabel, feedSource };
+    return { uiState: 'BLOCKED', sentence: `Blocked: ${reason}${otherTradeNote}`, sessionLabel, feedSource };
   }
 
   // Shadow enabled, running
-  return { uiState: 'RUNNING', sentence: `Shadow Trading active on ${symbol} — scanning for setups.`, sessionLabel, feedSource };
+  return { uiState: 'RUNNING', sentence: `Shadow Trading active on ${symbol} — scanning for setups.${otherTradeNote}`, sessionLabel, feedSource };
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -374,7 +377,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
   // ── Connection state ────────────────────────────────────────────────────────
   const [isConnected, setIsConnected]     = useState(false);
   const [accountMode, setAccountMode]     = useState<'simulation' | 'live' | 'unknown'>('unknown');
-  const [showConnForm, setShowConnForm]   = useState(false);
+  // showConnForm removed — connection form is now in dock Settings tab
   const [connCreds, setConnCreds]         = useState({ username: '', password: '', accountMode: 'simulation' as 'simulation' | 'live', cid: '', sec: '' });
   const [connecting, setConnecting]       = useState(false);
   const [connError, setConnError]         = useState<string | null>(null);
@@ -441,6 +444,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
   const [marketState, setMarketState] = useState<MarketStatePayload | null>(null);
   const [chartTimeframe, setChartTimeframe] = useState<'1m' | '5m' | '15m'>('5m');
   const [dockCollapsed, setDockCollapsed] = useState(false);
+  const [dockActiveTab, setDockActiveTab] = useState<string | undefined>(undefined);
 
   // Pipeline visibility state
   const [blockedEvals, setBlockedEvals] = useState<any[]>([]);
@@ -832,12 +836,15 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
       {/* ── Sticky Header ── */}
       <ShadowTraderHeader
         symbol={symbol}
+        supportedSymbols={SUPPORTED_SYMBOLS}
+        symbolLabels={SYMBOL_LABELS}
+        onSymbolChange={handleSymbolChange}
         displayState={displayState}
         onStartShadow={handleShadowToggle}
         onPauseShadow={handleShadowPauseResume}
         onResumeShadow={handleShadowPauseResume}
         onFlattenStop={handleShadowFlatten}
-        onConnectFeed={() => setShowConnForm(v => !v)}
+        onConnectFeed={() => { setDockCollapsed(false); setDockActiveTab('settings'); }}
         onBack={onBack}
         shadowEnabled={shadow?.enabled ?? false}
         shadowPaused={shadow?.paused ?? false}
@@ -971,86 +978,73 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           reliability={simulatorState?.signalReliability ?? null}
           collapsed={dockCollapsed}
           onToggleCollapsed={() => setDockCollapsed(c => !c)}
-        />
-
-        {/* Pipeline, Trust, Positions, Shadow Controls, Account — now in bottom dock */}
-
-        {/* ── 5. Connection form ── */}
-        {showConnForm && !isConnected && (
-          <div style={s.card}>
-            <div style={s.cardTitle}>Connect Tradovate</div>
-            <div style={s.noteBox}>
-              Requires a Tradovate account with API access enabled.{' '}
-              To get your API credentials: log in to Tradovate, go to <strong>Settings &rarr; API Access &rarr; Generate API Key</strong>.{' '}
-              Save the <strong>CID</strong> and <strong>Secret</strong> shown after generation.{' '}
-              Use your <strong>dedicated API password</strong> below (not your regular login password).
+          externalActiveTab={dockActiveTab as any}
+          onTabChange={() => setDockActiveTab(undefined)}
+          renderConnectionForm={() => !isConnected ? (
+            <div style={s.card}>
+              <div style={s.cardTitle}>Connect Tradovate</div>
+              <div style={s.noteBox}>
+                Requires a Tradovate account with API access enabled.{' '}
+                To get your API credentials: log in to Tradovate, go to <strong>Settings &rarr; API Access &rarr; Generate API Key</strong>.{' '}
+                Save the <strong>CID</strong> and <strong>Secret</strong> shown after generation.{' '}
+                Use your <strong>dedicated API password</strong> below (not your regular login password).
+              </div>
+              <div style={s.row}>
+                <Field label="Username"><input style={s.input} value={connCreds.username} onChange={e => setConnCreds(c => ({ ...c, username: e.target.value }))} placeholder="username" autoComplete="off" /></Field>
+                <Field label="API Password"><input style={s.input} type="password" value={connCreds.password} onChange={e => setConnCreds(c => ({ ...c, password: e.target.value }))} placeholder="dedicated API password" /></Field>
+              </div>
+              <div style={s.row}>
+                <Field label="Mode">
+                  <div style={s.segmented}>
+                    {(['simulation', 'live'] as const).map(m => (
+                      <button key={m} style={{ ...s.seg, ...(connCreds.accountMode === m ? s.segActive : {}) }} onClick={() => setConnCreds(c => ({ ...c, accountMode: m }))}>
+                        {m === 'simulation' ? 'Simulation' : 'Live'}
+                      </button>
+                    ))}
+                  </div>
+                </Field>
+                <Field label="CID"><input style={s.input} value={connCreds.cid} onChange={e => setConnCreds(c => ({ ...c, cid: e.target.value }))} placeholder="e.g. 154" /></Field>
+                <Field label="Secret"><input style={s.input} type="password" value={connCreds.sec} onChange={e => setConnCreds(c => ({ ...c, sec: e.target.value }))} placeholder="API secret key" /></Field>
+              </div>
+              {connError && <div style={s.errorBanner}>{connError}</div>}
+              <div style={s.actions}>
+                <button style={{ ...s.btn, ...s.btnPrimary, opacity: connecting ? 0.5 : 1 }} disabled={connecting} onClick={handleConnect}>
+                  {connecting ? 'Connecting...' : 'Connect'}
+                </button>
+              </div>
             </div>
-            <div style={s.row}>
-              <Field label="Username"><input style={s.input} value={connCreds.username} onChange={e => setConnCreds(c => ({ ...c, username: e.target.value }))} placeholder="username" autoComplete="off" /></Field>
-              <Field label="API Password"><input style={s.input} type="password" value={connCreds.password} onChange={e => setConnCreds(c => ({ ...c, password: e.target.value }))} placeholder="dedicated API password" /></Field>
-            </div>
-            <div style={s.row}>
-              <Field label="Mode">
-                <div style={s.segmented}>
-                  {(['simulation', 'live'] as const).map(m => (
-                    <button key={m} style={{ ...s.seg, ...(connCreds.accountMode === m ? s.segActive : {}) }} onClick={() => setConnCreds(c => ({ ...c, accountMode: m }))}>
-                      {m === 'simulation' ? 'Simulation' : 'Live'}
-                    </button>
-                  ))}
+          ) : null}
+          renderAccountSettings={() => (
+            <div style={s.card}>
+              <div style={s.cardTitle}>Account Settings</div>
+              <div style={s.row}>
+                <Field label="Balance ($)">
+                  <input style={s.input} type="number" value={balance} onChange={e => { setBalance(e.target.value); setAdvice(null); }} placeholder="25000" />
+                </Field>
+                <Field label="Risk %">
+                  <input style={{ ...s.input, width: 80 }} type="number" min="0.1" max="5" step="0.25" value={riskPct} onChange={e => { setRiskPct(e.target.value); setAdvice(null); }} />
+                </Field>
+                <div style={s.derivedMetric}>
+                  <span style={s.derivedLabel}>Max Risk $</span>
+                  <span style={s.derivedValue}>${maxRiskDollars.toFixed(0)}</span>
                 </div>
-              </Field>
-              <Field label="CID"><input style={s.input} value={connCreds.cid} onChange={e => setConnCreds(c => ({ ...c, cid: e.target.value }))} placeholder="e.g. 154" /></Field>
-              <Field label="Secret"><input style={s.input} type="password" value={connCreds.sec} onChange={e => setConnCreds(c => ({ ...c, sec: e.target.value }))} placeholder="API secret key" /></Field>
+              </div>
             </div>
-            {connError && <div style={s.errorBanner}>{connError}</div>}
-            <div style={s.actions}>
-              <button style={{ ...s.btn, ...s.btnPrimary, opacity: connecting ? 0.5 : 1 }} disabled={connecting} onClick={handleConnect}>
-                {connecting ? 'Connecting...' : 'Connect'}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* ── 6. Account Settings ── */}
-        <div style={s.card}>
-          <div style={s.cardTitle}>Account Settings</div>
-          <div style={s.row}>
-            <Field label="Balance ($)">
-              <input style={s.input} type="number" value={balance} onChange={e => { setBalance(e.target.value); setAdvice(null); }} placeholder="25000" />
-            </Field>
-            <Field label="Risk %">
-              <input style={{ ...s.input, width: 80 }} type="number" min="0.1" max="5" step="0.25" value={riskPct} onChange={e => { setRiskPct(e.target.value); setAdvice(null); }} />
-            </Field>
-            <div style={s.derivedMetric}>
-              <span style={s.derivedLabel}>Max Risk $</span>
-              <span style={s.derivedValue}>${maxRiskDollars.toFixed(0)}</span>
-            </div>
-          </div>
-        </div>
-
-        {/* ── 7. Symbol selector / Your Setup ── */}
-        <div style={s.card}>
-          <div style={s.cardTitle}>{shadow?.enabled ? 'Watched Symbol' : 'Your Setup'}</div>
-          <div style={s.row}>
-            <Field label="Symbol">
-              <select style={s.select} value={symbol} onChange={e => handleSymbolChange(e.target.value)}>
-                {SUPPORTED_SYMBOLS.map(sym => <option key={sym} value={sym}>{sym} — {SYMBOL_LABELS[sym]}</option>)}
-              </select>
-            </Field>
-            {!shadow?.enabled && (
-              <Field label="Direction">
-                <div style={s.segmented}>
-                  {(['long', 'short'] as const).map(d => (
-                    <button key={d} style={{ ...s.seg, ...(side === d ? (d === 'long' ? s.segLong : s.segShort) : {}) }} onClick={() => { setSide(d); setAdvice(null); }}>
-                      {d === 'long' ? '▲ Long' : '▼ Short'}
-                    </button>
-                  ))}
-                </div>
-              </Field>
-            )}
-          </div>
-          {!shadow?.enabled && (
-            <>
+          )}
+          renderManualSetup={() => !shadow?.enabled ? (
+            <div style={s.card}>
+              <div style={s.cardTitle}>Your Setup</div>
+              <div style={s.row}>
+                <Field label="Direction">
+                  <div style={s.segmented}>
+                    {(['long', 'short'] as const).map(d => (
+                      <button key={d} style={{ ...s.seg, ...(side === d ? (d === 'long' ? s.segLong : s.segShort) : {}) }} onClick={() => { setSide(d); setAdvice(null); }}>
+                        {d === 'long' ? '▲ Long' : '▼ Short'}
+                      </button>
+                    ))}
+                  </div>
+                </Field>
+              </div>
               <div style={s.row}>
                 <Field label="Entry"><input style={s.input} type="number" placeholder="0.00" value={entry} onChange={e => { setEntry(e.target.value); setAdvice(null); }} /></Field>
                 <Field label="Stop"><input style={s.input} type="number" placeholder="0.00" value={stop} onChange={e => { setStop(e.target.value); setAdvice(null); }} /></Field>
@@ -1059,9 +1053,9 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
               <Field label="Thesis">
                 <textarea style={s.textarea} rows={2} placeholder="Entry catalyst, structure, invalidation..." value={thesis} onChange={e => { setThesis(e.target.value); setAdvice(null); }} />
               </Field>
-            </>
-          )}
-        </div>
+            </div>
+          ) : null}
+        />
 
         {/* Positions, comparisons, blocked candidates, history, analytics — now in bottom dock */}
         </>

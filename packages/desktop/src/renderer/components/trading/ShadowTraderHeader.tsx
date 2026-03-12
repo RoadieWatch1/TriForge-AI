@@ -19,6 +19,9 @@ interface DerivedDisplayState {
 
 interface ShadowTraderHeaderProps {
   symbol: string;
+  supportedSymbols: string[];
+  symbolLabels: Record<string, string>;
+  onSymbolChange: (sym: string) => void;
   displayState: DerivedDisplayState;
   onStartShadow: () => void;
   onPauseShadow: () => void;
@@ -48,6 +51,9 @@ const STATE_BADGE: Record<ShadowTraderUiState, { label: string; color: string; b
 
 export function ShadowTraderHeader({
   symbol,
+  supportedSymbols,
+  symbolLabels,
+  onSymbolChange,
   displayState,
   onStartShadow,
   onPauseShadow,
@@ -70,7 +76,15 @@ export function ShadowTraderHeader({
       <div style={s.left}>
         <button style={s.backBtn} onClick={onBack}>←</button>
         <span style={s.titleText}>Shadow Trader</span>
-        <span style={s.symbolBadge}>{symbol}</span>
+        <select
+          style={s.symbolSelect}
+          value={symbol}
+          onChange={e => onSymbolChange(e.target.value)}
+        >
+          {supportedSymbols.map(sym => (
+            <option key={sym} value={sym}>{sym} — {symbolLabels[sym] ?? sym}</option>
+          ))}
+        </select>
         <span style={{ ...s.feedBadge, color: feedColor, borderColor: feedColor + '40' }}>
           {displayState.feedSource === 'Live Tradovate' ? 'LIVE' : 'SIM'}
         </span>
@@ -157,11 +171,14 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: 12, fontWeight: 700, color: 'rgba(255,255,255,0.7)',
     letterSpacing: '0.02em',
   },
-  symbolBadge: {
-    fontSize: 10, fontWeight: 800, letterSpacing: '0.06em',
+  symbolSelect: {
+    fontSize: 10, fontWeight: 800, letterSpacing: '0.04em',
     color: 'rgba(255,255,255,0.6)',
     background: 'rgba(255,255,255,0.06)',
-    borderRadius: 3, padding: '2px 7px',
+    border: '1px solid rgba(255,255,255,0.08)',
+    borderRadius: 3, padding: '2px 6px',
+    cursor: 'pointer', outline: 'none',
+    fontFamily: 'var(--font-mono, monospace)',
   },
   feedBadge: {
     fontSize: 9, fontWeight: 800, letterSpacing: '0.08em',

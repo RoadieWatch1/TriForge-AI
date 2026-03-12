@@ -23,7 +23,7 @@ import { ShadowTradeCard } from './ShadowTradeCard';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type DockTab = 'positions' | 'orders' | 'decisions' | 'journal' | 'analytics' | 'inspector';
+type DockTab = 'positions' | 'orders' | 'decisions' | 'journal' | 'analytics' | 'inspector' | 'settings';
 
 interface ShadowTraderBottomDockProps {
   // Positions tab
@@ -59,9 +59,15 @@ interface ShadowTraderBottomDockProps {
   sessionContext: any;
   blockedEvaluations: any[];
   reliability: any;
+  // Settings tab (render props for connection form + account settings)
+  renderConnectionForm?: () => React.ReactNode;
+  renderAccountSettings?: () => React.ReactNode;
+  renderManualSetup?: () => React.ReactNode;
   // Dock state
   collapsed: boolean;
   onToggleCollapsed: () => void;
+  externalActiveTab?: DockTab;
+  onTabChange?: (tab: DockTab) => void;
 }
 
 const TABS: { key: DockTab; label: string }[] = [
@@ -71,10 +77,13 @@ const TABS: { key: DockTab; label: string }[] = [
   { key: 'journal', label: 'Journal' },
   { key: 'analytics', label: 'Analytics' },
   { key: 'inspector', label: 'Inspector' },
+  { key: 'settings', label: 'Settings' },
 ];
 
 export function ShadowTraderBottomDock(props: ShadowTraderBottomDockProps) {
-  const [activeTab, setActiveTab] = useState<DockTab>('positions');
+  const [internalTab, setInternalTab] = useState<DockTab>('positions');
+  const activeTab = props.externalActiveTab ?? internalTab;
+  const setActiveTab = (tab: DockTab) => { setInternalTab(tab); props.onTabChange?.(tab); };
 
   return (
     <div style={{ ...s.dock, ...(props.collapsed ? s.dockCollapsed : {}) }}>
@@ -199,6 +208,14 @@ export function ShadowTraderBottomDock(props: ShadowTraderBottomDockProps) {
               <WatchPanel watches={props.watches} />
               <NewsCalendarPanel newsContext={props.simulatorState?.newsRiskContext ?? null} />
               <SessionRegimePanel regimeContext={props.simulatorState?.regimeContext ?? null} />
+            </>
+          )}
+
+          {activeTab === 'settings' && (
+            <>
+              {props.renderConnectionForm?.()}
+              {props.renderAccountSettings?.()}
+              {props.renderManualSetup?.()}
             </>
           )}
         </div>
