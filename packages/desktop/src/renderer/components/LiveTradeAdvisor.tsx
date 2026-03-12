@@ -924,6 +924,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
               simulatorBlockedReason={simulatorState?.blockedReason ?? null}
               latestReviewed={reviewedIntents[0] ?? null}
               shadowEnabled={shadow?.enabled ?? false}
+              onEnableShadow={!shadow?.enabled ? handleShadowToggle : undefined}
             />
             <MarketContextCard
               regimeContext={simulatorState?.regimeContext ?? null}

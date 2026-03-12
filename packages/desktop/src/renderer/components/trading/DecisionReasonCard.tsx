@@ -9,14 +9,20 @@ interface DecisionReasonCardProps {
   simulatorBlockedReason: string | null;
   latestReviewed: { outcome: string; reason?: string; intent?: { side?: string; entry?: number; score?: number } } | null;
   shadowEnabled: boolean;
+  onEnableShadow?: () => void;
 }
 
-export function DecisionReasonCard({ shadowBlockedReason, simulatorBlockedReason, latestReviewed, shadowEnabled }: DecisionReasonCardProps) {
+export function DecisionReasonCard({ shadowBlockedReason, simulatorBlockedReason, latestReviewed, shadowEnabled, onEnableShadow }: DecisionReasonCardProps) {
   if (!shadowEnabled) {
     return (
       <div style={s.card}>
         <div style={s.label}>DECISION</div>
-        <div style={s.text}>Shadow Trading is disabled. Enable it to see trade decisions.</div>
+        <div style={s.text}>Shadow Trading is disabled.</div>
+        {onEnableShadow && (
+          <button style={s.enableBtn} onClick={onEnableShadow}>
+            Start Shadow Trading
+          </button>
+        )}
       </div>
     );
   }
@@ -73,6 +79,12 @@ const s: Record<string, React.CSSProperties> = {
   },
   text: {
     fontSize: 11, color: 'rgba(255,255,255,0.35)', lineHeight: '1.5',
+  },
+  enableBtn: {
+    marginTop: 8, fontSize: 10, fontWeight: 700, letterSpacing: '0.04em',
+    color: '#60a5fa', background: 'rgba(96,165,250,0.1)',
+    border: '1px solid rgba(96,165,250,0.3)', borderRadius: 4,
+    padding: '5px 12px', cursor: 'pointer',
   },
   outcomeRow: {
     display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4,
