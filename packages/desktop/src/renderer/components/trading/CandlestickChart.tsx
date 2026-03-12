@@ -114,7 +114,7 @@ function priceLabel(ctx: CanvasRenderingContext2D, x: number, y: number, text: s
   ctx.fillText(text, x + pw, y + 3.5);
 }
 
-function formatTime(ts: number): string {
+function formatEtTime(ts: number): string {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/New_York',
     hour: '2-digit',
@@ -422,7 +422,7 @@ function draw(
   ctx.textAlign = 'center';
   for (let i = 0; i < n; i += labelEvery) {
     const x = i * barW + barW / 2;
-    ctx.fillText(formatTime(visible[i].timestamp), x, h - 4);
+    ctx.fillText(formatEtTime(visible[i].timestamp), x, h - 4);
   }
   // ET timezone indicator
   ctx.fillStyle = COL.timeText;
@@ -484,7 +484,7 @@ function draw(
     // Time label at crosshair X
     const barIdx = Math.min(Math.max(0, Math.floor(mouseX / barW)), n - 1);
     if (barIdx < n) {
-      const timeLabel = formatTime(visible[barIdx].timestamp);
+      const timeLabel = formatEtTime(visible[barIdx].timestamp);
       ctx.font = '9px monospace';
       const tw = ctx.measureText(timeLabel).width + 8;
       ctx.fillStyle = 'rgba(255,255,255,0.08)';

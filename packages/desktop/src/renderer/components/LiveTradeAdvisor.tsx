@@ -1001,28 +1001,16 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
             {marketState?.bars ? (
               <>
                 <CandlestickChart
-                  bars={chartTimeframe === '1m' ? marketState.bars.bars1m : chartTimeframe === '5m' ? marketState.bars.bars5m : marketState.bars.bars15m}
-                  timeframe={chartTimeframe}
+                  bars={chartModel.bars}
+                  timeframe={chartModel.timeframe}
                   onTimeframeChange={setChartTimeframe}
-                  currentPrice={snapshot?.lastPrice}
-                  symbol={marketState.symbol ?? symbol}
-                  source={marketState.source}
-                  feedFreshnessMs={snapshot?.feedFreshnessMs}
-                  tradeOverlay={shadow?.openTrades?.[0] ? {
-                    entryPrice: shadow.openTrades[0].entryPrice,
-                    stopPrice: shadow.openTrades[0].stopPrice,
-                    targetPrice: shadow.openTrades[0].targetPrice,
-                    side: shadow.openTrades[0].side,
-                  } : null}
-                  levels={levelMap?.levels?.filter((l: any) => !l.broken).slice(0, 8).map((l: any) => ({
-                    price: l.price, type: l.type, strength: l.strength ?? 50, grade: l.grade,
-                  }))}
-                  events={reviewedIntents.slice(0, 10).map((ri: any) => ({
-                    timestamp: ri.reviewedAt ?? 0,
-                    type: ri.outcome as 'approved' | 'rejected',
-                    side: ri.intent?.side,
-                    price: ri.intent?.entry,
-                  }))}
+                  currentPrice={chartModel.currentPrice}
+                  symbol={chartModel.symbol}
+                  source={marketState?.source}
+                  feedFreshnessMs={chartModel.feedFreshnessMs}
+                  tradeOverlay={chartModel.tradeOverlay}
+                  levels={chartModel.levels}
+                  events={chartModel.events}
                   height={400}
                 />
                 <MarketDataStrip
