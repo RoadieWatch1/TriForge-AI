@@ -254,6 +254,92 @@ interface PromotionWorkflowStatus {
   lastReadinessState: StrategyReadinessState;
 }
 
+// ── Derived state types + helpers ────────────────────────────────────────────
+
+type ShadowTraderUiState =
+  | 'DISCONNECTED' | 'READY' | 'RUNNING' | 'PAUSED' | 'BLOCKED' | 'OPEN_POSITION';
+
+interface DerivedDisplayState {
+  uiState: ShadowTraderUiState;
+  sentence: string;
+  sessionLabel: string | null;
+  feedSource: 'Live Tradovate' | 'Simulated';
+}
+
+interface ChartLevel {
+  price: number;
+  type: string;
+  strength: number;
+  grade?: string;
+}
+
+interface ChartEvent {
+  timestamp: number;
+  type: 'approved' | 'rejected';
+  side?: string;
+  price?: number;
+}
+
+interface ActiveChartModel {
+  symbol: string;
+  timeframe: '1m' | '5m' | '15m';
+  source: 'live' | 'sim';
+  bars: OhlcBar[];
+  tradeOverlay: { entryPrice: number; stopPrice: number; targetPrice: number; side: 'long' | 'short' } | null;
+  currentPrice: number | undefined;
+  feedFreshnessMs: number | undefined;
+  levels: ChartLevel[];
+  events: ChartEvent[];
+}
+
+function normalizeSymbol(s: string): string {
+  return s.trim().toUpperCase();
+}
+
+function deriveShadowTraderUiState(
+  isConnected: boolean,
+  shadow: ShadowAccountState | null,
+  simulatorState: any,
+  symbol: string,
+  snapshot: LiveSnapshot | null,
+  marketSource: 'tradovate' | 'simulated' | undefined,
+): DerivedDisplayState {
+  const feedSource: 'Live Tradovate' | 'Simulated' =
+    marketSource === 'tradovate' ? 'Live Tradovate' : 'Simulated';
+  const sessionLabel = snapshot?.sessionLabel ?? null;
+
+  // Not connected to any feed and shadow not enabled
+  if (!isConnected && !shadow?.enabled) {
+    return { uiState: 'DISCONNECTED', sentence: 'No market feed connected. Connect Tradovate or enable Shadow Trading to start.', sessionLabel, feedSource };
+  }
+
+  // Shadow not enabled but feed is connected
+  if (!shadow?.enabled) {
+    return { uiState: 'READY', sentence: `Market feed active on ${symbol}. Enable Shadow Trading to begin.`, sessionLabel, feedSource };
+  }
+
+  // Shadow enabled — check for open positions first
+  if (shadow.openTrades.length > 0) {
+    const t = shadow.openTrades.find(tr => normalizeSymbol(tr.symbol) === normalizeSymbol(symbol)) ?? shadow.openTrades[0];
+    const pnlStr = t.unrealizedPnl !== undefined ? ` (${t.unrealizedPnl >= 0 ? '+' : ''}$${t.unrealizedPnl.toFixed(2)})` : '';
+    return { uiState: 'OPEN_POSITION', sentence: `Open ${t.side.toUpperCase()} on ${t.symbol} @ ${t.entryPrice}${pnlStr}`, sessionLabel, feedSource };
+  }
+
+  // Shadow enabled, paused
+  if (shadow.paused) {
+    return { uiState: 'PAUSED', sentence: 'Shadow Trading paused — no new trades will be taken.', sessionLabel, feedSource };
+  }
+
+  // Shadow enabled, blocked
+  if (shadow.blockedReason || simulatorState?.blockedReason) {
+    const reason = shadow.blockedReason || simulatorState?.blockedReason || 'Unknown';
+    return { uiState: 'BLOCKED', sentence: `Blocked: ${reason}`, sessionLabel, feedSource };
+  }
+
+  // Shadow enabled, running
+  return { uiState: 'RUNNING', sentence: `Shadow Trading active on ${symbol} — scanning for setups.`, sessionLabel, feedSource };
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const SYMBOL_LABELS: Record<string, string> = {
@@ -695,6 +781,43 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
   const maxRiskDollars = (parseFloat(balance) || 0) * (parseFloat(riskPct) || 1) / 100;
   const shadowPnlColor = !shadow ? 'rgba(255,255,255,0.7)' : shadow.dailyPnL > 0 ? '#34d399' : shadow.dailyPnL < 0 ? '#f87171' : 'rgba(255,255,255,0.7)';
   const shadowBalPct   = shadow ? ((shadow.currentBalance - shadow.startingBalance) / shadow.startingBalance * 100) : 0;
+
+  // ── Derived display state ─────────────────────────────────────────────────
+  const displayState: DerivedDisplayState = deriveShadowTraderUiState(
+    isConnected, shadow, simulatorState, symbol, snapshot, marketState?.source,
+  );
+
+  // ── Active chart model (single source of truth for chart UI) ──────────────
+  const activeTradeForSymbol = shadow?.openTrades?.find(
+    t => normalizeSymbol(t.symbol) === normalizeSymbol(symbol)
+  ) ?? null;
+
+  const chartModel: ActiveChartModel = {
+    symbol: marketState?.symbol ?? symbol,
+    timeframe: chartTimeframe,
+    source: marketState?.source === 'tradovate' ? 'live' : 'sim',
+    bars: !marketState?.bars ? [] :
+      chartTimeframe === '1m' ? marketState.bars.bars1m :
+      chartTimeframe === '5m' ? marketState.bars.bars5m :
+      marketState.bars.bars15m,
+    tradeOverlay: activeTradeForSymbol ? {
+      entryPrice: activeTradeForSymbol.entryPrice,
+      stopPrice: activeTradeForSymbol.stopPrice,
+      targetPrice: activeTradeForSymbol.targetPrice,
+      side: activeTradeForSymbol.side,
+    } : null,
+    currentPrice: snapshot?.lastPrice,
+    feedFreshnessMs: snapshot?.feedFreshnessMs,
+    levels: levelMap?.levels?.filter((l: any) => !l.broken).slice(0, 8).map((l: any) => ({
+      price: l.price, type: l.type, strength: l.strength ?? 50, grade: l.grade,
+    })) ?? [],
+    events: reviewedIntents.slice(0, 10).map((ri: any) => ({
+      timestamp: ri.reviewedAt ?? 0,
+      type: ri.outcome as 'approved' | 'rejected',
+      side: ri.intent?.side,
+      price: ri.intent?.entry,
+    })),
+  };
 
   // ── Render ───────────────────────────────────────────────────────────────────
 
