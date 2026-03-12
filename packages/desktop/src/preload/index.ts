@@ -568,6 +568,13 @@ const api = {
       ipcRenderer.invoke('trading:journal:advisoryTargets', dimension) as Promise<{ summary?: unknown; error?: string }>,
     reliabilitySetupTrust: () =>
       ipcRenderer.invoke('trading:reliability:setupTrust') as Promise<{ records?: unknown[]; error?: string }>,
+
+    // Real-time copy-trade signal listener
+    onShadowTradeAlert: (cb: (alert: unknown) => void): (() => void) => {
+      const handler = (_: unknown, alert: unknown) => cb(alert);
+      ipcRenderer.on('shadow:tradeAlert', handler);
+      return () => { ipcRenderer.removeListener('shadow:tradeAlert', handler); };
+    },
   },
 
   // Scheduler (recurring + once jobs)

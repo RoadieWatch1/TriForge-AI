@@ -61,6 +61,10 @@ import { SetupReliabilityStore } from '../reliability/SetupReliabilityStore';
 // Journal
 import { TradeJournalStore, type ExtendedJournalEntry } from '../learning/TradeJournalStore';
 
+// Trade alert
+import { broadcastTradeAlert, symbolLabel } from '../tradeAlertBroadcaster';
+import { INSTRUMENT_META } from '@triforge/engine';
+
 // ── Reviewed Intent Record ─────────────────────────────────────────────────
 
 export type ReviewOutcome = 'approved' | 'rejected' | 'error' | 'no_council';
@@ -447,6 +451,28 @@ export class TriForgeShadowSimulator {
 
       // Successfully executed
       this._recordReview(intent, 'approved', councilResult, orderResult, 'Approved and executed.');
+
+      // Real-time copy-trade signal to renderer
+      if (orderResult.position) {
+        const pos = orderResult.position;
+        broadcastTradeAlert({
+          type: 'trade_opened',
+          source: 'simulator',
+          tradeId: pos.id,
+          symbol: pos.symbol,
+          symbolLabel: symbolLabel(pos.symbol),
+          side: pos.side,
+          entryPrice: pos.entryPrice,
+          stopPrice: pos.stopPrice,
+          targetPrice: pos.targetPrice,
+          qty: pos.qty,
+          timestamp: pos.openedAt,
+          setupGrade: intent.setupGrade,
+          confidence: intent.confidence,
+          qualityScore: intent.setupQualityScore ?? intent.score?.final,
+        });
+      }
+
       return intent;
     }
 
@@ -496,6 +522,30 @@ export class TriForgeShadowSimulator {
       if (trigger) {
         const exitPrice = trigger === 'stop' ? pos.stopPrice : pos.targetPrice;
         this._positionBook.closePosition(pos.id, exitPrice, trigger);
+
+        // Real-time copy-trade close signal
+        const meta = INSTRUMENT_META[pos.symbol];
+        const pointValue = meta?.pointValue ?? 1;
+        const pnlDollars = pos.realizedPnlPoints !== undefined
+          ? pos.realizedPnlPoints * pointValue * pos.qty
+          : undefined;
+        broadcastTradeAlert({
+          type: 'trade_closed',
+          source: 'simulator',
+          tradeId: pos.id,
+          symbol: pos.symbol,
+          symbolLabel: symbolLabel(pos.symbol),
+          side: pos.side,
+          entryPrice: pos.entryPrice,
+          stopPrice: pos.stopPrice,
+          targetPrice: pos.targetPrice,
+          qty: pos.qty,
+          timestamp: Date.now(),
+          exitPrice,
+          exitReason: trigger,
+          pnl: pnlDollars,
+          pnlR: pos.rMultiple,
+        });
       }
     }
 

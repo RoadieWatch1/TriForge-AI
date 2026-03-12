@@ -46,6 +46,7 @@ import type {
 } from '@triforge/engine';
 import { DEFAULT_PROMOTION_GUARDRAILS, computeSetupGrade, computeAgreementLabel, buildTradeDecisionExplanation } from '@triforge/engine';
 import { TriForgeShadowSimulator } from './shadow/TriForgeShadowSimulator';
+import { broadcastTradeAlert, symbolLabel } from './tradeAlertBroadcaster';
 import { TradovateMarketDataAdapter } from './market/TradovateMarketDataAdapter';
 import { SimulatedMarketDataProvider } from './market/SimulatedMarketDataProvider';
 import type { IMarketDataProvider } from './market/MarketDataProvider';
@@ -738,6 +739,24 @@ class ShadowTradingControllerClass {
 
     // Phase 3: Emit trade_opened event
     this._emitEvent(this._buildOpenEvent(snap, trade, advice, candidateId, councilVotes));
+
+    // Real-time copy-trade signal to renderer
+    broadcastTradeAlert({
+      type: 'trade_opened',
+      source: 'controller',
+      tradeId: trade.id,
+      symbol: trade.symbol,
+      symbolLabel: symbolLabel(trade.symbol),
+      side: trade.side,
+      entryPrice: trade.entryPrice,
+      stopPrice: trade.stopPrice,
+      targetPrice: trade.targetPrice,
+      qty: trade.qty,
+      timestamp: trade.openedAt,
+      setupGrade: trade.setupGrade,
+      confidence: setup.confidence,
+      qualityScore,
+    });
   }
 
   // ── Price-based exit check ───────────────────────────────────────────────────
@@ -821,6 +840,25 @@ class ShadowTradingControllerClass {
 
     // Phase 3: Emit trade_closed event
     this._emitEvent(this._buildCloseEvent(trade));
+
+    // Real-time copy-trade signal to renderer
+    broadcastTradeAlert({
+      type: 'trade_closed',
+      source: 'controller',
+      tradeId: trade.id,
+      symbol: trade.symbol,
+      symbolLabel: symbolLabel(trade.symbol),
+      side: trade.side,
+      entryPrice: trade.entryPrice,
+      stopPrice: trade.stopPrice,
+      targetPrice: trade.targetPrice,
+      qty: trade.qty,
+      timestamp: Date.now(),
+      exitPrice: trade.exitPrice,
+      exitReason: trade.exitReason,
+      pnl: trade.pnl,
+      pnlR: trade.pnlR,
+    });
   }
 
   // ── Unrealized P/L update ────────────────────────────────────────────────────

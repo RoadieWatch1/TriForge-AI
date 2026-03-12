@@ -31,6 +31,7 @@ import { PipelineStatusPanel } from './trading/PipelineStatusPanel';
 import { TradeThesisPanel } from './trading/TradeThesisPanel';
 import { ReliabilityPanel } from './trading/ReliabilityPanel';
 import { TrustEvidencePanel } from './trading/TrustEvidencePanel';
+import { ShadowTradeToastContainer, type TradeSignalAlert } from './trading/ShadowTradeToast';
 
 // ── Local type mirrors (engine types, no direct import) ───────────────────────
 
@@ -255,7 +256,17 @@ interface PromotionWorkflowStatus {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const SUPPORTED_SYMBOLS = ['NQ', 'MNQ', 'ES', 'MES', 'RTY', 'M2K', 'CL', 'GC'];
+const SYMBOL_LABELS: Record<string, string> = {
+  NQ:  'Nasdaq-100 (Full)',
+  MNQ: 'Micro Nasdaq-100',
+  ES:  'S&P 500 (Full)',
+  MES: 'Micro S&P 500',
+  RTY: 'Russell 2000',
+  M2K: 'Micro Russell 2000',
+  CL:  'Crude Oil',
+  GC:  'Gold',
+};
+const SUPPORTED_SYMBOLS = Object.keys(SYMBOL_LABELS);
 
 const VERDICT_CONFIG: Record<TradeAdviceVerdict, { label: string; color: string; bg: string }> = {
   buy:                  { label: 'BUY',                  color: '#34d399', bg: 'rgba(52,211,153,0.12)' },
@@ -352,6 +363,8 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
   const [councilEffectSummary, setCouncilEffectSummary] = useState<any>(null);
   const [advisoryTargetSummary, setAdvisoryTargetSummary] = useState<any>(null);
   const [setupTrustRecords, setSetupTrustRecords] = useState<any[]>([]);
+  const [latestSignal, setLatestSignal] = useState<TradeSignalAlert | null>(null);
+  const [signalAge, setSignalAge] = useState(0);
   const expectancyDimRef = useRef(expectancyDimension);
 
   // ── Trading trial ──────────────────────────────────────────────────────────
@@ -386,6 +399,25 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
     });
     return () => stopPolling();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Real-time copy-trade signal listener ──────────────────────────────────
+  useEffect(() => {
+    const SIGNAL_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
+    const unsub = (window.triforge.trading as any).onShadowTradeAlert?.((alert: TradeSignalAlert) => {
+      setLatestSignal(alert);
+      setSignalAge(0);
+    });
+    const ageTick = setInterval(() => {
+      setLatestSignal(prev => {
+        if (!prev) return null;
+        const age = Date.now() - prev.timestamp;
+        if (age > SIGNAL_EXPIRY_MS) return null; // expired
+        setSignalAge(Math.round(age / 1000));
+        return prev;
+      });
+    }, 1000);
+    return () => { unsub?.(); clearInterval(ageTick); };
+  }, []);
 
   // ── Polling (market + shadow state) ─────────────────────────────────────────
 
@@ -715,6 +747,11 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
       <div style={s.disclaimer}>
         No live orders are placed by this feature. Shadow trades use virtual funds only. Always confirm inside Tradovate.
       </div>
+
+      {/* ── Latest Signal Strip (persistent copy-trade reference) ── */}
+      {shadow?.enabled && latestSignal && (
+        <LatestSignalStrip signal={latestSignal} ageSec={signalAge} />
+      )}
 
       <div style={s.body}>
         {/* ── Level Engine Inspector Tab Bar ── */}
@@ -1171,7 +1208,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           <div style={s.row}>
             <Field label="Symbol">
               <select style={s.select} value={symbol} onChange={e => handleSymbolChange(e.target.value)}>
-                {SUPPORTED_SYMBOLS.map(sym => <option key={sym} value={sym}>{sym}</option>)}
+                {SUPPORTED_SYMBOLS.map(sym => <option key={sym} value={sym}>{sym} — {SYMBOL_LABELS[sym]}</option>)}
               </select>
             </Field>
             {!shadow?.enabled && (
@@ -1345,6 +1382,96 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
         )}
         </>}
       </div>
+
+      {/* Real-time copy-trade signal toasts */}
+      <ShadowTradeToastContainer />
+    </div>
+  );
+}
+
+// ── Latest Signal Strip ──────────────────────────────────────────────────────
+
+function LatestSignalStrip({ signal, ageSec }: { signal: TradeSignalAlert; ageSec: number }) {
+  const isOpen = signal.type === 'trade_opened';
+  const sideColor = signal.side === 'long' ? '#34d399' : '#f87171';
+
+  type Freshness = 'live' | 'aging' | 'stale';
+  const freshness: Freshness = ageSec < 15 ? 'live' : ageSec < 60 ? 'aging' : 'stale';
+  const freshnessLabel: Record<Freshness, string> = { live: 'LIVE NOW', aging: 'AGING', stale: 'STALE' };
+  const freshnessColor: Record<Freshness, string> = { live: '#34d399', aging: '#fbbf24', stale: '#f87171' };
+  const fc = freshnessColor[freshness];
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' as const,
+      background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
+      borderLeft: `3px solid ${fc}`, borderRadius: 6, padding: '6px 12px',
+      margin: '0 0 4px', fontFamily: 'var(--font-mono, monospace)', fontSize: 10,
+    }}>
+      <span style={{ fontSize: 8, fontWeight: 800, letterSpacing: '0.08em', color: 'rgba(255,255,255,0.35)' }}>
+        LATEST SIGNAL
+      </span>
+      <span style={{ fontWeight: 700, color: 'rgba(255,255,255,0.5)', fontSize: 9 }}>
+        {isOpen ? 'OPENED' : 'CLOSED'}
+      </span>
+      <span style={{ fontWeight: 700, color: sideColor, fontSize: 10 }}>
+        {signal.side.toUpperCase()}
+      </span>
+      <span style={{ fontWeight: 700, color: 'rgba(255,255,255,0.9)', fontSize: 11 }}>
+        {signal.symbol}
+      </span>
+      <span style={{ color: 'rgba(255,255,255,0.35)', fontSize: 9 }}>
+        {signal.symbolLabel}
+      </span>
+
+      {isOpen ? (
+        <>
+          <span style={{ color: 'rgba(255,255,255,0.6)' }}>
+            Entry <b style={{ color: 'rgba(255,255,255,0.9)' }}>{signal.entryPrice.toFixed(2)}</b>
+          </span>
+          <span style={{ color: 'rgba(255,255,255,0.6)' }}>
+            Stop <b style={{ color: 'rgba(255,255,255,0.9)' }}>{signal.stopPrice.toFixed(2)}</b>
+          </span>
+          <span style={{ color: 'rgba(255,255,255,0.6)' }}>
+            Target <b style={{ color: 'rgba(255,255,255,0.9)' }}>{signal.targetPrice.toFixed(2)}</b>
+          </span>
+          {signal.setupGrade && (
+            <span style={{ color: 'rgba(255,255,255,0.5)' }}>
+              Grade <b>{signal.setupGrade}</b>
+            </span>
+          )}
+        </>
+      ) : (
+        <>
+          {signal.exitPrice != null && (
+            <span style={{ color: 'rgba(255,255,255,0.6)' }}>
+              Exit <b style={{ color: 'rgba(255,255,255,0.9)' }}>{signal.exitPrice.toFixed(2)}</b>
+            </span>
+          )}
+          {signal.exitReason && (
+            <span style={{ fontWeight: 700, fontSize: 9, color: signal.exitReason === 'target' ? '#34d399' : '#f87171' }}>
+              {signal.exitReason.toUpperCase()}
+            </span>
+          )}
+          {signal.pnl != null && (
+            <span style={{ fontWeight: 700, color: signal.pnl >= 0 ? '#34d399' : '#f87171' }}>
+              {signal.pnl >= 0 ? '+' : ''}{signal.pnl.toFixed(2)}
+            </span>
+          )}
+        </>
+      )}
+
+      <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{
+          fontSize: 8, fontWeight: 700, letterSpacing: '0.1em',
+          color: fc, border: `1px solid ${fc}`, borderRadius: 3, padding: '1px 5px',
+        }}>
+          {freshnessLabel[freshness]}
+        </span>
+        <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.25)' }}>
+          {ageSec}s ago
+        </span>
+      </span>
     </div>
   );
 }
@@ -2087,7 +2214,7 @@ const s: Record<string, React.CSSProperties> = {
   noteBox:       { fontSize: 11, color: 'rgba(255,255,255,0.4)', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 6, padding: '8px 10px', lineHeight: 1.5 },
   row:           { display: 'flex', gap: 12, flexWrap: 'wrap' },
   input:         { background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, color: 'rgba(255,255,255,0.85)', fontSize: 12, padding: '7px 10px', outline: 'none', width: '100%', boxSizing: 'border-box', fontFamily: 'inherit' },
-  select:        { background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, color: 'rgba(255,255,255,0.85)', fontSize: 12, padding: '7px 10px', outline: 'none', width: '100%', boxSizing: 'border-box', fontFamily: 'inherit', cursor: 'pointer' },
+  select:        { background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, color: 'rgba(255,255,255,0.85)', fontSize: 12, padding: '7px 10px', outline: 'none', width: '100%', boxSizing: 'border-box', fontFamily: 'inherit', cursor: 'pointer', colorScheme: 'dark' },
   textarea:      { background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, color: 'rgba(255,255,255,0.85)', fontSize: 12, padding: '7px 10px', outline: 'none', width: '100%', boxSizing: 'border-box', resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.5 },
   segmented:     { display: 'flex', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, overflow: 'hidden' },
   seg:           { flex: 1, background: 'none', border: 'none', color: 'rgba(255,255,255,0.35)', fontSize: 11, fontWeight: 600, padding: '7px 12px', cursor: 'pointer', fontFamily: 'inherit' },

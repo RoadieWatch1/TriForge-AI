@@ -91,3 +91,17 @@ export function playErrorTone(): void {
   const ctx = ac(); if (!ctx) return;
   tone(ctx, 440, 440, 330, 300, 0.07);
 }
+
+/** Ascending double-beep — shadow trade opened (copy-trade signal). */
+export function playTradeOpenTone(): void {
+  const ctx = ac(); if (!ctx) return;
+  tone(ctx, 660, 660, 880, 150, 0.06);
+  setTimeout(() => { const c = ac(); if (c) tone(c, 880, 880, 1100, 150, 0.06); }, 180);
+}
+
+/** Trade closed tone — ascending for profit, descending for loss. */
+export function playTradeCloseTone(isProfit: boolean): void {
+  const ctx = ac(); if (!ctx) return;
+  if (isProfit) tone(ctx, 880, 880, 1320, 200, 0.05);
+  else          tone(ctx, 660, 660, 440, 200, 0.05);
+}
