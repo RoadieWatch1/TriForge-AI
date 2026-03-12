@@ -279,6 +279,7 @@ export function TradeThesisPanel(props: TradeThesisProps) {
   if (!sim?.active && !props.shadow?.enabled) return null;
 
   const thesis = computeThesis(props);
+  const reliability = props.simulatorState?.signalReliability ?? null;
   const aSt = ACTION_STYLE[thesis.actionState];
   const bSt = BIAS_STYLE[thesis.bias];
 
