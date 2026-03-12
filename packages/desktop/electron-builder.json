@@ -36,6 +36,10 @@
     "identity": "Developer ID Application"
   },
 
+  "zip": {
+    "artifactName": "TriForge-AI-${version}-universal-mac.zip"
+  },
+
   "dmg": {
     "artifactName": "TriForge-AI.dmg",
     "title": "TriForge AI",
