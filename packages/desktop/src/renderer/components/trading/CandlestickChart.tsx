@@ -51,7 +51,16 @@ interface CandlestickChartProps {
   levels?: ChartLevel[];
   events?: ChartEvent[];
   height?: number;
+  timezone?: string;
 }
+
+const TZ_ABBREV: Record<string, string> = {
+  'America/New_York': 'ET',
+  'America/Chicago': 'CT',
+  'America/Denver': 'MT',
+  'America/Los_Angeles': 'PT',
+  'UTC': 'UTC',
+};
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -113,9 +122,9 @@ function priceLabel(ctx: CanvasRenderingContext2D, x: number, y: number, text: s
   ctx.fillText(text, x + pw, y + 3.5);
 }
 
-function formatEtTime(ts: number): string {
+function formatChartTime(ts: number, tz: string): string {
   const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
+    timeZone: tz,
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
@@ -422,12 +431,12 @@ function draw(
   ctx.textAlign = 'center';
   for (let i = 0; i < n; i += labelEvery) {
     const x = i * barW + barW / 2;
-    ctx.fillText(formatEtTime(visible[i].timestamp), x, h - 4);
+    ctx.fillText(formatChartTime(visible[i].timestamp, timezone), x, h - 4);
   }
-  // ET timezone indicator
+  // Timezone indicator
   ctx.fillStyle = COL.timeText;
   ctx.textAlign = 'right';
-  ctx.fillText('ET', chartW - 4, h - 4);
+  ctx.fillText(TZ_ABBREV[timezone] ?? timezone, chartW - 4, h - 4);
   ctx.textAlign = 'start';
 
   // ── Trade level overlays ──────────────────────────────────────────────
@@ -484,7 +493,7 @@ function draw(
     // Time label at crosshair X
     const barIdx = Math.min(Math.max(0, Math.floor(mouseX / barW)), n - 1);
     if (barIdx < n) {
-      const timeLabel = formatEtTime(visible[barIdx].timestamp);
+      const timeLabel = formatChartTime(visible[barIdx].timestamp, timezone);
       ctx.font = '9px monospace';
       const tw = ctx.measureText(timeLabel).width + 8;
       ctx.fillStyle = 'rgba(255,255,255,0.08)';
@@ -558,6 +567,7 @@ export function CandlestickChart({
   levels,
   events,
   height = 340,
+  timezone = 'America/New_York',
 }: CandlestickChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);

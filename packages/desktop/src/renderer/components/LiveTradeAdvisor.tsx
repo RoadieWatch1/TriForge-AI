@@ -386,6 +386,10 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
   const [balance, setBalance]             = useState('25000');
   const [riskPct, setRiskPct]             = useState('1');
 
+  // ── Chart timezone ─────────────────────────────────────────────────────────
+  const [chartTimezone, setChartTimezone] = useState(() => localStorage.getItem('triforge-chart-tz') ?? 'America/New_York');
+  const handleTimezoneChange = (tz: string) => { setChartTimezone(tz); localStorage.setItem('triforge-chart-tz', tz); };
+
   // ── Symbol / setup ──────────────────────────────────────────────────────────
   const [symbol, setSymbol]               = useState('NQ');
   const [side, setSide]                   = useState<'long' | 'short'>('long');
@@ -897,6 +901,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
               tradeOverlay={chartModel.tradeOverlay}
               levels={chartModel.levels}
               events={chartModel.events}
+              timezone={chartTimezone}
               height={400}
             />
             {marketState?.bars && (
@@ -1029,6 +1034,17 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
                   <span style={s.derivedLabel}>Max Risk $</span>
                   <span style={s.derivedValue}>${maxRiskDollars.toFixed(0)}</span>
                 </div>
+              </div>
+              <div style={s.row}>
+                <Field label="Chart Timezone">
+                  <select style={s.input} value={chartTimezone} onChange={e => handleTimezoneChange(e.target.value)}>
+                    <option value="America/New_York">Eastern (ET)</option>
+                    <option value="America/Chicago">Central (CT)</option>
+                    <option value="America/Denver">Mountain (MT)</option>
+                    <option value="America/Los_Angeles">Pacific (PT)</option>
+                    <option value="UTC">UTC</option>
+                  </select>
+                </Field>
               </div>
             </div>
           )}
