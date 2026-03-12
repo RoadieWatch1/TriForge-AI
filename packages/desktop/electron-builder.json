@@ -33,10 +33,7 @@
     "gatekeeperAssess": false,
     "entitlements": "assets/entitlements.mac.plist",
     "entitlementsInherit": "assets/entitlements.mac.plist",
-    "identity": "Developer ID Application"
-  },
-
-  "zip": {
+    "identity": "Developer ID Application",
     "artifactName": "TriForge-AI-${version}-universal-mac.zip"
   },
 
