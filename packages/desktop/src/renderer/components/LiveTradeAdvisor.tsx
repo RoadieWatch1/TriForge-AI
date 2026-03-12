@@ -33,6 +33,10 @@ import { ReliabilityPanel } from './trading/ReliabilityPanel';
 import { TrustEvidencePanel } from './trading/TrustEvidencePanel';
 import { ShadowTradeToastContainer, type TradeSignalAlert } from './trading/ShadowTradeToast';
 import { ShadowTraderHeader } from './trading/ShadowTraderHeader';
+import { ChartTruthStrip } from './trading/ChartTruthStrip';
+import { CurrentTradeStateCard } from './trading/CurrentTradeStateCard';
+import { DecisionReasonCard } from './trading/DecisionReasonCard';
+import { MarketContextCard } from './trading/MarketContextCard';
 
 // ── Local type mirrors (engine types, no direct import) ───────────────────────
 
@@ -976,77 +980,64 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
         {/* ── Simulator tab (chart-first layout) ── */}
         {(inspectorTab === 'simulator' || !simulatorState?.active) && <>
 
-        {/* ── 1. Hero Area: Chart + Thesis ── */}
-        <div style={s.heroRow}>
-          {/* LEFT: Chart column */}
-          <div style={s.heroChartCol}>
-            {marketState?.bars ? (
-              <>
-                <CandlestickChart
-                  bars={chartModel.bars}
-                  timeframe={chartModel.timeframe}
-                  onTimeframeChange={setChartTimeframe}
-                  currentPrice={chartModel.currentPrice}
-                  symbol={chartModel.symbol}
-                  source={marketState?.source}
-                  feedFreshnessMs={chartModel.feedFreshnessMs}
-                  tradeOverlay={chartModel.tradeOverlay}
-                  levels={chartModel.levels}
-                  events={chartModel.events}
-                  height={400}
-                />
-                <MarketDataStrip
-                  lastPrice={snapshot?.lastPrice}
-                  bidPrice={snapshot?.bidPrice}
-                  askPrice={snapshot?.askPrice}
-                  highOfDay={snapshot?.highOfDay}
-                  lowOfDay={snapshot?.lowOfDay}
-                  trend={snapshot?.trend}
-                  feedFreshnessMs={snapshot?.feedFreshnessMs}
-                  source={marketState.source}
-                />
-              </>
-            ) : (
-              /* Fallback: text-based market card when no bar data yet */
-              <div style={{ ...s.card, flex: 1 }}>
-                <div style={{ ...s.cardTitle, gap: 6 }}>
-                  Live Market — {symbol}
-                  {isConnected && snapshot?.lastPrice && <span style={s.liveDot} />}
-                  {snapshot?.feedFreshnessMs !== undefined && (
-                    <span style={{ fontSize: 9, color: snapshot.feedFreshnessMs > 8000 ? '#f87171' : snapshot.feedFreshnessMs > 4000 ? '#fbbf24' : 'rgba(255,255,255,0.2)', marginLeft: 'auto' }}>
-                      {snapshot.feedFreshnessMs < 1000 ? '<1s' : `${(snapshot.feedFreshnessMs / 1000).toFixed(0)}s`} ago
-                    </span>
-                  )}
-                </div>
-                {!isConnected ? (
-                  <div style={s.statusNote}>
-                    <span style={s.statusDot} />
-                    {shadow?.enabled
-                      ? 'Running on simulated market data.'
-                      : 'Not connected — click Connect Tradovate to enable live data.'}
-                  </div>
-                ) : !snapshot?.lastPrice ? (
-                  <div style={s.statusNote}>
-                    <span style={{ ...s.statusDot, background: '#fbbf24' }} />
-                    Connected — waiting for first price tick on {symbol}.
-                  </div>
-                ) : (
-                  <div style={s.metricsRow}>
-                    <Metric label="Last"  value={snapshot.lastPrice.toFixed(2)} />
-                    <Metric label="Bid"   value={snapshot.bidPrice   !== undefined ? snapshot.bidPrice.toFixed(2)   : '—'} dim />
-                    <Metric label="Ask"   value={snapshot.askPrice   !== undefined ? snapshot.askPrice.toFixed(2)   : '—'} dim />
-                    <Metric label="High"  value={snapshot.highOfDay  !== undefined ? snapshot.highOfDay.toFixed(2)  : '—'} />
-                    <Metric label="Low"   value={snapshot.lowOfDay   !== undefined ? snapshot.lowOfDay.toFixed(2)   : '—'} />
-                    <Metric label="Trend" value={snapshot.trend ? snapshot.trend.toUpperCase() : '—'} highlight={snapshot.trend === 'up'} dimRed={snapshot.trend === 'down'} />
-                  </div>
-                )}
-                {snapshot?.warning && <div style={s.snapshotWarning}>{snapshot.warning}</div>}
-              </div>
+        {/* ── 1. Main Workspace: Chart + Decision Rail ── */}
+        <div style={s.mainWorkspace}>
+          {/* LEFT: Chart area (~70%) */}
+          <div style={s.chartArea}>
+            <ChartTruthStrip
+              symbol={chartModel.symbol}
+              timeframe={chartModel.timeframe}
+              source={chartModel.source}
+              feedFreshnessMs={chartModel.feedFreshnessMs}
+              tradeOverlay={chartModel.tradeOverlay}
+              uiState={displayState.uiState}
+            />
+            <CandlestickChart
+              bars={chartModel.bars}
+              timeframe={chartModel.timeframe}
+              onTimeframeChange={setChartTimeframe}
+              currentPrice={chartModel.currentPrice}
+              symbol={chartModel.symbol}
+              source={marketState?.source}
+              feedFreshnessMs={chartModel.feedFreshnessMs}
+              tradeOverlay={chartModel.tradeOverlay}
+              levels={chartModel.levels}
+              events={chartModel.events}
+              height={400}
+            />
+            {marketState?.bars && (
+              <MarketDataStrip
+                lastPrice={snapshot?.lastPrice}
+                bidPrice={snapshot?.bidPrice}
+                askPrice={snapshot?.askPrice}
+                highOfDay={snapshot?.highOfDay}
+                lowOfDay={snapshot?.lowOfDay}
+                trend={snapshot?.trend}
+                feedFreshnessMs={snapshot?.feedFreshnessMs}
+                source={marketState.source}
+              />
             )}
           </div>
 
-          {/* RIGHT: Thesis column */}
-          <div style={s.heroThesisCol}>
+          {/* RIGHT: Decision rail (~30%) */}
+          <div style={s.decisionRail}>
+            <CurrentTradeStateCard
+              trade={activeTradeForSymbol}
+              blockedReason={shadow?.blockedReason ?? simulatorState?.blockedReason ?? null}
+            />
+            <DecisionReasonCard
+              shadowBlockedReason={shadow?.blockedReason ?? null}
+              simulatorBlockedReason={simulatorState?.blockedReason ?? null}
+              latestReviewed={reviewedIntents[0] ?? null}
+              shadowEnabled={shadow?.enabled ?? false}
+            />
+            <MarketContextCard
+              regimeContext={simulatorState?.regimeContext ?? null}
+              pathPrediction={pathPrediction}
+              sessionLabel={displayState.sessionLabel}
+              newsBlocked={simulatorState?.newsRiskContext?.blocked ?? false}
+              newsReason={simulatorState?.newsRiskContext?.reason ?? null}
+            />
             <TradeThesisPanel
               pathPrediction={pathPrediction}
               snapshot={snapshot}
@@ -2302,6 +2293,9 @@ const s: Record<string, React.CSSProperties> = {
   heroRow:       { display: 'flex', gap: 12, alignItems: 'stretch', borderTop: '1px solid rgba(96,165,250,0.15)', paddingTop: 12 },
   heroChartCol:  { flex: 2, minWidth: 0, display: 'flex', flexDirection: 'column' },
   heroThesisCol: { flex: 1, minWidth: 300, maxWidth: 380, display: 'flex', flexDirection: 'column', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 6 },
+  mainWorkspace: { display: 'flex', flex: 1, gap: 10, minHeight: 0 },
+  chartArea:     { flex: 7, display: 'flex', flexDirection: 'column', minWidth: 0 },
+  decisionRail:  { flex: 3, minWidth: 260, maxWidth: 380, display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto' },
   card:          { background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 6, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 12 },
   cardTitle:     { fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'rgba(255,255,255,0.35)', display: 'flex', alignItems: 'center', gap: 6 },
   noteBox:       { fontSize: 11, color: 'rgba(255,255,255,0.4)', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 6, padding: '8px 10px', lineHeight: 1.5 },
