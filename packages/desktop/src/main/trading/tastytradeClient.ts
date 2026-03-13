@@ -662,7 +662,10 @@ export class TastytradeClient {
 
     this._last      = price;
     this._lastTickAt = Date.now();
-    if (this._authState === 'dxlink_connected') this._authState = 'ready';
+    if (this._authState === 'dxlink_connected') {
+      this._authState = 'ready';
+      console.log(`[TastytradeClient] First Trade received — price=${price} symbol=${this._symbol} → state=ready`);
+    }
 
     // Update forming 1m bar
     const minuteKey = Math.floor(ts / 60_000);
@@ -689,8 +692,12 @@ export class TastytradeClient {
   private _handleQuoteEvent(ev: Record<string, unknown>): void {
     const bid = Number(ev['bidPrice'] ?? 0);
     const ask = Number(ev['askPrice'] ?? 0);
+    const firstQuote = this._bid === 0 && this._ask === 0;
     if (bid > 0) this._bid = bid;
     if (ask > 0) this._ask = ask;
+    if (firstQuote && (this._bid > 0 || this._ask > 0)) {
+      console.log(`[TastytradeClient] First Quote received — bid=${this._bid} ask=${this._ask} symbol=${this._symbol}`);
+    }
   }
 
   // ── Subscription ─────────────────────────────────────────────────────────
@@ -715,6 +722,8 @@ export class TastytradeClient {
   subscribe(symbol: string): void {
     const newSym   = symbol.toUpperCase();
     const newDxSym = _toDxSymbol(newSym);
+
+    console.log(`[TastytradeClient] subscribe(${symbol}) → dxSymbol=${newDxSym} authState=${this._authState} wsReady=${this._wsReady} channelOpen=${this._channelOpen}`);
 
     if (this._symbol === newSym) return;
 

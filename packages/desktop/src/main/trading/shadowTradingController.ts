@@ -256,7 +256,12 @@ class ShadowTradingControllerClass {
     const ttSame  = tastytradeProvider.activeSymbol()    === symbol;
     if (!simSame) this._simulatedAdapter.subscribe(symbol);
     if (!tvSame)  this._marketAdapter.subscribe(symbol);
-    if (!ttSame && tastytradeProvider.isConnected()) tastytradeProvider.subscribe(symbol);
+    // Always call subscribe() — it is safe in any auth state.
+    // subscribe() stores _dxSymbol immediately; if the channel is not open yet,
+    // the subscription is deferred and fires automatically when AUTHORIZED fires.
+    // Removing the isConnected() guard breaks the deadlock where the symbol was
+    // never registered because auth hadn't completed when setActiveSymbol() was called.
+    if (!ttSame) tastytradeProvider.subscribe(symbol);
   }
 
   getState(): ShadowAccountState {

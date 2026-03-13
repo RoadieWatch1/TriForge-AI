@@ -22,6 +22,7 @@
   },
   "version": "1.18.1",
   "dependencies": {
+    "electron": "^41.0.1",
     "vosk-browser": "^0.0.8"
   }
 }
