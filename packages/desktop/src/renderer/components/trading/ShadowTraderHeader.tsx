@@ -14,7 +14,7 @@ interface DerivedDisplayState {
   uiState: ShadowTraderUiState;
   sentence: string;
   sessionLabel: string | null;
-  feedSource: 'Live Tradovate' | 'Simulated';
+  feedSource: 'Live Tradovate' | 'Live Tastytrade' | 'Simulated';
 }
 
 interface ShadowTraderHeaderProps {
@@ -72,7 +72,9 @@ export function ShadowTraderHeader({
   onTimezoneChange,
 }: ShadowTraderHeaderProps) {
   const badge = STATE_BADGE[displayState.uiState];
-  const feedColor = displayState.feedSource === 'Live Tradovate' ? '#34d399' : '#a78bfa';
+  const feedColor =
+    displayState.feedSource === 'Live Tradovate' ? '#34d399' :
+    displayState.feedSource === 'Live Tastytrade' ? '#34d399' : '#a78bfa';
 
   return (
     <div style={s.bar}>
@@ -90,8 +92,9 @@ export function ShadowTraderHeader({
           ))}
         </select>
         <span style={{ ...s.feedBadge, color: feedColor, borderColor: feedColor + '40' }}>
-          {displayState.feedSource === 'Live Tradovate' ? 'LIVE' : 'SIM'}
+          {displayState.feedSource === 'Simulated' ? 'SIM' : 'LIVE'}
         </span>
+        <span style={s.paperOnlyBadge}>PAPER ONLY</span>
         <span style={{ ...s.stateBadge, color: badge.color, background: badge.bg, borderColor: badge.color + '40' }}>
           {badge.label}
         </span>
@@ -100,9 +103,12 @@ export function ShadowTraderHeader({
         )}
       </div>
 
-      {/* Center: state sentence */}
+      {/* Center: state sentence + paper-only notice */}
       <div style={s.center}>
         <span style={s.sentence}>{displayState.sentence}</span>
+        <span style={s.paperSafety}>
+          Paper Only — TriForge does not place real trades. Copy manually in your broker if desired.
+        </span>
       </div>
 
       {/* Right: timezone + action buttons */}
@@ -121,7 +127,7 @@ export function ShadowTraderHeader({
         )}
         {displayState.uiState === 'READY' && (
           <button style={{ ...s.actionBtn, ...s.actionPrimary }} onClick={onStartShadow} disabled={shadowToggling}>
-            {shadowToggling ? 'Starting...' : 'Start Shadow'}
+            {shadowToggling ? 'Starting...' : 'Start Paper'}
           </button>
         )}
         {displayState.uiState === 'RUNNING' && (
@@ -141,12 +147,12 @@ export function ShadowTraderHeader({
         )}
         {displayState.uiState === 'OPEN_POSITION' && (
           <button style={{ ...s.actionBtn, ...s.actionDanger }} onClick={onFlattenStop}>
-            Flatten & Stop
+            Flatten Paper & Stop
           </button>
         )}
         {shadowEnabled && displayState.uiState !== 'DISCONNECTED' && displayState.uiState !== 'READY' && (
           <button style={{ ...s.actionBtn, ...s.actionGhost }} onClick={onStartShadow} disabled={shadowToggling}>
-            {shadowToggling ? '...' : 'Stop Shadow'}
+            {shadowToggling ? '...' : 'Stop Paper'}
           </button>
         )}
       </div>
@@ -208,6 +214,21 @@ const s: Record<string, React.CSSProperties> = {
   sentence: {
     fontSize: 11, color: 'rgba(255,255,255,0.4)',
     whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+    display: 'block',
+  },
+  paperSafety: {
+    display: 'block',
+    fontSize: 9, color: 'rgba(251,191,36,0.55)',
+    letterSpacing: '0.02em',
+    marginTop: 2,
+    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+  },
+  paperOnlyBadge: {
+    fontSize: 9, fontWeight: 800, letterSpacing: '0.08em',
+    color: '#fbbf24',
+    background: 'rgba(251,191,36,0.1)',
+    border: '1px solid rgba(251,191,36,0.35)',
+    borderRadius: 3, padding: '1px 6px',
   },
   actionBtn: {
     fontSize: 10, fontWeight: 700, letterSpacing: '0.04em',

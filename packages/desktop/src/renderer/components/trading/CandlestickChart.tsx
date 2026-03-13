@@ -45,7 +45,7 @@ interface CandlestickChartProps {
   onTimeframeChange: (tf: '1m' | '5m' | '15m') => void;
   currentPrice?: number;
   symbol?: string;
-  source?: 'tradovate' | 'simulated';
+  source?: 'tradovate' | 'tastytrade' | 'simulated';
   feedFreshnessMs?: number;
   tradeOverlay?: TradeLevelOverlay | null;
   levels?: ChartLevel[];
@@ -235,8 +235,8 @@ function draw(
   }
 
   if (source) {
-    const t = source === 'tradovate' ? 'LIVE' : 'SIM';
-    const col = source === 'tradovate' ? COL.up : '#a78bfa';
+    const t = source === 'simulated' ? 'SIM' : 'LIVE';
+    const col = source === 'simulated' ? '#a78bfa' : COL.up;
     const tw = ctx.measureText(t).width + 8;
     ctx.fillStyle = col + '18';
     ctx.fillRect(bx, by, tw, 16);

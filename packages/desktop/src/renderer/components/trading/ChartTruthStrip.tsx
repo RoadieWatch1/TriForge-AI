@@ -23,7 +23,7 @@ export function ChartTruthStrip({ symbol, timeframe, source, feedFreshnessMs, tr
     : 'rgba(255,255,255,0.25)';
 
   const tradeStr = tradeOverlay
-    ? `OPEN ${tradeOverlay.side.toUpperCase()} @ ${tradeOverlay.entryPrice.toFixed(2)}`
+    ? `PAPER ${tradeOverlay.side.toUpperCase()} @ ${tradeOverlay.entryPrice.toFixed(2)}`
     : uiState === 'RUNNING' ? 'Scanning...'
     : uiState === 'PAUSED' ? 'Paused'
     : '';
@@ -39,8 +39,10 @@ export function ChartTruthStrip({ symbol, timeframe, source, feedFreshnessMs, tr
       <span style={s.tf}>{timeframe.toUpperCase()}</span>
       <span style={s.sep}>|</span>
       <span style={{ ...s.src, color: source === 'live' ? '#34d399' : '#a78bfa' }}>
-        {source === 'live' ? 'LIVE' : 'SIM'}
+        {source === 'live' ? 'LIVE DATA' : 'SIM DATA'}
       </span>
+      <span style={s.sep}>|</span>
+      <span style={s.paperOnly}>PAPER ONLY</span>
       <span style={s.sep}>|</span>
       <span style={{ ...s.fresh, color: freshColor }}>{freshLabel}</span>
       {tradeStr && (
@@ -65,6 +67,7 @@ const s: Record<string, React.CSSProperties> = {
   sep: { fontSize: 10, color: 'rgba(255,255,255,0.08)' },
   tf: { fontSize: 9, fontWeight: 700, color: 'rgba(255,255,255,0.3)' },
   src: { fontSize: 9, fontWeight: 800, letterSpacing: '0.06em' },
+  paperOnly: { fontSize: 9, fontWeight: 800, letterSpacing: '0.06em', color: '#fbbf24' },
   fresh: { fontSize: 9 },
   trade: { fontSize: 9, fontWeight: 800, letterSpacing: '0.04em' },
 };

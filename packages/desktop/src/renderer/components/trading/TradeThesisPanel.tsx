@@ -182,7 +182,7 @@ function computeNextUnlock(reason: string, p: TradeThesisProps): string {
   if (r.includes('max_trades')) return 'Trade limit reached — resume tomorrow';
   if (r.includes('manual_confirmation')) return 'Confirm or reject pending trade';
   if (r.includes('cool')) return 'Cooldown period active';
-  if (r.includes('paused')) return 'Resume shadow trading';
+  if (r.includes('paused')) return 'Resume paper trading';
   return 'Condition change needed';
 }
 

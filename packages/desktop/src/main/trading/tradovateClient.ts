@@ -47,6 +47,10 @@ interface QuoteTick {
   highOfDay?: number;
   lowOfDay?: number;
   totalVolume?: number;
+  /** Volume of the most recent trade tick from Tradovate (preferred over TotalTradeVolume delta). */
+  tradeSize?: number;
+  /** Timestamp of the most recent trade tick from Tradovate (preferred over client receive time). */
+  tradeTimestamp?: number;
   receivedAt: number;
 }
 
@@ -235,7 +239,7 @@ class BarAccumulator {
 
   get state(): IndicatorState { return this._state; }
 
-  onTick(price: number, totalVolume: number | undefined, tickTs: number): void {
+  onTick(price: number, totalVolume: number | undefined, tickTs: number, tradeSizeHint?: number): void {
     // Use one consistent timestamp for all time-based decisions
     const minuteKey = Math.floor(tickTs / 60000);
 
@@ -254,15 +258,19 @@ class BarAccumulator {
     this._currentBar.low   = Math.min(this._currentBar.low, price);
     this._currentBar.close = price;
 
-    // Volume delta from TotalTradeVolume
-    let tickVolume = 1; // fallback: count 1 per tick
+    // Volume resolution (best → worst):
+    //  1. tradeSizeHint — direct size from Tradovate Trade entry (no delta issues)
+    //  2. TotalTradeVolume delta — works when connected and no reset boundary
+    //  3. Fallback 1 — last resort, will undercount
+    let tickVolume = 1;
     let volumeValid = true;
-    if (totalVolume != null && this._prevTotalVolume != null) {
+    if (tradeSizeHint != null && tradeSizeHint > 0) {
+      tickVolume = tradeSizeHint;
+    } else if (totalVolume != null && this._prevTotalVolume != null) {
       const delta = totalVolume - this._prevTotalVolume;
       if (delta > 0 && delta < 100000) {
         tickVolume = delta;
       } else {
-        // Negative or huge delta (reconnect boundary / reset) — discard
         volumeValid = false;
         if (delta < 0) {
           console.log(`[BarAccumulator] Invalid volume delta=${delta} (negative) — ignoring for VWAP`);
@@ -702,6 +710,8 @@ export class TradovateClient {
     }
   }
 
+  private _diagLoggedOnce = false;
+
   private _processQuote(q: Record<string, unknown>): void {
     const entries = q['entries'] as Record<string, Record<string, unknown>> | undefined;
     if (!entries) return;
@@ -714,7 +724,34 @@ export class TradovateClient {
     const existing = this.quotes.get(symbol) ?? { symbol, receivedAt: 0 };
 
     if (entries['Trade']) {
+      // DIAG: log the raw Trade entry once so we can see exactly what fields Tradovate sends
+      if (!this._diagLoggedOnce) {
+        this._diagLoggedOnce = true;
+        console.log('[DIAG] Raw quote top-level keys:', Object.keys(q));
+        console.log('[DIAG] Raw Trade entry:', JSON.stringify(entries['Trade']));
+        console.log('[DIAG] All entry keys:', Object.keys(entries));
+        if (entries['TotalTradeVolume']) {
+          console.log('[DIAG] TotalTradeVolume entry:', JSON.stringify(entries['TotalTradeVolume']));
+        }
+      }
+
       existing.lastPrice = Number(entries['Trade']['price']);
+      // Capture tick volume directly from the trade entry (more reliable than TotalTradeVolume delta)
+      if (entries['Trade']['size'] != null) {
+        existing.tradeSize = Number(entries['Trade']['size']);
+      }
+      // Capture Tradovate's server-side trade timestamp to use for bar bucketing.
+      // This avoids bar boundary errors caused by network latency (using Date.now() would
+      // assign a trade at 09:29:59 to the 09:30 bar if it arrives 1 second late).
+      const rawTs = entries['Trade']['timestamp'] ?? entries['Trade']['ts'];
+      if (rawTs != null) {
+        const tsStr = String(rawTs);
+        existing.tradeTimestamp = new Date(
+          tsStr.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(tsStr) ? tsStr : tsStr + 'Z',
+        ).getTime();
+      } else {
+        existing.tradeTimestamp = undefined;
+      }
     }
     if (entries['Bid']) {
       existing.bidPrice = Number(entries['Bid']['price']);
@@ -734,9 +771,12 @@ export class TradovateClient {
     existing.receivedAt = Date.now();
     this.quotes.set(symbol, existing);
 
-    // Feed tick to bar accumulator for ATR / VWAP / trend computation
+    // Feed tick to bar accumulator for ATR / VWAP / trend computation.
+    // Prefer Tradovate's trade timestamp over client receive time, and trade size over
+    // the TotalTradeVolume delta (which is unreliable across reconnects and large spikes).
     if (existing.lastPrice != null) {
-      this._accumulator.onTick(existing.lastPrice, existing.totalVolume, existing.receivedAt);
+      const tickTs = existing.tradeTimestamp ?? existing.receivedAt;
+      this._accumulator.onTick(existing.lastPrice, existing.totalVolume, tickTs, existing.tradeSize);
     }
   }
 
@@ -968,14 +1008,22 @@ export class TradovateClient {
         return;
       }
 
-      const ohlcBars: OhlcBar[] = rawBars.map(b => ({
-        timestamp: new Date(String(b['timestamp'])).getTime(),
-        open:      Number(b['open'] ?? 0),
-        high:      Number(b['high'] ?? 0),
-        low:       Number(b['low'] ?? 0),
-        close:     Number(b['close'] ?? 0),
-        volume:    Number(b['upVolume'] ?? 0) + Number(b['downVolume'] ?? 0),
-      })).filter(b => b.timestamp > 0 && b.open > 0);
+      const ohlcBars: OhlcBar[] = rawBars.map(b => {
+        // Force UTC parsing — bare ISO strings (no Z/offset) are ambiguous in JS
+        // and will be parsed as local time, shifting bars by the machine's UTC offset.
+        const tsStr = String(b['timestamp']);
+        const tsMs  = new Date(
+          tsStr.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(tsStr) ? tsStr : tsStr + 'Z',
+        ).getTime();
+        return {
+          timestamp: tsMs,
+          open:   Number(b['open'] ?? 0),
+          high:   Number(b['high'] ?? 0),
+          low:    Number(b['low'] ?? 0),
+          close:  Number(b['close'] ?? 0),
+          volume: Number(b['upVolume'] ?? 0) + Number(b['downVolume'] ?? 0),
+        };
+      }).filter(b => b.timestamp > 0 && b.open > 0);
 
       if (ohlcBars.length > 0) {
         this._accumulator.loadHistorical(ohlcBars);

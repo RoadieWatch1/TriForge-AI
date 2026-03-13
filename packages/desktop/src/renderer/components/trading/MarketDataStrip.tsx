@@ -13,7 +13,7 @@ interface MarketDataStripProps {
   lowOfDay?: number;
   trend?: 'up' | 'down' | 'range' | 'unknown';
   feedFreshnessMs?: number;
-  source?: 'tradovate' | 'simulated';
+  source?: 'tradovate' | 'tastytrade' | 'simulated';
 }
 
 const s = {
@@ -68,7 +68,7 @@ export function MarketDataStrip({
         </span>
       )}
       <span style={{ ...s.right, color: freshColor }}>
-        {freshLabel}{freshLabel ? ' ago' : ''}{source ? ` \u00b7 ${source === 'tradovate' ? 'LIVE' : 'SIMULATED'}` : ''}
+        {freshLabel}{freshLabel ? ' ago' : ''}{source ? ` \u00b7 ${source === 'simulated' ? 'SIMULATED' : 'LIVE'}` : ''}
       </span>
     </div>
   );

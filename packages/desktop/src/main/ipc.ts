@@ -22,6 +22,7 @@ import { createNotifyAdapter } from './notifications';
 import { createMailAdapter } from './mailService';
 import { NativeIntentRouter } from './nativeIntentRouter';
 import { tradovateService } from './trading/tradovateService';
+import { tastytradeProvider } from './trading/market/TastytradeMarketDataProvider';
 import { shadowTradingController } from './trading/shadowTradingController';
 import type { CouncilReviewResult } from './trading/shadowTradingController';
 import { buildCouncilContext } from './trading/council/CouncilTradeReviewContext';
@@ -2985,6 +2986,29 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   ipcMain.handle('trading:tradovateDisconnect', async () => {
     await tradovateService.forget();
     return { ok: true };
+  });
+
+  // ── Tastytrade (free paper-account live data) ───────────────────────────────
+
+  ipcMain.handle('trading:tastytradeConnect', async (_e, creds: { username: string; password: string }) => {
+    try {
+      await tastytradeProvider.connect(creds.username, creds.password);
+      return { ok: true };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('trading:tastytradeDisconnect', () => {
+    tastytradeProvider.disconnect();
+    return { ok: true };
+  });
+
+  ipcMain.handle('trading:tastytradeStatus', () => {
+    return {
+      connected: tastytradeProvider.isConnected(),
+      symbol:    tastytradeProvider.activeSymbol(),
+    };
   });
 
   ipcMain.handle('trading:tradovateAccountState', async () => {

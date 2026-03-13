@@ -53,7 +53,7 @@ interface OhlcBar {
 interface MarketStatePayload {
   snapshot: LiveSnapshot | null;
   bars: { bars1m: OhlcBar[]; bars5m: OhlcBar[]; bars15m: OhlcBar[] } | null;
-  source: 'tradovate' | 'simulated';
+  source: 'tradovate' | 'tastytrade' | 'simulated';
   connected: boolean;
   symbol: string | null;
 }
@@ -269,7 +269,7 @@ interface DerivedDisplayState {
   uiState: ShadowTraderUiState;
   sentence: string;
   sessionLabel: string | null;
-  feedSource: 'Live Tradovate' | 'Simulated';
+  feedSource: 'Live Tradovate' | 'Live Tastytrade' | 'Simulated';
 }
 
 interface ChartLevel {
@@ -308,20 +308,21 @@ function deriveShadowTraderUiState(
   simulatorState: any,
   symbol: string,
   snapshot: LiveSnapshot | null,
-  marketSource: 'tradovate' | 'simulated' | undefined,
+  marketSource: 'tradovate' | 'tastytrade' | 'simulated' | undefined,
 ): DerivedDisplayState {
-  const feedSource: 'Live Tradovate' | 'Simulated' =
-    marketSource === 'tradovate' ? 'Live Tradovate' : 'Simulated';
+  const feedSource: 'Live Tradovate' | 'Live Tastytrade' | 'Simulated' =
+    marketSource === 'tradovate' ? 'Live Tradovate' :
+    marketSource === 'tastytrade' ? 'Live Tastytrade' : 'Simulated';
   const sessionLabel = snapshot?.sessionLabel ?? null;
 
   // Not connected to any feed and shadow not enabled
   if (!isConnected && !shadow?.enabled) {
-    return { uiState: 'DISCONNECTED', sentence: 'No market feed connected. Connect Tradovate or enable Shadow Trading to start.', sessionLabel, feedSource };
+    return { uiState: 'DISCONNECTED', sentence: 'No market feed connected. Connect Tradovate or enable Paper Trading to start.', sessionLabel, feedSource };
   }
 
   // Shadow not enabled but feed is connected
   if (!shadow?.enabled) {
-    return { uiState: 'READY', sentence: `Market feed active on ${symbol}. Enable Shadow Trading to begin.`, sessionLabel, feedSource };
+    return { uiState: 'READY', sentence: `Market feed active on ${symbol}. Enable Paper Trading to begin.`, sessionLabel, feedSource };
   }
 
   // Shadow enabled — check for open position on the CURRENT symbol
@@ -336,7 +337,7 @@ function deriveShadowTraderUiState(
 
   // Shadow enabled, paused
   if (shadow.paused) {
-    return { uiState: 'PAUSED', sentence: `Shadow Trading paused — no new trades will be taken.${otherTradeNote}`, sessionLabel, feedSource };
+    return { uiState: 'PAUSED', sentence: `Paper Trading paused — no new trades will be taken.${otherTradeNote}`, sessionLabel, feedSource };
   }
 
   // Shadow enabled, blocked
@@ -346,7 +347,7 @@ function deriveShadowTraderUiState(
   }
 
   // Shadow enabled, running
-  return { uiState: 'RUNNING', sentence: `Shadow Trading active on ${symbol} — scanning for setups.${otherTradeNote}`, sessionLabel, feedSource };
+  return { uiState: 'RUNNING', sentence: `Paper Trading active on ${symbol} — scanning for setups.${otherTradeNote}`, sessionLabel, feedSource };
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -381,6 +382,12 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
   const [connCreds, setConnCreds]         = useState({ username: '', password: '', accountMode: 'simulation' as 'simulation' | 'live', cid: '', sec: '' });
   const [connecting, setConnecting]       = useState(false);
   const [connError, setConnError]         = useState<string | null>(null);
+
+  // ── Tastytrade (free live data) ─────────────────────────────────────────────
+  const [ttCreds, setTtCreds]             = useState({ username: '', password: '' });
+  const [ttConnecting, setTtConnecting]   = useState(false);
+  const [ttConnError, setTtConnError]     = useState<string | null>(null);
+  const [ttConnected, setTtConnected]     = useState(false);
 
   // ── Balance / risk ──────────────────────────────────────────────────────────
   const [balance, setBalance]             = useState('25000');
@@ -485,14 +492,16 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
     Promise.all([
       window.triforge.trading.tradovateStatus(),
       window.triforge.trading.shadowState(),
-    ]).then(([status, shadowState]) => {
+      (window.triforge.trading as any).tastytradeStatus?.() ?? Promise.resolve(null),
+    ]).then(([status, shadowState, ttStatus]) => {
       setIsConnected(status.connected);
       setAccountMode(status.accountMode);
       setShadow(shadowState as ShadowAccountState);
+      if (ttStatus?.connected) setTtConnected(true);
       const ss = shadowState as ShadowAccountState;
       // Start polling if Tradovate is connected OR shadow trading is enabled
       // (simulated data mode still needs polling for simulator state, trades, etc.)
-      if (status.connected || ss.enabled) startPolling(symbol);
+      if (status.connected || ss.enabled || ttStatus?.connected) startPolling(symbol);
       else setSnapshot({ connected: false, accountMode: 'unknown', symbol });
     }).catch(() => {
       setSnapshot({ connected: false, accountMode: 'unknown', symbol });
@@ -693,7 +702,6 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
       const status = await window.triforge.trading.tradovateStatus();
       setIsConnected(status.connected);
       setAccountMode(status.accountMode);
-      setShowConnForm(false);
       startPolling(symbol);
     } catch (err) {
       setConnError(err instanceof Error ? err.message : String(err));
@@ -706,6 +714,25 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
     setIsConnected(false); setAccountMode('unknown');
     setSnapshot({ connected: false, accountMode: 'unknown', symbol });
     setAdvice(null); setCouncilReview(null);
+  };
+
+  const handleTastytradeConnect = async () => {
+    if (!ttCreds.username || !ttCreds.password) { setTtConnError('Username and password required.'); return; }
+    setTtConnecting(true); setTtConnError(null);
+    try {
+      const res = await (window.triforge.trading as any).tastytradeConnect?.(ttCreds);
+      if (res?.error) { setTtConnError(res.error); return; }
+      setTtConnected(true);
+      startPolling(symbol);
+    } catch (err) {
+      setTtConnError(err instanceof Error ? err.message : String(err));
+    } finally { setTtConnecting(false); }
+  };
+
+  const handleTastytradeDisconnect = async () => {
+    await (window.triforge.trading as any).tastytradeDisconnect?.();
+    setTtConnected(false);
+    if (!isConnected && !shadow?.enabled) stopPolling();
   };
 
   // ── Advice ───────────────────────────────────────────────────────────────────
@@ -922,6 +949,11 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
 
           {/* RIGHT: Decision rail (~30%) */}
           <div style={s.decisionRail}>
+            {/* Rail identity header */}
+            <div style={s.railHeader}>
+              <span style={s.railPaperBadge}>PAPER ONLY</span>
+              <span style={s.railHeaderText}>TriForge does not place real trades</span>
+            </div>
             <CurrentTradeStateCard
               trade={activeTradeForSymbol}
               blockedReason={shadow?.blockedReason ?? simulatorState?.blockedReason ?? null}
@@ -989,38 +1021,76 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
           externalActiveTab={dockActiveTab as any}
           onTabChange={() => setDockActiveTab(undefined)}
           renderConnectionForm={() => !isConnected ? (
-            <div style={s.card}>
-              <div style={s.cardTitle}>Connect Tradovate</div>
-              <div style={s.noteBox}>
-                Requires a Tradovate account with API access enabled.{' '}
-                To get your API credentials: log in to Tradovate, go to <strong>Settings &rarr; API Access &rarr; Generate API Key</strong>.{' '}
-                Save the <strong>CID</strong> and <strong>Secret</strong> shown after generation.{' '}
-                Use your <strong>dedicated API password</strong> below (not your regular login password).
+            <>
+              {/* ── Tradovate (paid API) ── */}
+              <div style={s.card}>
+                <div style={s.cardTitle}>Connect Tradovate</div>
+                <div style={s.noteBox}>
+                  Requires a Tradovate account with API access enabled.{' '}
+                  To get your API credentials: log in to Tradovate, go to <strong>Settings &rarr; API Access &rarr; Generate API Key</strong>.{' '}
+                  Save the <strong>CID</strong> and <strong>Secret</strong> shown after generation.{' '}
+                  Use your <strong>dedicated API password</strong> below (not your regular login password).
+                </div>
+                <div style={s.row}>
+                  <Field label="Username"><input style={s.input} value={connCreds.username} onChange={e => setConnCreds(c => ({ ...c, username: e.target.value }))} placeholder="username" autoComplete="off" /></Field>
+                  <Field label="API Password"><input style={s.input} type="password" value={connCreds.password} onChange={e => setConnCreds(c => ({ ...c, password: e.target.value }))} placeholder="dedicated API password" /></Field>
+                </div>
+                <div style={s.row}>
+                  <Field label="Mode">
+                    <div style={s.segmented}>
+                      {(['simulation', 'live'] as const).map(m => (
+                        <button key={m} style={{ ...s.seg, ...(connCreds.accountMode === m ? s.segActive : {}) }} onClick={() => setConnCreds(c => ({ ...c, accountMode: m }))}>
+                          {m === 'simulation' ? 'Simulation' : 'Live'}
+                        </button>
+                      ))}
+                    </div>
+                  </Field>
+                  <Field label="CID"><input style={s.input} value={connCreds.cid} onChange={e => setConnCreds(c => ({ ...c, cid: e.target.value }))} placeholder="e.g. 154" /></Field>
+                  <Field label="Secret"><input style={s.input} type="password" value={connCreds.sec} onChange={e => setConnCreds(c => ({ ...c, sec: e.target.value }))} placeholder="API secret key" /></Field>
+                </div>
+                {connError && <div style={s.errorBanner}>{connError}</div>}
+                <div style={s.actions}>
+                  <button style={{ ...s.btn, ...s.btnPrimary, opacity: connecting ? 0.5 : 1 }} disabled={connecting} onClick={handleConnect}>
+                    {connecting ? 'Connecting...' : 'Connect'}
+                  </button>
+                </div>
               </div>
-              <div style={s.row}>
-                <Field label="Username"><input style={s.input} value={connCreds.username} onChange={e => setConnCreds(c => ({ ...c, username: e.target.value }))} placeholder="username" autoComplete="off" /></Field>
-                <Field label="API Password"><input style={s.input} type="password" value={connCreds.password} onChange={e => setConnCreds(c => ({ ...c, password: e.target.value }))} placeholder="dedicated API password" /></Field>
-              </div>
-              <div style={s.row}>
-                <Field label="Mode">
-                  <div style={s.segmented}>
-                    {(['simulation', 'live'] as const).map(m => (
-                      <button key={m} style={{ ...s.seg, ...(connCreds.accountMode === m ? s.segActive : {}) }} onClick={() => setConnCreds(c => ({ ...c, accountMode: m }))}>
-                        {m === 'simulation' ? 'Simulation' : 'Live'}
+
+              {/* ── Tastytrade (free live data) ── */}
+              <div style={s.card}>
+                <div style={s.cardTitle}>
+                  Free Live Data
+                  <span style={s.ttFreeBadge}>FREE</span>
+                </div>
+                {!ttConnected ? (
+                  <>
+                    <div style={s.noteBox}>
+                      Use your <strong>Tastytrade paper account</strong> for free real-time CME futures data — no API subscription required.
+                      Shadow Trading still runs paper-only; this just upgrades the price feed from simulated to live.
+                    </div>
+                    <div style={s.row}>
+                      <Field label="Username">
+                        <input style={s.input} value={ttCreds.username} onChange={e => setTtCreds(c => ({ ...c, username: e.target.value }))} placeholder="tastytrade username" autoComplete="off" />
+                      </Field>
+                      <Field label="Password">
+                        <input style={s.input} type="password" value={ttCreds.password} onChange={e => setTtCreds(c => ({ ...c, password: e.target.value }))} placeholder="tastytrade password" />
+                      </Field>
+                    </div>
+                    {ttConnError && <div style={s.errorBanner}>{ttConnError}</div>}
+                    <div style={s.actions}>
+                      <button style={{ ...s.btn, ...s.btnPrimary, opacity: ttConnecting ? 0.5 : 1 }} disabled={ttConnecting} onClick={handleTastytradeConnect}>
+                        {ttConnecting ? 'Connecting...' : 'Connect Free Data'}
                       </button>
-                    ))}
+                    </div>
+                  </>
+                ) : (
+                  <div style={s.ttConnectedRow}>
+                    <span style={s.ttConnectedDot}>● Live CME data active</span>
+                    <button style={{ ...s.btn, ...s.btnDanger }} onClick={handleTastytradeDisconnect}>Disconnect</button>
                   </div>
-                </Field>
-                <Field label="CID"><input style={s.input} value={connCreds.cid} onChange={e => setConnCreds(c => ({ ...c, cid: e.target.value }))} placeholder="e.g. 154" /></Field>
-                <Field label="Secret"><input style={s.input} type="password" value={connCreds.sec} onChange={e => setConnCreds(c => ({ ...c, sec: e.target.value }))} placeholder="API secret key" /></Field>
+                )}
               </div>
-              {connError && <div style={s.errorBanner}>{connError}</div>}
-              <div style={s.actions}>
-                <button style={{ ...s.btn, ...s.btnPrimary, opacity: connecting ? 0.5 : 1 }} disabled={connecting} onClick={handleConnect}>
-                  {connecting ? 'Connecting...' : 'Connect'}
-                </button>
-              </div>
-            </div>
+            </>
           ) : null}
           renderAccountSettings={() => (
             <div style={s.card}>
@@ -1492,7 +1562,7 @@ function ShadowAnalyticsPanel({ summary, refinement, readiness, onClear, promoti
         readiness={readiness as any}
         promotion={promotion as any}
         councilValueAdded={cvaProp}
-        gradeSummary={gradeProp}
+        gradeSummary={gradeProp ?? undefined}
       />
 
       {/* Phase 7: Grade-Based Analytics */}
@@ -1909,6 +1979,9 @@ const s: Record<string, React.CSSProperties> = {
   mainWorkspace: { display: 'flex', flex: 1, gap: 10, minHeight: 0 },
   chartArea:     { flex: 7, display: 'flex', flexDirection: 'column', minWidth: 0 },
   decisionRail:  { flex: 3, minWidth: 260, maxWidth: 380, display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto' },
+  railHeader:    { display: 'flex', alignItems: 'center', gap: 8, padding: '5px 10px', background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.15)', borderRadius: 5 },
+  railPaperBadge:{ fontSize: 9, fontWeight: 800, letterSpacing: '0.08em', color: '#fbbf24', background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.3)', borderRadius: 3, padding: '1px 6px', flexShrink: 0 },
+  railHeaderText:{ fontSize: 9, color: 'rgba(251,191,36,0.45)', letterSpacing: '0.02em' },
   card:          { background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 6, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 12 },
   cardTitle:     { fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'rgba(255,255,255,0.35)', display: 'flex', alignItems: 'center', gap: 6 },
   noteBox:       { fontSize: 11, color: 'rgba(255,255,255,0.4)', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 6, padding: '8px 10px', lineHeight: 1.5 },
@@ -1932,6 +2005,10 @@ const s: Record<string, React.CSSProperties> = {
   btn:           { border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 700, padding: '9px 18px', cursor: 'pointer', fontFamily: 'inherit' },
   btnPrimary:    { background: 'rgba(96,165,250,0.15)', border: '1px solid rgba(96,165,250,0.3)', color: '#60a5fa' },
   btnGhost:      { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.4)' },
+  btnDanger:     { background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)', color: '#f87171' },
+  ttFreeBadge:   { marginLeft: 8, fontSize: 9, fontWeight: 800, letterSpacing: '0.06em', color: '#34d399', background: 'rgba(52,211,153,0.1)', border: '1px solid rgba(52,211,153,0.25)', borderRadius: 3, padding: '1px 6px', verticalAlign: 'middle' },
+  ttConnectedRow:  { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  ttConnectedDot:  { fontSize: 12, color: '#34d399', fontWeight: 600 },
   derivedMetric: { display: 'flex', flexDirection: 'column', gap: 2, justifyContent: 'flex-end' },
   derivedLabel:  { fontSize: 10, color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase', letterSpacing: '0.06em' },
   derivedValue:  { fontSize: 16, fontWeight: 700, color: 'rgba(255,255,255,0.7)', fontVariantNumeric: 'tabular-nums' },

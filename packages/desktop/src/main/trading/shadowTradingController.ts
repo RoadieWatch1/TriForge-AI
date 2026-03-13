@@ -49,6 +49,7 @@ import { TriForgeShadowSimulator } from './shadow/TriForgeShadowSimulator';
 import { broadcastTradeAlert, symbolLabel } from './tradeAlertBroadcaster';
 import { TradovateMarketDataAdapter } from './market/TradovateMarketDataAdapter';
 import { SimulatedMarketDataProvider } from './market/SimulatedMarketDataProvider';
+import { tastytradeProvider } from './market/TastytradeMarketDataProvider';
 import type { IMarketDataProvider } from './market/MarketDataProvider';
 import { MarketSnapshotStore } from './market/MarketSnapshotStore';
 
@@ -122,10 +123,11 @@ class ShadowTradingControllerClass {
 
   /**
    * Returns the active market data provider.
-   * Prefers Tradovate if connected; falls back to simulated provider.
+   * Provider priority: Tradovate → Tastytrade → Simulated.
    */
   private _getActiveProvider(): IMarketDataProvider {
     if (this._marketAdapter.isConnected()) return this._marketAdapter;
+    if (tastytradeProvider.isConnected()) return tastytradeProvider;
     return this._simulatedAdapter;
   }
 
@@ -141,7 +143,9 @@ class ShadowTradingControllerClass {
     return {
       snapshot: provider.getSnapshot(),
       bars: provider.getBars(),
-      source: this._marketAdapter.isConnected() ? 'tradovate' as const : 'simulated' as const,
+      source: this._marketAdapter.isConnected() ? 'tradovate' as const
+            : tastytradeProvider.isConnected()  ? 'tastytrade' as const
+            : 'simulated' as const,
       connected: provider.isConnected(),
       symbol: provider.activeSymbol(),
     };
@@ -243,15 +247,16 @@ class ShadowTradingControllerClass {
   }
 
   /**
-   * Centralized symbol change — updates both simulated and Tradovate providers.
-   * Same-symbol guard: does nothing if both providers are already on this symbol.
+   * Centralized symbol change — updates all providers.
+   * Same-symbol guard: skips providers already on this symbol.
    */
   setActiveSymbol(symbol: string): void {
     const simSame = this._simulatedAdapter.activeSymbol() === symbol;
-    const tvSame = this._marketAdapter.activeSymbol() === symbol;
-    if (simSame && tvSame) return;
+    const tvSame  = this._marketAdapter.activeSymbol()   === symbol;
+    const ttSame  = tastytradeProvider.activeSymbol()    === symbol;
     if (!simSame) this._simulatedAdapter.subscribe(symbol);
-    if (!tvSame) this._marketAdapter.subscribe(symbol);
+    if (!tvSame)  this._marketAdapter.subscribe(symbol);
+    if (!ttSame && tastytradeProvider.isConnected()) tastytradeProvider.subscribe(symbol);
   }
 
   getState(): ShadowAccountState {

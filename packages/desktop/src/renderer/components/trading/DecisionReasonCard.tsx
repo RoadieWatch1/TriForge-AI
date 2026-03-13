@@ -17,10 +17,10 @@ export function DecisionReasonCard({ shadowBlockedReason, simulatorBlockedReason
     return (
       <div style={s.card}>
         <div style={s.label}>DECISION</div>
-        <div style={s.text}>Shadow Trading is disabled.</div>
+        <div style={s.text}>Paper Trading is off.</div>
         {onEnableShadow && (
           <button style={s.enableBtn} onClick={onEnableShadow}>
-            Start Shadow Trading
+            Start Paper Trading
           </button>
         )}
       </div>
@@ -62,7 +62,7 @@ export function DecisionReasonCard({ shadowBlockedReason, simulatorBlockedReason
   return (
     <div style={s.card}>
       <div style={s.label}>DECISION</div>
-      <div style={s.text}>Waiting — scanning for setups...</div>
+      <div style={s.text}>Waiting — scanning for paper trade setups...</div>
     </div>
   );
 }
