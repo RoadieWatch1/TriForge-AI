@@ -53,7 +53,11 @@ function _restGet(url: string, token: string): Promise<unknown> {
       hostname: parsed.hostname,
       path:     parsed.pathname + parsed.search,
       method:   'GET',
-      headers:  { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      headers:  {
+        'Authorization': token,
+        'Accept':        'application/json',
+        'Content-Type':  'application/json',
+      },
     }, res => {
       let raw = '';
       res.on('data', c => { raw += c; });
@@ -75,7 +79,8 @@ function _restPost(url: string, body: unknown, token?: string): Promise<unknown>
       headers:  {
         'Content-Type':   'application/json',
         'Content-Length': Buffer.byteLength(payload),
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+        'Accept':         'application/json',
+        ...(token ? { 'Authorization': token } : {}),
       },
     }, res => {
       let raw = '';
