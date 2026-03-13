@@ -468,10 +468,11 @@ export class TastytradeClient {
 
     const tData = tokenRes['data'] as Record<string, unknown> | undefined;
     console.log('[TastytradeClient] Quote streamer token response:', {
-      keys:          tData ? Object.keys(tData) : [],
-      hasToken:      Boolean(tData?.['token']),
-      streamerUrl:   tData?.['streamer-url']   ?? null,
-      websocketUrl:  tData?.['websocket-url']  ?? null,
+      keys:         tData ? Object.keys(tData) : [],
+      hasToken:     Boolean(tData?.['token']),
+      dxlinkUrl:    tData?.['dxlink-url']    ?? null,
+      streamerUrl:  tData?.['streamer-url']  ?? null,
+      websocketUrl: tData?.['websocket-url'] ?? null,
     });
 
     if (!tData) {
@@ -482,10 +483,22 @@ export class TastytradeClient {
     this._authState = 'quote_token_ready';
 
     // Tastytrade returns the token WITH "Bearer " prefix already in some versions
-    const rawToken      = String(tData['token'] ?? '');
-    const rawUrl        = String(tData['streamer-url'] ?? tData['websocket-url'] ?? '');
-    const wsUrl         = this._normalizeStreamerUrl(rawUrl) || 'wss://tasty-openapi-ws.dxfeed.com/realtime';
+    const rawToken     = String(tData['token'] ?? '');
+    const dxlinkUrl    = String(tData['dxlink-url']    ?? '').trim();
+    const streamerUrl  = String(tData['streamer-url']  ?? '').trim();
+    const websocketUrl = String(tData['websocket-url'] ?? '').trim();
+    // Prefer dxlink-url (Tastytrade docs say to use this field), then fall back
+    const rawUrl       = dxlinkUrl || streamerUrl || websocketUrl;
+    const wsUrl        = this._normalizeStreamerUrl(rawUrl) || 'wss://tasty-openapi-ws.dxfeed.com/realtime';
     const streamerToken = rawToken.startsWith('Bearer ') ? rawToken.slice(7) : rawToken;
+
+    console.log('[TastytradeClient] URL selection:', {
+      dxlinkUrl:   dxlinkUrl   || null,
+      streamerUrl: streamerUrl || null,
+      websocketUrl: websocketUrl || null,
+      selectedUrl: rawUrl      || null,
+      normalized:  wsUrl,
+    });
 
     console.log('[TastytradeClient] dxLink URL:', { raw: rawUrl, normalized: wsUrl });
     console.log(`[TastytradeClient] Connecting to dxLink at ${wsUrl}`);
