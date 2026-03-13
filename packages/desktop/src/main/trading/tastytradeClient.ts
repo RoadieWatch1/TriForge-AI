@@ -105,9 +105,14 @@ function _restPost(url: string, body: unknown, opts: _PostOpts = {}): Promise<un
         // Device challenge is not a hard error — return a tagged object so caller handles it
         if (res.statusCode === 403) {
           const b = parsed2 as Record<string, unknown> | undefined;
-          const code = (b?.['error'] as Record<string, unknown> | undefined)?.['code'];
+          const errObj = b?.['error'] as Record<string, unknown> | undefined;
+          const code = errObj?.['code'];
           if (code === 'device_challenge_required') {
-            const challengeToken = res.headers['x-tastyworks-challenge-token'] as string ?? '';
+            // Token may be in response headers (standard) OR embedded in error body
+            const tokenFromHeader = res.headers['x-tastyworks-challenge-token'] as string | undefined;
+            const tokenFromBody   = errObj?.['challenge_token'] as string | undefined;
+            const challengeToken  = tokenFromHeader ?? tokenFromBody ?? '';
+            console.log('[TastytradeClient] Device challenge — token from header:', tokenFromHeader ?? '(none)', '| from body:', tokenFromBody ?? '(none)');
             return resolve({ _deviceChallenge: true, challengeToken, body: parsed2 });
           }
         }
@@ -340,11 +345,16 @@ export class TastytradeClient {
 
   /** Complete device challenge with the OTP the user received via email/SMS. */
   async verifyDevice(otp: string): Promise<void> {
-    if (this._authState !== 'device_challenge_required' || !this._pendingChallengeToken) {
+    if (this._authState !== 'device_challenge_required') {
       throw new Error('No pending device challenge');
     }
+    if (!this._pendingChallengeToken) {
+      throw new Error('Device challenge token missing — Tastytrade did not return a challenge token in the 403 response. Check app logs for details.');
+    }
 
-    const res = await _restPost(`${TASTYTRADE_API}/sessions/device-challenge`, { answer: otp }, {
+    console.log('[TastytradeClient] Submitting device challenge OTP, token length:', this._pendingChallengeToken.length);
+
+    const res = await _restPost(`${TASTYTRADE_API}/device-challenge`, { answer: otp }, {
       extraHeaders: { 'X-Tastyworks-Challenge-Token': this._pendingChallengeToken },
     }) as Record<string, unknown>;
 

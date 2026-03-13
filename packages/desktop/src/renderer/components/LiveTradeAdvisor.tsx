@@ -1091,7 +1091,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
                 ) : ttDeviceChallenge ? (
                   <>
                     <div style={s.noteBox}>
-                      Tastytrade sent a verification code to your registered email or phone. Enter it below to complete sign-in.
+                      Tastytrade requires device verification. Check your <strong>email inbox</strong> (including spam) and your <strong>text messages</strong> for a code from Tastytrade. If no code arrives, click Back and try connecting again to request a new one.
                     </div>
                     <div style={s.row}>
                       <Field label="Verification Code">
