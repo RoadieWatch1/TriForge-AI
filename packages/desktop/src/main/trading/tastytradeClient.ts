@@ -290,6 +290,9 @@ export class TastytradeClient {
   private _msgCounter = 0;
   private _firstMsgLogged = false;
   private _firstFeedDataLogged = false;
+  // Field schema per event type, populated by FEED_CONFIG messages.
+  // Used to decode positional arrays in compact dxLink FEED_DATA format.
+  private _feedSchema: Record<string, string[]> = {};
 
   get authState(): TastytradeAuthState { return this._authState; }
 
@@ -554,8 +557,10 @@ export class TastytradeClient {
     const type = msg['type'] as string | undefined;
 
     if (type === 'SETUP') {
-      // Server confirms setup — open a feed channel
-      this._wsSend({ type: 'CHANNEL_REQUEST', channel: DX_CHANNEL, service: 'FEED', parameters: { contract: 'AUTO' } });
+      // Request FULL data format so events arrive as named-field JSON objects
+      // rather than positional arrays. Falls back to schema-based decoding if
+      // the server ignores this and sends compact arrays anyway.
+      this._wsSend({ type: 'CHANNEL_REQUEST', channel: DX_CHANNEL, service: 'FEED', parameters: { contract: 'AUTO', dataFormat: 'FULL' } });
       return;
     }
 
@@ -570,6 +575,17 @@ export class TastytradeClient {
         if (this._dxSymbol && this._channelOpen) {
           this._sendSubscription(this._dxSymbol);
         }
+      }
+      return;
+    }
+
+    if (type === 'FEED_CONFIG') {
+      // Server sends field schema when compact/schemed format is in use.
+      // e.g. { eventFields: { Quote: ["eventType","eventSymbol","bidPrice",...] } }
+      const eventFields = msg['eventFields'] as Record<string, string[]> | undefined;
+      if (eventFields) {
+        this._feedSchema = { ...this._feedSchema, ...eventFields };
+        console.log('[TastytradeClient] Feed schema received for:', Object.keys(eventFields).join(', '));
       }
       return;
     }
@@ -603,15 +619,30 @@ export class TastytradeClient {
       if (Array.isArray(data)) {
         let i = 0;
         while (i < data.length) {
-          if (typeof data[i] === 'string' && i + 1 < data.length && typeof data[i + 1] === 'object' && data[i + 1] !== null) {
-            // Compact alternating format: ["Quote", {fields...}, "Trade", {fields...}]
-            const eventType = data[i] as string;
-            const eventData = data[i + 1] as Record<string, unknown>;
-            this._handleFeedItem({ ...eventData, eventType });
+          const d0 = data[i];
+          const d1 = data[i + 1];
+          if (typeof d0 === 'string' && i + 1 < data.length) {
+            const eventType = d0;
+            if (Array.isArray(d1)) {
+              // Compact/schemed format: ["Quote", [field0, field1, ...]]
+              // Use FEED_CONFIG schema to map positions → named fields.
+              const schema = this._feedSchema[eventType];
+              if (schema) {
+                const ev: Record<string, unknown> = { eventType };
+                schema.forEach((field, idx) => { ev[field] = d1[idx]; });
+                this._handleFeedItem(ev);
+              } else {
+                // No schema yet — try positional fallback for known event types
+                this._handleFeedItemCompact(eventType, d1 as unknown[]);
+              }
+            } else if (typeof d1 === 'object' && d1 !== null) {
+              // Alternating format: ["Quote", {field: value, ...}]
+              this._handleFeedItem({ ...(d1 as Record<string, unknown>), eventType });
+            }
             i += 2;
-          } else if (typeof data[i] === 'object' && data[i] !== null) {
-            // Full-object format: [{eventType: "Quote", ...}]
-            this._handleFeedItem(data[i] as Record<string, unknown>);
+          } else if (typeof d0 === 'object' && d0 !== null && !Array.isArray(d0)) {
+            // Full-object format: [{eventType: "Quote", bidPrice: ...}]
+            this._handleFeedItem(d0 as Record<string, unknown>);
             i += 1;
           } else {
             i += 1;
@@ -623,6 +654,41 @@ export class TastytradeClient {
 
     if (type === 'ERROR') {
       console.error('[TastytradeClient] dxLink error:', JSON.stringify(msg));
+    }
+  }
+
+  // Positional fallback for dxFeed compact arrays when FEED_CONFIG schema hasn't arrived.
+  // Field order is per dxFeed protocol specification for each event type.
+  private _handleFeedItemCompact(eventType: string, row: unknown[]): void {
+    if (eventType === 'Quote') {
+      // ["eventType","eventSymbol","eventTime","sequence","timeNanoPart",
+      //  "bidTime","bidExchangeCode","bidPrice","bidSize",
+      //  "askTime","askExchangeCode","askPrice","askSize"]
+      this._handleFeedItem({
+        eventType, eventSymbol: row[1],
+        bidPrice: row[7], bidSize: row[8],
+        askPrice: row[11], askSize: row[12],
+      });
+    } else if (eventType === 'Trade' || eventType === 'TradeL2') {
+      // ["eventType","eventSymbol","eventTime","sequence","timeNanoPart",
+      //  "exchangeCode","price","change","size","dayVolume","dayTurnover",
+      //  "tickDirection","extendedTradingHours"]
+      this._handleFeedItem({
+        eventType, eventSymbol: row[1], time: row[2],
+        price: row[6], size: row[8],
+      });
+    } else if (eventType === 'Candle') {
+      // ["eventType","eventSymbol","eventTime","sequence","count",
+      //  "open","high","low","close","volume","vwap","bidVolume","askVolume","openInterest","impVolatility"]
+      this._handleFeedItem({
+        eventType, eventSymbol: row[1], time: row[2],
+        open: row[5], high: row[6], low: row[7], close: row[8], volume: row[9],
+      });
+    } else if (eventType === 'Summary') {
+      this._handleFeedItem({
+        eventType, eventSymbol: row[1],
+        dayHighPrice: row[6], dayLowPrice: row[7],
+      });
     }
   }
 
