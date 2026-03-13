@@ -282,6 +282,8 @@ export class TastytradeClient {
   private _sessionToken: string | null = null;
   private _pendingChallengeToken: string | null = null;
   private _pendingChallengeType: TastytradeChallengeType = 'unknown';
+  private _pendingCredentials: { username: string; password: string } | null = null;
+  private _verifyUrl: string = `${TASTYTRADE_API}/sessions`;
   private _ws: WebSocket | null = null;
   private _wsReady   = false;
   private _channelOpen = false;
@@ -333,21 +335,29 @@ export class TastytradeClient {
         extraHeaders: { 'X-Tastyworks-Challenge-Token': this._pendingChallengeToken },
       }) as Record<string, unknown>;
 
-      // Extract challenge type so UI can show the right prompt
-      const rawType = (triggerRes?.['data'] as Record<string, unknown> | undefined)?.['challenge-type']
-                   ?? (triggerRes?.['challenge-type'])
-                   ?? (triggerRes?.['data'] as Record<string, unknown> | undefined)?.['challenge_type']
-                   ?? (triggerRes?.['challenge_type'])
-                   ?? 'unknown';
-      const typeMap: Record<string, TastytradeChallengeType> = {
-        'security_question': 'security_question',
-        'security-question': 'security_question',
+      const d = (triggerRes?.['data'] as Record<string, unknown> | undefined) ?? {};
+
+      // Extract challenge type from the `step` field (e.g. "otp_verification")
+      const step = String(d['step'] ?? d['challenge-type'] ?? d['challenge_type'] ?? 'unknown');
+      const stepMap: Record<string, TastytradeChallengeType> = {
+        'otp_verification':  'sms',
+        'otp-verification':  'sms',
         'sms':               'sms',
         'totp':              'totp',
         'authenticator':     'totp',
+        'security_question': 'security_question',
+        'security-question': 'security_question',
       };
-      this._pendingChallengeType = typeMap[String(rawType)] ?? 'unknown';
-      console.log('[TastytradeClient] Challenge delivery triggered — type:', this._pendingChallengeType, '| raw response:', JSON.stringify(triggerRes).slice(0, 200));
+      this._pendingChallengeType = stepMap[step] ?? 'unknown';
+
+      // Extract the redirect URL for the verify step (Tastytrade sends us back to /sessions)
+      const redirect = d['redirect'] as Record<string, unknown> | undefined;
+      const redirectPath = String(redirect?.['url'] ?? '/sessions');
+      this._verifyUrl = redirectPath.startsWith('http')
+        ? redirectPath
+        : `${TASTYTRADE_API}${redirectPath}`;
+
+      console.log('[TastytradeClient] Challenge delivery triggered — step:', step, '| type:', this._pendingChallengeType, '| verify URL:', this._verifyUrl, '| required headers:', JSON.stringify(redirect?.['required-headers']));
       return true;
     } catch (err) {
       console.error('[TastytradeClient] Challenge trigger failed (non-fatal):', err instanceof Error ? err.message : String(err));
@@ -365,6 +375,7 @@ export class TastytradeClient {
 
     // Device challenge — must complete a second step before we have a session
     if (res['_deviceChallenge']) {
+      this._pendingCredentials    = { username, password };
       this._pendingChallengeToken = (res['challengeToken'] as string) ?? '';
       this._authState = 'device_challenge_required';
       console.log('[TastytradeClient] Device challenge required — triggering OTP delivery');
@@ -386,19 +397,29 @@ export class TastytradeClient {
     await this._connectStreamer();
   }
 
-  /** Complete device challenge with the OTP the user received via email/SMS. */
+  /** Complete device challenge — re-POSTs to /sessions with OTP in header as Tastytrade instructs. */
   async verifyDevice(otp: string): Promise<void> {
     if (this._authState !== 'device_challenge_required') {
       throw new Error('No pending device challenge');
     }
     if (!this._pendingChallengeToken) {
-      throw new Error('Device challenge token missing — Tastytrade did not return a challenge token in the 403 response. Check app logs for details.');
+      throw new Error('Device challenge token missing — check app logs for details.');
+    }
+    if (!this._pendingCredentials) {
+      throw new Error('Credentials missing — please reconnect and try again.');
     }
 
-    console.log('[TastytradeClient] Submitting device challenge OTP, token length:', this._pendingChallengeToken.length);
+    console.log('[TastytradeClient] Submitting OTP — POSTing to', this._verifyUrl, 'with X-Tastyworks-OTP header');
 
-    const res = await _restPost(`${TASTYTRADE_API}/device-challenge`, { answer: otp }, {
-      extraHeaders: { 'X-Tastyworks-Challenge-Token': this._pendingChallengeToken },
+    const res = await _restPost(this._verifyUrl, {
+      login:         this._pendingCredentials.username,
+      password:      this._pendingCredentials.password,
+      'remember-me': false,
+    }, {
+      extraHeaders: {
+        'X-Tastyworks-Challenge-Token': this._pendingChallengeToken,
+        'X-Tastyworks-OTP':             otp.trim(),
+      },
     }) as Record<string, unknown>;
 
     const data = res['data'] as Record<string, unknown> | undefined;
@@ -407,9 +428,11 @@ export class TastytradeClient {
       throw new Error(`Device verification failed: ${errMsg}`);
     }
 
-    this._sessionToken = String(data['session-token']);
+    this._sessionToken          = String(data['session-token']);
     this._pendingChallengeToken = null;
     this._pendingChallengeType  = 'unknown';
+    this._pendingCredentials    = null;
+    this._verifyUrl             = `${TASTYTRADE_API}/sessions`;
     this._authState = 'authenticated';
     console.log('[TastytradeClient] Device verified — connecting streamer');
     await this._connectStreamer();
@@ -835,6 +858,8 @@ export class TastytradeClient {
     this._sessionToken          = null;
     this._pendingChallengeToken = null;
     this._pendingChallengeType  = 'unknown';
+    this._pendingCredentials    = null;
+    this._verifyUrl             = `${TASTYTRADE_API}/sessions`;
     this._authState             = 'disconnected';
     this._wsReady               = false;
     this._channelOpen           = false;
