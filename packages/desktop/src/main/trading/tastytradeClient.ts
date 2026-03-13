@@ -263,8 +263,13 @@ export type TastytradeAuthState =
 
 // ── Device challenge error ────────────────────────────────────────────────────
 
+export type TastytradeChallengeType = 'security_question' | 'sms' | 'totp' | 'unknown';
+
 export class TastytradeDeviceChallengeError extends Error {
-  constructor(public readonly challengeToken: string) {
+  constructor(
+    public readonly challengeToken: string,
+    public readonly challengeType: TastytradeChallengeType = 'unknown',
+  ) {
     super('DEVICE_CHALLENGE_REQUIRED');
     this.name = 'TastytradeDeviceChallengeError';
   }
@@ -276,6 +281,7 @@ export class TastytradeClient {
   private _authState: TastytradeAuthState = 'disconnected';
   private _sessionToken: string | null = null;
   private _pendingChallengeToken: string | null = null;
+  private _pendingChallengeType: TastytradeChallengeType = 'unknown';
   private _ws: WebSocket | null = null;
   private _wsReady   = false;
   private _channelOpen = false;
@@ -314,21 +320,37 @@ export class TastytradeClient {
 
   // ── Auth ──────────────────────────────────────────────────────────────────
 
-  /** POST /device-challenge with no answer — tells Tastytrade to send the OTP to the user's email/phone. */
+  /** POST /device-challenge with no answer — triggers Tastytrade to send the challenge to the user.
+   *  Also captures the challenge type (security_question / sms / totp) from the response. */
   private async _triggerChallengeDelivery(): Promise<boolean> {
     if (!this._pendingChallengeToken) {
       console.warn('[TastytradeClient] _triggerChallengeDelivery: no challenge token stored');
       return false;
     }
     try {
-      console.log('[TastytradeClient] Triggering OTP delivery via POST /device-challenge (token length:', this._pendingChallengeToken.length, ')');
-      await _restPost(`${TASTYTRADE_API}/device-challenge`, {}, {
+      console.log('[TastytradeClient] Triggering challenge delivery via POST /device-challenge (token length:', this._pendingChallengeToken.length, ')');
+      const triggerRes = await _restPost(`${TASTYTRADE_API}/device-challenge`, {}, {
         extraHeaders: { 'X-Tastyworks-Challenge-Token': this._pendingChallengeToken },
-      });
-      console.log('[TastytradeClient] OTP delivery triggered successfully');
+      }) as Record<string, unknown>;
+
+      // Extract challenge type so UI can show the right prompt
+      const rawType = (triggerRes?.['data'] as Record<string, unknown> | undefined)?.['challenge-type']
+                   ?? (triggerRes?.['challenge-type'])
+                   ?? (triggerRes?.['data'] as Record<string, unknown> | undefined)?.['challenge_type']
+                   ?? (triggerRes?.['challenge_type'])
+                   ?? 'unknown';
+      const typeMap: Record<string, TastytradeChallengeType> = {
+        'security_question': 'security_question',
+        'security-question': 'security_question',
+        'sms':               'sms',
+        'totp':              'totp',
+        'authenticator':     'totp',
+      };
+      this._pendingChallengeType = typeMap[String(rawType)] ?? 'unknown';
+      console.log('[TastytradeClient] Challenge delivery triggered — type:', this._pendingChallengeType, '| raw response:', JSON.stringify(triggerRes).slice(0, 200));
       return true;
     } catch (err) {
-      console.error('[TastytradeClient] OTP trigger failed (non-fatal):', err instanceof Error ? err.message : String(err));
+      console.error('[TastytradeClient] Challenge trigger failed (non-fatal):', err instanceof Error ? err.message : String(err));
       return false;
     }
   }
@@ -348,7 +370,7 @@ export class TastytradeClient {
       console.log('[TastytradeClient] Device challenge required — triggering OTP delivery');
       const triggered = await this._triggerChallengeDelivery();
       console.log('[TastytradeClient] OTP trigger result:', triggered ? 'sent' : 'failed — user may need to click Resend');
-      throw new TastytradeDeviceChallengeError(this._pendingChallengeToken);
+      throw new TastytradeDeviceChallengeError(this._pendingChallengeToken, this._pendingChallengeType);
     }
 
     const data = res['data'] as Record<string, unknown> | undefined;
@@ -387,6 +409,7 @@ export class TastytradeClient {
 
     this._sessionToken = String(data['session-token']);
     this._pendingChallengeToken = null;
+    this._pendingChallengeType  = 'unknown';
     this._authState = 'authenticated';
     console.log('[TastytradeClient] Device verified — connecting streamer');
     await this._connectStreamer();
@@ -811,6 +834,7 @@ export class TastytradeClient {
     }
     this._sessionToken          = null;
     this._pendingChallengeToken = null;
+    this._pendingChallengeType  = 'unknown';
     this._authState             = 'disconnected';
     this._wsReady               = false;
     this._channelOpen           = false;

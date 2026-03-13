@@ -2997,7 +2997,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       return { ok: true };
     } catch (err) {
       if (err instanceof TastytradeDeviceChallengeError) {
-        return { deviceChallenge: true };
+        return { deviceChallenge: true, challengeType: err.challengeType };
       }
       return { error: err instanceof Error ? err.message : String(err) };
     }

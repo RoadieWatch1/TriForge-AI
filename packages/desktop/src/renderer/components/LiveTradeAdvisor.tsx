@@ -389,6 +389,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
   const [ttConnError, setTtConnError]     = useState<string | null>(null);
   const [ttConnected, setTtConnected]     = useState(false);
   const [ttDeviceChallenge, setTtDeviceChallenge] = useState(false);
+  const [ttChallengeType, setTtChallengeType]     = useState<string>('unknown');
   const [ttOtp, setTtOtp]                 = useState('');
   const [ttVerifying, setTtVerifying]     = useState(false);
   const [ttResendSent, setTtResendSent]   = useState(false);
@@ -725,7 +726,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
     setTtConnecting(true); setTtConnError(null); setTtDeviceChallenge(false);
     try {
       const res = await (window.triforge.trading as any).tastytradeConnect?.(ttCreds);
-      if (res?.deviceChallenge) { setTtDeviceChallenge(true); return; }
+      if (res?.deviceChallenge) { setTtDeviceChallenge(true); setTtChallengeType(res.challengeType ?? 'unknown'); return; }
       if (res?.error) { setTtConnError(res.error); return; }
       setTtConnected(true);
       startPolling(symbol);
@@ -1108,17 +1109,24 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
                 ) : ttDeviceChallenge ? (
                   <>
                     <div style={s.noteBox}>
-                      Tastytrade requires device verification. Check your <strong>email inbox</strong> (including spam) and your <strong>text messages</strong> for a code from Tastytrade. If no code arrives, click Back and try connecting again to request a new one.
+                      {ttChallengeType === 'security_question'
+                        ? <>Tastytrade requires your <strong>security question answer</strong>. Find it under My Profile → Security on the Tastytrade website.</>
+                        : ttChallengeType === 'sms'
+                          ? <>Tastytrade sent a code to your registered <strong>phone number</strong>. Enter it below.</>
+                          : ttChallengeType === 'totp'
+                            ? <>Enter the code from your <strong>authenticator app</strong> (Google Authenticator / Authy).</>
+                            : <>Tastytrade requires verification. Check your email, text messages, or security question. Challenge type: <strong>{ttChallengeType}</strong></>
+                      }
                     </div>
                     <div style={s.row}>
-                      <Field label="Verification Code">
+                      <Field label={ttChallengeType === 'security_question' ? 'Security Answer' : 'Verification Code'}>
                         <input
-                          style={{ ...s.input, width: 160, letterSpacing: '0.15em' }}
+                          style={{ ...s.input, width: 160, letterSpacing: ttChallengeType === 'security_question' ? 'normal' : '0.15em' }}
                           value={ttOtp}
                           onChange={e => setTtOtp(e.target.value)}
-                          placeholder="123456"
-                          autoComplete="one-time-code"
-                          maxLength={8}
+                          placeholder={ttChallengeType === 'security_question' ? 'Your answer' : '123456'}
+                          autoComplete={ttChallengeType === 'security_question' ? 'off' : 'one-time-code'}
+                          maxLength={ttChallengeType === 'security_question' ? 100 : 8}
                         />
                       </Field>
                     </div>
@@ -1130,9 +1138,11 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
                       <button style={{ ...s.btn, ...s.btnGhost }} onClick={() => { setTtDeviceChallenge(false); setTtConnError(null); setTtOtp(''); }}>
                         Back
                       </button>
-                      <button style={{ ...s.btn, ...s.btnGhost }} onClick={handleTastytradeResend}>
-                        {ttResendSent ? 'Sent!' : 'Resend Code'}
-                      </button>
+                      {ttChallengeType !== 'security_question' && (
+                        <button style={{ ...s.btn, ...s.btnGhost }} onClick={handleTastytradeResend}>
+                          {ttResendSent ? 'Sent!' : 'Resend Code'}
+                        </button>
+                      )}
                     </div>
                   </>
                 ) : (

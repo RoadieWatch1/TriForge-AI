@@ -462,7 +462,7 @@ const api = {
     tradovateDisconnect: () =>
       ipcRenderer.invoke('trading:tradovateDisconnect') as Promise<{ ok?: boolean }>,
     tastytradeConnect: (creds: { username: string; password: string }) =>
-      ipcRenderer.invoke('trading:tastytradeConnect', creds) as Promise<{ ok?: boolean; deviceChallenge?: boolean; error?: string }>,
+      ipcRenderer.invoke('trading:tastytradeConnect', creds) as Promise<{ ok?: boolean; deviceChallenge?: boolean; challengeType?: string; error?: string }>,
     tastytradeVerifyDevice: (otp: string) =>
       ipcRenderer.invoke('trading:tastytradeVerifyDevice', otp) as Promise<{ ok?: boolean; error?: string }>,
     tastytradeResendChallenge: () =>
