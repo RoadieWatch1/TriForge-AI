@@ -344,7 +344,7 @@ export class TastytradeClient {
       throw new Error('No pending device challenge');
     }
 
-    const res = await _restPost(`${TASTYTRADE_API}/sessions/validate`, { answer: otp }, {
+    const res = await _restPost(`${TASTYTRADE_API}/sessions/device-challenge`, { answer: otp }, {
       extraHeaders: { 'X-Tastyworks-Challenge-Token': this._pendingChallengeToken },
     }) as Record<string, unknown>;
 
