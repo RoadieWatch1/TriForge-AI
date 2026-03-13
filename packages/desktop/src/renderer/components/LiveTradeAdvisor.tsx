@@ -387,7 +387,8 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
   const [ttCreds, setTtCreds]             = useState({ username: '', password: '' });
   const [ttConnecting, setTtConnecting]   = useState(false);
   const [ttConnError, setTtConnError]     = useState<string | null>(null);
-  const [ttConnected, setTtConnected]     = useState(false);
+  const [ttAuthOk, setTtAuthOk]           = useState(false);   // auth succeeded
+  const [ttConnected, setTtConnected]     = useState(false);   // dxLink stream ready
   const [ttDeviceChallenge, setTtDeviceChallenge] = useState(false);
   const [ttChallengeType, setTtChallengeType]     = useState<string>('unknown');
   const [ttOtp, setTtOtp]                 = useState('');
@@ -541,13 +542,19 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
     // FAST LANE (1.5s): price-sensitive + thesis-critical
     const fastTick = async () => {
       try {
-        const [mktStateRes, shadowState, simStateRes, watchesRes, reviewedRes] = await Promise.all([
+        const [mktStateRes, shadowState, simStateRes, watchesRes, reviewedRes, ttStatus] = await Promise.all([
           (window.triforge.trading as any).marketState?.() ?? Promise.resolve(null),
           window.triforge.trading.shadowState(),
           (window.triforge.trading as any).simulatorStateGet?.() ?? Promise.resolve(null),
           (window.triforge.trading as any).watchesGet?.() ?? Promise.resolve(null),
           (window.triforge.trading as any).reviewedIntentsGet?.() ?? Promise.resolve(null),
+          (window.triforge.trading as any).tastytradeStatus?.() ?? Promise.resolve(null),
         ]);
+        // Update Tastytrade stream readiness based on actual provider state
+        if (ttStatus) {
+          setTtConnected(Boolean(ttStatus.connected));
+          if (ttStatus.connected) setTtAuthOk(true);
+        }
         if (mktStateRes?.marketState) {
           const ms = mktStateRes.marketState as MarketStatePayload;
           setMarketState(ms);
@@ -728,7 +735,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
       const res = await (window.triforge.trading as any).tastytradeConnect?.(ttCreds);
       if (res?.deviceChallenge) { setTtDeviceChallenge(true); setTtChallengeType(res.challengeType ?? 'unknown'); return; }
       if (res?.error) { setTtConnError(res.error); return; }
-      setTtConnected(true);
+      setTtAuthOk(true);   // auth done — stream is connecting in background
       startPolling(symbol);
     } catch (err) {
       setTtConnError(err instanceof Error ? err.message : String(err));
@@ -743,7 +750,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
       if (res?.error) { setTtConnError(res.error); return; }
       setTtDeviceChallenge(false);
       setTtOtp('');
-      setTtConnected(true);
+      setTtAuthOk(true);   // auth done — stream is connecting in background
       startPolling(symbol);
     } catch (err) {
       setTtConnError(err instanceof Error ? err.message : String(err));
@@ -769,6 +776,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
   const handleTastytradeDisconnect = async () => {
     await (window.triforge.trading as any).tastytradeDisconnect?.();
     setTtConnected(false);
+    setTtAuthOk(false);
     setTtDeviceChallenge(false);
     setTtOtp('');
     if (!isConnected && !shadow?.enabled) stopPolling();
@@ -1105,6 +1113,11 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
                   <div style={s.ttConnectedRow}>
                     <span style={s.ttConnectedDot}>● Live CME data active</span>
                     <button style={{ ...s.btn, ...s.btnDanger }} onClick={handleTastytradeDisconnect}>Disconnect</button>
+                  </div>
+                ) : ttAuthOk ? (
+                  <div style={s.ttConnectedRow}>
+                    <span style={{ ...s.ttConnectedDot, color: '#fbbf24' }}>◌ Authenticated — connecting feed...</span>
+                    <button style={{ ...s.btn, ...s.btnDanger }} onClick={handleTastytradeDisconnect}>Cancel</button>
                   </div>
                 ) : ttDeviceChallenge ? (
                   <>

@@ -448,6 +448,15 @@ export class TastytradeClient {
 
   // ── Streamer connection ───────────────────────────────────────────────────
 
+  /** Convert http(s):// → ws(s):// so the ws library can open the socket. */
+  private _normalizeStreamerUrl(raw: string): string {
+    const s = raw.trim();
+    if (!s) return '';
+    if (s.startsWith('https://')) return 'wss://' + s.slice(8);
+    if (s.startsWith('http://'))  return 'ws://'  + s.slice(7);
+    return s; // already wss:// or ws://
+  }
+
   private async _connectStreamer(): Promise<void> {
     if (!this._sessionToken) return;
 
@@ -458,6 +467,13 @@ export class TastytradeClient {
     ) as Record<string, unknown>;
 
     const tData = tokenRes['data'] as Record<string, unknown> | undefined;
+    console.log('[TastytradeClient] Quote streamer token response:', {
+      keys:          tData ? Object.keys(tData) : [],
+      hasToken:      Boolean(tData?.['token']),
+      streamerUrl:   tData?.['streamer-url']   ?? null,
+      websocketUrl:  tData?.['websocket-url']  ?? null,
+    });
+
     if (!tData) {
       this._authState = 'disconnected';
       console.error('[TastytradeClient] Failed to get streamer token:', JSON.stringify(tokenRes));
@@ -466,10 +482,12 @@ export class TastytradeClient {
     this._authState = 'quote_token_ready';
 
     // Tastytrade returns the token WITH "Bearer " prefix already in some versions
-    const rawToken     = String(tData['token'] ?? '');
-    const wsUrl        = String(tData['streamer-url'] ?? tData['websocket-url'] ?? 'wss://tasty-openapi-ws.dxfeed.com/realtime');
+    const rawToken      = String(tData['token'] ?? '');
+    const rawUrl        = String(tData['streamer-url'] ?? tData['websocket-url'] ?? '');
+    const wsUrl         = this._normalizeStreamerUrl(rawUrl) || 'wss://tasty-openapi-ws.dxfeed.com/realtime';
     const streamerToken = rawToken.startsWith('Bearer ') ? rawToken.slice(7) : rawToken;
 
+    console.log('[TastytradeClient] dxLink URL:', { raw: rawUrl, normalized: wsUrl });
     console.log(`[TastytradeClient] Connecting to dxLink at ${wsUrl}`);
 
     const { default: WsClass } = await import('ws') as { default: typeof WebSocket };
