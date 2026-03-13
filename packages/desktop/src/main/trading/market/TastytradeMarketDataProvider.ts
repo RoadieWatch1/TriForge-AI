@@ -11,7 +11,8 @@
 
 import type { LiveTradeSnapshot, NormalizedMarketData, NormalizedBar } from '@triforge/engine';
 import type { OhlcBar } from '../tradovateClient';
-import { TastytradeClient } from '../tastytradeClient';
+import { TastytradeClient, TastytradeDeviceChallengeError } from '../tastytradeClient';
+import type { TastytradeAuthState } from '../tastytradeClient';
 import type { IMarketDataProvider } from './MarketDataProvider';
 
 // ── Provider class ────────────────────────────────────────────────────────────
@@ -19,15 +20,28 @@ import type { IMarketDataProvider } from './MarketDataProvider';
 class TastytradeMarketDataProviderClass implements IMarketDataProvider {
   private readonly _client = new TastytradeClient();
 
-  /** Connect and authenticate. Throws on bad credentials. */
+  /** Connect and authenticate. Throws TastytradeDeviceChallengeError if device challenge required. */
   async connect(username: string, password: string): Promise<void> {
     await this._client.authenticate(username, password);
+  }
+
+  /** Complete the device challenge with the OTP received by the user. */
+  async verifyDevice(otp: string): Promise<void> {
+    await this._client.verifyDevice(otp);
+  }
+
+  /** Current auth state — use to drive UI (e.g. show OTP input when 'device_challenge_required'). */
+  authState(): TastytradeAuthState {
+    return this._client.authState;
   }
 
   /** Disconnect and clear all state. */
   disconnect(): void {
     this._client.disconnect();
   }
+
+  // Re-export error class so IPC layer can instanceof-check without importing the client
+  static readonly DeviceChallengeError = TastytradeDeviceChallengeError;
 
   // ── IMarketDataProvider ──────────────────────────────────────────────────
 

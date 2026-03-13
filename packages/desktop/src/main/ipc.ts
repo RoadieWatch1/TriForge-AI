@@ -23,6 +23,7 @@ import { createMailAdapter } from './mailService';
 import { NativeIntentRouter } from './nativeIntentRouter';
 import { tradovateService } from './trading/tradovateService';
 import { tastytradeProvider } from './trading/market/TastytradeMarketDataProvider';
+import { TastytradeDeviceChallengeError } from './trading/tastytradeClient';
 import { shadowTradingController } from './trading/shadowTradingController';
 import type { CouncilReviewResult } from './trading/shadowTradingController';
 import { buildCouncilContext } from './trading/council/CouncilTradeReviewContext';
@@ -2995,6 +2996,18 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       await tastytradeProvider.connect(creds.username, creds.password);
       return { ok: true };
     } catch (err) {
+      if (err instanceof TastytradeDeviceChallengeError) {
+        return { deviceChallenge: true };
+      }
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('trading:tastytradeVerifyDevice', async (_e, otp: string) => {
+    try {
+      await tastytradeProvider.verifyDevice(otp);
+      return { ok: true };
+    } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
     }
   });
@@ -3006,8 +3019,9 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('trading:tastytradeStatus', () => {
     return {
-      connected: tastytradeProvider.isConnected(),
-      symbol:    tastytradeProvider.activeSymbol(),
+      connected:  tastytradeProvider.isConnected(),
+      authState:  tastytradeProvider.authState(),
+      symbol:     tastytradeProvider.activeSymbol(),
     };
   });
 

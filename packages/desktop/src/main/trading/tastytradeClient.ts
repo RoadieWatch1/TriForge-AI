@@ -74,7 +74,12 @@ function _restGet(url: string, token: string): Promise<unknown> {
   });
 }
 
-function _restPost(url: string, body: unknown, token?: string): Promise<unknown> {
+interface _PostOpts {
+  token?:        string;
+  extraHeaders?: Record<string, string>;
+}
+
+function _restPost(url: string, body: unknown, opts: _PostOpts = {}): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify(body);
     const parsed  = new URL(url);
@@ -87,16 +92,30 @@ function _restPost(url: string, body: unknown, token?: string): Promise<unknown>
         'Content-Length': Buffer.byteLength(payload),
         'Accept':         'application/json',
         'User-Agent':     'TriForge-AI/1.0 (Electron)',
-        ...(token ? { 'Authorization': token } : {}),
+        ...(opts.token        ? { 'Authorization': opts.token } : {}),
+        ...(opts.extraHeaders ?? {}),
       },
     }, res => {
       let raw = '';
       res.on('data', c => { raw += c; });
       res.on('end', () => {
-        if (res.statusCode && res.statusCode >= 400) {
-          return reject(new Error(`HTTP ${res.statusCode} from ${parsed.hostname}: ${raw.slice(0, 200)}`));
+        let parsed2: unknown;
+        try { parsed2 = JSON.parse(raw); } catch { parsed2 = raw; }
+
+        // Device challenge is not a hard error — return a tagged object so caller handles it
+        if (res.statusCode === 403) {
+          const b = parsed2 as Record<string, unknown> | undefined;
+          const code = (b?.['error'] as Record<string, unknown> | undefined)?.['code'];
+          if (code === 'device_challenge_required') {
+            const challengeToken = res.headers['x-tastyworks-challenge-token'] as string ?? '';
+            return resolve({ _deviceChallenge: true, challengeToken, body: parsed2 });
+          }
         }
-        try { resolve(JSON.parse(raw)); } catch { resolve(raw); }
+
+        if (res.statusCode && res.statusCode >= 400) {
+          return reject(new Error(`HTTP ${res.statusCode} from ${parsed.hostname}: ${raw.slice(0, 300)}`));
+        }
+        resolve(parsed2);
       });
     });
     req.on('error', reject);
@@ -226,12 +245,38 @@ function _computeVwapRelation(price?: number, vwap?: number, atr?: number): Vwap
 const TASTYTRADE_API = 'https://api.tastytrade.com';
 const DX_CHANNEL     = 1;
 
+// ── Auth state machine ────────────────────────────────────────────────────────
+
+export type TastytradeAuthState =
+  | 'disconnected'
+  | 'authenticating'
+  | 'device_challenge_required'
+  | 'authenticated'
+  | 'quote_token_ready'
+  | 'dxlink_connected'
+  | 'ready';
+
+// ── Device challenge error ────────────────────────────────────────────────────
+
+export class TastytradeDeviceChallengeError extends Error {
+  constructor(public readonly challengeToken: string) {
+    super('DEVICE_CHALLENGE_REQUIRED');
+    this.name = 'TastytradeDeviceChallengeError';
+  }
+}
+
+// ── Client ────────────────────────────────────────────────────────────────────
+
 export class TastytradeClient {
+  private _authState: TastytradeAuthState = 'disconnected';
   private _sessionToken: string | null = null;
+  private _pendingChallengeToken: string | null = null;
   private _ws: WebSocket | null = null;
   private _wsReady   = false;
   private _channelOpen = false;
   private _msgCounter = 0;
+
+  get authState(): TastytradeAuthState { return this._authState; }
 
   // Active subscription
   private _symbol:   string | null = null;   // Triforge symbol e.g. "NQ"
@@ -260,25 +305,59 @@ export class TastytradeClient {
 
   private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-  get isConnected(): boolean { return this._sessionToken !== null && this._wsReady && this._channelOpen; }
+  get isConnected(): boolean { return this._authState === 'ready'; }
 
   // ── Auth ──────────────────────────────────────────────────────────────────
 
   async authenticate(username: string, password: string): Promise<void> {
+    this._authState = 'authenticating';
     const res = await _restPost(`${TASTYTRADE_API}/sessions`, {
-      login:       username,
-      password:    password,
+      login:         username,
+      password:      password,
       'remember-me': false,
     }) as Record<string, unknown>;
 
+    // Device challenge — must complete a second step before we have a session
+    if (res['_deviceChallenge']) {
+      this._pendingChallengeToken = (res['challengeToken'] as string) ?? '';
+      this._authState = 'device_challenge_required';
+      console.log('[TastytradeClient] Device challenge required — awaiting OTP');
+      throw new TastytradeDeviceChallengeError(this._pendingChallengeToken);
+    }
+
     const data = res['data'] as Record<string, unknown> | undefined;
     if (!data?.['session-token']) {
+      this._authState = 'disconnected';
       const errMsg = (res['error'] as Record<string, unknown>)?.['message'] ?? JSON.stringify(res);
       throw new Error(`Tastytrade auth failed: ${errMsg}`);
     }
 
     this._sessionToken = String(data['session-token']);
-    console.log('[TastytradeClient] Authenticated successfully');
+    this._authState = 'authenticated';
+    console.log('[TastytradeClient] Authenticated — connecting streamer');
+    await this._connectStreamer();
+  }
+
+  /** Complete device challenge with the OTP the user received via email/SMS. */
+  async verifyDevice(otp: string): Promise<void> {
+    if (this._authState !== 'device_challenge_required' || !this._pendingChallengeToken) {
+      throw new Error('No pending device challenge');
+    }
+
+    const res = await _restPost(`${TASTYTRADE_API}/sessions/validate`, { answer: otp }, {
+      extraHeaders: { 'X-Tastyworks-Challenge-Token': this._pendingChallengeToken },
+    }) as Record<string, unknown>;
+
+    const data = res['data'] as Record<string, unknown> | undefined;
+    if (!data?.['session-token']) {
+      const errMsg = (res['error'] as Record<string, unknown>)?.['message'] ?? JSON.stringify(res);
+      throw new Error(`Device verification failed: ${errMsg}`);
+    }
+
+    this._sessionToken = String(data['session-token']);
+    this._pendingChallengeToken = null;
+    this._authState = 'authenticated';
+    console.log('[TastytradeClient] Device verified — connecting streamer');
     await this._connectStreamer();
   }
 
@@ -295,9 +374,11 @@ export class TastytradeClient {
 
     const tData = tokenRes['data'] as Record<string, unknown> | undefined;
     if (!tData) {
+      this._authState = 'disconnected';
       console.error('[TastytradeClient] Failed to get streamer token:', JSON.stringify(tokenRes));
       throw new Error('Could not retrieve Tastytrade streamer token');
     }
+    this._authState = 'quote_token_ready';
 
     // Tastytrade returns the token WITH "Bearer " prefix already in some versions
     const rawToken     = String(tData['token'] ?? '');
@@ -310,6 +391,7 @@ export class TastytradeClient {
     this._ws = new (WsClass as unknown as new (url: string) => WebSocket)(wsUrl);
 
     this._ws.on('open', () => {
+      this._authState = 'dxlink_connected';
       // Step 1: SETUP
       this._wsSend({ type: 'SETUP', channel: 0, version: '0.1-js/1.0.0', keepaliveTimeout: 60, acceptKeepaliveTimeout: 60 });
       // Step 2: AUTH
@@ -464,6 +546,7 @@ export class TastytradeClient {
 
     this._last      = price;
     this._lastTickAt = Date.now();
+    if (this._authState === 'dxlink_connected') this._authState = 'ready';
 
     // Update forming 1m bar
     const minuteKey = Math.floor(ts / 60_000);
@@ -687,11 +770,13 @@ export class TastytradeClient {
       try { this._ws.close(); } catch { /* ok */ }
       this._ws = null;
     }
-    this._sessionToken = null;
-    this._wsReady      = false;
-    this._channelOpen  = false;
+    this._sessionToken          = null;
+    this._pendingChallengeToken = null;
+    this._authState             = 'disconnected';
+    this._wsReady               = false;
+    this._channelOpen           = false;
     this._bars1mMap.clear();
-    this._formingBar   = null;
+    this._formingBar            = null;
     console.log('[TastytradeClient] Disconnected');
   }
 

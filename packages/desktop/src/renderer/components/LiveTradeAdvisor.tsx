@@ -388,6 +388,9 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
   const [ttConnecting, setTtConnecting]   = useState(false);
   const [ttConnError, setTtConnError]     = useState<string | null>(null);
   const [ttConnected, setTtConnected]     = useState(false);
+  const [ttDeviceChallenge, setTtDeviceChallenge] = useState(false);
+  const [ttOtp, setTtOtp]                 = useState('');
+  const [ttVerifying, setTtVerifying]     = useState(false);
 
   // ── Balance / risk ──────────────────────────────────────────────────────────
   const [balance, setBalance]             = useState('25000');
@@ -718,9 +721,10 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
 
   const handleTastytradeConnect = async () => {
     if (!ttCreds.username || !ttCreds.password) { setTtConnError('Username and password required.'); return; }
-    setTtConnecting(true); setTtConnError(null);
+    setTtConnecting(true); setTtConnError(null); setTtDeviceChallenge(false);
     try {
       const res = await (window.triforge.trading as any).tastytradeConnect?.(ttCreds);
+      if (res?.deviceChallenge) { setTtDeviceChallenge(true); return; }
       if (res?.error) { setTtConnError(res.error); return; }
       setTtConnected(true);
       startPolling(symbol);
@@ -729,9 +733,26 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
     } finally { setTtConnecting(false); }
   };
 
+  const handleTastytradeVerify = async () => {
+    if (!ttOtp.trim()) { setTtConnError('Enter the verification code.'); return; }
+    setTtVerifying(true); setTtConnError(null);
+    try {
+      const res = await (window.triforge.trading as any).tastytradeVerifyDevice?.(ttOtp.trim());
+      if (res?.error) { setTtConnError(res.error); return; }
+      setTtDeviceChallenge(false);
+      setTtOtp('');
+      setTtConnected(true);
+      startPolling(symbol);
+    } catch (err) {
+      setTtConnError(err instanceof Error ? err.message : String(err));
+    } finally { setTtVerifying(false); }
+  };
+
   const handleTastytradeDisconnect = async () => {
     await (window.triforge.trading as any).tastytradeDisconnect?.();
     setTtConnected(false);
+    setTtDeviceChallenge(false);
+    setTtOtp('');
     if (!isConnected && !shadow?.enabled) stopPolling();
   };
 
@@ -1062,11 +1083,43 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
                   Free Live Data
                   <span style={s.ttFreeBadge}>FREE</span>
                 </div>
-                {!ttConnected ? (
+                {ttConnected ? (
+                  <div style={s.ttConnectedRow}>
+                    <span style={s.ttConnectedDot}>● Live CME data active</span>
+                    <button style={{ ...s.btn, ...s.btnDanger }} onClick={handleTastytradeDisconnect}>Disconnect</button>
+                  </div>
+                ) : ttDeviceChallenge ? (
+                  <>
+                    <div style={s.noteBox}>
+                      Tastytrade sent a verification code to your registered email or phone. Enter it below to complete sign-in.
+                    </div>
+                    <div style={s.row}>
+                      <Field label="Verification Code">
+                        <input
+                          style={{ ...s.input, width: 160, letterSpacing: '0.15em' }}
+                          value={ttOtp}
+                          onChange={e => setTtOtp(e.target.value)}
+                          placeholder="123456"
+                          autoComplete="one-time-code"
+                          maxLength={8}
+                        />
+                      </Field>
+                    </div>
+                    {ttConnError && <div style={s.errorBanner}>{ttConnError}</div>}
+                    <div style={s.actions}>
+                      <button style={{ ...s.btn, ...s.btnPrimary, opacity: ttVerifying ? 0.5 : 1 }} disabled={ttVerifying} onClick={handleTastytradeVerify}>
+                        {ttVerifying ? 'Verifying...' : 'Verify Device'}
+                      </button>
+                      <button style={{ ...s.btn, ...s.btnGhost }} onClick={() => { setTtDeviceChallenge(false); setTtConnError(null); setTtOtp(''); }}>
+                        Back
+                      </button>
+                    </div>
+                  </>
+                ) : (
                   <>
                     <div style={s.noteBox}>
                       Use your <strong>Tastytrade paper account</strong> for free real-time CME futures data — no API subscription required.
-                      Shadow Trading still runs paper-only; this just upgrades the price feed from simulated to live.
+                      Paper Trading still runs paper-only; this just upgrades the price feed from simulated to live.
                     </div>
                     <div style={s.row}>
                       <Field label="Username">
@@ -1083,11 +1136,6 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
                       </button>
                     </div>
                   </>
-                ) : (
-                  <div style={s.ttConnectedRow}>
-                    <span style={s.ttConnectedDot}>● Live CME data active</span>
-                    <button style={{ ...s.btn, ...s.btnDanger }} onClick={handleTastytradeDisconnect}>Disconnect</button>
-                  </div>
                 )}
               </div>
             </>
