@@ -56,12 +56,18 @@ function _restGet(url: string, token: string): Promise<unknown> {
       headers:  {
         'Authorization': token,
         'Accept':        'application/json',
-        'Content-Type':  'application/json',
+        'Content-Type':  'application/json; charset=utf-8',
+        'User-Agent':    'TriForge-AI/1.0 (Electron)',
       },
     }, res => {
       let raw = '';
       res.on('data', c => { raw += c; });
-      res.on('end', () => { try { resolve(JSON.parse(raw)); } catch { resolve(raw); } });
+      res.on('end', () => {
+        if (res.statusCode && res.statusCode >= 400) {
+          return reject(new Error(`HTTP ${res.statusCode} from ${parsed.hostname}: ${raw.slice(0, 200)}`));
+        }
+        try { resolve(JSON.parse(raw)); } catch { resolve(raw); }
+      });
     });
     req.on('error', reject);
     req.end();
@@ -77,15 +83,21 @@ function _restPost(url: string, body: unknown, token?: string): Promise<unknown>
       path:     parsed.pathname + parsed.search,
       method:   'POST',
       headers:  {
-        'Content-Type':   'application/json',
+        'Content-Type':   'application/json; charset=utf-8',
         'Content-Length': Buffer.byteLength(payload),
         'Accept':         'application/json',
+        'User-Agent':     'TriForge-AI/1.0 (Electron)',
         ...(token ? { 'Authorization': token } : {}),
       },
     }, res => {
       let raw = '';
       res.on('data', c => { raw += c; });
-      res.on('end', () => { try { resolve(JSON.parse(raw)); } catch { resolve(raw); } });
+      res.on('end', () => {
+        if (res.statusCode && res.statusCode >= 400) {
+          return reject(new Error(`HTTP ${res.statusCode} from ${parsed.hostname}: ${raw.slice(0, 200)}`));
+        }
+        try { resolve(JSON.parse(raw)); } catch { resolve(raw); }
+      });
     });
     req.on('error', reject);
     req.write(payload);
