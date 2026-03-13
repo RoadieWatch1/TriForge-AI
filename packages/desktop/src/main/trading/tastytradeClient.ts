@@ -594,11 +594,28 @@ export class TastytradeClient {
       const data = msg['data'] as unknown[] | undefined;
       if (!this._firstFeedDataLogged && Array.isArray(data) && data.length > 0) {
         this._firstFeedDataLogged = true;
-        console.log('[TastytradeClient] First FEED_DATA received — items:', data.length, 'sample:', JSON.stringify(data[0]).slice(0, 200));
+        // Log first two elements to expose whether format is compact alternating
+        // [eventType, eventData, ...] or full-object [{eventType, ...}, ...]
+        console.log('[TastytradeClient] First FEED_DATA — items:', data.length,
+          'data[0]:', JSON.stringify(data[0]).slice(0, 120),
+          'data[1]:', JSON.stringify(data[1]).slice(0, 200));
       }
       if (Array.isArray(data)) {
-        for (const item of data) {
-          this._handleFeedItem(item as Record<string, unknown>);
+        let i = 0;
+        while (i < data.length) {
+          if (typeof data[i] === 'string' && i + 1 < data.length && typeof data[i + 1] === 'object' && data[i + 1] !== null) {
+            // Compact alternating format: ["Quote", {fields...}, "Trade", {fields...}]
+            const eventType = data[i] as string;
+            const eventData = data[i + 1] as Record<string, unknown>;
+            this._handleFeedItem({ ...eventData, eventType });
+            i += 2;
+          } else if (typeof data[i] === 'object' && data[i] !== null) {
+            // Full-object format: [{eventType: "Quote", ...}]
+            this._handleFeedItem(data[i] as Record<string, unknown>);
+            i += 1;
+          } else {
+            i += 1;
+          }
         }
       }
       return;
