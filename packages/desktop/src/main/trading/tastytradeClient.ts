@@ -314,6 +314,25 @@ export class TastytradeClient {
 
   // ── Auth ──────────────────────────────────────────────────────────────────
 
+  /** POST /device-challenge with no answer — tells Tastytrade to send the OTP to the user's email/phone. */
+  private async _triggerChallengeDelivery(): Promise<boolean> {
+    if (!this._pendingChallengeToken) {
+      console.warn('[TastytradeClient] _triggerChallengeDelivery: no challenge token stored');
+      return false;
+    }
+    try {
+      console.log('[TastytradeClient] Triggering OTP delivery via POST /device-challenge (token length:', this._pendingChallengeToken.length, ')');
+      await _restPost(`${TASTYTRADE_API}/device-challenge`, {}, {
+        extraHeaders: { 'X-Tastyworks-Challenge-Token': this._pendingChallengeToken },
+      });
+      console.log('[TastytradeClient] OTP delivery triggered successfully');
+      return true;
+    } catch (err) {
+      console.error('[TastytradeClient] OTP trigger failed (non-fatal):', err instanceof Error ? err.message : String(err));
+      return false;
+    }
+  }
+
   async authenticate(username: string, password: string): Promise<void> {
     this._authState = 'authenticating';
     const res = await _restPost(`${TASTYTRADE_API}/sessions`, {
@@ -326,7 +345,9 @@ export class TastytradeClient {
     if (res['_deviceChallenge']) {
       this._pendingChallengeToken = (res['challengeToken'] as string) ?? '';
       this._authState = 'device_challenge_required';
-      console.log('[TastytradeClient] Device challenge required — awaiting OTP');
+      console.log('[TastytradeClient] Device challenge required — triggering OTP delivery');
+      const triggered = await this._triggerChallengeDelivery();
+      console.log('[TastytradeClient] OTP trigger result:', triggered ? 'sent' : 'failed — user may need to click Resend');
       throw new TastytradeDeviceChallengeError(this._pendingChallengeToken);
     }
 
@@ -369,6 +390,14 @@ export class TastytradeClient {
     this._authState = 'authenticated';
     console.log('[TastytradeClient] Device verified — connecting streamer');
     await this._connectStreamer();
+  }
+
+  /** Re-trigger OTP delivery without re-entering credentials. */
+  async resendDeviceChallenge(): Promise<boolean> {
+    if (this._authState !== 'device_challenge_required') {
+      throw new Error('No active device challenge to resend');
+    }
+    return this._triggerChallengeDelivery();
   }
 
   // ── Streamer connection ───────────────────────────────────────────────────

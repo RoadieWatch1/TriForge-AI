@@ -3012,6 +3012,15 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     }
   });
 
+  ipcMain.handle('trading:tastytradeResendChallenge', async () => {
+    try {
+      const sent = await tastytradeProvider.resendDeviceChallenge();
+      return { ok: true, sent };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
   ipcMain.handle('trading:tastytradeDisconnect', () => {
     tastytradeProvider.disconnect();
     return { ok: true };

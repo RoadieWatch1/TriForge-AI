@@ -30,6 +30,11 @@ class TastytradeMarketDataProviderClass implements IMarketDataProvider {
     await this._client.verifyDevice(otp);
   }
 
+  /** Re-trigger OTP delivery without re-entering credentials. */
+  async resendDeviceChallenge(): Promise<boolean> {
+    return this._client.resendDeviceChallenge();
+  }
+
   /** Current auth state — use to drive UI (e.g. show OTP input when 'device_challenge_required'). */
   authState(): TastytradeAuthState {
     return this._client.authState;

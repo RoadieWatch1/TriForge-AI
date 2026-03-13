@@ -465,6 +465,8 @@ const api = {
       ipcRenderer.invoke('trading:tastytradeConnect', creds) as Promise<{ ok?: boolean; deviceChallenge?: boolean; error?: string }>,
     tastytradeVerifyDevice: (otp: string) =>
       ipcRenderer.invoke('trading:tastytradeVerifyDevice', otp) as Promise<{ ok?: boolean; error?: string }>,
+    tastytradeResendChallenge: () =>
+      ipcRenderer.invoke('trading:tastytradeResendChallenge') as Promise<{ ok?: boolean; sent?: boolean; error?: string }>,
     tastytradeDisconnect: () =>
       ipcRenderer.invoke('trading:tastytradeDisconnect') as Promise<{ ok?: boolean }>,
     tastytradeStatus: () =>

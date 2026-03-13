@@ -391,6 +391,7 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
   const [ttDeviceChallenge, setTtDeviceChallenge] = useState(false);
   const [ttOtp, setTtOtp]                 = useState('');
   const [ttVerifying, setTtVerifying]     = useState(false);
+  const [ttResendSent, setTtResendSent]   = useState(false);
 
   // ── Balance / risk ──────────────────────────────────────────────────────────
   const [balance, setBalance]             = useState('25000');
@@ -746,6 +747,22 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
     } catch (err) {
       setTtConnError(err instanceof Error ? err.message : String(err));
     } finally { setTtVerifying(false); }
+  };
+
+  const handleTastytradeResend = async () => {
+    setTtResendSent(false);
+    setTtConnError(null);
+    try {
+      const result = await (window.triforge.trading as any).tastytradeResendChallenge?.();
+      if (!result?.ok) {
+        setTtConnError(result?.error ?? 'Failed to resend code.');
+        return;
+      }
+      setTtResendSent(true);
+      setTimeout(() => setTtResendSent(false), 4000);
+    } catch (err) {
+      setTtConnError(err instanceof Error ? err.message : 'Failed to resend code.');
+    }
   };
 
   const handleTastytradeDisconnect = async () => {
@@ -1112,6 +1129,9 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
                       </button>
                       <button style={{ ...s.btn, ...s.btnGhost }} onClick={() => { setTtDeviceChallenge(false); setTtConnError(null); setTtOtp(''); }}>
                         Back
+                      </button>
+                      <button style={{ ...s.btn, ...s.btnGhost }} onClick={handleTastytradeResend}>
+                        {ttResendSent ? 'Sent!' : 'Resend Code'}
                       </button>
                     </div>
                   </>
