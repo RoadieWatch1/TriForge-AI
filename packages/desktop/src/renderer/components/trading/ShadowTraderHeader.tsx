@@ -34,6 +34,8 @@ interface ShadowTraderHeaderProps {
   hasOpenTrades: boolean;
   lastEvalAt: number | null;
   shadowToggling: boolean;
+  timezone: string;
+  onTimezoneChange: (tz: string) => void;
 }
 
 // ── State badge colors ──────────────────────────────────────────────────────
@@ -66,6 +68,8 @@ export function ShadowTraderHeader({
   hasOpenTrades,
   lastEvalAt,
   shadowToggling,
+  timezone,
+  onTimezoneChange,
 }: ShadowTraderHeaderProps) {
   const badge = STATE_BADGE[displayState.uiState];
   const feedColor = displayState.feedSource === 'Live Tradovate' ? '#34d399' : '#a78bfa';
@@ -101,8 +105,15 @@ export function ShadowTraderHeader({
         <span style={s.sentence}>{displayState.sentence}</span>
       </div>
 
-      {/* Right: action buttons */}
+      {/* Right: timezone + action buttons */}
       <div style={s.right}>
+        <select style={s.tzSelect} value={timezone} onChange={e => onTimezoneChange(e.target.value)}>
+          <option value="America/New_York">ET</option>
+          <option value="America/Chicago">CT</option>
+          <option value="America/Denver">MT</option>
+          <option value="America/Los_Angeles">PT</option>
+          <option value="UTC">UTC</option>
+        </select>
         {displayState.uiState === 'DISCONNECTED' && (
           <button style={{ ...s.actionBtn, ...s.actionPrimary }} onClick={onConnectFeed}>
             Connect Feed
@@ -218,5 +229,14 @@ const s: Record<string, React.CSSProperties> = {
   actionGhost: {
     color: 'rgba(255,255,255,0.3)', background: 'none',
     borderColor: 'rgba(255,255,255,0.08)',
+  },
+  tzSelect: {
+    fontSize: 10, fontWeight: 700, letterSpacing: '0.04em',
+    color: 'rgba(255,255,255,0.4)',
+    background: 'rgba(255,255,255,0.05)',
+    border: '1px solid rgba(255,255,255,0.08)',
+    borderRadius: 3, padding: '2px 6px',
+    cursor: 'pointer', outline: 'none',
+    fontFamily: 'var(--font-mono, monospace)',
   },
 };

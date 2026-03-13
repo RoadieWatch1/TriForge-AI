@@ -855,6 +855,8 @@ export function LiveTradeAdvisor({ onBack }: { onBack: () => void }) {
         hasOpenTrades={(shadow?.openTrades?.length ?? 0) > 0}
         lastEvalAt={shadow?.lastEvalAt ?? null}
         shadowToggling={shadowToggling}
+        timezone={chartTimezone}
+        onTimezoneChange={handleTimezoneChange}
       />
 
       {/* ── Trading Trial Banner ── */}
