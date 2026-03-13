@@ -288,6 +288,8 @@ export class TastytradeClient {
   private _wsReady   = false;
   private _channelOpen = false;
   private _msgCounter = 0;
+  private _firstMsgLogged = false;
+  private _firstFeedDataLogged = false;
 
   get authState(): TastytradeAuthState { return this._authState; }
 
@@ -506,6 +508,8 @@ export class TastytradeClient {
     const { default: WsClass } = await import('ws') as { default: typeof WebSocket };
     this._ws = new (WsClass as unknown as new (url: string) => WebSocket)(wsUrl);
 
+    this._firstMsgLogged = false;
+    this._firstFeedDataLogged = false;
     this._ws.on('open', () => {
       this._authState = 'dxlink_connected';
       // Step 1: SETUP
@@ -517,6 +521,10 @@ export class TastytradeClient {
     this._ws.on('message', (raw: Buffer) => {
       try {
         const msg = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (!this._firstMsgLogged) {
+          this._firstMsgLogged = true;
+          console.log('[TastytradeClient] First raw dxLink message:', JSON.stringify(msg).slice(0, 300));
+        }
         this._handleMessage(msg);
       } catch { /* ignore malformed */ }
     });
@@ -556,8 +564,10 @@ export class TastytradeClient {
       console.log(`[TastytradeClient] Auth state: ${state}`);
       if (state === 'AUTHORIZED') {
         this._wsReady = true;
-        // If we already have a symbol to subscribe, do it now
-        if (this._dxSymbol) {
+        // Only subscribe when BOTH authorized AND channel open — avoids premature
+        // or duplicate subscription. CHANNEL_OPENED handler covers the case where
+        // AUTHORIZED fires first; this covers the reverse order.
+        if (this._dxSymbol && this._channelOpen) {
           this._sendSubscription(this._dxSymbol);
         }
       }
@@ -567,6 +577,7 @@ export class TastytradeClient {
     if (type === 'CHANNEL_OPENED') {
       this._channelOpen = true;
       console.log('[TastytradeClient] Feed channel opened');
+      // Only subscribe when BOTH conditions are true — single authoritative send point.
       if (this._dxSymbol && this._wsReady) {
         this._sendSubscription(this._dxSymbol);
       }
@@ -581,6 +592,10 @@ export class TastytradeClient {
 
     if (type === 'FEED_DATA') {
       const data = msg['data'] as unknown[] | undefined;
+      if (!this._firstFeedDataLogged && Array.isArray(data) && data.length > 0) {
+        this._firstFeedDataLogged = true;
+        console.log('[TastytradeClient] First FEED_DATA received — items:', data.length, 'sample:', JSON.stringify(data[0]).slice(0, 200));
+      }
       if (Array.isArray(data)) {
         for (const item of data) {
           this._handleFeedItem(item as Record<string, unknown>);
@@ -632,8 +647,12 @@ export class TastytradeClient {
 
     if (open <= 0) return; // incomplete or invalid candle
 
+    const isFirstCandle = this._bars1mMap.size === 0;
     const bar: OhlcBar = { timestamp: ts, open, high, low, close, volume };
     this._bars1mMap.set(ts, bar);
+    if (isFirstCandle) {
+      console.log(`[TastytradeClient] First Candle received — ts=${ts} o=${open} h=${high} l=${low} c=${close}`);
+    }
 
     // Keep last 300 bars
     if (this._bars1mMap.size > 300) {
@@ -748,6 +767,7 @@ export class TastytradeClient {
     this._historyDone  = false;
     this._vwapPV = 0;
     this._vwapV  = 0;
+    this._firstFeedDataLogged = false;  // re-log on symbol change
 
     if (this._wsReady && this._channelOpen) {
       this._sendSubscription(newDxSym);
