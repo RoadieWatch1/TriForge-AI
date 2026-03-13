@@ -2994,6 +2994,9 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   ipcMain.handle('trading:tastytradeConnect', async (_e, creds: { username: string; password: string }) => {
     try {
       await tastytradeProvider.connect(creds.username, creds.password);
+      // Re-push the active symbol so the deferred subscription fires when the
+      // dxLink feed channel opens (fixes race: symbol selected before connect).
+      shadowTradingController.setActiveSymbol(shadowTradingController.getActiveSymbol());
       return { ok: true };
     } catch (err) {
       if (err instanceof TastytradeDeviceChallengeError) {
@@ -3006,6 +3009,9 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   ipcMain.handle('trading:tastytradeVerifyDevice', async (_e, otp: string) => {
     try {
       await tastytradeProvider.verifyDevice(otp);
+      // Re-push the active symbol so the deferred subscription fires when the
+      // dxLink feed channel opens (fixes race: symbol selected before connect).
+      shadowTradingController.setActiveSymbol(shadowTradingController.getActiveSymbol());
       return { ok: true };
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };

@@ -276,24 +276,27 @@ const st = {
 
 export function TradeThesisPanel(props: TradeThesisProps) {
   const sim = props.simulatorState;
-  if (!sim?.active && !props.shadow?.enabled) return null;
+  const active = !!(sim?.active || props.shadow?.enabled);
 
-  const thesis = computeThesis(props);
-  const reliability = props.simulatorState?.signalReliability ?? null;
-  const aSt = ACTION_STYLE[thesis.actionState];
-  const bSt = BIAS_STYLE[thesis.bias];
-
-  // ACT flash
+  // Hooks must be declared unconditionally (Rules of Hooks)
   const [flash, setFlash] = useState(false);
   const prevAction = useRef<ActionState | null>(null);
+  const thesis = active ? computeThesis(props) : null;
   useEffect(() => {
+    if (!thesis) return;
     if (prevAction.current !== null && prevAction.current !== 'ACT' && thesis.actionState === 'ACT') {
       setFlash(true);
       const t = setTimeout(() => setFlash(false), 1200);
       return () => clearTimeout(t);
     }
     prevAction.current = thesis.actionState;
-  }, [thesis.actionState]);
+  }, [thesis?.actionState]);
+
+  if (!active || !thesis) return null;
+
+  const reliability = props.simulatorState?.signalReliability ?? null;
+  const aSt = ACTION_STYLE[thesis.actionState];
+  const bSt = BIAS_STYLE[thesis.bias];
 
   return (
     <div style={{

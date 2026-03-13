@@ -111,6 +111,7 @@ class ShadowTradingControllerClass {
   private _lastTradeOpenedAt = 0;
   private _todayKey = '';   // YYYY-MM-DD, resets on new day
   private _councilFn: CouncilReviewFn | null = null;
+  private _activeSymbol: string = 'NQ';
   private _lastLimitBlockReason: ShadowBlockReason | undefined;
   private _lastEmittedBlock = new Map<string, number>();
   private _strategyConfig: ShadowStrategyConfig = {};
@@ -251,6 +252,7 @@ class ShadowTradingControllerClass {
    * Same-symbol guard: skips providers already on this symbol.
    */
   setActiveSymbol(symbol: string): void {
+    this._activeSymbol = symbol;
     const simSame = this._simulatedAdapter.activeSymbol() === symbol;
     const tvSame  = this._marketAdapter.activeSymbol()   === symbol;
     const ttSame  = tastytradeProvider.activeSymbol()    === symbol;
@@ -259,9 +261,11 @@ class ShadowTradingControllerClass {
     // Always call subscribe() — it is safe in any auth state.
     // subscribe() stores _dxSymbol immediately; if the channel is not open yet,
     // the subscription is deferred and fires automatically when AUTHORIZED fires.
-    // Removing the isConnected() guard breaks the deadlock where the symbol was
-    // never registered because auth hadn't completed when setActiveSymbol() was called.
     if (!ttSame) tastytradeProvider.subscribe(symbol);
+  }
+
+  getActiveSymbol(): string {
+    return this._activeSymbol;
   }
 
   getState(): ShadowAccountState {
