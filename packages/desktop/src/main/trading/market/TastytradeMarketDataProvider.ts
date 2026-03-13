@@ -19,6 +19,7 @@ import type { IMarketDataProvider } from './MarketDataProvider';
 
 class TastytradeMarketDataProviderClass implements IMarketDataProvider {
   private readonly _client = new TastytradeClient();
+  private _firstBarsLogged = false;
 
   /** Connect and authenticate. Throws TastytradeDeviceChallengeError if device challenge required. */
   async connect(username: string, password: string): Promise<void> {
@@ -58,6 +59,17 @@ class TastytradeMarketDataProviderClass implements IMarketDataProvider {
     if (!this._client.isConnected) return null;
     const bars = this._client.getBars();
     if (bars.bars1m.length === 0) return null;
+    if (!this._firstBarsLogged) {
+      this._firstBarsLogged = true;
+      const latest = bars.bars1m[bars.bars1m.length - 1];
+      console.log('[TastytradeProvider] First getBars() → bars ready:', {
+        bars1m: bars.bars1m.length,
+        bars5m: bars.bars5m.length,
+        bars15m: bars.bars15m.length,
+        latestTs: latest?.timestamp,
+        latestClose: latest?.close,
+      });
+    }
     return bars;
   }
 

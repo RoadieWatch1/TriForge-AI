@@ -112,6 +112,7 @@ class ShadowTradingControllerClass {
   private _todayKey = '';   // YYYY-MM-DD, resets on new day
   private _councilFn: CouncilReviewFn | null = null;
   private _activeSymbol: string = 'NQ';
+  private _firstTastytradeMarketStateLogged = false;
   private _lastLimitBlockReason: ShadowBlockReason | undefined;
   private _lastEmittedBlock = new Map<string, number>();
   private _strategyConfig: ShadowStrategyConfig = {};
@@ -141,12 +142,26 @@ class ShadowTradingControllerClass {
   /** Unified market state: snapshot + bars + source in one payload. */
   getMarketState() {
     const provider = this._getActiveProvider();
+    const bars = provider.getBars();
+    const source = this._marketAdapter.isConnected() ? 'tradovate' as const
+                 : tastytradeProvider.isConnected()  ? 'tastytrade' as const
+                 : 'simulated' as const;
+    if (!this._firstTastytradeMarketStateLogged && source === 'tastytrade' && bars && bars.bars1m.length > 0) {
+      this._firstTastytradeMarketStateLogged = true;
+      const latest = bars.bars1m[bars.bars1m.length - 1];
+      console.log('[ShadowController] First getMarketState() with Tastytrade bars:', {
+        source,
+        bars1m: bars.bars1m.length,
+        bars5m: bars.bars5m.length,
+        latestTs: latest?.timestamp,
+        latestClose: latest?.close,
+        symbol: provider.activeSymbol(),
+      });
+    }
     return {
       snapshot: provider.getSnapshot(),
-      bars: provider.getBars(),
-      source: this._marketAdapter.isConnected() ? 'tradovate' as const
-            : tastytradeProvider.isConnected()  ? 'tastytrade' as const
-            : 'simulated' as const,
+      bars,
+      source,
       connected: provider.isConnected(),
       symbol: provider.activeSymbol(),
     };
