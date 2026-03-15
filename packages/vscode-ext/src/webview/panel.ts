@@ -14,6 +14,8 @@ import {
 } from '@triforge/engine';
 import { ChangePatch } from '../core/patch';
 import { LicenseManager, LicenseStatus, LS_CHECKOUT } from '../core/license';
+import { getReviewRuntime } from '../extension';
+import type { ReviewSession } from '../reviewRuntime';
 
 // ── Data Contracts ─────────────────────────────────────────────────────────
 
@@ -149,6 +151,14 @@ export class TriForgeCouncilPanel {
   private _useGovernedPipeline = true; // feature flag: true = new governed pipeline, false = legacy
   private _workflowEventUnsubscribers: Array<() => void> = [];
 
+  // ── Review Runtime ───────────────────────────────────────────────────────
+  private _reviewRuntime = getReviewRuntime();
+  private _reviewSession: ReviewSession | null = null;
+  private _lastActiveMode: 'council' | 'governed' | 'review' | null = null;
+  // Context preserved from selection-triggered runs so it survives a null _session
+  private _selectionFilePath = '';
+  private _selectionFullFileContent = '';
+
   private static readonly _validProviders: ProviderName[] = ['openai', 'grok', 'claude'];
   private static _isValidProvider(v: unknown): v is ProviderName {
     return typeof v === 'string' && TriForgeCouncilPanel._validProviders.includes(v as ProviderName);
@@ -226,19 +236,53 @@ export class TriForgeCouncilPanel {
     this._send({ type: 'insert-prompt', text });
   }
 
-  /** Called by selection commands — pre-fills inputs and auto-starts the pipeline. */
-  public runForSelection(prompt: string, code: string, intensity: string, filePath?: string, fullFileContent?: string): void {
+  /** Called by selection commands — pre-fills inputs and routes to the appropriate pipeline. */
+  public runForSelection(
+    prompt: string,
+    code: string,
+    intensity: string,
+    filePath?: string,
+    fullFileContent?: string,
+    options?: {
+      reviewRuntime?: boolean;
+      governed?: boolean;
+      mode?: ExecutionMode;
+      action?: CouncilWorkflowAction;
+    },
+  ): void {
+    // Always capture selection context so _runAuthorReviewRuntime can use it
+    // even when no legacy _session object exists yet.
+    this._selectionFilePath = filePath ?? '';
+    this._selectionFullFileContent = fullFileContent ?? '';
     if (this._session) {
       this._session.filePath = filePath ?? '';
       this._session.fullFileContent = fullFileContent ?? '';
       this._session.contextFiles = {};
     }
-    this._send({ type: 'council-started', prompt, originalCode: code, intensity });
-    this._runCouncilPipeline(prompt, code, intensity);
+
+    if (options?.reviewRuntime === true) {
+      this._runAuthorReviewRuntime(prompt, code, intensity);
+    } else if (options?.governed === true) {
+      this._runGovernedPipeline(
+        prompt,
+        code,
+        options?.mode ?? 'safe',
+        options?.action ?? 'plan_then_code',
+      );
+    } else {
+      this._send({ type: 'council-started', prompt, originalCode: code, intensity });
+      this._runCouncilPipeline(prompt, code, intensity);
+    }
   }
 
   /** Export the current session as a Markdown document. */
   public async exportDebate(): Promise<void> {
+    if (this._lastActiveMode === 'review') {
+      vscode.window.showWarningMessage(
+        'TriForge AI: No council session to export. Export is only available after a council or governed pipeline run.',
+      );
+      return;
+    }
     if (!this._session) {
       vscode.window.showWarningMessage('TriForge AI: No council session to export. Run a request first.');
       return;
@@ -313,7 +357,13 @@ export class TriForgeCouncilPanel {
       async (message: any) => {
         switch (message.command) {
           case 'council:run':
-            if (this._useGovernedPipeline) {
+            if (message.reviewRuntime === true) {
+              await this._runAuthorReviewRuntime(
+                message.prompt as string,
+                (message.context as string) ?? '',
+                (message.intensity as string) ?? 'analytical'
+              );
+            } else if (this._useGovernedPipeline) {
               await this._runGovernedPipeline(
                 message.prompt as string,
                 (message.context as string) ?? '',
@@ -328,8 +378,26 @@ export class TriForgeCouncilPanel {
               );
             }
             break;
+          case 'review:run':
+            await this._runAuthorReviewRuntime(
+              message.prompt as string,
+              (message.context as string) ?? '',
+              (message.intensity as string) ?? 'analytical'
+            );
+            break;
+          case 'review:getLatest':
+            if (this._reviewSession) {
+              this._send({
+                type: 'review-runtime-result',
+                session: this._toReviewSummaryPayload(this._reviewSession),
+              });
+            }
+            break;
           case 'council:apply':
             await this._applyFinalCode();
+            break;
+          case 'council:export':
+            await this.exportDebate();
             break;
           case 'council:applyDraft':
             await this._applyDraftCode();
@@ -399,17 +467,28 @@ export class TriForgeCouncilPanel {
             const name = message.provider;
             const key = message.key as string;
             if (TriForgeCouncilPanel._isValidProvider(name) && key) {
-              await this._providerManager.setKey(name, key);
-              await this.refreshProviderStatus();
-              vscode.window.showInformationMessage(`TriForge AI: ${name} key saved.`);
+              try {
+                await this._providerManager.setKey(name, key);
+                await this.refreshProviderStatus();
+                vscode.window.showInformationMessage(`TriForge AI: ${name} key saved.`);
+              } catch (err: any) {
+                vscode.window.showErrorMessage(`TriForge AI: Failed to save ${name} key — ${err?.message ?? err}`);
+                this._send({ type: 'error', message: `Failed to save ${name} key: ${err?.message ?? err}` });
+              }
+            } else {
+              vscode.window.showWarningMessage(`TriForge AI: Invalid provider or empty key.`);
             }
             break;
           }
           case 'removeApiKey': {
             const providerName = message.provider;
             if (TriForgeCouncilPanel._isValidProvider(providerName)) {
-              await this._providerManager.removeKey(providerName);
-              await this.refreshProviderStatus();
+              try {
+                await this._providerManager.removeKey(providerName);
+                await this.refreshProviderStatus();
+              } catch (err: any) {
+                vscode.window.showErrorMessage(`TriForge AI: Failed to remove ${providerName} key — ${err?.message ?? err}`);
+              }
             }
             break;
           }
@@ -673,6 +752,155 @@ export class TriForgeCouncilPanel {
     );
   }
 
+  // ── Review Runtime Pipeline ──────────────────────────────────────────────
+
+  private async _runAuthorReviewRuntime(
+    prompt: string,
+    context: string,
+    intensity: string,
+  ): Promise<void> {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+    // Prefer explicit selection context (set by runForSelection) over session or active editor
+    const activeFile =
+      this._selectionFilePath ||
+      this._session?.filePath ||
+      vscode.window.activeTextEditor?.document.fileName ||
+      '';
+
+    // Build lightweight diagnostics snapshot from VS Code language services
+    const rawDiagnostics = vscode.languages.getDiagnostics();
+    const diagnostics = rawDiagnostics.flatMap(([uri, diags]) =>
+      diags.slice(0, 10).map(d => ({
+        filePath: uri.fsPath,
+        severity: (['error', 'warning', 'information', 'hint'] as const)[d.severity] ?? 'information',
+        message: d.message,
+        source: d.source,
+        code: typeof d.code === 'object' ? String(d.code.value) : d.code != null ? String(d.code) : undefined,
+        line: d.range.start.line,
+        endLine: d.range.end.line,
+      }))
+    ).slice(0, 50);
+
+    // Collect relevant files from session context
+    const relevantFiles = [
+      ...(activeFile ? [{ path: activeFile, reason: 'active file', confidence: 0.9 }] : []),
+      ...Object.keys(this._session?.contextFiles ?? {}).map(p => ({
+        path: p, reason: 'user-added context', confidence: 0.8,
+      })),
+    ];
+
+    // Choose verification intents based on prompt keywords
+    const lp = prompt.toLowerCase();
+    const verificationIntents: Array<'lint' | 'typecheck' | 'test' | 'build'> = ['lint', 'typecheck', 'test'];
+    if (/build|bundle|compil|webpack|esbuild/.test(lp)) { verificationIntents.push('build'); }
+
+    const isSelectionTrigger = context.length > 0;
+    const notes: string[] = [];
+    if (activeFile) {
+      notes.push(`Active file: ${activeFile}`);
+    }
+    if (isSelectionTrigger) {
+      notes.push(`This review was triggered from a code selection. The selected code is provided as context below.`);
+      notes.push(`Selected code:\n${context.slice(0, 2000)}`);
+    } else if (context) {
+      notes.push(`User context:\n${context.slice(0, 1000)}`);
+    }
+    // Prefer explicit selection context over session, so fresh panel loads work
+    const fullFileContent = this._selectionFullFileContent || this._session?.fullFileContent;
+    if (fullFileContent && activeFile) {
+      notes.push(`Full file content of ${path.basename(activeFile)}:\n${fullFileContent.slice(0, 3000)}`);
+    }
+
+    const repoContext = {
+      workspaceRoot,
+      taskLabel: prompt.slice(0, 80),
+      userRequest: prompt,
+      relevantFiles,
+      diagnostics,
+      verificationIntents,
+      changedFilesBeforeTask: [],
+      notes,
+      capturedAtIso: new Date().toISOString(),
+    };
+
+    this._lastActiveMode = 'review';
+    this._send({ type: 'review-runtime-started', prompt });
+
+    try {
+      const task = this._reviewRuntime.createTaskDraft({
+        userRequest: prompt,
+        objective: prompt,
+        acceptanceCriteria: [],
+        constraints: intensity === 'ruthless' ? ['maximum scrutiny'] : [],
+        repoContext,
+      });
+
+      const result = this._reviewRuntime.runTask(task);
+      this._reviewSession = result.session;
+
+      this._send({
+        type: 'review-runtime-result',
+        session: this._toReviewSummaryPayload(result.session),
+        gate: {
+          allowed: result.gate.allowed,
+          status: result.gate.status,
+          reasons: result.gate.reasons,
+          commitMessage: result.gate.artifact?.commitMessageDraft,
+        },
+      });
+    } catch (err: any) {
+      this._send({ type: 'review-runtime-error', message: err?.message ?? 'Review runtime failed.' });
+    }
+  }
+
+  private _toReviewSummaryPayload(session: ReviewSession) {
+    return {
+      id: session.id,
+      phase: session.phase,
+      status: session.status,
+      objective: session.task.objective,
+      authorPlanSummary: session.authorPlan?.summary ?? '',
+      implementationSummary: session.implementationDraft?.summary ?? '',
+      planReviewDecisions: session.planReviewDecisions.map(d => ({
+        reviewer: d.reviewer,
+        scope: d.scope,
+        verdict: d.verdict,
+        summary: d.summary,
+        findingCount: d.findings.length,
+        mustFixCount: d.mustFixIds.length,
+      })),
+      codeReviewDecisions: session.codeReviewDecisions.map(d => ({
+        reviewer: d.reviewer,
+        scope: d.scope,
+        verdict: d.verdict,
+        summary: d.summary,
+        findingCount: d.findings.length,
+        mustFixCount: d.mustFixIds.length,
+      })),
+      reconciliation: session.reconciliation ? {
+        winningAlignment: session.reconciliation.winningAlignment,
+        alignedActors: session.reconciliation.alignedActors,
+        summary: session.reconciliation.summary,
+        mustDoCount: session.reconciliation.mustDoBeforeSubmit.length,
+        unresolvedRiskCount: session.reconciliation.unresolvedRisks.length,
+      } : null,
+      verification: session.verification ? {
+        status: session.verification.status,
+        checks: session.verification.checks.map(c => ({
+          intent: c.intent,
+          status: c.status,
+          summary: c.summary,
+        })),
+      } : null,
+      submission: session.submission ? {
+        status: session.submission.status,
+        commitMessageDraft: session.submission.commitMessageDraft,
+        remainingRisks: session.submission.remainingRisks,
+      } : null,
+      blockedReason: session.blockedReason,
+    };
+  }
+
   // ── Governed Workflow Pipeline ───────────────────────────────────────────
 
   private async _runGovernedPipeline(
@@ -708,6 +936,8 @@ export class TriForgeCouncilPanel {
         fullContext += `\n\n--- ${relPath} ---\n${content}`;
       }
     }
+
+    this._lastActiveMode = 'governed';
 
     try {
       // Start session
@@ -917,6 +1147,8 @@ export class TriForgeCouncilPanel {
       filePath: this._session?.filePath,
       fullFileContent: this._session?.fullFileContent,
     };
+
+    this._lastActiveMode = 'council';
 
     // Quorum detection
     this._unavailableProviders.clear();
@@ -2107,6 +2339,14 @@ export class TriForgeCouncilPanel {
   .p-gpt   { background: rgba(16,185,129,0.1);  color: #10b981; border-color: rgba(16,185,129,0.3); }
   .p-cld   { background: rgba(249,115,22,0.1);  color: #f97316; border-color: rgba(249,115,22,0.3); }
   .p-grk   { background: rgba(129,140,248,0.1); color: #818cf8; border-color: rgba(129,140,248,0.3); }
+  .badge-ok   { background: rgba(16,185,129,0.12); color: #10b981; border-color: rgba(16,185,129,0.35); }
+  .badge-warn { background: rgba(245,158,11,0.12); color: #f59e0b; border-color: rgba(245,158,11,0.35); }
+  .badge-error { background: rgba(239,68,68,0.12); color: #ef4444; border-color: rgba(239,68,68,0.35); }
+
+  /* Review Runtime */
+  .rr-block { padding: 8px 11px; border-top: 1px solid rgba(255,255,255,0.05); font-size: 11px; line-height: 1.5; color: rgba(255,255,255,0.68); }
+  .rr-decision { padding: 4px 0; color: rgba(255,255,255,0.68); }
+  .rr-meta { color: rgba(255,255,255,0.42); font-size: 10px; }
 
   /* Buttons */
   button { cursor: pointer; border: none; border-radius: 4px; font-size: 12px; font-family: inherit; transition: background 0.15s; }
@@ -2382,6 +2622,7 @@ export class TriForgeCouncilPanel {
       </div>
       <div class="topbar-run">
         <button class="btn-p" id="btn-run" style="white-space:nowrap;padding:6px 12px;">Run &#x25B6;</button>
+        <button class="btn-s" id="btn-run-review" style="font-size:11px;padding:3px 9px;" title="Run with Review Runtime">Review &#x25B6;</button>
         <button class="btn-s" id="btn-abort" style="font-size:11px;padding:3px 9px;display:none;">Abort</button>
         <button class="btn-g" id="btn-reset" style="font-size:11px;padding:3px 6px;">&#x21BA;</button>
       </div>
@@ -2467,16 +2708,16 @@ export class TriForgeCouncilPanel {
           <span id="cfg-chevron" class="panel-chevron">&#x25BE;</span>
         </div>
         <div id="cfg-body" style="display:flex;flex-direction:column;gap:8px;padding:8px 10px 14px;">
-          <div class="krow"><label>OpenAI</label><input type="password" id="k-openai" placeholder="sk-..."/><button class="btn-s" id="ks-openai">Save</button><button class="btn-d" id="kr-openai">Remove</button></div>
-          <div class="krow"><label>Claude</label><input type="password" id="k-claude" placeholder="sk-ant-..."/><button class="btn-s" id="ks-claude">Save</button><button class="btn-d" id="kr-claude">Remove</button></div>
-          <div class="krow"><label>Grok</label><input type="password" id="k-grok" placeholder="xai-..."/><button class="btn-s" id="ks-grok">Save</button><button class="btn-d" id="kr-grok">Remove</button></div>
+          <div class="krow"><label>OpenAI</label><input type="text" autocomplete="off" spellcheck="false" id="k-openai" placeholder="sk-..."/><button type="button" class="btn-s" id="ks-openai">Save</button><button type="button" class="btn-d" id="kr-openai">Remove</button></div>
+          <div class="krow"><label>Claude</label><input type="text" autocomplete="off" spellcheck="false" id="k-claude" placeholder="sk-ant-..."/><button type="button" class="btn-s" id="ks-claude">Save</button><button type="button" class="btn-d" id="kr-claude">Remove</button></div>
+          <div class="krow"><label>Grok</label><input type="text" autocomplete="off" spellcheck="false" id="k-grok" placeholder="xai-..."/><button type="button" class="btn-s" id="ks-grok">Save</button><button type="button" class="btn-d" id="kr-grok">Remove</button></div>
           <div style="border-top:1px solid var(--border);margin:2px 0;padding-top:6px;display:flex;flex-direction:column;gap:6px;">
             <datalist id="dl-openai-models"><option value="gpt-4o"/><option value="gpt-4o-mini"/><option value="o1"/><option value="o3-mini"/></datalist>
             <datalist id="dl-claude-models"><option value="claude-opus-4-6"/><option value="claude-sonnet-4-6"/><option value="claude-haiku-4-5-20251001"/></datalist>
             <datalist id="dl-grok-models"><option value="grok-3"/><option value="grok-2"/></datalist>
-            <div class="krow"><label>OpenAI Model</label><input type="text" id="m-openai" list="dl-openai-models" placeholder="gpt-4o"/><button class="btn-s" id="ms-openai">Save</button></div>
-            <div class="krow"><label>Claude Model</label><input type="text" id="m-claude" list="dl-claude-models" placeholder="claude-sonnet-4-6"/><button class="btn-s" id="ms-claude">Save</button></div>
-            <div class="krow"><label>Grok Model</label><input type="text" id="m-grok" list="dl-grok-models" placeholder="grok-3"/><button class="btn-s" id="ms-grok">Save</button></div>
+            <div class="krow"><label>OpenAI Model</label><input type="text" id="m-openai" list="dl-openai-models" placeholder="gpt-4o"/><button type="button" class="btn-s" id="ms-openai">Save</button></div>
+            <div class="krow"><label>Claude Model</label><input type="text" id="m-claude" list="dl-claude-models" placeholder="claude-sonnet-4-6"/><button type="button" class="btn-s" id="ms-claude">Save</button></div>
+            <div class="krow"><label>Grok Model</label><input type="text" id="m-grok" list="dl-grok-models" placeholder="grok-3"/><button type="button" class="btn-s" id="ms-grok">Save</button></div>
           </div>
           <div class="krow"><label>Audio</label><button class="ibtn on" id="btn-audio">On</button></div>
           <!-- License -->
@@ -2745,6 +2986,26 @@ export class TriForgeCouncilPanel {
         <div><div style="font-size:22px;opacity:0.15;margin-bottom:8px;">&#x25A6;</div>Final output appears here after the council completes.</div>
       </div>
 
+      <!-- Review Runtime result -->
+      <div class="sec hidden" id="s-review-runtime">
+        <div class="sh">Review Runtime<div class="meta"><span id="rr-status" class="badge">&#x2014;</span></div></div>
+        <div id="rr-summary" style="display:none;padding:7px 10px;border-radius:5px;margin-bottom:10px;font-size:12px;line-height:1.6;border:1px solid rgba(255,255,255,0.08);"></div>
+        <div style="margin-bottom:6px;"><strong>Objective:</strong> <span id="rr-objective"></span></div>
+        <div style="margin-bottom:4px;"><strong>Plan:</strong> <span id="rr-plan-summary"></span></div>
+        <div style="margin-bottom:4px;"><strong>Implementation:</strong> <span id="rr-impl-summary"></span></div>
+        <div style="margin-bottom:4px;"><strong>Plan Reviews:</strong><div id="rr-plan-reviews"></div></div>
+        <div style="margin-bottom:4px;"><strong>Code Reviews:</strong><div id="rr-code-reviews"></div></div>
+        <div style="margin-bottom:4px;"><strong>Reconciliation:</strong><div id="rr-reconciliation"></div></div>
+        <div style="margin-bottom:4px;"><strong>Verification:</strong><div id="rr-verification"></div></div>
+        <div style="margin-bottom:4px;"><strong>Commit message:</strong><pre id="rr-submit" class="cb" style="margin-top:4px;white-space:pre-wrap;"></pre></div>
+        <div class="arow" id="rr-actions" style="display:none;">
+          <button class="btn-p" id="btn-rr-copy-commit">Copy Commit</button>
+          <button class="btn-s" id="btn-rr-send-commit">Send to Commit Box</button>
+          <button class="btn-s" id="btn-rr-run-again">Run Again</button>
+          <button class="btn-g" id="btn-rr-close">Close Review</button>
+        </div>
+      </div>
+
       <!-- Final result -->
       <div class="sec hidden" id="s-result">
         <div class="sh">Final Implementation<div class="meta"><span id="rc-badge" class="badge">&#x2014;</span></div></div>
@@ -2756,6 +3017,8 @@ export class TriForgeCouncilPanel {
           <button class="btn-s" id="btn-export">Export</button>
           <button class="btn-g" id="btn-reset2">&#x21BA; New</button>
         </div>
+      </div>
+
       <!-- Alternative -->
       <div class="sec hidden" id="s-alt">
         <div class="sh">Alternative Proposal<div class="meta"><span id="ap-badge" class="badge">&#x2014;</span><span id="ac-badge" class="badge">&#x2014;</span><span id="ar-badge" class="badge">&#x2014;</span></div></div>
@@ -2842,7 +3105,7 @@ function send(cmd, d){ vs.postMessage(Object.assign({command:cmd}, d||{})); }
 
 // State
 var LS_CHECKOUT='${lsCheckout}';
-const S = { phase:'IDLE', intensity:'adaptive', providers:{}, debOpen:false, running:false, councilMode:'FULL', dlVersions:[], audioEnabled:true, wsFiles:[], ctxFiles:[], promptHistory:[], upgradeUrl:'' };
+const S = { phase:'IDLE', intensity:'adaptive', providers:{}, debOpen:false, running:false, councilMode:'FULL', dlVersions:[], audioEnabled:true, wsFiles:[], ctxFiles:[], promptHistory:[], upgradeUrl:'', reviewRuntime:null };
 const PH_ORD = ['DRAFTING','RISK_CHECK','CRITIQUE','DEBATE','COMPLETE'];
 
 // DOM
@@ -2852,6 +3115,14 @@ function hide(i){ const e=$(i); if(e){ e.classList.add('hidden'); } }
 function txt(i,t){ const e=$(i); if(e){ e.textContent=t; } }
 function cod(i,t){ const e=$(i); if(e){ e.textContent=t||''; } }
 function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+// Centralized run-button state — call instead of mutating S.running + btn visibility inline
+function setRunning(running){
+  S.running = running;
+  var run=$('btn-run'), rvw=$('btn-run-review'), abt=$('btn-abort');
+  if(run){ run.style.display = running ? 'none' : ''; }
+  if(rvw){ rvw.style.display = running ? 'none' : ''; }
+  if(abt){ abt.style.display = running ? '' : 'none'; }
+}
 
 function pLbl(n){ return n==='openai'?'GPT':n==='claude'?'Claude':'Grok'; }
 function pCls(n){ return n==='openai'?'p-gpt':n==='claude'?'p-cld':'p-grk'; }
@@ -2908,7 +3179,6 @@ function onPhase(d){
   if(d.message){ txt('pmsg', d.message); }
 
   if(d.phase==='IDLE'||d.phase==='BYPASSED'||d.phase==='COMPLETE'){
-    S.running=false;
     const viz=$('s-viz'); if(viz){ viz.classList.remove('depth-active'); }
     ['claude','gpt','grok'].forEach(function(p){ const n=$('vn-'+p); if(n){ n.classList.remove('depth-on'); } });
     document.body.classList.remove('ruthless-active');
@@ -2917,24 +3187,19 @@ function onPhase(d){
       if(ca){ ca.classList.add('hidden'); }
       if(ci){ ci.classList.remove('hidden'); }
       if(tp){ tp.classList.remove('active'); }
-      var run=$('btn-run'), abt=$('btn-abort');
-      if(run){ run.style.display=''; }
-      if(abt){ abt.style.display='none'; }
+      setRunning(false);
       resetNodes();
     }
     if(d.phase==='BYPASSED'){ const b=$('bypass-b'); if(b){ b.style.display='block'; } }
     return;
   }
 
-  S.running=true;
+  setRunning(true);
   var ca2=$('center-active'), ci2=$('center-idle'), tp2=$('topbar-phase');
   if(ca2){ ca2.classList.remove('hidden'); }
   if(ci2){ ci2.classList.add('hidden'); }
   if(tp2){ tp2.classList.add('active'); }
   show('s-viz');
-  var run2=$('btn-run'), abt2=$('btn-abort');
-  if(run2){ run2.style.display='none'; }
-  if(abt2){ abt2.style.display=''; }
   updSteps(d.phase);
 
   // Depth activation during cognition
@@ -2943,6 +3208,10 @@ function onPhase(d){
   if(S.intensity==='ruthless'){ document.body.classList.add('ruthless-active'); }
 
   if(d.phase==='DRAFTING'){
+    // Clear stale views from other pipelines before legacy council starts
+    clearGovernedWorkflowView();
+    hide('s-review-runtime');
+    clearReviewRuntimeView();
     resetNodes();
     const prim=S.providers['grok']?'grok':S.providers['openai']?'openai':'claude';
     setNode(prim,'drafting');
@@ -3052,7 +3321,7 @@ function onDebate(db){
 
 // Complete handler
 function onComplete(d){
-  S.running=false; S.phase='COMPLETE';
+  setRunning(false); S.phase='COMPLETE';
   updSteps('COMPLETE');
   const viz=$('s-viz'); if(viz){ viz.classList.remove('depth-active'); }
   ['claude','gpt','grok'].forEach(function(p){ const n=$('vn-'+p); if(n){ n.classList.remove('depth-on'); } });
@@ -3369,9 +3638,7 @@ function reset(){
   if(rca){ rca.classList.add('hidden'); }
   if(rci){ rci.classList.remove('hidden'); }
   if(rtp){ rtp.classList.remove('active'); }
-  var rrun=$('btn-run'), rabt=$('btn-abort');
-  if(rrun){ rrun.style.display=''; }
-  if(rabt){ rabt.style.display='none'; }
+  setRunning(false);
   // Clear AI columns
   ['openai','claude','grok'].forEach(function(p){
     var cd=$('col-draft-'+p); if(cd){ cd.style.display='none'; }
@@ -3381,7 +3648,9 @@ function reset(){
     var cs=$('col-state-'+p); if(cs){ cs.textContent='idle'; cs.className='ai-state'; }
   });
   // Restore right panel idle
-  show('right-idle'); hide('s-result');
+  show('right-idle'); hide('s-result'); hide('s-review-runtime');
+  S.reviewRuntime = null;
+  clearReviewRuntimeView();
   ['s-viz','s-draft','s-risk','s-agree','s-debate','s-alt','s-deadlock','s-synth-note','s-critical-obj'].forEach(hide);
   resetNodes();
   const vc=$('vcards'); if(vc){ vc.innerHTML=''; }
@@ -3398,6 +3667,130 @@ function reset(){
   ['claude','gpt','grok'].forEach(function(p){ const n=$('vn-'+p); if(n){ n.classList.remove('depth-on'); } });
   // Reset context files (keep file tree loaded)
   send('workspace:clearContext');
+}
+
+// ── Mode-switch clear helpers ─────────────────────────────────────────────
+function clearLegacyCouncilView(){
+  ['s-result','s-alt','s-synth-note','s-debate','s-deadlock','s-critical-obj','s-draft','s-risk','s-agree','s-viz'].forEach(hide);
+  var vc=$('vcards'); if(vc){ vc.innerHTML=''; }
+  resetNodes();
+}
+function clearGovernedWorkflowView(){
+  ['wf-plan-preview','wf-code-preview','wf-commit-preview'].forEach(function(id){
+    var el=$(id); if(el){ el.innerHTML=''; }
+  });
+  ['wf-reviews','wf-roles','wf-msg'].forEach(function(id){
+    var el=$(id); if(el){ el.innerHTML=''; }
+  });
+  var wfp=$('workflow-phase'); if(wfp){ hide('workflow-phase'); }
+  // reset phase bar steps
+  document.querySelectorAll('.wf-step').forEach(function(el){ el.classList.remove('active','done'); });
+}
+
+// ── Review Runtime helpers ────────────────────────────────────────────────
+function clearReviewRuntimeView(){
+  var ids=['rr-objective','rr-plan-summary','rr-impl-summary','rr-plan-reviews','rr-code-reviews','rr-reconciliation','rr-verification','rr-submit'];
+  ids.forEach(function(id){
+    var el=$(id); if(!el){ return; }
+    if(id==='rr-submit'){ el.textContent=''; } else { el.innerHTML=''; }
+  });
+  var status=$('rr-status');
+  if(status){ status.textContent='\u2014'; status.className='badge'; }
+  var acts=$('rr-actions'); if(acts){ acts.style.display='none'; }
+  var sum=$('rr-summary'); if(sum){ sum.innerHTML=''; sum.style.display='none'; }
+}
+function rrVerdictClass(verdict){
+  if(verdict==='approve') return 'badge-ok';
+  if(verdict==='approve_with_notes') return 'badge-warn';
+  if(verdict==='revise_required') return 'badge-warn';
+  if(verdict==='reject') return 'badge-error';
+  return '';
+}
+function renderReviewDecisionList(decisions){
+  if(!decisions||!decisions.length) return '<em>None</em>';
+  return decisions.map(function(d){
+    return '<div class="rr-decision"><span class="badge '+rrVerdictClass(d.verdict)+'">'+d.verdict+'</span> '
+      +'<strong>'+d.reviewer+'</strong> &mdash; '+esc(d.summary||'')
+      +' <span class="rr-meta">('+d.findingCount+' finding'+(d.findingCount!==1?'s':'')+', '
+      +d.mustFixCount+' must-fix)</span></div>';
+  }).join('');
+}
+function onReviewRuntimeResult(session, gate){
+  if(!session) return;
+  S.reviewRuntime = session;
+  show('s-review-runtime');
+  var rrs=$('rr-status');
+  if(rrs){
+    var cls = gate&&gate.allowed ? 'badge-ok' : (session.status==='blocked'?'badge-error':'badge-warn');
+    rrs.textContent = session.phase||session.status;
+    rrs.className='badge '+cls;
+  }
+  var obj=$('rr-objective'); if(obj){ obj.textContent=session.objective||''; }
+  var ps=$('rr-plan-summary'); if(ps){ ps.textContent=session.authorPlanSummary||''; }
+  var is=$('rr-impl-summary'); if(is){ is.textContent=session.implementationSummary||''; }
+  var pr=$('rr-plan-reviews'); if(pr){ pr.innerHTML=renderReviewDecisionList(session.planReviewDecisions); }
+  var cr=$('rr-code-reviews'); if(cr){ cr.innerHTML=renderReviewDecisionList(session.codeReviewDecisions); }
+  var rec=$('rr-reconciliation');
+  if(rec){
+    if(session.reconciliation){
+      var r=session.reconciliation;
+      rec.innerHTML='<strong>'+r.winningAlignment+'</strong> &mdash; '+esc(r.summary||'')
+        +' <span class="rr-meta">('+r.mustDoCount+' must-do, '+r.unresolvedRiskCount+' risks)</span>';
+    } else {
+      rec.innerHTML='<em>Not yet reconciled</em>';
+    }
+  }
+  var ver=$('rr-verification');
+  if(ver){
+    if(session.verification){
+      var vl=session.verification.checks.map(function(c){
+        return '<span class="badge '+(c.status==='passed'?'badge-ok':'badge-warn')+'">'+c.intent+'</span> '+esc(c.summary||'');
+      }).join('<br>');
+      ver.innerHTML=vl||'<em>No checks</em>';
+    } else {
+      ver.innerHTML='<em>Not yet verified</em>';
+    }
+  }
+  var sub=$('rr-submit');
+  if(sub){
+    if(session.submission&&session.submission.commitMessageDraft){
+      sub.textContent=session.submission.commitMessageDraft;
+    } else if(gate&&gate.commitMessage){
+      sub.textContent=gate.commitMessage;
+    } else {
+      sub.textContent='';
+    }
+  }
+  // Show action row now that we have a result
+  var acts=$('rr-actions'); if(acts){ acts.style.display=''; }
+  // Populate compact terminal summary
+  var sum=$('rr-summary');
+  if(sum){
+    var mustDo=0, unresolvedRisk=0;
+    if(session.reconciliation){ mustDo=session.reconciliation.mustDoCount||0; unresolvedRisk=session.reconciliation.unresolvedRiskCount||0; }
+    var hasCommit=!!(session.submission&&session.submission.commitMessageDraft)||(gate&&!!gate.commitMessage);
+    var isAllowed=gate&&gate.allowed;
+    var isBlocked=session.status==='blocked';
+    var label, bg, borderColor;
+    if(isBlocked){
+      label='Blocked by must-fix findings';
+      bg='rgba(239,68,68,0.10)'; borderColor='rgba(239,68,68,0.30)';
+    } else if(mustDo>0||unresolvedRisk>0){
+      label='Needs revision';
+      bg='rgba(245,158,11,0.10)'; borderColor='rgba(245,158,11,0.30)';
+    } else {
+      label='Ready for submission';
+      bg='rgba(16,185,129,0.10)'; borderColor='rgba(16,185,129,0.30)';
+    }
+    sum.innerHTML='<strong>'+label+'</strong>'
+      +' &nbsp;&bull;&nbsp; Gate: <span class="badge '+(isAllowed?'badge-ok':'badge-error')+'">'+(isAllowed?'allowed':'blocked')+'</span>'
+      +' &nbsp;&bull;&nbsp; Must-do: '+mustDo
+      +' &nbsp;&bull;&nbsp; Unresolved risks: '+unresolvedRisk
+      +' &nbsp;&bull;&nbsp; Commit draft: '+(hasCommit?'<span class="badge badge-ok">yes</span>':'<span class="badge badge-warn">no</span>');
+    sum.style.background=bg;
+    sum.style.borderColor=borderColor;
+    sum.style.display='';
+  }
 }
 
 // Message listener
@@ -3417,14 +3810,11 @@ window.addEventListener('message', function(e){
     case 'error':
       toast(d.message||'An error occurred.', false);
       if(S.running){
-        S.running=false;
+        setRunning(false);
         var eca=$('center-active'), eci=$('center-idle'), etp=$('topbar-phase');
         if(eca){ eca.classList.add('hidden'); }
         if(eci){ eci.classList.remove('hidden'); }
         if(etp){ etp.classList.remove('active'); }
-        var erun=$('btn-run'), eabt=$('btn-abort');
-        if(erun){ erun.style.display=''; }
-        if(eabt){ eabt.style.display='none'; }
       }
       break;
     case 'council-mode':      onCouncilMode(d); break;
@@ -3477,6 +3867,7 @@ window.addEventListener('message', function(e){
       toast('Intensity escalated to '+d.intensity.toUpperCase()+'. Re-run to apply.', false);
       break;
     case 'council-started':
+      WF.pipeline = 'legacy';
       if(d.prompt){ const ti=$('task-input'); if(ti){ ti.value=d.prompt; } }
       if(d.originalCode){ const ci=$('ctx-input'); if(ci){ ci.value=d.originalCode; } }
       if(d.intensity){
@@ -3492,6 +3883,11 @@ window.addEventListener('message', function(e){
 
     // ── Governed Workflow Messages ────────────────────────────────────────
     case 'workflow-started':
+      WF.pipeline = 'governed';
+      // Clear stale views from other pipelines
+      clearLegacyCouncilView();
+      hide('s-review-runtime');
+      clearReviewRuntimeView();
       // Show workflow phase bar, hide legacy
       var tp2=$('topbar-phase'); if(tp2){ tp2.classList.remove('active'); }
       var wfp=$('workflow-phase'); if(wfp){ wfp.classList.add('active'); }
@@ -3504,9 +3900,8 @@ window.addEventListener('message', function(e){
       showWorkflowRoles(d.roles);
       updateWorkflowPhase('intake','Starting governed pipeline ('+d.mode+')...');
       // Switch to active state
-      S.running=true;
       var ca=$('center-active'),ci=$('center-idle'); if(ca){ca.classList.remove('hidden');} if(ci){ci.classList.add('hidden');}
-      var run=$('btn-run'),abt=$('btn-abort'); if(run){run.style.display='none';} if(abt){abt.style.display='';}
+      setRunning(true);
       break;
     case 'workflow-phase':
       updateWorkflowPhase(d.phase, d.message||('Phase: '+d.phase));
@@ -3554,19 +3949,39 @@ window.addEventListener('message', function(e){
       break;
     case 'workflow-complete':
       updateWorkflowPhase('pushed',d.summary||'Complete');
-      S.running=false;
-      var wrun=$('btn-run'),wabt=$('btn-abort'); if(wrun){wrun.style.display='';} if(wabt){wabt.style.display='none';}
+      setRunning(false);
       break;
     case 'workflow-blocked':
       updateWorkflowPhase('blocked',d.reason||'Blocked');
-      S.running=false;
-      var brun=$('btn-run'),babt=$('btn-abort'); if(brun){brun.style.display='';} if(babt){babt.style.display='none';}
+      setRunning(false);
       toast(d.reason||'Workflow blocked.',false);
       break;
     case 'workflow-error':
       toast(d.error||'Workflow error.',false);
-      S.running=false;
-      var erun2=$('btn-run'),eabt2=$('btn-abort'); if(erun2){erun2.style.display='';} if(eabt2){eabt2.style.display='none';}
+      setRunning(false);
+      break;
+
+    // ── Review Runtime Messages ───────────────────────────────────────────
+    case 'review-runtime-started':
+      WF.pipeline = 'review';
+      setRunning(true);
+      hide('right-idle');
+      clearLegacyCouncilView();
+      clearGovernedWorkflowView();
+      show('s-review-runtime');
+      clearReviewRuntimeView();
+      var rrs=$('rr-status'); if(rrs){ rrs.textContent='Running\u2026'; rrs.className='badge badge-warn'; }
+      break;
+    case 'review-runtime-result':
+      setRunning(false);
+      onReviewRuntimeResult(d.session, d.gate);
+      break;
+    case 'review-runtime-error':
+      setRunning(false);
+      hide('right-idle');
+      show('s-review-runtime');
+      var rrs2=$('rr-status'); if(rrs2){ rrs2.textContent='Error'; rrs2.className='badge badge-error'; }
+      toast(d.message||'Review runtime error.',false);
       break;
   }
 });
@@ -3744,20 +4159,53 @@ function showWorkflowCommitPreview(gate) {
 
 // Button bindings
 $('btn-run')&&$('btn-run').addEventListener('click',function(){
+  if(S.running){ toast('A run is already in progress. Abort first.'); return; }
   const p=($('task-input')||{}).value||'', c=($('ctx-input')||{}).value||'';
   if(!p.trim()){ toast('Please describe your task before running the council.'); return; }
   addToHistory(p.trim());
   const al=$('i-auto-lbl'); if(al){ al.textContent=''; al.classList.add('hidden'); }
   send('council:run',{prompt:p.trim(),context:c.trim(),intensity:S.intensity,mode:WF.mode,action:WF.action});
 });
+$('btn-run-review')&&$('btn-run-review').addEventListener('click',function(){
+  if(S.running){ toast('A run is already in progress. Abort first.'); return; }
+  const p=($('task-input')||{}).value||'', c=($('ctx-input')||{}).value||'';
+  if(!p.trim()){ toast('Please describe your task before running the review runtime.'); return; }
+  addToHistory(p.trim());
+  send('review:run',{prompt:p.trim(),context:c.trim(),intensity:S.intensity});
+});
 $('btn-abort')&&$('btn-abort').addEventListener('click',function(){
-  if(WF.pipeline==='governed'){ send('workflow:abort'); }
-  else { send('council:abort'); }
+  if(WF.pipeline==='governed'){
+    send('workflow:abort');
+  } else if(WF.pipeline==='review'){
+    // Review runtime is non-cancellable server-side; clean up UI state immediately
+    setRunning(false);
+    var rrs=$('rr-status'); if(rrs){ rrs.textContent='Aborted'; rrs.className='badge badge-warn'; }
+  } else {
+    send('council:abort');
+  }
 });
 $('btn-bypass')&&$('btn-bypass').addEventListener('click',function(){ send('council:applyDraft'); });
 $('btn-apply')&&$('btn-apply').addEventListener('click',function(){ send('council:apply'); });
 $('btn-esc')&&$('btn-esc').addEventListener('click',function(){ send('council:escalate'); });
 $('btn-export')&&$('btn-export').addEventListener('click',function(){ send('council:export'); });
+// ── Review Runtime action row ─────────────────────────────────────────────
+$('btn-rr-copy-commit')&&$('btn-rr-copy-commit').addEventListener('click',function(){
+  var el=$('rr-submit'); if(!el||!el.textContent.trim()){ toast('No commit message to copy.'); return; }
+  navigator.clipboard.writeText(el.textContent.trim()).then(function(){ toast('Commit message copied.'); });
+});
+$('btn-rr-send-commit')&&$('btn-rr-send-commit').addEventListener('click',function(){
+  var el=$('rr-submit'); if(!el||!el.textContent.trim()){ toast('No commit message available.'); return; }
+  var box=$('git-commit-msg'); if(box){ box.value=el.textContent.trim(); toast('Sent to commit box.'); }
+});
+$('btn-rr-run-again')&&$('btn-rr-run-again').addEventListener('click',function(){
+  send('review:run', { prompt: S.reviewRuntime&&S.reviewRuntime.objective||'' });
+});
+$('btn-rr-close')&&$('btn-rr-close').addEventListener('click',function(){
+  hide('s-review-runtime');
+  clearReviewRuntimeView();
+  S.reviewRuntime = null;
+  show('right-idle');
+});
 $('btn-reset')&&$('btn-reset').addEventListener('click',reset);
 $('file-search')&&$('file-search').addEventListener('input',function(){ renderFileList(this.value); });
 $('btn-ctx-clear')&&$('btn-ctx-clear').addEventListener('click',function(){ send('workspace:clearContext'); });
@@ -3881,11 +4329,25 @@ $('btn-co-override')&&$('btn-co-override').addEventListener('click',function(){ 
 $('btn-co-debate')&&$('btn-co-debate').addEventListener('click',function(){ hide('s-critical-obj'); show('s-phase'); send('council:deadlock:extended'); });
 $('btn-co-synth')&&$('btn-co-synth').addEventListener('click',function(){ hide('s-critical-obj'); show('s-phase'); send('council:deadlock:synthesis'); });
 
-// API key buttons (no inline onclick — CSP safe)
-['openai','claude','grok'].forEach(function(p){
-  var sb=$('ks-'+p), rb=$('kr-'+p);
-  if(sb){ sb.addEventListener('click',function(){ var inp=$('k-'+p); if(!inp||!inp.value.trim()){ toast('Enter a '+pLbl(p)+' API key first.', false); return; } send('setApiKey',{provider:p,key:inp.value.trim()}); inp.value=''; toast('\u2713 '+pLbl(p)+' key saved.', true); }); }
-  if(rb){ rb.addEventListener('click',function(){ send('removeApiKey',{provider:p}); }); }
+// API key buttons — event delegation for robustness
+document.addEventListener('click',function(ev){
+  var tgt=ev.target; if(!tgt||!tgt.id){ return; }
+  var id=tgt.id;
+  if(id==='ks-openai'||id==='ks-claude'||id==='ks-grok'){
+    var p2=id.slice(3);
+    var inp=$('k-'+p2);
+    if(!inp||!inp.value.trim()){ toast('Enter a '+pLbl(p2)+' API key first.',false); return; }
+    var key2=inp.value.trim();
+    send('setApiKey',{provider:p2,key:key2});
+    inp.value='';
+    tgt.textContent='Saved!';
+    setTimeout(function(){ tgt.textContent='Save'; },2000);
+    toast('\u2713 '+pLbl(p2)+' key sent to extension.',true);
+  } else if(id==='kr-openai'||id==='kr-claude'||id==='kr-grok'){
+    var p3=id.slice(3);
+    send('removeApiKey',{provider:p3});
+    toast(pLbl(p3)+' key removed.',true);
+  }
 });
 $('btn-audio')&&$('btn-audio').addEventListener('click',function(){ S.audioEnabled=!S.audioEnabled; this.textContent=S.audioEnabled?'On':'Off'; this.classList.toggle('on',S.audioEnabled); });
 $('btn-reset2')&&$('btn-reset2').addEventListener('click',reset);
