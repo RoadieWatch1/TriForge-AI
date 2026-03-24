@@ -390,6 +390,9 @@ export class Store implements StorageAdapter {
   }
   // Sync update — used by ProviderManager.saveSessions()
   update(key: string, value: unknown): void { this.data.kv[key] = JSON.stringify(value); this.save(); }
+  // Raw string KV accessors — used by ExperimentManager, capability scan, etc.
+  getKv(key: string): string | undefined { return this.data.kv[key]; }
+  setKv(key: string, value: string): void { this.data.kv[key] = value; this.save(); }
 
   getPermissions(): Permission[] {
     return DEFAULT_PERMISSIONS.map(p => ({ ...p, ...this.data.permissions[p.key] }));

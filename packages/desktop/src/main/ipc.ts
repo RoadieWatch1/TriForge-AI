@@ -2473,12 +2473,6 @@ VERIFY: [1-3 specific things the user should double-check]
 
   // ── Forge Engine — Generate Image (DALL-E 3 → Grok fallback) ───────────────
   ipcMain.handle('forgeEngine:generateImage', async (_event, { prompt }: { prompt: string }) => {
-    const lic = await store.getLicense();
-    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
-    if (!hasCapability('FORGE_PROFILES', tier)) {
-      return { error: lockedError('FORGE_PROFILES') };
-    }
-
     const openAiKey = await store.getSecret('triforge.openai.apiKey');
     const grokKey   = await store.getSecret('triforge.grok.apiKey');
     if (!openAiKey && !grokKey) return { error: 'No image API key configured. Add an OpenAI or Grok key in Settings → API Keys.' };
@@ -2527,11 +2521,6 @@ VERIFY: [1-3 specific things the user should double-check]
 
   // ── Pro Image Generator ──────────────────────────────────────────────────────
   ipcMain.handle('image:generate', async (_event, req: import('@triforge/engine').ImageGenerationRequest) => {
-    const lic  = await store.getLicense();
-    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
-    if (!hasCapability('FORGE_PROFILES', tier)) {
-      return { error: lockedError('FORGE_PROFILES') };
-    }
     try {
       const svc    = await _getImageService(store);
       if (!svc.canGenerate()) {

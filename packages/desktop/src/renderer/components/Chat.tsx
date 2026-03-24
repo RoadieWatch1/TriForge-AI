@@ -698,7 +698,11 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         setDeliberationPhase(null);
         setWebSearching(false);
 
-        if (result.error && handleGateError(result.error)) { setSending(false); return; }
+        if (result.error) {
+          handleGateError(result.error);
+          setSending(false);
+          return;
+        }
 
         onMessageSent();
         const aiMsg: Message = {

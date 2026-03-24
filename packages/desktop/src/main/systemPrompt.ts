@@ -89,7 +89,7 @@ export async function buildSystemPrompt(store: Store, professionAdditions?: stri
   const hasPrinter    = grantedPerms.some(p => p.key === 'printer');
   const hasBrowser    = grantedPerms.some(p => p.key === 'browser') && hasCapability('BROWSER_AUTOMATION', tier);
   const hasEmail      = grantedPerms.some(p => p.key === 'email_s' || p.key === 'email_r') && hasCapability('EMAIL_CALENDAR', tier);
-  const hasImageGen   = tier !== 'free'; // Visual Engine requires Pro+
+  const hasImageGen   = true; // Visual Engine always available
 
   const systemTools: string[] = [];
   if (hasFiles) {
