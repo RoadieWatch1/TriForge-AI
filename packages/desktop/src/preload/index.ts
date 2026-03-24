@@ -605,6 +605,10 @@ const api = {
       ipcRenderer.invoke('audit:getRecent', n) as Promise<{ entries?: unknown[]; error?: string }>,
     tailSince: (ts: number) =>
       ipcRenderer.invoke('audit:tailSince', ts) as Promise<{ entries?: unknown[]; error?: string }>,
+    export: (fromTs: number, toTs: number, format: 'json' | 'csv' | 'text', filter?: string) =>
+      ipcRenderer.invoke('audit:export', fromTs, toTs, format, filter) as Promise<{ ok: boolean; text?: string; entryCount?: number; error?: string }>,
+    exportPolicyHistory: (fromTs: number, toTs: number) =>
+      ipcRenderer.invoke('audit:exportPolicyHistory', fromTs, toTs) as Promise<{ ok: boolean; text?: string; error?: string }>,
   },
 
   // Agent engine — health + event ring buffer (Phase 3.5)
@@ -627,9 +631,27 @@ const api = {
     list: () =>
       ipcRenderer.invoke('approvals:list') as Promise<{ requests?: unknown[]; error?: string }>,
     approve: (approvalId: string) =>
-      ipcRenderer.invoke('approvals:approve', approvalId) as Promise<{ ok?: boolean; error?: string }>,
+      ipcRenderer.invoke('approvals:approve', approvalId) as Promise<{
+        success: boolean; error?: string; retryable?: boolean;
+      }>,
     deny: (approvalId: string, reason?: string) =>
-      ipcRenderer.invoke('approvals:deny', approvalId, reason) as Promise<{ ok?: boolean; error?: string }>,
+      ipcRenderer.invoke('approvals:deny', approvalId, reason) as Promise<{
+        success: boolean; error?: string; retryable?: boolean;
+      }>,
+  },
+
+  // Income Operator approval creation (Phase 4B)
+  // list/approve/deny reuse window.triforge.approvals — income tools filter client-side
+  incomeApprovals: {
+    create: (
+      experimentId: string,
+      action: string,
+      args: Record<string, unknown>,
+      riskLevel: 'low' | 'medium' | 'high',
+    ) =>
+      ipcRenderer.invoke('approval:income:create', experimentId, action, args, riskLevel) as Promise<{
+        success: boolean; data?: { approvalId: string }; error?: string; retryable?: boolean;
+      }>,
   },
 
   // Task pause / resume (Phase 3.5)
@@ -1243,6 +1265,19 @@ const api = {
       ipcRenderer.invoke('local:provider:chat', baseUrl, model, messages) as Promise<{ text?: string; error?: string }>,
     models:  (baseUrl: string) =>
       ipcRenderer.invoke('local:provider:models', baseUrl) as Promise<{ models?: string[]; error?: string }>,
+    // Phase 4 — persistent config + routing policy
+    getConfig: () =>
+      ipcRenderer.invoke('local:config:get') as Promise<{ enabled: boolean; baseUrl: string; model: string; fallback: boolean }>,
+    setConfig: (baseUrl: string, model: string) =>
+      ipcRenderer.invoke('local:config:set', baseUrl, model) as Promise<{ ok: boolean }>,
+    enableRouting: () =>
+      ipcRenderer.invoke('local:routing:enable') as Promise<{ ok: boolean }>,
+    disableRouting: () =>
+      ipcRenderer.invoke('local:routing:disable') as Promise<{ ok: boolean }>,
+    setFallback: (v: boolean) =>
+      ipcRenderer.invoke('local:routing:setFallback', v) as Promise<{ ok: boolean }>,
+    skillAnalyze: (markdown: string) =>
+      ipcRenderer.invoke('local:skillAnalyze', markdown) as Promise<{ ok: boolean; riskLevel?: string; findings?: string[]; summary?: string; error?: string }>,
   },
 
   // Command dispatch audit logging
@@ -1366,6 +1401,1119 @@ const api = {
       ipcRenderer.on('vibe:progress', handler);
       return () => ipcRenderer.removeListener('vibe:progress', handler);
     },
+  },
+
+  // ── Phase 1.5: Background Agent ──────────────────────────────────────────
+  backgroundLoop: {
+    status: () =>
+      ipcRenderer.invoke('backgroundLoop:status') as Promise<{
+        enabled: boolean;
+        running: boolean;
+        lastTickAt: number | null;
+        lastFiredMission: { id: string; name: string; firedAt: number } | null;
+      }>,
+    enable: () =>
+      ipcRenderer.invoke('backgroundLoop:enable') as Promise<{
+        enabled: boolean;
+        running: boolean;
+        lastTickAt: number | null;
+        lastFiredMission: { id: string; name: string; firedAt: number } | null;
+      }>,
+    disable: () =>
+      ipcRenderer.invoke('backgroundLoop:disable') as Promise<{
+        enabled: boolean;
+        running: boolean;
+        lastTickAt: number | null;
+        lastFiredMission: { id: string; name: string; firedAt: number } | null;
+      }>,
+    onStatus: (cb: (v: {
+      enabled: boolean;
+      running: boolean;
+      lastTickAt: number | null;
+      lastFiredMission: { id: string; name: string; firedAt: number } | null;
+      healthy?: boolean;
+      restarted?: boolean;
+    }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, v: unknown) => cb(v as never);
+      ipcRenderer.on('backgroundLoop:status', handler);
+      return () => ipcRenderer.removeListener('backgroundLoop:status', handler);
+    },
+  },
+
+  // ── Phase 1.5: Webhook ───────────────────────────────────────────────────
+  webhook: {
+    status: () =>
+      ipcRenderer.invoke('webhook:status') as Promise<{
+        enabled: boolean;
+        port: number;
+        token: string;
+        running: boolean;
+      }>,
+    start: () =>
+      ipcRenderer.invoke('webhook:start') as Promise<{ ok: boolean; port?: number; token?: string; error?: string }>,
+    stop: () =>
+      ipcRenderer.invoke('webhook:stop') as Promise<{ ok: boolean; error?: string }>,
+  },
+
+  // ── Phase 2: Control Plane ───────────────────────────────────────────────
+  controlPlane: {
+    status: () =>
+      ipcRenderer.invoke('controlPlane:status') as Promise<{
+        enabled: boolean;
+        running: boolean;
+        port: number;
+        token: string;
+        lastStartedAt: number | null;
+      }>,
+    start: () =>
+      ipcRenderer.invoke('controlPlane:start') as Promise<{
+        ok: boolean;
+        enabled: boolean;
+        running: boolean;
+        port: number;
+        token: string;
+        error?: string;
+      }>,
+    stop: () =>
+      ipcRenderer.invoke('controlPlane:stop') as Promise<{ ok: boolean; error?: string }>,
+    generateToken: () =>
+      ipcRenderer.invoke('controlPlane:generateToken') as Promise<{ token: string }>,
+  },
+
+  // ── Phase 3: GitHub Integration ─────────────────────────────────────────
+  github: {
+    setCredential: (key: 'pat' | 'webhook_secret', value: string) =>
+      ipcRenderer.invoke('github:setCredential', key, value) as Promise<{ ok: boolean }>,
+    testConnection: () =>
+      ipcRenderer.invoke('github:testConnection') as Promise<{
+        ok: boolean; login?: string; name?: string | null; publicRepos?: number; error?: string;
+      }>,
+    listRepos: (page?: number) =>
+      ipcRenderer.invoke('github:listRepos', page) as Promise<{
+        repos: Array<{ id: number; full_name: string; name: string; owner: string; private: boolean; description: string | null; open_issues_count: number }>;
+        error?: string;
+      }>,
+    listPRs: (owner: string, repo: string) =>
+      ipcRenderer.invoke('github:listPRs', owner, repo) as Promise<{
+        prs: Array<{ number: number; title: string; user: string; html_url: string; draft: boolean; additions: number; deletions: number; changed_files: number; created_at: string }>;
+        error?: string;
+      }>,
+    listIssues: (owner: string, repo: string) =>
+      ipcRenderer.invoke('github:listIssues', owner, repo) as Promise<{
+        issues: Array<{ number: number; title: string; user: string; html_url: string; labels: string[]; comments: number; created_at: string }>;
+        error?: string;
+      }>,
+    reviewPR: (owner: string, repo: string, prNumber: number) =>
+      ipcRenderer.invoke('github:reviewPR', owner, repo, prNumber) as Promise<{
+        ok: boolean;
+        reviewId?: string;
+        review?: {
+          id: string; type: string; owner: string; repo: string; number: number; title: string;
+          htmlUrl: string; synthesis: string; responses: Array<{ provider: string; text: string }>;
+          status: string; createdAt: number;
+        };
+        error?: string;
+      }>,
+    triageIssue: (owner: string, repo: string, issueNumber: number) =>
+      ipcRenderer.invoke('github:triageIssue', owner, repo, issueNumber) as Promise<{
+        ok: boolean; reviewId?: string;
+        review?: {
+          id: string; type: string; synthesis: string; responses: Array<{ provider: string; text: string }>;
+          status: string; createdAt: number;
+        };
+        error?: string;
+      }>,
+    pendingReviews: () =>
+      ipcRenderer.invoke('github:pendingReviews') as Promise<{
+        reviews: Array<{
+          id: string; type: string; owner: string; repo: string; number: number; title: string;
+          htmlUrl: string; synthesis: string; responses: Array<{ provider: string; text: string }>;
+          status: string; commentUrl?: string; createdAt: number; source: string;
+        }>;
+      }>,
+    approveReview: (reviewId: string) =>
+      ipcRenderer.invoke('github:approveReview', reviewId) as Promise<{ ok: boolean; commentUrl?: string; error?: string }>,
+    dismissReview: (reviewId: string) =>
+      ipcRenderer.invoke('github:dismissReview', reviewId) as Promise<{ ok: boolean; error?: string }>,
+    webhookStatus: () =>
+      ipcRenderer.invoke('github:webhookStatus') as Promise<{ enabled: boolean; hasSecret: boolean; port: number }>,
+    webhookEnable: () =>
+      ipcRenderer.invoke('github:webhookEnable') as Promise<{ ok: boolean }>,
+    webhookDisable: () =>
+      ipcRenderer.invoke('github:webhookDisable') as Promise<{ ok: boolean }>,
+  },
+
+  // ── Phase 2: Skill Trust Layer ───────────────────────────────────────────
+  skillTrust: {
+    analyze: (rawMarkdown: string) =>
+      ipcRenderer.invoke('skillTrust:analyze', rawMarkdown) as Promise<{
+        result?: {
+          riskLevel: 'low' | 'medium' | 'high' | 'critical';
+          blocked: boolean;
+          blockReason?: string;
+          requiresApproval: boolean;
+          councilReviewRequired: boolean;
+          declaredCapabilities: string[];
+          detectedCapabilities: string[];
+          detectedPatterns: Array<{ pattern: string; severity: string; description: string }>;
+          reviewSummary: string;
+          frontmatter: Record<string, unknown>;
+        };
+        decision?: {
+          allowed: boolean;
+          requiresApproval: boolean;
+          requiresCouncilReview: boolean;
+          blockReason?: string;
+        };
+        error?: string;
+      }>,
+  },
+
+  // ── Phase 5: Skill Store ─────────────────────────────────────────────────
+  skillStore: {
+    list: () =>
+      ipcRenderer.invoke('skill:list') as Promise<{ skills: Array<{
+        id: string; name: string; version?: string; description?: string; author?: string;
+        source: string; sourceUrl?: string; riskLevel: string; blocked: boolean;
+        requiresApproval: boolean; councilReviewRequired: boolean;
+        declaredCapabilities: string[]; detectedCapabilities: string[];
+        reviewSummary: string; enabled: boolean; installedAt: number;
+        lastRunAt?: number; runCount: number;
+      }> }>,
+    install: (rawMarkdown: string, source: string, sourceUrl?: string) =>
+      ipcRenderer.invoke('skill:install', rawMarkdown, source, sourceUrl) as Promise<{
+        success: boolean;
+        data?: {
+          skill: Record<string, unknown>;
+          decision: { allowed: boolean; requiresApproval: boolean; requiresCouncilReview: boolean; blockReason?: string };
+          result: { riskLevel: string; blocked: boolean; reviewSummary: string; detectedPatterns: Array<{ pattern: string; severity: string; description: string }> };
+        };
+        error?: string;
+        retryable?: boolean;
+      }>,
+    enable:    (id: string) => ipcRenderer.invoke('skill:enable',    id) as Promise<{ ok: boolean }>,
+    disable:   (id: string) => ipcRenderer.invoke('skill:disable',   id) as Promise<{ ok: boolean }>,
+    uninstall: (id: string) => ipcRenderer.invoke('skill:uninstall', id) as Promise<{ ok: boolean }>,
+    run:       (id: string, goal?: string) => ipcRenderer.invoke('skill:run', id, goal) as Promise<{ ok: boolean; taskId?: string; error?: string }>,
+    fetchUrl:  (url: string) => ipcRenderer.invoke('skill:fetchUrl', url) as Promise<{ ok: boolean; markdown?: string; error?: string }>,
+    examples:  () => ipcRenderer.invoke('skill:examples') as Promise<{ examples: Array<{ name: string; description: string; markdown: string }> }>,
+  },
+  // ── Phase 7: Approval Policy Engine ──────────────────────────────────────
+  policy: {
+    list: () =>
+      ipcRenderer.invoke('policy:list') as Promise<{ rules: Array<{
+        id: string; enabled: boolean; priority: number; name: string; description?: string;
+        matchSource: string; matchRiskClass: string; matchCategory?: string;
+        action: string; preferLocal?: boolean; isDefault: boolean; createdAt: number;
+      }> }>,
+    create: (fields: { name: string; description?: string; priority: number; enabled: boolean; matchSource: string; matchRiskClass: string; matchCategory?: string; action: string; preferLocal?: boolean }) =>
+      ipcRenderer.invoke('policy:create', fields) as Promise<{ ok: boolean; rule?: Record<string, unknown> }>,
+    update: (id: string, patch: Record<string, unknown>) =>
+      ipcRenderer.invoke('policy:update', id, patch) as Promise<{ ok: boolean; rule?: Record<string, unknown>; error?: string }>,
+    delete: (id: string) =>
+      ipcRenderer.invoke('policy:delete', id) as Promise<{ ok: boolean }>,
+    enable:      (id: string) => ipcRenderer.invoke('policy:enable',      id) as Promise<{ ok: boolean }>,
+    disable:     (id: string) => ipcRenderer.invoke('policy:disable',     id) as Promise<{ ok: boolean }>,
+    setPriority: (id: string, priority: number) => ipcRenderer.invoke('policy:setPriority', id, priority) as Promise<{ ok: boolean }>,
+    reset:       () => ipcRenderer.invoke('policy:reset') as Promise<{ ok: boolean }>,
+    simulate:    (source: string, riskClass: string, category?: string) =>
+      ipcRenderer.invoke('policy:simulate', source, riskClass, category) as Promise<{ resolution: { action: string; ruleId: string | null; ruleName: string | null; preferLocal: boolean; usedFallback: boolean } }>,
+  },
+
+  // ── Phase 6: Telegram Messaging ──────────────────────────────────────────
+  jira: {
+    setCredentials:       (workspaceUrl: string, email: string, apiToken: string) =>
+      ipcRenderer.invoke('jira:setCredentials', workspaceUrl, email, apiToken) as Promise<{ ok: boolean }>,
+    testConnection:       () =>
+      ipcRenderer.invoke('jira:testConnection') as Promise<{ ok: boolean; displayName?: string; emailAddress?: string; accountId?: string; error?: string }>,
+    status:               () =>
+      ipcRenderer.invoke('jira:status') as Promise<{ enabled: boolean; workspaceUrl: string; email: string; displayName: string; allowedProjects: string[]; summarySlackChannel: string }>,
+    listProjects:         () =>
+      ipcRenderer.invoke('jira:listProjects') as Promise<{ ok: boolean; projects: Array<{ id: string; key: string; name: string; issueTypes: Array<{ id: string; name: string; subtask: boolean }> }>; error?: string }>,
+    searchIssues:         (jql: string, maxResults?: number) =>
+      ipcRenderer.invoke('jira:searchIssues', jql, maxResults) as Promise<{ ok: boolean; issues: Array<{ id: string; key: string; summary: string; status: string; statusCategory: string; priority: string; issueType: string; projectKey: string; projectName: string; assigneeName?: string; description: string; updated: string }>; error?: string }>,
+    getIssue:             (issueKey: string) =>
+      ipcRenderer.invoke('jira:getIssue', issueKey) as Promise<{ ok: boolean; issue?: { id: string; key: string; summary: string; status: string; statusCategory: string; priority: string; issueType: string; projectKey: string; projectName: string; assigneeName?: string; reporterName?: string; description: string; created: string; updated: string }; comments?: Array<{ id: string; authorName: string; body: string; created: string }>; transitions?: Array<{ id: string; name: string; toStatus: string }>; error?: string }>,
+    queueComment:         (issueKey: string, body: string) =>
+      ipcRenderer.invoke('jira:queueComment', issueKey, body) as Promise<{ ok: boolean; actionId?: string; requiresApproval?: boolean; error?: string }>,
+    queueCreate:          (projectKey: string, issueTypeId: string, summary: string, description?: string) =>
+      ipcRenderer.invoke('jira:queueCreate', projectKey, issueTypeId, summary, description) as Promise<{ ok: boolean; actionId?: string; error?: string }>,
+    queueTransition:      (issueKey: string, transitionId: string, toStatus: string) =>
+      ipcRenderer.invoke('jira:queueTransition', issueKey, transitionId, toStatus) as Promise<{ ok: boolean; actionId?: string; error?: string }>,
+    approveAction:        (actionId: string) =>
+      ipcRenderer.invoke('jira:approveAction', actionId) as Promise<{ ok: boolean; error?: string }>,
+    dismissAction:        (actionId: string) =>
+      ipcRenderer.invoke('jira:dismissAction', actionId) as Promise<{ ok: boolean }>,
+    listQueue:            (includeProcessed?: boolean) =>
+      ipcRenderer.invoke('jira:listQueue', includeProcessed) as Promise<{ actions: Array<{ id: string; type: string; issueKey?: string; projectKey?: string; summary: string; body: string; toStatus?: string; status: string; createdAt: number; processedAt?: number }> }>,
+    triageIssue:          (issueKey: string) =>
+      ipcRenderer.invoke('jira:triageIssue', issueKey) as Promise<{ ok: boolean; taskId?: string; error?: string }>,
+    setSummarySlackChannel:(channelId: string) =>
+      ipcRenderer.invoke('jira:setSummarySlackChannel', channelId) as Promise<{ ok: boolean }>,
+    sendSummaryNow:       (jql?: string) =>
+      ipcRenderer.invoke('jira:sendSummaryNow', jql) as Promise<{ ok: boolean; error?: string }>,
+    setAllowedProjects:   (projectKeys: string[]) =>
+      ipcRenderer.invoke('jira:setAllowedProjects', projectKeys) as Promise<{ ok: boolean }>,
+  },
+  slack: {
+    setToken:           (token: string) =>
+      ipcRenderer.invoke('slack:setToken', token) as Promise<{ ok: boolean }>,
+    testConnection:     () =>
+      ipcRenderer.invoke('slack:testConnection') as Promise<{ ok: boolean; botUserId?: string; botUserName?: string; workspaceName?: string; workspaceId?: string; error?: string }>,
+    start:              () =>
+      ipcRenderer.invoke('slack:start') as Promise<{ ok: boolean; workspaceName?: string; botUserName?: string; already?: boolean; error?: string }>,
+    stop:               () =>
+      ipcRenderer.invoke('slack:stop') as Promise<{ ok: boolean }>,
+    status:             () =>
+      ipcRenderer.invoke('slack:status') as Promise<{ enabled: boolean; running: boolean; workspaceName: string; botUserName: string; allowedChannels: string[]; allowedUsers: string[]; summaryChannel: string; summarySchedule: string; lastMessageAt: number | null }>,
+    listChannels:       () =>
+      ipcRenderer.invoke('slack:listChannels') as Promise<{ ok: boolean; channels: Array<{ id: string; name: string; isMember: boolean; numMembers: number }>; error?: string }>,
+    addAllowedChannel:  (channelId: string) =>
+      ipcRenderer.invoke('slack:addAllowedChannel', channelId) as Promise<{ ok: boolean; allowedChannels: string[] }>,
+    removeAllowedChannel:(channelId: string) =>
+      ipcRenderer.invoke('slack:removeAllowedChannel', channelId) as Promise<{ ok: boolean; allowedChannels: string[] }>,
+    addAllowedUser:     (userId: string) =>
+      ipcRenderer.invoke('slack:addAllowedUser', userId) as Promise<{ ok: boolean; allowedUsers: string[] }>,
+    removeAllowedUser:  (userId: string) =>
+      ipcRenderer.invoke('slack:removeAllowedUser', userId) as Promise<{ ok: boolean; allowedUsers: string[] }>,
+    sendMessage:        (channelId: string, text: string) =>
+      ipcRenderer.invoke('slack:sendMessage', channelId, text) as Promise<{ ok: boolean; error?: string }>,
+    listMessages:       (limit?: number) =>
+      ipcRenderer.invoke('slack:listMessages', limit) as Promise<{ messages: Array<{
+        id: string; direction: string; channel: string; chatId: number; channelId?: string;
+        chatName?: string; text: string; riskClass?: string; taskId?: string;
+        status: string; blockedReason?: string; timestamp: number;
+      }> }>,
+    setSummaryChannel:  (channelId: string) =>
+      ipcRenderer.invoke('slack:setSummaryChannel', channelId) as Promise<{ ok: boolean }>,
+    setSummarySchedule: (schedule: 'disabled' | 'daily' | 'weekly') =>
+      ipcRenderer.invoke('slack:setSummarySchedule', schedule) as Promise<{ ok: boolean }>,
+    sendSummaryNow:     () =>
+      ipcRenderer.invoke('slack:sendSummaryNow') as Promise<{ ok: boolean }>,
+  },
+  discord: {
+    setToken:           (token: string) =>
+      ipcRenderer.invoke('discord:setToken', token) as Promise<{ ok: boolean }>,
+    testConnection:     () =>
+      ipcRenderer.invoke('discord:testConnection') as Promise<{ ok: boolean; id?: string; username?: string; discriminator?: string; error?: string }>,
+    start:              () =>
+      ipcRenderer.invoke('discord:start') as Promise<{ ok: boolean; username?: string; already?: boolean; error?: string }>,
+    stop:               () =>
+      ipcRenderer.invoke('discord:stop') as Promise<{ ok: boolean }>,
+    status:             () =>
+      ipcRenderer.invoke('discord:status') as Promise<{ enabled: boolean; running: boolean; botUserName: string; botUserId: string; allowedChannels: string[]; allowedUsers: string[]; lastMessageAt: number | null }>,
+    listGuilds:         () =>
+      ipcRenderer.invoke('discord:listGuilds') as Promise<{ ok: boolean; guilds: Array<{ id: string; name: string }>; error?: string }>,
+    listChannels:       (guildId: string) =>
+      ipcRenderer.invoke('discord:listChannels', guildId) as Promise<{ ok: boolean; channels: Array<{ id: string; name: string; type: number }>; error?: string }>,
+    addAllowedChannel:  (channelId: string) =>
+      ipcRenderer.invoke('discord:addAllowedChannel', channelId) as Promise<{ ok: boolean; allowedChannels: string[] }>,
+    removeAllowedChannel: (channelId: string) =>
+      ipcRenderer.invoke('discord:removeAllowedChannel', channelId) as Promise<{ ok: boolean; allowedChannels: string[] }>,
+    addAllowedUser:     (userId: string) =>
+      ipcRenderer.invoke('discord:addAllowedUser', userId) as Promise<{ ok: boolean; allowedUsers: string[] }>,
+    removeAllowedUser:  (userId: string) =>
+      ipcRenderer.invoke('discord:removeAllowedUser', userId) as Promise<{ ok: boolean; allowedUsers: string[] }>,
+    sendMessage:        (channelId: string, text: string) =>
+      ipcRenderer.invoke('discord:sendMessage', channelId, text) as Promise<{ ok: boolean; error?: string }>,
+    listMessages:       (limit?: number) =>
+      ipcRenderer.invoke('discord:listMessages', limit) as Promise<{ messages: Array<{
+        id: string; direction: string; channel: string; chatId: number; channelId?: string;
+        chatName?: string; text: string; riskClass?: string; taskId?: string;
+        status: string; blockedReason?: string; timestamp: number;
+      }> }>,
+  },
+  linear: {
+    setApiKey:          (apiKey: string) =>
+      ipcRenderer.invoke('linear:setApiKey', apiKey) as Promise<{ ok: boolean }>,
+    testConnection:     () =>
+      ipcRenderer.invoke('linear:testConnection') as Promise<{ ok: boolean; name?: string; email?: string; id?: string; error?: string }>,
+    status:             () =>
+      ipcRenderer.invoke('linear:status') as Promise<{ enabled: boolean; userName: string; workspaceName: string; allowedTeams: string[]; summarySlackChannel: string }>,
+    listTeams:          () =>
+      ipcRenderer.invoke('linear:listTeams') as Promise<{ ok: boolean; teams: Array<{ id: string; name: string; key: string }>; error?: string }>,
+    searchIssues:       (query: string, teamId?: string, limit?: number) =>
+      ipcRenderer.invoke('linear:searchIssues', query, teamId, limit) as Promise<{ ok: boolean; issues: Array<{
+        id: string; identifier: string; title: string;
+        stateId: string; stateName: string; stateType: string;
+        priority: number; priorityLabel: string;
+        assigneeId?: string; assigneeName?: string;
+        teamId: string; teamName: string; teamKey: string;
+        description: string; updatedAt: string; createdAt: string; url: string;
+      }>; error?: string }>,
+    getIssue:           (id: string) =>
+      ipcRenderer.invoke('linear:getIssue', id) as Promise<{ ok: boolean; issue?: {
+        id: string; identifier: string; title: string;
+        stateId: string; stateName: string; stateType: string;
+        priority: number; priorityLabel: string;
+        assigneeId?: string; assigneeName?: string;
+        teamId: string; teamName: string; teamKey: string;
+        description: string; updatedAt: string; createdAt: string; url: string;
+      }; comments?: Array<{ id: string; body: string; authorName: string; createdAt: string }>;
+         states?: Array<{ id: string; name: string; type: string; color: string }>; error?: string }>,
+    listWorkflowStates: (teamId: string) =>
+      ipcRenderer.invoke('linear:listWorkflowStates', teamId) as Promise<{ ok: boolean; states: Array<{ id: string; name: string; type: string; color: string }>; error?: string }>,
+    queueComment:       (issueId: string, identifier: string, body: string) =>
+      ipcRenderer.invoke('linear:queueComment', issueId, identifier, body) as Promise<{ ok: boolean; actionId?: string; requiresApproval?: boolean; error?: string }>,
+    queueCreate:        (teamId: string, teamKey: string, title: string, description?: string, stateId?: string, assigneeId?: string, priority?: number) =>
+      ipcRenderer.invoke('linear:queueCreate', teamId, teamKey, title, description, stateId, assigneeId, priority) as Promise<{ ok: boolean; actionId?: string; error?: string }>,
+    queueUpdate:        (issueId: string, identifier: string, patch: { stateId?: string; stateName?: string; assigneeId?: string; priority?: number; title?: string }) =>
+      ipcRenderer.invoke('linear:queueUpdate', issueId, identifier, patch) as Promise<{ ok: boolean; actionId?: string; error?: string }>,
+    approveAction:      (actionId: string) =>
+      ipcRenderer.invoke('linear:approveAction', actionId) as Promise<{ ok: boolean; error?: string }>,
+    dismissAction:      (actionId: string) =>
+      ipcRenderer.invoke('linear:dismissAction', actionId) as Promise<{ ok: boolean }>,
+    listQueue:          (includeProcessed?: boolean) =>
+      ipcRenderer.invoke('linear:listQueue', includeProcessed) as Promise<{ actions: Array<{
+        id: string; type: string; issueId?: string; teamId?: string;
+        summary: string; body: string; stateId?: string; assigneeId?: string;
+        priority?: number; status: string; createdAt: number; processedAt?: number;
+      }> }>,
+    triageIssue:        (issueId: string) =>
+      ipcRenderer.invoke('linear:triageIssue', issueId) as Promise<{ ok: boolean; taskId?: string; error?: string }>,
+    setAllowedTeams:    (teamIds: string[]) =>
+      ipcRenderer.invoke('linear:setAllowedTeams', teamIds) as Promise<{ ok: boolean }>,
+    setSummarySlackChannel: (channelId: string) =>
+      ipcRenderer.invoke('linear:setSummarySlackChannel', channelId) as Promise<{ ok: boolean }>,
+    sendSummaryNow:     (query?: string, teamId?: string) =>
+      ipcRenderer.invoke('linear:sendSummaryNow', query, teamId) as Promise<{ ok: boolean; error?: string }>,
+  },
+  push: {
+    configure:       (config: {
+      provider: 'ntfy' | 'pushover' | 'disabled';
+      ntfyTopic?: string; ntfyServer?: string; ntfyToken?: string;
+      pushoverApp?: string; pushoverUser?: string;
+    }) =>
+      ipcRenderer.invoke('push:configure', config) as Promise<{ ok: boolean; error?: string }>,
+    status:          () =>
+      ipcRenderer.invoke('push:status') as Promise<{
+        provider: string; ntfyTopic?: string; ntfyServer?: string; pushoverUser?: string;
+        eventSettings: Record<string, { enabled: boolean; priority: string }>;
+      }>,
+    setEventSetting: (event: string, enabled: boolean, priority: string) =>
+      ipcRenderer.invoke('push:setEventSetting', event, enabled, priority) as Promise<{ ok: boolean }>,
+    getEventSettings: () =>
+      ipcRenderer.invoke('push:getEventSettings') as Promise<{ events: Array<{
+        key: string; label: string; description: string; enabled: boolean; priority: string;
+      }> }>,
+    sendTest:        () =>
+      ipcRenderer.invoke('push:sendTest') as Promise<{ ok: boolean; error?: string }>,
+    getLog:          (limit?: number) =>
+      ipcRenderer.invoke('push:getLog', limit) as Promise<{ entries: Array<{
+        id: string; event: string; title: string; provider: string;
+        success: boolean; error?: string; timestamp: number;
+      }> }>,
+  },
+  recipe: {
+    list:      () =>
+      ipcRenderer.invoke('recipe:list') as Promise<Array<{
+        id: string; name: string; description: string; trigger: string; triggerLabel: string;
+        paramSchema: Array<{ key: string; label: string; placeholder: string; required: boolean }>;
+        enabled: boolean; params: Record<string, string>;
+        lastRunAt?: number; lastRunStatus?: 'success' | 'failed' | 'skipped'; lastRunResult?: string;
+      }>>,
+    toggle:    (id: string, enabled: boolean) =>
+      ipcRenderer.invoke('recipe:toggle', id, enabled) as Promise<{ ok: boolean }>,
+    setParams: (id: string, params: Record<string, string>) =>
+      ipcRenderer.invoke('recipe:setParams', id, params) as Promise<{ ok: boolean }>,
+    run:       (id: string) =>
+      ipcRenderer.invoke('recipe:run', id) as Promise<{ ok: boolean; result?: string; error?: string }>,
+  },
+  ops: {
+    overview:     (window?: '24h' | '7d' | '30d') =>
+      ipcRenderer.invoke('ops:overview', window ?? '24h') as Promise<{
+        window: string; tasksCreated: number; tasksCompleted: number; tasksFailed: number;
+        approvalsPending: number; highRiskBlocked: number; skillBlocked: number;
+        recipesCompleted: number; recipesFailed: number;
+        pushSent: number; pushFailed: number;
+        localModelUses: number; cloudFallbacks: number;
+        githubReviewsDone: number; policyMatches: number;
+      }>,
+    channels:     (window?: '24h' | '7d' | '30d') =>
+      ipcRenderer.invoke('ops:channels', window ?? '24h') as Promise<{
+        window: string;
+        telegram: { received: number; blocked: number; replied: number; approvals: number; replyRate: number };
+        slack:    { received: number; blocked: number; replied: number; approvals: number; replyRate: number };
+        discord:  { received: number; blocked: number; replied: number; approvals: number; replyRate: number };
+        recentMessages: Array<{ channel: string; direction: string; status: string; riskClass?: string; text: string; timestamp: number }>;
+      }>,
+    governance:   (window?: '24h' | '7d' | '30d') =>
+      ipcRenderer.invoke('ops:governance', window ?? '24h') as Promise<{
+        window: string; totalMatches: number; totalBlocked: number; totalApprovals: number;
+        topRules:       Array<{ label: string; count: number }>;
+        topSources:     Array<{ label: string; count: number }>;
+        topRiskClasses: Array<{ label: string; count: number }>;
+        recentBlocked:  Array<{ eventType: string; reason: string; source: string; timestamp: number }>;
+      }>,
+    integrations: (window?: '24h' | '7d' | '30d') =>
+      ipcRenderer.invoke('ops:integrations', window ?? '24h') as Promise<{
+        window: string;
+        github:  { reviewsCompleted: number; commentsPosted: number; commentsBlocked: number; webhooksReceived: number; issuesTriaged: number };
+        jira:    { actionsQueued: number; actionsApproved: number; actionsDismissed: number; commentsPosted: number; issuesCreated: number; transitions: number };
+        linear:  { actionsQueued: number; actionsApproved: number; actionsDismissed: number; commentsPosted: number; issuesCreated: number; statusUpdates: number };
+        skills:  { installed: number; executed: number; blocked: number };
+        controlPlane: { tasksCreated: number };
+      }>,
+    recipes:      (window?: '24h' | '7d' | '30d') =>
+      ipcRenderer.invoke('ops:recipes', window ?? '24h') as Promise<{
+        window: string;
+        recipes: Array<{ id: string; name: string; trigger: string; enabled: boolean; lastRunAt?: number; lastRunStatus?: string; lastRunResult?: string; ranInWindow: boolean }>;
+      }>,
+    health:       () =>
+      ipcRenderer.invoke('ops:health') as Promise<{
+        services: Array<{ name: string; connected: boolean; running: boolean; detail: string }>;
+      }>,
+  },
+  action: {
+    list:    (view?: string) =>
+      ipcRenderer.invoke('action:list', view ?? 'all') as Promise<{ items: Array<{
+        id: string; source: string; service: string; severity: 'critical' | 'warning' | 'info';
+        title: string; body: string;
+        canApprove: boolean; canDismiss: boolean; canRetry: boolean;
+        createdAt: number; metadata: Record<string, unknown>;
+      }> }>,
+    count:   () =>
+      ipcRenderer.invoke('action:count') as Promise<{
+        total: number; approvals: number; blocked: number; failures: number; alerts: number;
+      }>,
+    approve: (itemId: string) =>
+      ipcRenderer.invoke('action:approve', itemId) as Promise<{ ok: boolean; error?: string }>,
+    dismiss: (itemId: string) =>
+      ipcRenderer.invoke('action:dismiss', itemId) as Promise<{ ok: boolean }>,
+    retry:   (itemId: string) =>
+      ipcRenderer.invoke('action:retry', itemId) as Promise<{ ok: boolean; result?: string; error?: string }>,
+  },
+  context: {
+    getAll:         () =>
+      ipcRenderer.invoke('context:getAll') as Promise<{
+        repoMappings:    Array<{ id: string; repo: string; jiraProjectKey?: string; linearTeamId?: string; linearTeamName?: string; reviewInstructions?: string; defaultLabels?: string[]; createdAt: number; updatedAt: number }>;
+        channelMappings: Array<{ id: string; channel: string; channelId: string; channelName?: string; workstream?: string; projectKey?: string; createdAt: number; updatedAt: number }>;
+        projectNotes:    Array<{ id: string; projectKey: string; projectName?: string; summary?: string; defaultPriority?: string; defaultLabels?: string[]; automationContext?: string; escalationChannelId?: string; createdAt: number; updatedAt: number }>;
+        enabled:         Record<string, boolean>;
+      }>,
+    setEnabled:     (category: string, enabled: boolean) =>
+      ipcRenderer.invoke('context:setEnabled', category, enabled) as Promise<{ ok: boolean }>,
+    upsertRepo:     (input: { repo: string; jiraProjectKey?: string; linearTeamId?: string; linearTeamName?: string; reviewInstructions?: string; defaultLabels?: string[] }) =>
+      ipcRenderer.invoke('context:upsertRepo', input) as Promise<{ ok: boolean; repoMappings: unknown[] }>,
+    deleteRepo:     (id: string) =>
+      ipcRenderer.invoke('context:deleteRepo', id) as Promise<{ ok: boolean }>,
+    upsertChannel:  (input: { channel: 'telegram' | 'slack' | 'discord'; channelId: string; channelName?: string; workstream?: string; projectKey?: string }) =>
+      ipcRenderer.invoke('context:upsertChannel', input) as Promise<{ ok: boolean; channelMappings: unknown[] }>,
+    deleteChannel:  (id: string) =>
+      ipcRenderer.invoke('context:deleteChannel', id) as Promise<{ ok: boolean }>,
+    upsertProject:  (input: { projectKey: string; projectName?: string; summary?: string; defaultPriority?: string; defaultLabels?: string[]; automationContext?: string; escalationChannelId?: string }) =>
+      ipcRenderer.invoke('context:upsertProject', input) as Promise<{ ok: boolean; projectNotes: unknown[] }>,
+    deleteProject:  (id: string) =>
+      ipcRenderer.invoke('context:deleteProject', id) as Promise<{ ok: boolean }>,
+    resolveRepo:    (repo: string) =>
+      ipcRenderer.invoke('context:resolveRepo', repo) as Promise<{ mapping?: unknown; projectNote?: unknown }>,
+    resolveChannel: (channel: string, channelId: string) =>
+      ipcRenderer.invoke('context:resolveChannel', channel, channelId) as Promise<{ mapping?: unknown; projectNote?: unknown }>,
+  },
+
+  // Phase 17 + 18 — TriForge Dispatch
+  dispatch: {
+    status: () =>
+      ipcRenderer.invoke('dispatch:status') as Promise<{
+        enabled: boolean; running: boolean; port: number; hasToken: boolean;
+        networkMode: string; deviceCount: number;
+        policy: { enabled: boolean; maxRisk: string; requireDesktopConfirm: boolean };
+        startedAt: number | null; allowRemoteApprove: boolean;
+      }>,
+    enable:        (port?: number) =>
+      ipcRenderer.invoke('dispatch:enable', port) as Promise<{ ok: boolean; port?: number; error?: string }>,
+    disable:       () =>
+      ipcRenderer.invoke('dispatch:disable') as Promise<{ ok: boolean }>,
+    generateToken: () =>
+      ipcRenderer.invoke('dispatch:generateToken') as Promise<{ ok: boolean; token?: string }>,
+    revokeToken:   () =>
+      ipcRenderer.invoke('dispatch:revokeToken') as Promise<{ ok: boolean }>,
+    getToken:      () =>
+      ipcRenderer.invoke('dispatch:getToken') as Promise<string | null>,
+
+    // Phase 18 — network mode + approve policy
+    setNetworkMode: (mode: 'local' | 'lan' | 'remote') =>
+      ipcRenderer.invoke('dispatch:setNetworkMode', mode) as Promise<{ ok: boolean }>,
+    setApprovePolicy: (policy: { enabled?: boolean; maxRisk?: string; requireDesktopConfirm?: boolean }) =>
+      ipcRenderer.invoke('dispatch:setApprovePolicy', policy) as Promise<{ ok: boolean }>,
+    setAllowRemoteApprove: (allow: boolean) =>
+      ipcRenderer.invoke('dispatch:setAllowRemoteApprove', allow) as Promise<{ ok: boolean }>,
+    setSessionTtl: (minutes: number) =>
+      ipcRenderer.invoke('dispatch:setSessionTtl', minutes) as Promise<{ ok: boolean }>,
+
+    // Phase 18 — pairing
+    generatePairingCode: () =>
+      ipcRenderer.invoke('dispatch:generatePairingCode') as Promise<{
+        ok: boolean; code?: string; expiresAt?: number;
+        pairUrl?: string; qrDataUrl?: string | null; error?: string;
+      }>,
+    getPairingCode: () =>
+      ipcRenderer.invoke('dispatch:getPairingCode') as Promise<{ code: string; expiresAt: number } | null>,
+
+    // Phase 18 — device management
+    listDevices: () =>
+      ipcRenderer.invoke('dispatch:listDevices') as Promise<Array<{
+        id: string; label: string; pairedAt: number;
+        lastSeenAt: number | null; lastSeenIp: string | null; expired: boolean;
+      }>>,
+    revokeDevice: (deviceId: string) =>
+      ipcRenderer.invoke('dispatch:revokeDevice', deviceId) as Promise<{ ok: boolean }>,
+
+    // Phase 18 — desktop confirmation
+    listPendingConfirmations: () =>
+      ipcRenderer.invoke('dispatch:listPendingConfirmations') as Promise<Array<{
+        id: string; action: string; itemId: string; verb: string;
+        deviceLabel: string; clientIp: string; createdAt: number;
+      }>>,
+    desktopConfirm: (confirmId: string, approved: boolean) =>
+      ipcRenderer.invoke('dispatch:desktopConfirm', confirmId, approved) as Promise<{ ok: boolean; error?: string }>,
+
+    // Phase 18 — IPC renderer event listeners
+    onDevicePaired: (cb: (device: { id: string; label: string; pairedAt: number }) => void) => {
+      const handler = (_: Electron.IpcRendererEvent, d: unknown) => cb(d as any);
+      ipcRenderer.on('dispatch:devicePaired', handler);
+      return () => ipcRenderer.removeListener('dispatch:devicePaired', handler);
+    },
+    onConfirmationRequired: (cb: (conf: { id: string; action: string; deviceLabel: string; itemId: string }) => void) => {
+      const handler = (_: Electron.IpcRendererEvent, c: unknown) => cb(c as any);
+      ipcRenderer.on('dispatch:confirmationRequired', handler);
+      return () => ipcRenderer.removeListener('dispatch:confirmationRequired', handler);
+    },
+
+    // Phase 19 — public URL / deep-link wiring
+    setPublicUrl: (url: string) =>
+      ipcRenderer.invoke('dispatch:setPublicUrl', url) as Promise<{ ok: boolean }>,
+    getPublicUrl: () =>
+      ipcRenderer.invoke('dispatch:getPublicUrl') as Promise<{ url: string }>,
+  },
+
+  // Phase 28 — Workspace integration management
+  workspaceIntegration: {
+    getStatus:      (integration: string) =>
+      ipcRenderer.invoke('workspaceIntegration:getStatus', integration) as Promise<{ config: Record<string, unknown> | null; hasPersonalCred: boolean }>,
+    setConfig:      (integration: string, payload: Record<string, unknown>) =>
+      ipcRenderer.invoke('workspaceIntegration:setConfig', integration, payload) as Promise<{ ok: boolean; error?: string }>,
+    test:           (integration: string) =>
+      ipcRenderer.invoke('workspaceIntegration:test', integration) as Promise<{ ok: boolean; scope: string; explanation: string }>,
+    revoke:         (integration: string) =>
+      ipcRenderer.invoke('workspaceIntegration:revoke', integration) as Promise<{ ok: boolean; error?: string }>,
+    setDefaults:    (integration: string, defaults: { useWorkspaceByDefault: boolean; allowPersonalFallback: boolean }) =>
+      ipcRenderer.invoke('workspaceIntegration:setDefaults', integration, defaults) as Promise<{ ok: boolean }>,
+    getRecipeScope: (recipeId: string) =>
+      ipcRenderer.invoke('workspaceIntegration:getRecipeScope', recipeId) as Promise<{ scope: 'personal' | 'workspace' }>,
+    setRecipeScope: (recipeId: string, scope: 'personal' | 'workspace') =>
+      ipcRenderer.invoke('workspaceIntegration:setRecipeScope', recipeId, scope) as Promise<{ ok: boolean }>,
+  },
+
+  // Phase 29 — Workspace policy matrix
+  workspacePolicy: {
+    getMatrix:     () =>
+      ipcRenderer.invoke('workspacePolicy:getMatrix') as Promise<{ matrix: Array<Record<string, unknown>> }>,
+    setRule:       (category: string, patch: Record<string, unknown>) =>
+      ipcRenderer.invoke('workspacePolicy:setRule', category, patch) as Promise<{ ok: boolean; error?: string }>,
+    resetDefaults: () =>
+      ipcRenderer.invoke('workspacePolicy:resetDefaults') as Promise<{ ok: boolean; matrix: Array<Record<string, unknown>> }>,
+    simulate:      (roleOrDeviceId: string, category: string) =>
+      ipcRenderer.invoke('workspacePolicy:simulate', roleOrDeviceId, category) as Promise<{
+        allowed: boolean; requiresDesktopConfirm: boolean; reason: string; actorRole: string | null;
+      }>,
+  },
+
+  // Phase 30 — Workspace automation governance
+  workspaceAutomation: {
+    getPolicy:               () =>
+      ipcRenderer.invoke('workspaceAutomation:getPolicy') as Promise<Record<string, unknown>>,
+    setPolicy:               (patch: Record<string, unknown>) =>
+      ipcRenderer.invoke('workspaceAutomation:setPolicy', patch) as Promise<{ ok: boolean; policy: Record<string, unknown> }>,
+    getRecipePolicy:         (recipeId: string) =>
+      ipcRenderer.invoke('workspaceAutomation:getRecipePolicy', recipeId) as Promise<{ policy: Record<string, unknown> | null }>,
+    setRecipePolicy:         (recipeId: string, patch: Record<string, unknown>) =>
+      ipcRenderer.invoke('workspaceAutomation:setRecipePolicy', recipeId, patch) as Promise<{ ok: boolean; policy?: Record<string, unknown>; error?: string }>,
+    deleteRecipePolicy:      (recipeId: string) =>
+      ipcRenderer.invoke('workspaceAutomation:deleteRecipePolicy', recipeId) as Promise<{ ok: boolean }>,
+    getDelegatedOperators:   () =>
+      ipcRenderer.invoke('workspaceAutomation:getDelegatedOperators') as Promise<{ operators: Array<Record<string, unknown>> }>,
+    assignDelegatedOperator: (op: Record<string, unknown>) =>
+      ipcRenderer.invoke('workspaceAutomation:assignDelegatedOperator', op) as Promise<{ ok: boolean; error?: string }>,
+    revokeDelegatedOperator: (deviceId: string) =>
+      ipcRenderer.invoke('workspaceAutomation:revokeDelegatedOperator', deviceId) as Promise<{ ok: boolean }>,
+    simulateRun:             (deviceIdOrRole: string, recipeId: string, isRemote: boolean) =>
+      ipcRenderer.invoke('workspaceAutomation:simulateRun', deviceIdOrRole, recipeId, isRemote) as Promise<{
+        allowed: boolean; requiresDesktopConfirm: boolean; reason: string;
+        blockedBy?: string; actorRole?: string | null; delegationType?: string | null; effectivePolicy: string;
+      }>,
+  },
+
+  // Phase 31 — Runbooks + Incident Mode
+  runbook: {
+    list:           () =>
+      ipcRenderer.invoke('runbook:list') as Promise<{ runbooks: Array<Record<string, unknown>> }>,
+    get:            (id: string) =>
+      ipcRenderer.invoke('runbook:get', id) as Promise<{ runbook: Record<string, unknown> | null }>,
+    create:         (payload: Record<string, unknown>) =>
+      ipcRenderer.invoke('runbook:create', payload) as Promise<{ ok: boolean; runbook?: Record<string, unknown>; error?: string }>,
+    update:         (id: string, patch: Record<string, unknown>) =>
+      ipcRenderer.invoke('runbook:update', id, patch) as Promise<{ ok: boolean; runbook?: Record<string, unknown>; error?: string }>,
+    delete:         (id: string) =>
+      ipcRenderer.invoke('runbook:delete', id) as Promise<{ ok: boolean }>,
+    run:            (id: string, vars?: Record<string, string>) =>
+      ipcRenderer.invoke('runbook:run', id, vars ?? {}) as Promise<{ ok: boolean; executionId?: string; status?: string; error?: string; missingVars?: string }>,
+    listExecutions: (runbookId?: string) =>
+      ipcRenderer.invoke('runbook:listExecutions', runbookId) as Promise<{ executions: Array<Record<string, unknown>> }>,
+    getExecution:   (executionId: string) =>
+      ipcRenderer.invoke('runbook:getExecution', executionId) as Promise<{ execution: Record<string, unknown> | null }>,
+    addStep:        (runbookId: string, step: Record<string, unknown>) =>
+      ipcRenderer.invoke('runbook:addStep', runbookId, step) as Promise<{ ok: boolean; step?: Record<string, unknown> }>,
+    removeStep:     (runbookId: string, stepId: string) =>
+      ipcRenderer.invoke('runbook:removeStep', runbookId, stepId) as Promise<{ ok: boolean }>,
+    reorderSteps:   (runbookId: string, stepIds: string[]) =>
+      ipcRenderer.invoke('runbook:reorderSteps', runbookId, stepIds) as Promise<{ ok: boolean }>,
+    incidentMode: {
+      get: () =>
+        ipcRenderer.invoke('runbook:incidentMode:get') as Promise<{ active: boolean; activatedAt?: number; reason?: string }>,
+      set: (active: boolean, reason?: string) =>
+        ipcRenderer.invoke('runbook:incidentMode:set', active, reason) as Promise<{ ok: boolean; state: Record<string, unknown> }>,
+    },
+    onIncidentModeChange: (cb: (state: { active: boolean; activatedAt?: number; reason?: string }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, state: { active: boolean }) => cb(state);
+      ipcRenderer.on('runbook:incidentMode', handler);
+      return () => ipcRenderer.removeListener('runbook:incidentMode', handler);
+    },
+    // Phase 32 — pause/resume
+    getHandoffQueue: () =>
+      ipcRenderer.invoke('runbook:getHandoffQueue') as Promise<{ items: Record<string, unknown>[] }>,
+    resume: (executionId: string, resolution: string) =>
+      ipcRenderer.invoke('runbook:resume', executionId, resolution) as Promise<{ ok: boolean; execution?: Record<string, unknown>; error?: string }>,
+    abort: (executionId: string) =>
+      ipcRenderer.invoke('runbook:abort', executionId) as Promise<{ ok: boolean; execution?: Record<string, unknown>; error?: string }>,
+  },
+
+  // Phase 35 — Runbook Packs
+  pack: {
+    list: () =>
+      ipcRenderer.invoke('pack:list') as Promise<{ packs: Record<string, unknown>[] }>,
+    export: (runbookIds: string[], meta: Record<string, string>) =>
+      ipcRenderer.invoke('pack:export', runbookIds, meta) as Promise<{ ok: boolean; json?: string; pack?: Record<string, unknown>; error?: string }>,
+    previewImport: (json: string) =>
+      ipcRenderer.invoke('pack:previewImport', json) as Promise<{ ok: boolean; preview?: Record<string, unknown>; error?: string }>,
+    import: (json: string) =>
+      ipcRenderer.invoke('pack:import', json) as Promise<{ ok: boolean; installedIds?: string[]; updatedIds?: string[]; pack?: Record<string, unknown>; error?: string }>,
+    uninstall: (packId: string) =>
+      ipcRenderer.invoke('pack:uninstall', packId) as Promise<{ ok: boolean; removedIds?: string[]; preservedIds?: string[]; error?: string }>,
+    rollback: (packId: string) =>
+      ipcRenderer.invoke('pack:rollback', packId) as Promise<{ ok: boolean; restoredIds?: string[]; version?: string; pack?: Record<string, unknown>; error?: string }>,
+    // Phase 36 — Trust, signing, and update safety
+    trust: {
+      getLocalKey: () =>
+        ipcRenderer.invoke('pack:trust:getLocalKey') as Promise<{ ok: boolean; keyId?: string; publicKeyPem?: string; error?: string }>,
+      signPack: (json: string, signerName: string, signerEmail?: string) =>
+        ipcRenderer.invoke('pack:trust:signPack', json, signerName, signerEmail) as Promise<{ ok: boolean; json?: string; error?: string }>,
+      listSigners: () =>
+        ipcRenderer.invoke('pack:trust:listSigners') as Promise<{ signers: Record<string, unknown>[] }>,
+      addSigner: (signer: Record<string, unknown>) =>
+        ipcRenderer.invoke('pack:trust:addSigner', signer) as Promise<{ ok: boolean; keyId?: string; error?: string }>,
+      removeSigner: (keyId: string) =>
+        ipcRenderer.invoke('pack:trust:removeSigner', keyId) as Promise<{ ok: boolean }>,
+      revokeSigner: (keyId: string) =>
+        ipcRenderer.invoke('pack:trust:revokeSigner', keyId) as Promise<{ ok: boolean }>,
+      getPolicy: () =>
+        ipcRenderer.invoke('pack:trust:getPolicy') as Promise<{ policy: Record<string, boolean> }>,
+      setPolicy: (policy: Record<string, boolean>) =>
+        ipcRenderer.invoke('pack:trust:setPolicy', policy) as Promise<{ ok: boolean }>,
+    },
+  },
+
+  // Phase 37 — Workspace analytics
+  analytics: {
+    report: (window: '24h' | '7d' | '30d') =>
+      ipcRenderer.invoke('analytics:report', window) as Promise<{ ok: boolean; report?: Record<string, unknown>; error?: string }>,
+    exportText: (window: '24h' | '7d' | '30d') =>
+      ipcRenderer.invoke('analytics:exportText', window) as Promise<{ ok: boolean; text?: string; error?: string }>,
+  },
+
+  // Phase 38 — Enterprise admin + policy inheritance
+  org: {
+    get: () =>
+      ipcRenderer.invoke('org:get') as Promise<{ org: Record<string, unknown> | null; policy: Record<string, unknown> }>,
+    create: (name: string, plan: string, adminEmail?: string) =>
+      ipcRenderer.invoke('org:create', name, plan, adminEmail) as Promise<{ ok: boolean; org?: Record<string, unknown>; error?: string }>,
+    update: (patch: Record<string, unknown>) =>
+      ipcRenderer.invoke('org:update', patch) as Promise<{ ok: boolean; org?: Record<string, unknown>; error?: string }>,
+    policy: {
+      get: () =>
+        ipcRenderer.invoke('org:policy:get') as Promise<{ policy: Record<string, unknown> }>,
+      set: (domain: string, patch: Record<string, unknown>) =>
+        ipcRenderer.invoke('org:policy:set', domain, patch) as Promise<{ ok: boolean; policy?: Record<string, unknown>; error?: string }>,
+      effective: () =>
+        ipcRenderer.invoke('org:policy:effective') as Promise<{ effective: Record<string, unknown> }>,
+    },
+    signers: {
+      list: () =>
+        ipcRenderer.invoke('org:signers:list') as Promise<{ signers: Record<string, unknown>[] }>,
+      add: (signer: Record<string, unknown>) =>
+        ipcRenderer.invoke('org:signers:add', signer) as Promise<{ ok: boolean; keyId?: string; error?: string }>,
+      revoke: (keyId: string) =>
+        ipcRenderer.invoke('org:signers:revoke', keyId) as Promise<{ ok: boolean; error?: string }>,
+      remove: (keyId: string) =>
+        ipcRenderer.invoke('org:signers:remove', keyId) as Promise<{ ok: boolean; error?: string }>,
+    },
+    analytics: (window: '24h' | '7d' | '30d') =>
+      ipcRenderer.invoke('org:analytics', window) as Promise<{ ok: boolean; report?: Record<string, unknown>; workspaceCount?: number; error?: string }>,
+  },
+
+
+  // Phase 27 — Workspace admin
+  workspace: {
+    get:    () =>
+      ipcRenderer.invoke('workspace:get') as Promise<Record<string, unknown> | null>,
+    create: (name: string) =>
+      ipcRenderer.invoke('workspace:create', name) as Promise<{ ok: boolean; workspace?: Record<string, unknown>; error?: string }>,
+    rename: (name: string) =>
+      ipcRenderer.invoke('workspace:rename', name) as Promise<{ ok: boolean }>,
+    invite: (role: string) =>
+      ipcRenderer.invoke('workspace:invite', role) as Promise<{ ok: boolean; invite?: Record<string, unknown>; error?: string }>,
+    setMemberRole: (deviceId: string, role: string) =>
+      ipcRenderer.invoke('workspace:member:setRole', deviceId, role) as Promise<{ ok: boolean; error?: string }>,
+    removeMember: (deviceId: string) =>
+      ipcRenderer.invoke('workspace:member:remove', deviceId) as Promise<{ ok: boolean; error?: string }>,
+    updatePolicy: (patch: Record<string, unknown>) =>
+      ipcRenderer.invoke('workspace:policy:update', patch) as Promise<{ ok: boolean; error?: string }>,
+  },
+
+  telegram: {
+    setToken:         (token: string) =>
+      ipcRenderer.invoke('telegram:setToken', token) as Promise<{ ok: boolean }>,
+    testConnection:   () =>
+      ipcRenderer.invoke('telegram:testConnection') as Promise<{ ok: boolean; username?: string; firstName?: string; id?: number; error?: string }>,
+    start:            () =>
+      ipcRenderer.invoke('telegram:start') as Promise<{ ok: boolean; username?: string; already?: boolean; error?: string }>,
+    stop:             () =>
+      ipcRenderer.invoke('telegram:stop') as Promise<{ ok: boolean }>,
+    status:           () =>
+      ipcRenderer.invoke('telegram:status') as Promise<{ enabled: boolean; running: boolean; botUsername: string; allowedChats: number[]; lastMessageAt: number | null }>,
+    addAllowedChat:   (chatId: number) =>
+      ipcRenderer.invoke('telegram:addAllowedChat', chatId) as Promise<{ ok: boolean; allowedChats: number[] }>,
+    removeAllowedChat:(chatId: number) =>
+      ipcRenderer.invoke('telegram:removeAllowedChat', chatId) as Promise<{ ok: boolean; allowedChats: number[] }>,
+    sendMessage:      (chatId: number, text: string) =>
+      ipcRenderer.invoke('telegram:sendMessage', chatId, text) as Promise<{ ok: boolean; error?: string }>,
+    listMessages:     (limit?: number) =>
+      ipcRenderer.invoke('telegram:listMessages', limit) as Promise<{ messages: Array<{
+        id: string; direction: string; channel: string; chatId: number; chatName?: string;
+        text: string; riskClass?: string; taskId?: string; status: string;
+        blockedReason?: string; timestamp: number;
+      }> }>,
+  },
+
+  // ── App metadata ─────────────────────────────────────────────────────────────
+  app: {
+    version: () => ipcRenderer.invoke('app:version') as Promise<string>,
+    name:    () => ipcRenderer.invoke('app:name')    as Promise<string>,
+  },
+
+  // ── Setup wizard ─────────────────────────────────────────────────────────────
+  setup: {
+    getRole: () => ipcRenderer.invoke('setup:getRole') as Promise<string>,
+    setRole: (role: string) => ipcRenderer.invoke('setup:setRole', role) as Promise<{ ok: boolean }>,
+  },
+
+  // ── Phase 40 — Recovery & Maintenance ────────────────────────────────────────
+  recovery: {
+    // Backup / Restore
+    createBackup:    ()                         => ipcRenderer.invoke('recovery:createBackup')    as Promise<{ ok: boolean; path?: string; error?: string }>,
+    restoreBackup:   ()                         => ipcRenderer.invoke('recovery:restoreBackup')   as Promise<{ ok: boolean; label?: string; createdAt?: number; error?: string }>,
+    getLastBackupAt: ()                         => ipcRenderer.invoke('recovery:getLastBackupAt') as Promise<number | null>,
+
+    // Snapshots
+    listSnapshots:    ()                          => ipcRenderer.invoke('recovery:listSnapshots')            as Promise<Array<{ id: string; label: string; createdAt: number; trigger: string }>>,
+    createSnapshot:   (trigger: string, label: string) => ipcRenderer.invoke('recovery:createSnapshot', trigger, label) as Promise<{ id: string; label: string; createdAt: number; trigger: string }>,
+    rollbackSnapshot: (id: string)               => ipcRenderer.invoke('recovery:rollbackSnapshot', id)     as Promise<{ ok: boolean; error?: string }>,
+    deleteSnapshot:   (id: string)               => ipcRenderer.invoke('recovery:deleteSnapshot', id)       as Promise<boolean>,
+
+    // Store validation
+    validateStore: () => ipcRenderer.invoke('recovery:validateStore') as Promise<{
+      valid: boolean;
+      issues: Array<{ severity: string; field: string; message: string; repairable: boolean }>;
+      checkedAt: number;
+      repairedCount: number;
+    }>,
+    repairStore: () => ipcRenderer.invoke('recovery:repairStore') as Promise<{
+      valid: boolean;
+      issues: Array<{ severity: string; field: string; message: string; repairable: boolean }>;
+      checkedAt: number;
+      repairedCount: number;
+    }>,
+
+    // Migrations
+    runMigrations:       () => ipcRenderer.invoke('recovery:runMigrations')       as Promise<{ ran: number; errors: string[] }>,
+    getMigrationHistory: () => ipcRenderer.invoke('recovery:getMigrationHistory') as Promise<Array<{ version: number; name: string; appliedAt: number; success: boolean; error?: string }>>,
+    getSchemaVersion:    () => ipcRenderer.invoke('recovery:getSchemaVersion')    as Promise<number>,
+
+    // Crash guard
+    getIncidents:  () =>                      ipcRenderer.invoke('recovery:getIncidents')          as Promise<Array<{ serviceId: string; label: string; crashCount: number; lastCrashAt: number; disabled: boolean; suggestion: string }>>,
+    resetIncident: (serviceId: string) =>     ipcRenderer.invoke('recovery:resetIncident', serviceId) as Promise<{ ok: boolean }>,
+  },
+
+  // ── Income Operator Phase 1 — Capability Scanner ─────────────────────────
+  incomeScanner: {
+    run: () =>
+      ipcRenderer.invoke('scanner:run') as Promise<{
+        ok?: boolean;
+        scan?: {
+          scannedAt: number;
+          installedApps: Array<{ name: string; path: string; exportFormats: string[]; incomeRelevant: string[] }>;
+          gpuName?: string;
+          gpuVramMB?: number;
+          storageGB: number;
+          connectedPlatforms: string[];
+          browserProfiles: string[];
+        };
+        error?: string;
+        tier?: string;
+      }>,
+    getResult: () =>
+      ipcRenderer.invoke('scanner:result:get') as Promise<{
+        scan: {
+          scannedAt: number;
+          installedApps: Array<{ name: string; path: string; exportFormats: string[]; incomeRelevant: string[] }>;
+          gpuName?: string;
+          gpuVramMB?: number;
+          storageGB: number;
+          connectedPlatforms: string[];
+          browserProfiles: string[];
+        } | null;
+      }>,
+    platforms: () =>
+      ipcRenderer.invoke('scanner:platforms:detected') as Promise<{ platforms: string[] }>,
+  },
+
+  // ── Income Operator Phase 1 — Tool Gap Analyzer ──────────────────────────
+  toolGap: {
+    analyze: (laneId: string) =>
+      ipcRenderer.invoke('toolGap:analyze', laneId) as Promise<{
+        gaps?: Array<{
+          toolName: string;
+          laneId: string;
+          priority: 'required' | 'recommended';
+          reason: string;
+          rationale: string;
+          installMode: 'suggest' | 'guided' | 'full';
+          wingetId?: string;
+          installUrl?: string;
+          verifyPath?: string;
+          approvalRequired: true;
+          requiresUac: boolean;
+        }>;
+        error?: string;
+      }>,
+    install: (gap: {
+      toolName: string;
+      laneId: string;
+      installMode: 'suggest' | 'guided' | 'full';
+      wingetId?: string;
+      installUrl?: string;
+      approvalRequired: true;
+      requiresUac: boolean;
+    }) =>
+      ipcRenderer.invoke('toolGap:install', gap) as Promise<{ ok?: boolean; opened?: boolean; error?: string }>,
+    verify: (toolName: string) =>
+      ipcRenderer.invoke('toolGap:verify', toolName) as Promise<{ found: boolean; toolName: string }>,
+  },
+
+  // ── Phase 3 — Income Experiment Manager ──────────────────────────────────
+  experiments: {
+    setBudget: (params: { totalBudget: number; maxPerExperiment: number; dailyLimit: number; reservePct?: number }) =>
+      ipcRenderer.invoke('experiment:setBudget', params) as Promise<{ ok?: boolean; budget?: Record<string, unknown>; error?: string; tier?: string }>,
+    getBudget: () =>
+      ipcRenderer.invoke('experiment:getBudget') as Promise<{ budget: {
+        totalBudget: number; maxPerExperiment: number; dailyLimit: number; reservePct: number;
+        allocated: Record<string, number>; spent: Record<string, number>;
+        dailySpentToday: number; dailySpentDate: string; setAt: number;
+      } | null }>,
+    create: (params: { laneId: string; name: string; rationale: string; budgetAsk: number; autoKillRule?: { budgetPctSpent: number; afterDays: number } }) =>
+      ipcRenderer.invoke('experiment:create', params) as Promise<{ experiment?: Record<string, unknown>; error?: string; tier?: string }>,
+    transition: (id: string, to: string, reason?: string) =>
+      ipcRenderer.invoke('experiment:transition', id, to, reason) as Promise<{ experiment?: Record<string, unknown>; error?: string }>,
+    recordSpend: (id: string, amount: number, reason: string) =>
+      ipcRenderer.invoke('experiment:recordSpend', id, amount, reason) as Promise<{ ok?: boolean; experiment?: Record<string, unknown>; dailyLimitHit?: boolean; budgetExceeded?: boolean; error?: string }>,
+    recordRevenue: (id: string, amount: number, source: string) =>
+      ipcRenderer.invoke('experiment:recordRevenue', id, amount, source) as Promise<{ ok?: boolean; experiment?: Record<string, unknown>; error?: string; tier?: string }>,
+    updateMetrics: (id: string, patch: Record<string, number>) =>
+      ipcRenderer.invoke('experiment:updateMetrics', id, patch) as Promise<{ ok?: boolean; error?: string }>,
+    evaluateAutoKill: (id: string) =>
+      ipcRenderer.invoke('experiment:evaluateAutoKill', id) as Promise<{ shouldKill: boolean; shouldScale: boolean; reason: string; roi: number }>,
+    recordDecision: (id: string, decision: 'continue' | 'kill' | 'scale', reason: string) =>
+      ipcRenderer.invoke('experiment:recordDecision', id, decision, reason) as Promise<{ ok?: boolean; error?: string; tier?: string }>,
+    get: (id: string) =>
+      ipcRenderer.invoke('experiment:get', id) as Promise<{
+        experiment?: Record<string, unknown>; roi?: number; roiLabel?: string;
+        recommendation?: 'continue' | 'kill' | 'scale'; recommendationReason?: string; error?: string;
+      }>,
+    list: () =>
+      ipcRenderer.invoke('experiment:list') as Promise<{ experiments: Array<Record<string, unknown>> }>,
+    listActive: () =>
+      ipcRenderer.invoke('experiment:listActive') as Promise<{ experiments: Array<Record<string, unknown>> }>,
+    // Phase 4C execution handlers — called after approval is granted or for safe direct actions
+    kill: (id: string, reason: string) =>
+      ipcRenderer.invoke('experiment:kill', id, reason) as Promise<{ ok?: boolean; experiment?: Record<string, unknown>; error?: string }>,
+    scale: (id: string, reason: string) =>
+      ipcRenderer.invoke('experiment:scale', id, reason) as Promise<{ ok?: boolean; experiment?: Record<string, unknown>; error?: string }>,
+    launch: (id: string, reason: string) =>
+      ipcRenderer.invoke('experiment:launch', id, reason) as Promise<{ ok?: boolean; experiment?: Record<string, unknown>; error?: string }>,
+    publishContent: (id: string, platform: string, contentNote: string) =>
+      ipcRenderer.invoke('content:publish', id, platform, contentNote) as Promise<{ ok?: boolean; error?: string }>,
+    connectPlatform: (id: string, platform: string, url: string) =>
+      ipcRenderer.invoke('platform:connect', id, platform, url) as Promise<{ ok?: boolean; error?: string }>,
+    getEvents: (id: string, limit?: number) =>
+      ipcRenderer.invoke('experiment:getEvents', id, limit) as Promise<{
+        events?: Array<Record<string, unknown>>;
+        error?: string;
+      }>,
+  },
+
+  // Phase 4C — Income decision engine
+  // Phase 4D — Activity feed + per-experiment events
+  income: {
+    // Phase 1 — Lane ranking
+    lanesRank: () =>
+      ipcRenderer.invoke('income:lanes:rank') as Promise<{
+        lanes?: Array<{
+          laneId: string; laneName: string; readinessScore: number;
+          gaps: Array<{ toolName: string; priority: 'required' | 'recommended'; reason: string; installMode: string }>;
+          timeToFirstDollar: string; rationale: string;
+        }>;
+        error?: string; tier?: string;
+      }>,
+    // Phase 4C — Decision engine
+    getRecommendations: (pendingApprovalKeys: string[]) =>
+      ipcRenderer.invoke('income:getRecommendations', pendingApprovalKeys) as Promise<{
+        recommendations?: Array<{
+          experimentId: string; experimentName: string; recommendedAction: string;
+          reason: string; riskLevel: 'low' | 'medium' | 'high';
+          approvalRequired: boolean; blockedBy: string[]; priority: 'critical' | 'high' | 'normal';
+        }>;
+        error?: string;
+      }>,
+    // Phase 4D — Activity feed
+    getActivity: (limit?: number) =>
+      ipcRenderer.invoke('income:getActivity', limit) as Promise<{
+        events?: Array<{ ts: number; label: string; detail: string; eventType: string }>;
+        error?: string;
+      }>,
+    // Phase 4E — Skill + platform readiness per lane
+    getReadiness: (laneIds: string[]) =>
+      ipcRenderer.invoke('income:getReadiness', laneIds) as Promise<{
+        lanes?: Array<{
+          laneId: string; laneName: string; readiness: 'live' | 'building' | 'pending';
+          skills: Array<{ id: string; name: string; installed: boolean }>;
+          platforms: Array<{ id: string; name: string; connected: boolean }>;
+        }>;
+        error?: string;
+      }>,
+  },
+
+  // ── Income Operator Phase 5 — Autopilot ──────────────────────────────────
+  autopilot: {
+    enable:  () =>
+      ipcRenderer.invoke('autopilot:enable') as Promise<{
+        success: boolean;
+        data?: { status: { enabled: boolean; running: boolean; lastRunAt: number | null; intervalMs: number; newRecoCount: number; lastCycleResult: string | null } };
+        error?: string; retryable?: boolean;
+      }>,
+    disable: () =>
+      ipcRenderer.invoke('autopilot:disable') as Promise<{
+        success: boolean;
+        data?: { status: { enabled: boolean; running: boolean; lastRunAt: number | null; intervalMs: number; newRecoCount: number; lastCycleResult: string | null } };
+        error?: string; retryable?: boolean;
+      }>,
+    status: () =>
+      ipcRenderer.invoke('autopilot:status') as Promise<{
+        status?: {
+          enabled: boolean; running: boolean; lastRunAt: number | null;
+          intervalMs: number; newRecoCount: number; lastCycleResult: string | null;
+        };
+        error?: string;
+      }>,
+    runNow: () =>
+      ipcRenderer.invoke('autopilot:runNow') as Promise<{
+        success: boolean;
+        data?: { status: { enabled: boolean; running: boolean; lastRunAt: number | null; intervalMs: number; newRecoCount: number; lastCycleResult: string | null } };
+        error?: string; retryable?: boolean;
+      }>,
+    /** Called whenever the autopilot status changes (each cycle end). */
+    onStatus: (cb: () => void): (() => void) => {
+      const h = () => cb();
+      ipcRenderer.on('income:autopilot:status', h);
+      return () => ipcRenderer.removeListener('income:autopilot:status', h);
+    },
+    /** Called when recommendations changed — renderer should refresh. */
+    onChanged: (cb: () => void): (() => void) => {
+      const h = () => cb();
+      ipcRenderer.on('income:autopilot:changed', h);
+      return () => ipcRenderer.removeListener('income:autopilot:changed', h);
+    },
+  },
+
+  // ── Phase 2B — ForgeHub skill catalog ────────────────────────────────────
+  forgeHub: {
+    list: () =>
+      ipcRenderer.invoke('forgeHub:list') as Promise<{
+        skills: Array<{
+          id: string; name: string; version: string; description: string;
+          author: string; tags: string[]; incomeLanes: string[];
+        }>;
+      }>,
+    get: (id: string) =>
+      ipcRenderer.invoke('forgeHub:get', id) as Promise<{
+        skill?: {
+          id: string; name: string; version: string; description: string;
+          author: string; tags: string[]; incomeLanes: string[]; markdown: string;
+        };
+        error?: string;
+      }>,
+    forLane: (laneId: string) =>
+      ipcRenderer.invoke('forgeHub:forLane', laneId) as Promise<{
+        skills: Array<{
+          id: string; name: string; version: string; description: string;
+          author: string; tags: string[]; incomeLanes: string[];
+        }>;
+      }>,
+    getMarkdown: (id: string) =>
+      ipcRenderer.invoke('forgeHub:getMarkdown', id) as Promise<{ markdown?: string; error?: string }>,
+  },
+
+  // ── Phase 2C — MCP Client ─────────────────────────────────────────────────
+  mcp: {
+    list: () =>
+      ipcRenderer.invoke('mcp:list') as Promise<{
+        servers: Array<{ id: string; serverInfo: { name: string; version: string } | null; toolCount: number }>;
+      }>,
+    connect: (config: { id: string; label: string; command: string; args?: string[]; cwd?: string; env?: Record<string, string> }) =>
+      ipcRenderer.invoke('mcp:connect', config) as Promise<{ ok?: boolean; serverInfo?: { name: string; version: string }; error?: string; tier?: string }>,
+    disconnect: (id: string) =>
+      ipcRenderer.invoke('mcp:disconnect', id) as Promise<{ ok?: boolean; error?: string }>,
+    listTools: (serverId: string) =>
+      ipcRenderer.invoke('mcp:listTools', serverId) as Promise<{
+        tools?: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>;
+        error?: string;
+      }>,
+    evaluateTool: (serverId: string, toolName: string) =>
+      ipcRenderer.invoke('mcp:evaluateTool', serverId, toolName) as Promise<{
+        risk?: 'low' | 'medium' | 'high' | 'blocked';
+        reason?: string;
+        requiresApproval?: boolean;
+        error?: string;
+      }>,
+    callTool: (serverId: string, toolName: string, args: Record<string, unknown>, approved: boolean) =>
+      ipcRenderer.invoke('mcp:callTool', serverId, toolName, args, approved) as Promise<{
+        ok?: boolean;
+        result?: {
+          content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
+          isError?: boolean;
+        };
+        error?: string;
+        tier?: string;
+      }>,
   },
 };
 

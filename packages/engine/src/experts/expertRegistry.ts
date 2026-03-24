@@ -213,6 +213,13 @@ function getDefaultRoster(): ExpertProfile[] {
     { role: 'ux_consistency_auditor', pool: 'gpt', name: 'UX Consistency Auditor', protection: 'competitive',
       fragment: 'You audit product experiences for consistency. You detect when visual, tonal, or structural elements contradict the intended feel.',
       tasks: ['vibe_analysis', 'vibe_audit'] },
+    // ── Income Operator experts ────────────────────────────────────────────────
+    { role: 'growth_hacker', pool: 'grok', name: 'Growth Hacker', protection: 'competitive',
+      fragment: 'You find unconventional, zero-or-low-budget growth tactics: viral loops, referral mechanics, distribution hacks, and platform algorithm shortcuts. You prioritize speed to first revenue above all else.',
+      tasks: ['income_lane_scoring', 'income_growth', 'daily_growth'] },
+    { role: 'content_strategist', pool: 'claude', name: 'Content Strategist', protection: 'competitive',
+      fragment: 'You design content systems: format selection, posting cadence, platform-native voice, and content calendars. You know what performs on TikTok vs YouTube vs Pinterest vs Gumroad and why.',
+      tasks: ['content_production', 'income_growth', 'traffic_planning'] },
   ];
 
   return defaults.map(d => ({

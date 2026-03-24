@@ -6,7 +6,7 @@ interface Props {
   onNavigate: (screen: string) => void;
 }
 
-export function OperatorMode({ onNavigate: _onNavigate }: Props) {
+export function OperatorMode({ onNavigate }: Props) {
   const systems = SYSTEM_REGISTRY.filter(s => s.modes.includes('operator'));
 
   const extra = (
@@ -27,9 +27,11 @@ export function OperatorMode({ onNavigate: _onNavigate }: Props) {
           key={s.id}
           system={s}
           onAction={() => {
+            if (s.id === 'visual_engine') { onNavigate('imageGenerator'); return; }
             console.log(`[OperatorMode] stub: ${s.id} action triggered`);
           }}
           actionLabel={
+            s.id === 'visual_engine'    ? 'Open Visual Engine' :
             s.id === 'social_poster'    ? 'Configure OAuth' :
             s.id === 'content_calendar' ? 'Create Calendar' :
             s.id === 'outreach_engine'  ? 'Set Up Outreach' :

@@ -2,6 +2,7 @@ import type { Store } from './store';
 import { TIERS, hasCapability } from './subscription';
 import type { Tier } from './license';
 import { getProfile } from './profiles';
+import type { ExperimentManager } from './experimentManager';
 
 // ── Profession engine ref (set by ipc.ts after engine init) ───────────────────
 // Decoupled via interface so systemPrompt.ts stays platform-agnostic.
@@ -18,6 +19,13 @@ export function getProfessionPromptAdditions(): string[] {
   return _professionEngineRef?.getActive()?.systemPromptAdditions ?? [];
 }
 
+// ── Experiment manager ref (set by ipc.ts after ExperimentManager is ready) ──
+let _experimentManagerRef: ExperimentManager | null = null;
+
+export function setExperimentManager(mgr: ExperimentManager | null): void {
+  _experimentManagerRef = mgr;
+}
+
 // ── Prompt cache ──────────────────────────────────────────────────────────────
 // Rebuilding the prompt on every message is wasteful. Cache it and only rebuild
 // when something that affects the prompt actually changes (tier, permissions,
@@ -32,8 +40,9 @@ function buildCacheKey(
   userName: string,
   todayLabel: string,
   professionId: string,
+  activeExperimentIds: string,
 ): string {
-  return [tier, grantedPermKeys.slice().sort().join(','), memoryCount, activeProfileId ?? '', userName, todayLabel, professionId].join('|');
+  return [tier, grantedPermKeys.slice().sort().join(','), memoryCount, activeProfileId ?? '', userName, todayLabel, professionId, activeExperimentIds].join('|');
 }
 
 /**
@@ -61,17 +70,26 @@ export async function buildSystemPrompt(store: Store, professionAdditions?: stri
   const professionId = professionAdditions && professionAdditions.length > 0
     ? professionAdditions[0].slice(0, 40)
     : '';
-  const cacheKey = buildCacheKey(tier, grantedPerms.map(p => p.key), memories.length, activeProfileId, userName, todayLabel, professionId);
+
+  // Income Operator context (only if capability is unlocked)
+  const incomeContext = (
+    hasCapability('INCOME_OPERATOR', tier) || hasCapability('INCOME_LANES', tier)
+  ) ? (_experimentManagerRef?.buildPromptContext() ?? '') : '';
+
+  const activeExperimentIds = incomeContext.slice(0, 80); // cache key fragment
+
+  const cacheKey = buildCacheKey(tier, grantedPerms.map(p => p.key), memories.length, activeProfileId, userName, todayLabel, professionId, activeExperimentIds);
   if (promptCache && promptCache.key === cacheKey) return promptCache.prompt;
   const permBlock = grantedPerms.length > 0
     ? grantedPerms.map(p => `• ${p.label}: ${p.description}`).join('\n')
     : '• No special permissions granted yet. User can enable them in Settings → Permissions.';
 
   // ── System tools available right now ──────────────────────────────────────
-  const hasFiles   = grantedPerms.some(p => p.key === 'files');
-  const hasPrinter = grantedPerms.some(p => p.key === 'printer');
-  const hasBrowser = grantedPerms.some(p => p.key === 'browser') && hasCapability('BROWSER_AUTOMATION', tier);
-  const hasEmail   = grantedPerms.some(p => p.key === 'email_s' || p.key === 'email_r') && hasCapability('EMAIL_CALENDAR', tier);
+  const hasFiles      = grantedPerms.some(p => p.key === 'files');
+  const hasPrinter    = grantedPerms.some(p => p.key === 'printer');
+  const hasBrowser    = grantedPerms.some(p => p.key === 'browser') && hasCapability('BROWSER_AUTOMATION', tier);
+  const hasEmail      = grantedPerms.some(p => p.key === 'email_s' || p.key === 'email_r') && hasCapability('EMAIL_CALENDAR', tier);
+  const hasImageGen   = tier !== 'free'; // Visual Engine requires Pro+
 
   const systemTools: string[] = [];
   if (hasFiles) {
@@ -108,6 +126,19 @@ export async function buildSystemPrompt(store: Store, professionAdditions?: stri
   }
   if (hasEmail) {
     systemTools.push('• EMAIL — can read and send emails on the user\'s behalf');
+  }
+  if (hasImageGen) {
+    systemTools.push(
+      '• VISUAL ENGINE (DALL-E 3 Image Generation) — generates high-quality images, logos, mockups, banners, app icons, product images, and any visual asset directly in this chat.',
+      '  To generate an image, end your message with: [RUN:generate_image:<descriptive prompt>]',
+      '  Image prompt best practices — be specific: include subject, style, mood, color palette, format, purpose.',
+      '  Examples:',
+      '    "A minimalist app icon for a productivity app, flat design, indigo and white, 1024x1024" → [RUN:generate_image:minimalist app icon for productivity app, flat design, indigo and white, 1024x1024]',
+      '    "A professional logo for TriForge AI — dark background, neon blue hexagon, clean typography" → [RUN:generate_image:professional logo for TriForge AI, dark background, neon blue hexagon, clean modern typography]',
+      '    "A bold product launch banner, dark theme, neon accents, 16:9 format" → [RUN:generate_image:bold product launch banner, dark theme, neon accents, 16:9 wide format]',
+      '  The generated image appears inline in chat with a Download button.',
+      '  You can also open the dedicated Visual Engine screen with [RUN:open_imageGenerator]',
+    );
   }
 
   // ── Active Forge Profile context (bounded injection, ≤ 1200 chars) ──────────
@@ -183,9 +214,9 @@ ${permBlock}
 ${profileBlock}
 ${professionAdditions && professionAdditions.length > 0
   ? `\n## Active Role Context\n${professionAdditions.join('\n')}\n`
-  : ''}
+  : ''}${incomeContext ? `\n${incomeContext}\n` : ''}
 ## How to Handle System Tasks
-When the user asks you to find documents, organize files, or print something:
+When the user asks you to find documents, organize files, print something, or generate an image:
 1. Confirm what you're about to do in one sentence
 2. End your message with the exact tag for the action — the UI will render a button the user clicks to execute:
    - Find a document by what it is → append [RUN:search_docs:<query>] (e.g. [RUN:search_docs:driver license])
@@ -195,7 +226,21 @@ When the user asks you to find documents, organize files, or print something:
    - Organize Documents → append [RUN:organize_documents]
    - Organize a custom/other folder (user picks it) → append [RUN:organize]
    - Print a file → append [RUN:print]
+   - Generate an image/logo/mockup → append [RUN:generate_image:<detailed visual prompt>]
 3. If a permission is missing, tell the user exactly: "Enable [Permission Name] in Settings → Permissions to do this" — do NOT include a [RUN:] tag
+
+## Navigation — Open Any TriForge Screen
+You can navigate the user directly to any part of TriForge AI by appending a navigation tag:
+- Open App Builder (build web apps with AI) → [RUN:open_builder]
+- Open Visual Engine (image generator full screen) → [RUN:open_imageGenerator]
+- Open Ventures (venture discovery + build) → [RUN:open_ventures]
+- Open Income Operator (hustle / income streams) → [RUN:open_hustle]
+- Open Command Center (strategic planning) → [RUN:open_forge]
+- Open Memory (your long-term memory store) → [RUN:open_memory]
+- Open Ledger (activity log) → [RUN:open_ledger]
+- Open Settings → [RUN:open_settings]
+- Open Forge Profiles → [RUN:open_profiles]
+Use navigation tags when the user asks "how do I get to X" or when suggesting they try a specific feature.
 
 When the user asks you to do something you cannot do yet (browser, email, trading):
 - State clearly what tier/permission is needed

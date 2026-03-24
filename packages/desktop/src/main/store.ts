@@ -2,6 +2,10 @@ import fs from 'fs';
 import path from 'path';
 import { app, safeStorage } from 'electron';
 import type { StorageAdapter, ShadowStrategyConfig, TradingOperationMode } from '@triforge/engine';
+import type { SharedContextData } from './sharedContext';
+import { EMPTY_SHARED_CONTEXT } from './sharedContext';
+import type { PairedDevice, PairingCode, NetworkMode, RemoteApprovePolicy } from './dispatchSession';
+import { DEFAULT_APPROVE_POLICY } from './dispatchSession';
 
 export interface Permission {
   key: string;
@@ -64,6 +68,104 @@ interface StoreData {
   ventureProposals?: Array<Record<string, unknown>>;
   ventureTrialStart?: number;
   founderProfile?: Record<string, unknown>;
+  // ── Income Operator ────────────────────────────────────────────────────────
+  lastCapabilityScan?: CapabilityScanResult;
+  lastCapabilityScanAt?: number;
+  incomeLanes?: IncomeLaneConfig[];
+  incomeExperiments?: IncomeExperiment[];
+  incomeBudget?: BudgetState;
+}
+
+// ── Income Operator types ──────────────────────────────────────────────────
+
+export interface DetectedApp {
+  name: string;
+  version?: string;
+  path: string;
+  exportFormats: string[];
+  incomeRelevant: string[]; // which income lane IDs this app enables
+}
+
+export interface CapabilityScanResult {
+  scannedAt: number;
+  installedApps: DetectedApp[];
+  gpuName?: string;
+  gpuVramMB?: number;
+  storageGB: number;
+  connectedPlatforms: string[];   // inferred from saved credentials
+  browserProfiles: string[];      // detected browser profile dirs
+}
+
+export type IncomeLaneId =
+  | 'digital_products'
+  | 'client_services'
+  | 'affiliate_content'
+  | 'faceless_youtube'
+  | 'short_form_brand'
+  | 'ai_music'
+  | 'mini_games'
+  | 'asset_packs';
+
+export interface IncomeLaneConfig {
+  laneId: IncomeLaneId;
+  name: string;
+  selectedAt: number;
+  active: boolean;
+}
+
+export type ExperimentStatus =
+  | 'proposed'
+  | 'approved'
+  | 'building'
+  | 'launched'
+  | 'measuring'
+  | 'scaling'
+  | 'killed'
+  | 'completed';
+
+export interface ExperimentMetrics {
+  views: number;
+  clicks: number;
+  followers: number;
+  watchTimeHours: number;
+  conversions: number;
+  revenue: number;
+  adSpend: number;
+  lastUpdatedAt: number;
+}
+
+export interface IncomeExperiment {
+  id: string;
+  laneId: IncomeLaneId;
+  name: string;
+  rationale: string;            // "TriForge picked this because..."
+  status: ExperimentStatus;
+  createdAt: number;
+  launchedAt?: number;
+  endedAt?: number;
+  budgetAllocated: number;
+  budgetSpent: number;
+  revenueEarned: number;
+  runbookIds: string[];
+  contentJobIds: string[];
+  platformLinks: Record<string, string>;  // platform → published URL
+  metrics: ExperimentMetrics;
+  decision?: 'continue' | 'kill' | 'scale';
+  decisionReason?: string;
+  // Auto-kill: if budgetPctSpent % of budget is gone with $0 revenue after afterDays → suggest kill
+  autoKillRule?: { budgetPctSpent: number; afterDays: number };
+}
+
+export interface BudgetState {
+  totalBudget: number;
+  maxPerExperiment: number;
+  dailyLimit: number;                      // emergency stop — hard cap per day
+  reservePct: number;                      // % held for scaling winners (default 20)
+  allocated: Record<string, number>;       // experimentId → allocated $
+  spent: Record<string, number>;           // experimentId → spent $
+  dailySpentToday: number;
+  dailySpentDate: string;                  // "YYYY-MM-DD" — resets when date changes
+  setAt: number;
 }
 
 function emptyData(): StoreData {
@@ -122,6 +224,68 @@ function isValidStoreData(d: unknown): d is Partial<StoreData> {
   if (o.tradingOperationMode !== undefined && typeof o.tradingOperationMode !== 'string') return false;
   if (o.promotionGuardrails !== undefined && typeof o.promotionGuardrails !== 'object') return false;
   return true;
+}
+
+// ── Phase 30 — Workspace automation governance types ──────────────────────────
+
+export type AutomationDestination = 'slack' | 'jira' | 'linear' | 'github' | 'push' | 'any';
+export type DelegationType = 'operator' | 'automation_operator' | 'approval_operator' | 'dispatch_only';
+
+export interface WorkspaceRecipePolicy {
+  recipeId:              string;
+  maxRisk:               'low' | 'medium' | 'high';
+  allowRemoteRun:        boolean;
+  requireDesktopConfirm: boolean;
+  allowedDestinations:   AutomationDestination[];
+  allowedRunnerRoles:    string[];          // WorkspaceRole values
+  allowedRunnerDeviceIds:string[];
+  ownerDeviceId?:        string;
+  editorDeviceIds:       string[];
+  enabled:               boolean;
+}
+
+export interface DelegatedOperator {
+  deviceId:       string;
+  label:          string;
+  delegationType: DelegationType;
+  assignedBy:     string;
+  assignedAt:     number;
+  recipeIds?:     string[];  // scoped to specific recipes; undefined = all
+  expiresAt?:     number;
+}
+
+export interface WorkspaceAutomationPolicy {
+  allowRemoteRunDefault:        boolean;
+  requireDesktopConfirmDefault: boolean;
+  maxRiskDefault:               'low' | 'medium' | 'high';
+  allowBundleSendFromRecipe:    boolean;
+  minRunnerRole:                string;  // WorkspaceRole
+}
+
+export const DEFAULT_AUTOMATION_POLICY: WorkspaceAutomationPolicy = {
+  allowRemoteRunDefault:        false,
+  requireDesktopConfirmDefault: false,
+  maxRiskDefault:               'medium',
+  allowBundleSendFromRecipe:    true,
+  minRunnerRole:                'operator',
+};
+
+// ── Phase 28 — Workspace integration config ───────────────────────────────────
+export interface WorkspaceIntegrationConfig {
+  configured: boolean;
+  useWorkspaceByDefault: boolean;
+  allowPersonalFallback: boolean;
+  lastTestAt?: number;
+  lastTestOk?: boolean;
+  connectedLabel?: string;
+  // Jira-specific config (stored clear; token is in credentials)
+  url?: string;
+  email?: string;
+  // Push-specific config
+  pushProvider?: 'ntfy' | 'pushover' | 'disabled';
+  pushTopic?: string;
+  pushServer?: string;
+  pushoverUser?: string;
 }
 
 export class Store implements StorageAdapter {
@@ -445,6 +609,559 @@ export class Store implements StorageAdapter {
   setFounderProfile(profile: Record<string, unknown>): void {
     this.data.founderProfile = profile;
     this.save();
+  }
+
+  // ── Background Agent + Webhook (Phase 1.5) ───────────────────────────────
+
+  getBackgroundLoopEnabled(): boolean {
+    return this.get<boolean>('backgroundLoopEnabled', false);
+  }
+  setBackgroundLoopEnabled(v: boolean): void { this.update('backgroundLoopEnabled', v); }
+
+  getWebhookEnabled(): boolean {
+    return this.get<boolean>('webhookEnabled', false);
+  }
+  setWebhookEnabled(v: boolean): void { this.update('webhookEnabled', v); }
+
+  getWebhookPort(): number {
+    return this.get<number>('webhookPort', 3748);
+  }
+  setWebhookPort(v: number): void { this.update('webhookPort', v); }
+
+  getWebhookToken(): string {
+    return this.get<string>('webhookToken', '');
+  }
+  setWebhookToken(v: string): void { this.update('webhookToken', v); }
+
+  getLastFiredMission(): { id: string; name: string; firedAt: number } | null {
+    return this.get<{ id: string; name: string; firedAt: number } | null>('lastFiredMission', null);
+  }
+  setLastFiredMission(v: { id: string; name: string; firedAt: number }): void {
+    this.update('lastFiredMission', v);
+  }
+
+  // ── Control Plane (Phase 2) ──────────────────────────────────────────────────
+
+  getControlPlaneEnabled(): boolean {
+    return this.get<boolean>('controlPlaneEnabled', false);
+  }
+  setControlPlaneEnabled(v: boolean): void { this.update('controlPlaneEnabled', v); }
+
+  getControlPlanePort(): number {
+    return this.get<number>('controlPlanePort', 18789);
+  }
+  setControlPlanePort(v: number): void { this.update('controlPlanePort', v); }
+
+  getControlPlaneToken(): string {
+    return this.get<string>('controlPlaneToken', '');
+  }
+  setControlPlaneToken(v: string): void { this.update('controlPlaneToken', v); }
+
+  getControlPlaneLastStartedAt(): number | null {
+    return this.get<number | null>('controlPlaneLastStartedAt', null);
+  }
+  setControlPlaneLastStartedAt(v: number): void { this.update('controlPlaneLastStartedAt', v); }
+
+  // ── Local Model Pipeline (Phase 4) ──────────────────────────────────────────
+
+  getLocalModelEnabled(): boolean { return this.get<boolean>('localModelEnabled', false); }
+  setLocalModelEnabled(v: boolean): void { this.update('localModelEnabled', v); }
+
+  getLocalModelBaseUrl(): string { return this.get<string>('localModelBaseUrl', 'http://localhost:11434'); }
+  setLocalModelBaseUrl(v: string): void { this.update('localModelBaseUrl', v); }
+
+  getLocalModelName(): string { return this.get<string>('localModelName', ''); }
+  setLocalModelName(v: string): void { this.update('localModelName', v); }
+
+  getLocalModelFallback(): boolean { return this.get<boolean>('localModelFallback', true); }
+  setLocalModelFallback(v: boolean): void { this.update('localModelFallback', v); }
+
+  // ── Telegram Messaging (Phase 6) ─────────────────────────────────────────────
+
+  getTelegramEnabled(): boolean { return this.get<boolean>('telegramEnabled', false); }
+  setTelegramEnabled(v: boolean): void { this.update('telegramEnabled', v); }
+
+  getTelegramAllowedChats(): number[] { return this.get<number[]>('telegramAllowedChats', []); }
+  setTelegramAllowedChats(v: number[]): void { this.update('telegramAllowedChats', v); }
+
+  getTelegramBotUsername(): string { return this.get<string>('telegramBotUsername', ''); }
+  setTelegramBotUsername(v: string): void { this.update('telegramBotUsername', v); }
+
+  getTelegramLastMessageAt(): number | null { return this.get<number | null>('telegramLastMessageAt', null); }
+  setTelegramLastMessageAt(v: number): void { this.update('telegramLastMessageAt', v); }
+
+  // ── Phase 8 — Slack ──────────────────────────────────────────────────────────
+
+  getSlackEnabled(): boolean { return this.get<boolean>('slackEnabled', false); }
+  setSlackEnabled(v: boolean): void { this.update('slackEnabled', v); }
+
+  getSlackAllowedChannels(): string[] { return this.get<string[]>('slackAllowedChannels', []); }
+  setSlackAllowedChannels(v: string[]): void { this.update('slackAllowedChannels', v); }
+
+  getSlackAllowedUsers(): string[] { return this.get<string[]>('slackAllowedUsers', []); }
+  setSlackAllowedUsers(v: string[]): void { this.update('slackAllowedUsers', v); }
+
+  getSlackWorkspaceName(): string { return this.get<string>('slackWorkspaceName', ''); }
+  setSlackWorkspaceName(v: string): void { this.update('slackWorkspaceName', v); }
+
+  getSlackBotUserId(): string { return this.get<string>('slackBotUserId', ''); }
+  setSlackBotUserId(v: string): void { this.update('slackBotUserId', v); }
+
+  getSlackBotUserName(): string { return this.get<string>('slackBotUserName', ''); }
+  setSlackBotUserName(v: string): void { this.update('slackBotUserName', v); }
+
+  getSlackSummaryChannel(): string { return this.get<string>('slackSummaryChannel', ''); }
+  setSlackSummaryChannel(v: string): void { this.update('slackSummaryChannel', v); }
+
+  getSlackSummarySchedule(): 'disabled' | 'daily' | 'weekly' {
+    return this.get<'disabled' | 'daily' | 'weekly'>('slackSummarySchedule', 'disabled');
+  }
+  setSlackSummarySchedule(v: 'disabled' | 'daily' | 'weekly'): void { this.update('slackSummarySchedule', v); }
+
+  getSlackLastMessageAt(): number | null { return this.get<number | null>('slackLastMessageAt', null); }
+  setSlackLastMessageAt(v: number): void { this.update('slackLastMessageAt', v); }
+
+  // ── Phase 9 — Jira ──────────────────────────────────────────────────────────
+
+  getJiraEnabled(): boolean { return this.get<boolean>('jiraEnabled', false); }
+  setJiraEnabled(v: boolean): void { this.update('jiraEnabled', v); }
+
+  getJiraWorkspaceUrl(): string { return this.get<string>('jiraWorkspaceUrl', ''); }
+  setJiraWorkspaceUrl(v: string): void { this.update('jiraWorkspaceUrl', v); }
+
+  getJiraEmail(): string { return this.get<string>('jiraEmail', ''); }
+  setJiraEmail(v: string): void { this.update('jiraEmail', v); }
+
+  getJiraUserDisplayName(): string { return this.get<string>('jiraUserDisplayName', ''); }
+  setJiraUserDisplayName(v: string): void { this.update('jiraUserDisplayName', v); }
+
+  getJiraAllowedProjects(): string[] { return this.get<string[]>('jiraAllowedProjects', []); }
+  setJiraAllowedProjects(v: string[]): void { this.update('jiraAllowedProjects', v); }
+
+  getJiraSummarySlackChannel(): string { return this.get<string>('jiraSummarySlackChannel', ''); }
+  setJiraSummarySlackChannel(v: string): void { this.update('jiraSummarySlackChannel', v); }
+
+  // ── Phase 10 — Push Notifications ───────────────────────────────────────────
+
+  getPushProvider(): 'ntfy' | 'pushover' | 'disabled' {
+    return this.get<'ntfy' | 'pushover' | 'disabled'>('pushProvider', 'disabled');
+  }
+  setPushProvider(v: 'ntfy' | 'pushover' | 'disabled'): void { this.update('pushProvider', v); }
+
+  getPushNtfyTopic(): string { return this.get<string>('pushNtfyTopic', ''); }
+  setPushNtfyTopic(v: string): void { this.update('pushNtfyTopic', v); }
+
+  getPushNtfyServer(): string { return this.get<string>('pushNtfyServer', 'https://ntfy.sh'); }
+  setPushNtfyServer(v: string): void { this.update('pushNtfyServer', v); }
+
+  getPushoverUserKey(): string { return this.get<string>('pushoverUserKey', ''); }
+  setPushoverUserKey(v: string): void { this.update('pushoverUserKey', v); }
+
+  getPushEventSettings(): Record<string, { enabled: boolean; priority: string }> {
+    return this.get<Record<string, { enabled: boolean; priority: string }>>('pushEventSettings', {});
+  }
+  setPushEventSettings(v: Record<string, { enabled: boolean; priority: string }>): void {
+    this.update('pushEventSettings', v);
+  }
+
+  // ── Phase 11 — Linear ────────────────────────────────────────────────────────
+
+  getLinearEnabled(): boolean { return this.get<boolean>('linearEnabled', false); }
+  setLinearEnabled(v: boolean): void { this.update('linearEnabled', v); }
+
+  getLinearWorkspaceName(): string { return this.get<string>('linearWorkspaceName', ''); }
+  setLinearWorkspaceName(v: string): void { this.update('linearWorkspaceName', v); }
+
+  getLinearUserName(): string { return this.get<string>('linearUserName', ''); }
+  setLinearUserName(v: string): void { this.update('linearUserName', v); }
+
+  getLinearAllowedTeams(): string[] { return this.get<string[]>('linearAllowedTeams', []); }
+  setLinearAllowedTeams(v: string[]): void { this.update('linearAllowedTeams', v); }
+
+  getLinearSummarySlackChannel(): string { return this.get<string>('linearSummarySlackChannel', ''); }
+  setLinearSummarySlackChannel(v: string): void { this.update('linearSummarySlackChannel', v); }
+
+  // ── Phase 12 — Discord ───────────────────────────────────────────────────────
+
+  getDiscordEnabled(): boolean { return this.get<boolean>('discordEnabled', false); }
+  setDiscordEnabled(v: boolean): void { this.update('discordEnabled', v); }
+
+  getDiscordBotUserId(): string { return this.get<string>('discordBotUserId', ''); }
+  setDiscordBotUserId(v: string): void { this.update('discordBotUserId', v); }
+
+  getDiscordBotUserName(): string { return this.get<string>('discordBotUserName', ''); }
+  setDiscordBotUserName(v: string): void { this.update('discordBotUserName', v); }
+
+  getDiscordAllowedChannels(): string[] { return this.get<string[]>('discordAllowedChannels', []); }
+  setDiscordAllowedChannels(v: string[]): void { this.update('discordAllowedChannels', v); }
+
+  getDiscordAllowedUsers(): string[] { return this.get<string[]>('discordAllowedUsers', []); }
+  setDiscordAllowedUsers(v: string[]): void { this.update('discordAllowedUsers', v); }
+
+  getDiscordLastMessageAt(): number | null { return this.get<number | null>('discordLastMessageAt', null); }
+  setDiscordLastMessageAt(v: number): void { this.update('discordLastMessageAt', v); }
+
+  // Phase 13 — Automation Recipes
+  getRecipeStates(): Record<string, { enabled: boolean; params: Record<string, string>; lastRunAt?: number; lastRunStatus?: 'success' | 'failed' | 'skipped'; lastRunResult?: string }> {
+    return this.get('recipeStates', {});
+  }
+  setRecipeStates(v: Record<string, { enabled: boolean; params: Record<string, string>; lastRunAt?: number; lastRunStatus?: 'success' | 'failed' | 'skipped'; lastRunResult?: string }>): void {
+    this.update('recipeStates', v);
+  }
+
+  // Phase 16 — Shared Context (Team Memory)
+  getSharedContext(): SharedContextData {
+    return this.get<SharedContextData>('sharedContext', EMPTY_SHARED_CONTEXT);
+  }
+  setSharedContext(v: SharedContextData): void {
+    this.update('sharedContext', v);
+  }
+
+  // ── Phase 17 — TriForge Dispatch (core) ──────────────────────────────────────
+
+  getDispatchEnabled(): boolean { return this.get<boolean>('dispatchEnabled', false); }
+  setDispatchEnabled(v: boolean): void { this.update('dispatchEnabled', v); }
+
+  getDispatchPort(): number { return this.get<number>('dispatchPort', 18790); }
+  setDispatchPort(v: number): void { this.update('dispatchPort', v); }
+
+  // Kept for backward compat — superseded by RemoteApprovePolicy in Phase 18
+  getDispatchAllowRemoteApprove(): boolean { return this.getRemoteApprovePolicy().enabled; }
+  setDispatchAllowRemoteApprove(v: boolean): void {
+    const p = this.getRemoteApprovePolicy();
+    this.setRemoteApprovePolicy({ ...p, enabled: v });
+  }
+
+  // ── Phase 18 — Dispatch Security Hardening ────────────────────────────────────
+
+  // Paired devices (session tokens stored here, never exposed to renderer)
+  getPairedDevices(): PairedDevice[] {
+    return this.get<PairedDevice[]>('dispatchPairedDevices', []);
+  }
+  setPairedDevices(v: PairedDevice[]): void { this.update('dispatchPairedDevices', v); }
+
+  // Active pairing code (single, replaced on each generate)
+  getActivePairingCode(): PairingCode | null {
+    return this.get<PairingCode | null>('dispatchPairingCode', null);
+  }
+  setActivePairingCode(v: PairingCode | null): void { this.update('dispatchPairingCode', v); }
+
+  // Network mode: 'local' | 'lan' | 'remote'
+  getDispatchNetworkMode(): NetworkMode {
+    return this.get<NetworkMode>('dispatchNetworkMode', 'lan');
+  }
+  setDispatchNetworkMode(v: NetworkMode): void { this.update('dispatchNetworkMode', v); }
+
+  // Granular remote-approve policy
+  getRemoteApprovePolicy(): RemoteApprovePolicy {
+    return this.get<RemoteApprovePolicy>('dispatchRemoteApprovePolicy', DEFAULT_APPROVE_POLICY);
+  }
+  setRemoteApprovePolicy(v: RemoteApprovePolicy): void { this.update('dispatchRemoteApprovePolicy', v); }
+
+  // Session lifetime in minutes (default 7 days)
+  getDispatchSessionTtlMinutes(): number {
+    return this.get<number>('dispatchSessionTtlMinutes', 10080);
+  }
+  setDispatchSessionTtlMinutes(v: number): void { this.update('dispatchSessionTtlMinutes', v); }
+
+  // ── Phase 19 — Dispatch Reachability ─────────────────────────────────────────
+
+  /** User-configured public URL for Dispatch (e.g. https://example.trycloudflare.com).
+   *  Used in X-Click ntfy headers and shown in AgentHQ for easy copying. */
+  getDispatchPublicUrl(): string { return this.get<string>('dispatchPublicUrl', ''); }
+  setDispatchPublicUrl(v: string): void { this.update('dispatchPublicUrl', v); }
+
+  /** Phase 21 — remote task workbench. Tasks are capped at 50; oldest pruned on overflow. */
+  getDispatchTasks(): import('./dispatchServer').DispatchTask[] {
+    return this.get<import('./dispatchServer').DispatchTask[]>('dispatchTasks', []);
+  }
+  setDispatchTasks(tasks: import('./dispatchServer').DispatchTask[]): void {
+    const capped = tasks.length > 50 ? tasks.slice(tasks.length - 50) : tasks;
+    this.update('dispatchTasks', capped);
+  }
+
+  /** Phase 25 — dispatch threads/inbox. Capped at 30; oldest pruned on overflow. */
+  getDispatchThreads(): import('./dispatchServer').DispatchThread[] {
+    return this.get<import('./dispatchServer').DispatchThread[]>('dispatchThreads', []);
+  }
+  setDispatchThreads(threads: import('./dispatchServer').DispatchThread[]): void {
+    const capped = threads.length > 30 ? threads.slice(threads.length - 30) : threads;
+    this.update('dispatchThreads', capped);
+  }
+
+  /** Phase 24 — dispatch bundles. Capped at 100; oldest pruned on overflow. */
+  getDispatchBundles(): import('./dispatchServer').DispatchArtifactBundle[] {
+    return this.get<import('./dispatchServer').DispatchArtifactBundle[]>('dispatchBundles', []);
+  }
+  setDispatchBundles(bundles: import('./dispatchServer').DispatchArtifactBundle[]): void {
+    const capped = bundles.length > 100 ? bundles.slice(bundles.length - 100) : bundles;
+    this.update('dispatchBundles', capped);
+  }
+
+  /** Phase 23 — dispatch artifacts. Capped at 200; oldest pruned on overflow. */
+  getDispatchArtifacts(): import('./dispatchServer').DispatchArtifact[] {
+    return this.get<import('./dispatchServer').DispatchArtifact[]>('dispatchArtifacts', []);
+  }
+  setDispatchArtifacts(arts: import('./dispatchServer').DispatchArtifact[]): void {
+    const capped = arts.length > 200 ? arts.slice(arts.length - 200) : arts;
+    this.update('dispatchArtifacts', capped);
+  }
+
+  // ── Phase 28 — Workspace integration configs ──────────────────────────────────
+
+  getWorkspaceIntegration(name: string): WorkspaceIntegrationConfig | null {
+    const all = this.get<Record<string, WorkspaceIntegrationConfig>>('wsIntegrations', {});
+    return all[name] ?? null;
+  }
+  setWorkspaceIntegration(name: string, config: WorkspaceIntegrationConfig): void {
+    const all = this.get<Record<string, WorkspaceIntegrationConfig>>('wsIntegrations', {});
+    all[name] = config;
+    this.update('wsIntegrations', all);
+  }
+  deleteWorkspaceIntegration(name: string): void {
+    const all = this.get<Record<string, WorkspaceIntegrationConfig>>('wsIntegrations', {});
+    delete all[name];
+    this.update('wsIntegrations', all);
+  }
+  getAllWorkspaceIntegrations(): Record<string, WorkspaceIntegrationConfig> {
+    return this.get<Record<string, WorkspaceIntegrationConfig>>('wsIntegrations', {});
+  }
+
+  // ── Phase 29 — Workspace approval matrix (stored as raw array; engine provides defaults) ──
+
+  getApprovalMatrix(): import('./workspacePolicyEngine').WorkspaceApprovalRule[] | null {
+    return this.get<import('./workspacePolicyEngine').WorkspaceApprovalRule[] | null>('wsApprovalMatrix', null);
+  }
+  setApprovalMatrix(rules: import('./workspacePolicyEngine').WorkspaceApprovalRule[]): void {
+    this.update('wsApprovalMatrix', rules);
+  }
+  resetApprovalMatrix(): void {
+    this.update('wsApprovalMatrix', null);
+  }
+
+  // ── Phase 28 — Workspace recipe scope ─────────────────────────────────────────
+
+  getWorkspaceRecipeScopes(): Record<string, 'personal' | 'workspace'> {
+    return this.get<Record<string, 'personal' | 'workspace'>>('wsRecipeScopes', {});
+  }
+  setWorkspaceRecipeScope(recipeId: string, scope: 'personal' | 'workspace'): void {
+    const all = this.getWorkspaceRecipeScopes();
+    all[recipeId] = scope;
+    this.update('wsRecipeScopes', all);
+  }
+
+  /** Phase 27 — workspace. Singleton object; null if not yet created. */
+  getWorkspace(): import('./dispatchServer').Workspace | null {
+    return this.get<import('./dispatchServer').Workspace | null>('workspace', null);
+  }
+  setWorkspace(ws: import('./dispatchServer').Workspace | null): void {
+    this.update('workspace', ws);
+  }
+
+  // ── Phase 31 — Runbooks + Incident mode ──────────────────────────────────────
+
+  getRunbooks(): import('./runbooks').RunbookDef[] {
+    return this.get<import('./runbooks').RunbookDef[]>('wsRunbooks', []);
+  }
+  getRunbook(id: string): import('./runbooks').RunbookDef | null {
+    return this.getRunbooks().find(r => r.id === id) ?? null;
+  }
+  saveRunbook(def: import('./runbooks').RunbookDef): void {
+    const all = this.getRunbooks();
+    const idx = all.findIndex(r => r.id === def.id);
+    if (idx >= 0) all[idx] = def; else all.push(def);
+    this.update('wsRunbooks', all);
+  }
+  deleteRunbook(id: string): boolean {
+    const all = this.getRunbooks();
+    const idx = all.findIndex(r => r.id === id);
+    if (idx < 0) return false;
+    all.splice(idx, 1);
+    this.update('wsRunbooks', all);
+    return true;
+  }
+
+  getRunbookExecutions(limit = 50): import('./runbooks').RunbookExecution[] {
+    return this.get<import('./runbooks').RunbookExecution[]>('wsRunbookExecutions', []).slice(-limit);
+  }
+  saveRunbookExecution(exec: import('./runbooks').RunbookExecution): void {
+    const all = this.get<import('./runbooks').RunbookExecution[]>('wsRunbookExecutions', []);
+    const idx = all.findIndex(e => e.id === exec.id);
+    if (idx >= 0) all[idx] = exec; else all.push(exec);
+    // Keep last 200 executions
+    if (all.length > 200) all.splice(0, all.length - 200);
+    this.update('wsRunbookExecutions', all);
+  }
+
+  getIncidentMode(): import('./runbooks').IncidentModeState {
+    return this.get<import('./runbooks').IncidentModeState>('wsIncidentMode', { active: false });
+  }
+  setIncidentMode(state: import('./runbooks').IncidentModeState): void {
+    this.update('wsIncidentMode', state);
+  }
+
+  // ── Phase 32 — Human handoff queue ───────────────────────────────────────────
+
+  getHandoffQueue(): import('./runbooks').HandoffQueueItem[] {
+    return this.get<import('./runbooks').HandoffQueueItem[]>('wsHandoffQueue', []);
+  }
+  addHandoffItem(item: import('./runbooks').HandoffQueueItem): void {
+    const all = this.getHandoffQueue();
+    all.push(item);
+    // Keep last 500 items
+    if (all.length > 500) all.splice(0, all.length - 500);
+    this.update('wsHandoffQueue', all);
+  }
+  resolveHandoffItem(id: string, resolution: string, resolvedBy?: string): boolean {
+    const all = this.getHandoffQueue();
+    const item = all.find(h => h.id === id);
+    if (!item) return false;
+    item.status     = 'resolved';
+    item.resolution = resolution;
+    item.resolvedAt = Date.now();
+    if (resolvedBy) item.resolvedBy = resolvedBy;
+    this.update('wsHandoffQueue', all);
+    return true;
+  }
+  patchHandoffItem(id: string, patch: Partial<import('./runbooks').HandoffQueueItem>): boolean {
+    const all  = this.getHandoffQueue();
+    const item = all.find(h => h.id === id);
+    if (!item) return false;
+    Object.assign(item, patch);
+    this.update('wsHandoffQueue', all);
+    return true;
+  }
+
+  removeHandoffItem(id: string): boolean {
+    const all = this.getHandoffQueue();
+    const idx = all.findIndex(h => h.id === id);
+    if (idx < 0) return false;
+    all.splice(idx, 1);
+    this.update('wsHandoffQueue', all);
+    return true;
+  }
+
+  // ── Phase 35 — Runbook pack registry ─────────────────────────────────────────
+
+  getPacks(): import('./runbookPack').PackRegistryEntry[] {
+    return this.get<import('./runbookPack').PackRegistryEntry[]>('wsPacks', []);
+  }
+  getPack(packId: string): import('./runbookPack').PackRegistryEntry | null {
+    return this.getPacks().find(p => p.packId === packId) ?? null;
+  }
+  savePack(entry: import('./runbookPack').PackRegistryEntry): void {
+    const all = this.getPacks();
+    const idx = all.findIndex(p => p.packId === entry.packId);
+    if (idx >= 0) all[idx] = entry; else all.push(entry);
+    this.update('wsPacks', all);
+  }
+  deletePack(packId: string): boolean {
+    const all = this.getPacks();
+    const idx = all.findIndex(p => p.packId === packId);
+    if (idx < 0) return false;
+    all.splice(idx, 1);
+    this.update('wsPacks', all);
+    return true;
+  }
+
+  // ── Phase 36 — Pack trust: signers + policy ───────────────────────────────────
+
+  getTrustedSigners(): import('./runbookPack').TrustedSigner[] {
+    return this.get<import('./runbookPack').TrustedSigner[]>('packTrustedSigners', []);
+  }
+  saveTrustedSigner(signer: import('./runbookPack').TrustedSigner): void {
+    const all = this.getTrustedSigners();
+    const idx = all.findIndex(s => s.keyId === signer.keyId);
+    if (idx >= 0) all[idx] = signer; else all.push(signer);
+    this.update('packTrustedSigners', all);
+  }
+  removeTrustedSigner(keyId: string): boolean {
+    const all = this.getTrustedSigners();
+    const idx = all.findIndex(s => s.keyId === keyId);
+    if (idx < 0) return false;
+    all.splice(idx, 1);
+    this.update('packTrustedSigners', all);
+    return true;
+  }
+  revokeTrustedSigner(keyId: string): boolean {
+    const all = this.getTrustedSigners();
+    const s = all.find(x => x.keyId === keyId);
+    if (!s) return false;
+    s.revoked = true;
+    this.update('packTrustedSigners', all);
+    return true;
+  }
+  getPackTrustPolicy(): import('./runbookPack').PackTrustPolicy {
+    return this.get<import('./runbookPack').PackTrustPolicy>('packTrustPolicy', {
+      allowUnsigned: true,
+      allowUnknownSigners: true,
+      requireAdminApprovalForInstall: false,
+      requireConfirmOnRiskIncrease: false,
+      blockNewDestinations: false,
+    });
+  }
+  setPackTrustPolicy(policy: import('./runbookPack').PackTrustPolicy): void {
+    this.update('packTrustPolicy', policy);
+  }
+
+  // ── Phase 38 — Org config + policy ───────────────────────────────────────────
+
+  getOrgConfig(): import('./orgConfig').OrgConfig | null {
+    return this.get<import('./orgConfig').OrgConfig | null>('orgConfig', null);
+  }
+  setOrgConfig(config: import('./orgConfig').OrgConfig): void {
+    this.update('orgConfig', config);
+  }
+  getOrgPolicy(): import('./orgConfig').OrgPolicy {
+    return this.get<import('./orgConfig').OrgPolicy>('orgPolicy', { ...require('./orgConfig').DEFAULT_ORG_POLICY });
+  }
+  setOrgPolicy(policy: import('./orgConfig').OrgPolicy): void {
+    this.update('orgPolicy', policy);
+  }
+
+  // ── Phase 30 — Workspace automation governance ───────────────────────────────
+
+  getRecipePolicy(recipeId: string): WorkspaceRecipePolicy | null {
+    const all = this.get<Record<string, WorkspaceRecipePolicy>>('wsRecipePolicies', {});
+    return all[recipeId] ?? null;
+  }
+  setRecipePolicy(recipeId: string, policy: WorkspaceRecipePolicy): void {
+    const all = this.get<Record<string, WorkspaceRecipePolicy>>('wsRecipePolicies', {});
+    all[recipeId] = policy;
+    this.update('wsRecipePolicies', all);
+  }
+  deleteRecipePolicy(recipeId: string): void {
+    const all = this.get<Record<string, WorkspaceRecipePolicy>>('wsRecipePolicies', {});
+    delete all[recipeId];
+    this.update('wsRecipePolicies', all);
+  }
+  getAllRecipePolicies(): Record<string, WorkspaceRecipePolicy> {
+    return this.get<Record<string, WorkspaceRecipePolicy>>('wsRecipePolicies', {});
+  }
+
+  getDelegatedOperators(): DelegatedOperator[] {
+    return this.get<DelegatedOperator[]>('wsDelegatedOperators', []);
+  }
+  setDelegatedOperator(op: DelegatedOperator): void {
+    const all = this.getDelegatedOperators();
+    const idx = all.findIndex(o => o.deviceId === op.deviceId);
+    if (idx >= 0) all[idx] = op; else all.push(op);
+    this.update('wsDelegatedOperators', all);
+  }
+  revokeDelegatedOperator(deviceId: string): boolean {
+    const all = this.getDelegatedOperators();
+    const idx = all.findIndex(o => o.deviceId === deviceId);
+    if (idx < 0) return false;
+    all.splice(idx, 1);
+    this.update('wsDelegatedOperators', all);
+    return true;
+  }
+
+  getWorkspaceAutomationPolicy(): WorkspaceAutomationPolicy {
+    return this.get<WorkspaceAutomationPolicy>('wsAutomationPolicy', DEFAULT_AUTOMATION_POLICY);
+  }
+  setWorkspaceAutomationPolicy(policy: WorkspaceAutomationPolicy): void {
+    this.update('wsAutomationPolicy', policy);
   }
 
   close(): void { /* no-op for file store */ }

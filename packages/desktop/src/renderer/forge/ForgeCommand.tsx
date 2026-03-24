@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { UpgradeGate } from '../components/UpgradeGate';
+import { parseLockedError } from '../capabilityRegistry';
 import { MissionBriefing } from './MissionBriefing';
 import { CouncilView } from './CouncilView';
 import { DecisionBoard } from './DecisionBoard';
@@ -213,6 +215,8 @@ export function ForgeCommand({ keyStatus, tier, messagesThisMonth, onMessageSent
   const [providers, setProviders] = useState<ProviderState[]>([]);
   const [result, setResult] = useState<MissionResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [gate,  setGate]  = useState<{ feature: string; neededTier: 'pro' | 'business' } | null>(null);
+  const [checkoutUrls, setCheckoutUrls] = useState<{ pro: string; business: string; portal: string }>({ pro: '', business: '', portal: '' });
   const [missions, setMissions] = useState<SavedMission[]>([]);
   const [executing, setExecuting] = useState(false);
   const [executionResult, setExecutionResult] = useState('');
@@ -232,12 +236,13 @@ export function ForgeCommand({ keyStatus, tier, messagesThisMonth, onMessageSent
 
   const unsubRef = useRef<(() => void) | null>(null);
 
-  // Load mission history
+  // Load mission history + checkout URLs
   useEffect(() => {
     try {
       const raw = localStorage.getItem('triforge-missions-v1');
       if (raw) setMissions(JSON.parse(raw));
     } catch { /* ignore */ }
+    window.triforge.license.checkoutUrls().then(setCheckoutUrls).catch(() => {});
   }, []);
 
   const saveMission = useCallback((objective: string, confidence: number, risk: string) => {
@@ -535,11 +540,28 @@ export function ForgeCommand({ keyStatus, tier, messagesThisMonth, onMessageSent
       </div>
 
       {/* Error banner */}
-      {error && (
-        <div style={s.errorBanner}>
-          {error.includes('FEATURE_LOCKED') ? 'Think Tank requires Pro or higher. Upgrade to access the AI Council.' : error}
-          <button style={s.errorDismiss} onClick={() => setError(null)}>Dismiss</button>
-        </div>
+      {error && (() => {
+        const gateInfo = parseLockedError(error);
+        if (gateInfo) {
+          // Show UpgradeGate for locked-feature errors; auto-set gate state so modal fires
+          if (!gate) setGate({ feature: gateInfo.feature, neededTier: gateInfo.neededTier });
+          return null;
+        }
+        return (
+          <div style={s.errorBanner}>
+            {error}
+            <button style={s.errorDismiss} onClick={() => setError(null)}>Dismiss</button>
+          </div>
+        );
+      })()}
+      {gate && (
+        <UpgradeGate
+          feature={gate.feature} neededTier={gate.neededTier}
+          onClose={() => { setGate(null); setError(null); }}
+          onUpgrade={(url) => { window.triforge.system.openExternal(url); setGate(null); setError(null); }}
+          proCheckout={checkoutUrls.pro}
+          bizCheckout={checkoutUrls.business}
+        />
       )}
 
       {/* Phase content */}

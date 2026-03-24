@@ -47,6 +47,8 @@ interface Message {
   // Photo result payloads
   photos?: PhotoFile[];
   photoLabel?: string;
+  // Inline generated image
+  generatedImageUrl?: string;
   // Streaming state — true while tokens are still arriving
   streaming?: boolean;
   // Task mode fields
@@ -89,6 +91,8 @@ interface Props {
   onNavigateToCommand?: () => void;
   /** Navigate to the Files screen (⊡) — used when a binary file is attached. */
   onNavigateToFiles?: () => void;
+  /** Generic screen navigation — used by RUN tags to open any TriForge screen. */
+  onNavigate?: (screen: string) => void;
   /** Controlled voice-output mode — set by parent (Settings screen). */
   voiceMode?: boolean;
   onVoiceModeChange?: (on: boolean) => void;
@@ -232,7 +236,7 @@ Format with actual email copy that can be used directly, not just descriptions.`
 
 // ── Chat Component ─────────────────────────────────────────────────────────────
 
-export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, onUpgradeClick, onBuildApp, activeProfileId, onProfileSwitch, onProfileDeactivate, prefill, onClearPrefill, onNavigateToCommand, onNavigateToFiles, voiceMode: voiceModeProp, onVoiceModeChange, pendingVoiceSession, onVoiceSessionClaimed }: Props) {
+export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, onUpgradeClick, onBuildApp, activeProfileId, onProfileSwitch, onProfileDeactivate, prefill, onClearPrefill, onNavigateToCommand, onNavigateToFiles, onNavigate, voiceMode: voiceModeProp, onVoiceModeChange, pendingVoiceSession, onVoiceSessionClaimed }: Props) {
   const [messages, setMessages] = useState<Message[]>(() => {
     // Load persisted history on first render
     try {
@@ -1052,6 +1056,22 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     } catch { addSystemMsg('Could not complete print job.'); }
   };
 
+  const runGenerateImage = async (imagePrompt: string) => {
+    addSystemMsg(`Generating image: "${imagePrompt}"…`);
+    try {
+      const result = await (window as any).triforge.forgeEngine.generateImage(imagePrompt);
+      if (result.error) {
+        addSystemMsg(`Image generation failed: ${result.error}`);
+      } else if (result.url) {
+        appendMsg({ id: crypto.randomUUID(), role: 'system', content: `Generated image for: "${imagePrompt}"`, generatedImageUrl: result.url as string, timestamp: new Date() });
+      } else {
+        addSystemMsg('Image generation failed. Check your OpenAI API key in Settings.');
+      }
+    } catch {
+      addSystemMsg('Image generation failed. Check your OpenAI API key in Settings.');
+    }
+  };
+
   const handleQuickAction = (a: typeof QUICK_ACTIONS[number]) => {
     setShowQuickActions(false);
     if ('action' in a) {
@@ -1561,6 +1581,18 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
                           else if (action === 'search_photos')                  runSearchPhotos();
                           else if (action === 'find_similar')                   runFindSimilar();
                           else if (action === 'print')                          runPickAndPrint();
+                          else if (action?.startsWith('generate_image:'))       runGenerateImage(action.slice('generate_image:'.length));
+                          else if (action === 'open_chat')                      onNavigate?.('chat');
+                          else if (action === 'open_forge')                     onNavigate?.('forge');
+                          else if (action === 'open_builder')                   onBuildApp();
+                          else if (action === 'open_vibe')                      onNavigate?.('vibe');
+                          else if (action === 'open_ventures')                  onNavigate?.('ventures');
+                          else if (action === 'open_hustle')                    onNavigate?.('hustle');
+                          else if (action === 'open_imageGenerator')            onNavigate?.('imageGenerator');
+                          else if (action === 'open_memory')                    onNavigate?.('memory');
+                          else if (action === 'open_ledger')                    onNavigate?.('ledger');
+                          else if (action === 'open_settings')                  onNavigate?.('settings');
+                          else if (action === 'open_profiles')                  onNavigate?.('profiles');
                         }} />
                 ))}
                 {sending && !consensusThinking && !singleModelStreaming && !taskRunning && <TypingIndicator />}
@@ -1900,19 +1932,30 @@ function ForgeRow({ icon, label, text }: { icon: string; label: string; text: st
 
 // ── RUN tag parser ────────────────────────────────────────────────────────────
 
-const RUN_TAG_RE = /\[RUN:((?:search_docs:[^\]]+)|index_docs|find_photos|organize|organize_deep|organize_desktop|organize_downloads|organize_documents|search_photos|find_similar|print)\]/i;
+const RUN_TAG_RE = /\[RUN:((?:search_docs:[^\]]+)|(?:generate_image:[^\]]+)|index_docs|find_photos|organize|organize_deep|organize_desktop|organize_downloads|organize_documents|search_photos|find_similar|print|open_chat|open_forge|open_builder|open_vibe|open_ventures|open_hustle|open_imageGenerator|open_memory|open_ledger|open_settings|open_profiles)\]/i;
 
 const RUN_LABELS: Record<string, string> = {
-  index_docs:           'Index Documents',
-  find_photos:          'Scan for Photos',
-  organize:             'Organize Folder…',
-  organize_deep:        'Deep Organize (All Sub-folders)…',
-  organize_desktop:     'Organize Desktop Now',
-  organize_downloads:   'Organize Downloads Now',
-  organize_documents:   'Organize Documents Now',
-  search_photos:        'Search Photos by Name',
-  find_similar:         'Find Similar Photos',
-  print:                'Choose File & Print',
+  index_docs:              'Index Documents',
+  find_photos:             'Scan for Photos',
+  organize:                'Organize Folder…',
+  organize_deep:           'Deep Organize (All Sub-folders)…',
+  organize_desktop:        'Organize Desktop Now',
+  organize_downloads:      'Organize Downloads Now',
+  organize_documents:      'Organize Documents Now',
+  search_photos:           'Search Photos by Name',
+  find_similar:            'Find Similar Photos',
+  print:                   'Choose File & Print',
+  open_chat:               'Open Chat',
+  open_forge:              'Open Command Center',
+  open_builder:            'Open App Builder',
+  open_vibe:               'Open Vibe Coder',
+  open_ventures:           'Open Ventures',
+  open_hustle:             'Open Income Operator',
+  open_imageGenerator:     'Open Visual Engine',
+  open_memory:             'Open Memory',
+  open_ledger:             'Open Ledger',
+  open_settings:           'Open Settings',
+  open_profiles:           'Open Forge Profiles',
 };
 
 // ── Photo Results Grid ────────────────────────────────────────────────────────
@@ -2053,7 +2096,35 @@ function MessageBubble({ msg, isSpeaking, canSpeak, onSpeak, onRetry, onRunActio
       <div style={cs.systemMsg}>
         {msg.docResults !== undefined
           ? <DocResultsMessage query={msg.docQuery ?? ''} results={msg.docResults} />
-          : <><span style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</span>{msg.photos && msg.photos.length > 0 && <PhotoGrid photos={msg.photos} />}</>
+          : <>
+              <span style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</span>
+              {msg.photos && msg.photos.length > 0 && <PhotoGrid photos={msg.photos} />}
+              {msg.generatedImageUrl && (
+                <div style={{ marginTop: 10 }}>
+                  <img
+                    src={msg.generatedImageUrl}
+                    alt="Generated"
+                    style={{ width: '100%', borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)', display: 'block' }}
+                  />
+                  <button
+                    style={{ marginTop: 8, background: 'rgba(74,222,128,0.12)', border: '1px solid rgba(74,222,128,0.3)', borderRadius: 6, color: '#4ade80', cursor: 'pointer', fontSize: 11, fontWeight: 600, padding: '5px 12px' }}
+                    onClick={async () => {
+                      try {
+                        const resp = await fetch(msg.generatedImageUrl!);
+                        const blob = await resp.blob();
+                        const blobUrl = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = blobUrl; a.download = `triforge-image-${Date.now()}.png`;
+                        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                        setTimeout(() => URL.revokeObjectURL(blobUrl), 2000);
+                      } catch { window.open(msg.generatedImageUrl, '_blank'); }
+                    }}
+                  >
+                    Download Image
+                  </button>
+                </div>
+              )}
+            </>
         }
       </div>
     );
@@ -2082,7 +2153,7 @@ function MessageBubble({ msg, isSpeaking, canSpeak, onSpeak, onRetry, onRunActio
             style={cs.runActionBtn}
             onClick={() => onRunAction(runAction)}
           >
-            ▶ {runAction.startsWith('search_docs:') ? `Search: "${runAction.slice('search_docs:'.length)}"` : (RUN_LABELS[runAction] ?? 'Run')}
+            ▶ {runAction.startsWith('search_docs:') ? `Search: "${runAction.slice('search_docs:'.length)}"` : runAction.startsWith('generate_image:') ? `Generate: "${runAction.slice('generate_image:'.length).slice(0, 40)}${runAction.length > 'generate_image:'.length + 40 ? '…' : ''}"` : (RUN_LABELS[runAction] ?? 'Run')}
           </button>
         )}
         <div style={cs.bubbleMeta}>

@@ -50,7 +50,39 @@ export type {
   ScheduleType, Step, Plan, Task, TrustPolicy, TrustModeSnapshot, TrustDecision,
   WalletSnapshot, SchedulerJob, AuditLedgerEntry, ToolDefinition, ToolContext,
   EngineEvent, ApprovalRequest,
+  // Phase 2 — Inbound Trust Gate
+  InboundTaskSource, InboundRiskClass, InboundTaskDecision,
 } from './core/taskTypes';
+
+// ── Skill Trust Layer (Phase 2) ────────────────────────────────────────────────
+export type {
+  SkillRiskLevel, SkillFrontmatter, DetectedPattern, SkillAnalysisResult, PolicyGateDecision,
+} from './tools/skillRiskTypes';
+export { analyze as analyzeSkill } from './tools/skillTrustEvaluator';
+export { evaluate as evaluateSkillPolicy, gate as skillPolicyGate } from './tools/skillPolicyGate';
+export type { GovernanceRule, GovSource, GovRiskClass, GovAction, GovernanceResolution } from './tools/governanceTypes';
+export { resolveGovernance, buildDefaultRules } from './tools/governanceTypes';
+
+// ── Skill Loader (Phase 2A) — filesystem discovery ────────────────────────────
+export type {
+  SkillSource, SkillTrustLevel, LoadedSkill,
+  SkillLoadError, SkillConflict, SkillLoadResult, SkillRoots,
+} from './skills/skillLoader';
+export { loadSkills, loadSingleSkill, defaultSkillRoots } from './skills/skillLoader';
+
+// ── ForgeHub (Phase 2B) — curated seed skill catalog ─────────────────────────
+export type { ForgeHubEntry } from './skills/forgeHub';
+export { listForgeHubSkills, getForgeHubSkill, getSkillsForLane, getSkillMarkdown } from './skills/forgeHub';
+
+// ── Skill Registry (Phase 3 bridge) — startup sync + active skill lookup ─────
+export type { ActiveSkill } from './skills/skillRegistry';
+export { syncBuiltinSkills, listActiveSkills, getActiveSkillByName } from './skills/skillRegistry';
+
+// ── MCP Client (Phase 2C) — Model Context Protocol transport ─────────────────
+export type {
+  McpServerInfo, McpTool, McpToolCallResult, McpToolRisk, McpClientOptions, McpServerConfig,
+} from './mcp/mcpClient';
+export { McpClient, McpClientRegistry, mcpRegistry, classifyMcpToolRisk } from './mcp/mcpClient';
 
 // Event bus singleton + ring buffer types
 export { eventBus } from './core/eventBus';

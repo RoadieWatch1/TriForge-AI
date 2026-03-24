@@ -2,7 +2,8 @@ import { app, BrowserWindow, nativeTheme, globalShortcut, Menu, protocol } from 
 import path from 'path';
 import fs from 'fs';
 import { Store } from './store';
-import { setupIpc, disposeIpcSingletons } from './ipc';
+import { setupIpc, disposeIpcSingletons, restoreBackgroundServices, supervisorHealthTick } from './ipc';
+import { runMigrations } from './migrationEngine';
 import { setupTray } from './tray';
 import { setupAutoUpdater } from './updater';
 import { TaskStore, Scheduler, AuditLedger } from '@triforge/engine';
@@ -310,8 +311,27 @@ app.whenReady().then(async () => {
     await store.init();
     bootLog('Store initialized');
 
+    // Phase 40 — run pending migrations before IPC is live
+    try {
+      const migResult = await runMigrations(store);
+      if (migResult.ran > 0) bootLog(`Migrations: ${migResult.ran} applied`);
+      if (migResult.errors.length > 0) bootError('Migration errors', migResult.errors.join('; '));
+    } catch (e) { bootError('Migration runner failed', e); }
+
     setupIpc(store);
     bootLog('IPC initialized');
+
+    // ── Phase 1.5: Auto-restore background agent + webhook on launch ──────────
+    restoreBackgroundServices(store).catch((e) =>
+      bootError('Background services restore failed', e),
+    );
+
+    // ── Phase 1.5: 30s supervisor health check for background agent ───────────
+    setInterval(() => {
+      if (!store) return;
+      supervisorHealthTick(store).catch(console.error);
+    }, 30_000);
+
   } catch (e) {
     bootError('Store/IPC init failed — app will run with limited functionality', e);
   }

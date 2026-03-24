@@ -82,6 +82,32 @@ export class AuditLedger {
       .reverse();
   }
 
+  // Scan all entries in a timestamp range — generates date filenames to cover
+  // the full range, enabling 7d / 30d analytics without a separate data store.
+  async scanRange(fromTs: number, toTs = Date.now()): Promise<AuditLedgerEntry[]> {
+    const dateStrs: string[] = [];
+    const cursor = new Date(fromTs);
+    const end    = new Date(toTs);
+    while (cursor <= end) {
+      dateStrs.push(todayDateStr(cursor));
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    const results: AuditLedgerEntry[] = [];
+    for (const dateStr of dateStrs) {
+      try {
+        const raw = await fs.promises.readFile(this._filePath(dateStr), 'utf8');
+        const entries = raw
+          .split('\n')
+          .filter(Boolean)
+          .map(line => { try { return JSON.parse(line) as AuditLedgerEntry; } catch { return null; } })
+          .filter((e): e is AuditLedgerEntry => e !== null && e.timestamp >= fromTs && e.timestamp <= toTs);
+        results.push(...entries);
+      } catch { /* file doesn't exist for that date */ }
+    }
+    return results.sort((a, b) => a.timestamp - b.timestamp);
+  }
+
   // Read all entries since a given timestamp (ms) — scans recent files
   async tailSince(ts: number): Promise<AuditLedgerEntry[]> {
     const results: AuditLedgerEntry[] = [];

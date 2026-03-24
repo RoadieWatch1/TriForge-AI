@@ -1,6 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import type { Permission } from '../main/store';
 import { PermissionWizard } from './components/PermissionWizard';
+import { SetupWizard } from './components/SetupWizard';
+import type { UserRole } from './components/SetupWizard';
+import { SystemHealth } from './components/SystemHealth';
+import { RecoveryScreen } from './components/RecoveryScreen';
+import { DocsScreen } from './components/DocsScreen';
+import { ReadinessScreen } from './components/ReadinessScreen';
 import { Chat } from './components/Chat';
 import { ForgeCommand } from './forge/ForgeCommand';
 import { LicensePanel } from './components/LicensePanel';
@@ -17,11 +23,13 @@ import { FileMode } from './modes/FileMode';
 import { InboxMode } from './modes/InboxMode';
 import { AutomationMode } from './modes/AutomationMode';
 import { HustleMode } from './modes/HustleMode';
+import { ForgeHubCatalog } from './components/ForgeHubCatalog';
 import { PhoneLink } from './components/PhoneLink';
 import { VentureDiscovery } from './components/VentureDiscovery';
 import { VibeCoding } from './components/VibeCoding';
 import { TradeDesk } from './components/TradeDesk';
 import { LiveTradeAdvisor } from './components/LiveTradeAdvisor';
+import { ImageGenerator } from './components/ImageGenerator';
 import { TrianglePresence } from './components/TrianglePresence';
 import { voiceService } from './voice/VoiceService';
 
@@ -53,8 +61,10 @@ export class ErrorBoundary extends React.Component<
 type Screen =
   | 'chat' | 'settings' | 'memory' | 'ledger' | 'plan' | 'builder'
   | 'profiles' | 'missioncontrol' | 'agenthq'
-  | 'dashboard' | 'operator' | 'world' | 'files' | 'inbox' | 'automation' | 'hustle'
-  | 'forge' | 'phonelink' | 'tradeDesk' | 'liveTradeAdvisor' | 'ventures' | 'vibeCoding';
+  | 'dashboard' | 'operator' | 'world' | 'files' | 'inbox' | 'automation' | 'hustle' | 'forgehub'
+  | 'forge' | 'phonelink' | 'tradeDesk' | 'liveTradeAdvisor' | 'ventures' | 'vibeCoding'
+  | 'imageGenerator'
+  | 'health' | 'recovery' | 'docs' | 'readiness';
 
 const LOCK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -215,7 +225,7 @@ export function App() {
     await refreshKeys();
   };
 
-  const handleWizardDone = async (updated: Permission[]) => {
+  const handleWizardDone = async (updated: Permission[], _role?: UserRole) => {
     setPermissions(updated);
     setFirstRun(false);
     try { setMode(await window.triforge.engine.mode()); } catch { /* ok */ }
@@ -245,7 +255,7 @@ export function App() {
     </div>
   );
 
-  if (firstRun) return <PermissionWizard permissions={permissions} onComplete={handleWizardDone} />;
+  if (firstRun) return <SetupWizard permissions={permissions} onComplete={handleWizardDone} />;
 
   // Show lock screen if PIN is set and app is locked
   if (locked && hasPin) return <LockScreen username={lockUsername} onUnlock={handleUnlock} />;
@@ -323,14 +333,19 @@ export function App() {
           <NavBtn icon="◇" label="Hustle"   active={screen === 'hustle'}         onClick={() => setScreen('hustle')} />
           <NavBtn icon="◆" label="Ventures" active={screen === 'ventures'}       onClick={() => setScreen('ventures')} />
           <NavBtn icon="⊙" label="Vibe"     active={screen === 'vibeCoding'}     onClick={() => setScreen('vibeCoding')} />
+          <NavBtn icon="⬛" label="Visual"   active={screen === 'imageGenerator'} onClick={() => setScreen('imageGenerator')} />
+          <NavBtn icon="◎" label="Memory"   active={screen === 'memory'}         onClick={() => setScreen('memory')} />
+          <NavBtn icon="≡" label="Ledger"   active={screen === 'ledger'}         onClick={() => setScreen('ledger')} />
           {/* Divider */}
           <div style={styles.navDivider} />
           <NavBtn icon="⊞" label="Builder"  active={screen === 'builder'}        onClick={() => setScreen('builder')} />
-          <NavBtn icon="◎" label="Memory"   active={screen === 'memory'}         onClick={() => setScreen('memory')} />
-          <NavBtn icon="≡" label="Ledger"   active={screen === 'ledger'}         onClick={() => setScreen('ledger')} />
           <NavBtn icon="⊕" label="Control"  active={screen === 'missioncontrol'} onClick={() => setScreen('missioncontrol')} />
           <NavBtn icon="⚙" label="Settings" active={screen === 'settings'}       onClick={() => setScreen('settings')} />
           <NavBtn icon="⊛" label="Phone"    active={screen === 'phonelink'}      onClick={() => setScreen('phonelink')} />
+          <NavBtn icon="◈" label="Health"     active={screen === 'health'}     onClick={() => setScreen('health')} />
+          <NavBtn icon="⊘" label="Recovery"  active={screen === 'recovery'}    onClick={() => setScreen('recovery')} />
+          <NavBtn icon="?" label="Docs"      active={screen === 'docs'}        onClick={() => setScreen('docs')} />
+          <NavBtn icon="✓" label="Readiness" active={screen === 'readiness'}   onClick={() => setScreen('readiness')} />
           <div style={{ flex: 1 }} />
           <NavBtn icon="▷" label="Plan"     active={screen === 'plan'}           onClick={() => setScreen('plan')} />
         </nav>
@@ -344,8 +359,10 @@ export function App() {
           {screen === 'inbox'      && <InboxMode      onNavigate={s => setScreen(s as Screen)} />}
           {screen === 'automation' && <AutomationMode onNavigate={s => setScreen(s as Screen)} />}
           {screen === 'hustle'     && <HustleMode     onNavigate={s => setScreen(s as Screen)} />}
-          {screen === 'ventures'   && <VentureDiscovery tier={tier} />}
-          {screen === 'vibeCoding' && <VibeCoding tier={tier} onUpgradeClick={() => setScreen('settings')} />}
+          {screen === 'forgehub'   && <ForgeHubCatalog onBack={() => setScreen('hustle')} />}
+          {screen === 'ventures'       && <VentureDiscovery tier={tier} />}
+          {screen === 'vibeCoding'     && <VibeCoding tier={tier} onUpgradeClick={() => setScreen('settings')} />}
+          {screen === 'imageGenerator' && <ImageGenerator tier={tier} onBack={() => setScreen('operator')} />}
           {screen === 'tradeDesk'        && <TradeDesk         onBack={() => setScreen('hustle')} />}
           {screen === 'liveTradeAdvisor' && <LiveTradeAdvisor   onBack={() => setScreen('hustle')} />}
           {screen === 'chat' && (
@@ -364,6 +381,7 @@ export function App() {
               onClearPrefill={() => setChatPrefill(null)}
               onNavigateToCommand={() => setScreen('forge')}
               onNavigateToFiles={() => setScreen('files')}
+              onNavigate={(s) => setScreen(s as any)}
               voiceMode={voiceMode}
               onVoiceModeChange={handleVoiceModeChange}
               pendingVoiceSession={pendingSessionName}
@@ -413,6 +431,10 @@ export function App() {
           {screen === 'memory' && <MemoryScreen />}
           {screen === 'plan' && <LicensePanel onTierChange={setTier} />}
           {screen === 'phonelink' && <PhoneLink />}
+          {screen === 'health'    && <SystemHealth     onNavigate={s => setScreen(s as Screen)} />}
+          {screen === 'recovery'  && <RecoveryScreen />}
+          {screen === 'docs'      && <DocsScreen />}
+          {screen === 'readiness' && <ReadinessScreen onNavigate={s => setScreen(s as Screen)} />}
         </main>
       </div>
     </div>
@@ -456,6 +478,18 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
 
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
   const [updateReady, setUpdateReady] = useState(false);
+  const [appVersion, setAppVersion] = useState<string>('');
+  const [appTier, setAppTier]       = useState<string>('free');
+
+  useEffect(() => {
+    Promise.all([
+      window.triforge.app?.version?.().catch(() => ''),
+      window.triforge.license.load().catch(() => ({ tier: 'free' })),
+    ]).then(([v, lic]) => {
+      setAppVersion(v as string);
+      setAppTier((lic as any)?.tier ?? 'free');
+    });
+  }, []);
 
   const checkForUpdates = async () => {
     setUpdateStatus('Checking for updates…');
@@ -632,6 +666,36 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
       {updateStatus && (
         <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginTop: 10 }}>{updateStatus}</p>
       )}
+
+      <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>About</h2>
+      <div style={styles.aboutCard}>
+        <div style={styles.aboutRow}>
+          <span style={styles.aboutKey}>Application</span>
+          <span style={styles.aboutVal}>TriForge AI</span>
+        </div>
+        {appVersion && (
+          <div style={styles.aboutRow}>
+            <span style={styles.aboutKey}>Version</span>
+            <span style={styles.aboutVal}>v{appVersion}</span>
+          </div>
+        )}
+        <div style={styles.aboutRow}>
+          <span style={styles.aboutKey}>Plan</span>
+          <span style={{ ...styles.aboutVal, color: appTier === 'free' ? 'var(--text-muted)' : 'var(--accent)', fontWeight: 700, textTransform: 'capitalize' as const }}>
+            {appTier}
+          </span>
+        </div>
+        <div style={styles.aboutRow}>
+          <span style={styles.aboutKey}>License</span>
+          <span style={styles.aboutVal}>
+            {appTier !== 'free' ? 'Active' : 'Free tier — upgrade for full capabilities'}
+          </span>
+        </div>
+        <div style={styles.aboutRow}>
+          <span style={styles.aboutKey}>Platform</span>
+          <span style={styles.aboutVal}>{typeof window !== 'undefined' ? window.navigator?.platform ?? 'Desktop' : 'Desktop'}</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -928,6 +992,11 @@ const styles: Record<string, React.CSSProperties & { WebkitAppRegion?: string }>
 
   errorMsg: { background: '#ef444420', border: '1px solid #ef4444', borderRadius: 8, color: '#ef4444', fontSize: 13, padding: '8px 12px' },
   successMsg: { background: '#10a37f20', border: '1px solid #10a37f', borderRadius: 8, color: '#10a37f', fontSize: 13, padding: '8px 12px' },
+
+  aboutCard: { background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' },
+  aboutRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '9px 14px', borderBottom: '1px solid var(--border)' },
+  aboutKey: { fontSize: 12, color: 'var(--text-muted)', fontWeight: 600 },
+  aboutVal: { fontSize: 12, color: 'var(--text-primary)' },
 
   permRow: { display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 10, padding: '10px 14px', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' },
   toggle: { flexShrink: 0, width: 36, height: 20, borderRadius: 10, background: 'var(--bg-input)', border: '1px solid var(--border)', cursor: 'pointer', position: 'relative', transition: 'background 0.2s', marginTop: 2 },

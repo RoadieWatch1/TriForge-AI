@@ -35,7 +35,7 @@ export const SYSTEM_REGISTRY: SystemCard[] = [
     name: 'Visual Engine',
     description: 'Marketing images, mockups, and promos via DALL-E 3',
     status: 'active',
-    modes: ['launch', 'operator', 'hustle'],
+    modes: ['launch', 'operator'],
   },
   {
     id: 'social_poster',

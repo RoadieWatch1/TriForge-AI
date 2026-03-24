@@ -20,9 +20,17 @@ export type Capability =
   | 'GOVERNANCE_PROFILES'  // custom permission profiles
   | 'FORGE_PROFILES'       // industry operational profiles (Restaurant, Trucking, Consultant)
   | 'AGENT_TASKS'          // autonomous task engine with trust policies + audit ledger
+  | 'DISPATCH_COLLAB'      // shared threads + team collaboration in Dispatch
   | 'VENTURE_DISCOVERY'    // council venture discovery + build + growth pipeline
   | 'VIBE_CODING'          // council-guided aesthetic-to-implementation translation
-  | 'UNLIMITED_MESSAGES';  // no monthly cap
+  | 'UNLIMITED_MESSAGES'   // no monthly cap
+  // ── Income Operator capabilities ─────────────────────────────────────────
+  | 'INCOME_SCANNER'       // desktop capability scanner + tool gap detector
+  | 'INCOME_LANES'         // income lane scoring + experiment creation
+  | 'CONTENT_FACTORY'      // AI content generation pipeline (scripts, listings, posts)
+  | 'INCOME_OPERATOR'      // autonomous experiment lifecycle + budget reallocation
+  | 'REVENUE_TRACKER'      // real revenue recording + ROI reports + spend ledger
+  | 'PLATFORM_PUBLISHING'; // YouTube / TikTok / Gumroad / Itch publishing adapters
 
 // ── Per-tier capability sets ──────────────────────────────────────────────────
 
@@ -73,6 +81,9 @@ const PRO_CAPS: ReadonlySet<Capability> = new Set<Capability>([
   'FORGE_PROFILES',
   'VENTURE_DISCOVERY',
   'VIBE_CODING',
+  'INCOME_SCANNER',
+  'INCOME_LANES',
+  'CONTENT_FACTORY',
 ]);
 
 const BUSINESS_CAPS: ReadonlySet<Capability> = new Set<Capability>([
@@ -83,7 +94,11 @@ const BUSINESS_CAPS: ReadonlySet<Capability> = new Set<Capability>([
   'WORKFLOW_REPLAY',
   'GOVERNANCE_PROFILES',
   'AGENT_TASKS',
+  'DISPATCH_COLLAB',
   'UNLIMITED_MESSAGES',
+  'INCOME_OPERATOR',
+  'REVENUE_TRACKER',
+  'PLATFORM_PUBLISHING',
 ]);
 
 export const TIER_CAPABILITIES: Record<Tier, ReadonlySet<Capability>> = {
@@ -132,9 +147,16 @@ export const CAPABILITY_LABELS: Record<Capability, string> = {
   GOVERNANCE_PROFILES: 'Governance profiles',
   FORGE_PROFILES:      'Forge Profiles (operational intelligence)',
   AGENT_TASKS:         'Autonomous Task Engine (trust policies + audit ledger)',
-  VENTURE_DISCOVERY:   'Venture Discovery + Build + Growth',
-  VIBE_CODING:         'Vibe Coding (aesthetic translation)',
-  UNLIMITED_MESSAGES:  'Unlimited messages',
+  DISPATCH_COLLAB:     'Shared Threads + Team Collaboration in Dispatch',
+  VENTURE_DISCOVERY:    'Venture Discovery + Build + Growth',
+  VIBE_CODING:          'Vibe Coding (aesthetic translation)',
+  UNLIMITED_MESSAGES:   'Unlimited messages',
+  INCOME_SCANNER:       'Desktop Capability Scanner + Tool Gap Detector',
+  INCOME_LANES:         'Income Lane Scoring + Experiment Creation',
+  CONTENT_FACTORY:      'AI Content Factory (scripts, listings, posts, sequences)',
+  INCOME_OPERATOR:      'Autonomous Income Operator (experiment lifecycle + reallocation)',
+  REVENUE_TRACKER:      'Revenue Tracker + Spend Ledger + ROI Reports',
+  PLATFORM_PUBLISHING:  'Platform Publishing (YouTube, TikTok, Gumroad, Itch)',
 };
 
 // ── Tier metadata (display / quota only — no boolean feature flags) ───────────

@@ -29,7 +29,10 @@ export type ExpertRole =
   | 'execution_planner'
   | 'compliance_checker'
   | 'vibe_translator'
-  | 'ux_consistency_auditor';
+  | 'ux_consistency_auditor'
+  // ── Income Operator experts ────────────────────────────────────────────────
+  | 'growth_hacker'        // viral loops, referral mechanics, zero-budget growth tactics
+  | 'content_strategist';  // content calendar, format selection, platform-native voice
 
 // ── Lifecycle states ────────────────────────────────────────────────────────
 
@@ -230,16 +233,21 @@ export const PROTECTED_EXPERT_ROLES: ExpertRole[] = [
 // ── Task type routing map ───────────────────────────────────────────────────
 
 export const TASK_TYPE_EXPERT_MAP: Record<string, ExpertRole[]> = {
-  venture_discovery: ['niche_finder', 'trend_hunter', 'risk_assessor', 'business_model_selector'],
-  brand_creation: ['brand_architect', 'positioning_expert', 'logo_identity_expert'],
-  website_building: ['landing_page_architect', 'seo_expert', 'conversion_optimizer'],
-  traffic_planning: ['paid_traffic_expert', 'short_form_growth_expert', 'newsletter_growth_expert'],
-  audience_capture: ['newsletter_growth_expert', 'conversion_optimizer', 'short_form_growth_expert'],
-  filing_prep: ['filing_prep_expert', 'compliance_checker', 'bookkeeping_setup_expert'],
-  daily_growth: ['kpi_analyst', 'automation_systems_expert', 'trend_hunter'],
-  scoring: ['risk_assessor', 'monetization_strategist', 'kpi_analyst'],
-  council_debate: ['execution_planner', 'research_verifier', 'contrarian_growth_expert'],
-  vibe_analysis: ['brand_architect', 'positioning_expert', 'vibe_translator', 'ux_consistency_auditor'],
-  vibe_build: ['landing_page_architect', 'vibe_translator', 'conversion_optimizer', 'ux_consistency_auditor'],
-  vibe_audit: ['ux_consistency_auditor', 'brand_architect', 'vibe_translator'],
+  venture_discovery:    ['niche_finder', 'trend_hunter', 'risk_assessor', 'business_model_selector'],
+  brand_creation:       ['brand_architect', 'positioning_expert', 'logo_identity_expert'],
+  website_building:     ['landing_page_architect', 'seo_expert', 'conversion_optimizer'],
+  traffic_planning:     ['paid_traffic_expert', 'short_form_growth_expert', 'newsletter_growth_expert'],
+  audience_capture:     ['newsletter_growth_expert', 'conversion_optimizer', 'short_form_growth_expert'],
+  filing_prep:          ['filing_prep_expert', 'compliance_checker', 'bookkeeping_setup_expert'],
+  daily_growth:         ['kpi_analyst', 'automation_systems_expert', 'trend_hunter'],
+  scoring:              ['risk_assessor', 'monetization_strategist', 'kpi_analyst'],
+  council_debate:       ['execution_planner', 'research_verifier', 'contrarian_growth_expert'],
+  vibe_analysis:        ['brand_architect', 'positioning_expert', 'vibe_translator', 'ux_consistency_auditor'],
+  vibe_build:           ['landing_page_architect', 'vibe_translator', 'conversion_optimizer', 'ux_consistency_auditor'],
+  vibe_audit:           ['ux_consistency_auditor', 'brand_architect', 'vibe_translator'],
+  // ── Income Operator task types ──────────────────────────────────────────────
+  income_lane_scoring:  ['monetization_strategist', 'growth_hacker', 'kpi_analyst'],
+  content_production:   ['content_strategist', 'short_form_growth_expert', 'conversion_optimizer'],
+  experiment_review:    ['kpi_analyst', 'monetization_strategist', 'risk_assessor'],
+  income_growth:        ['growth_hacker', 'content_strategist', 'automation_systems_expert'],
 };

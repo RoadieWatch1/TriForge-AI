@@ -17,7 +17,32 @@ export type CredentialKey =
   | 'twitter_api_key'
   | 'twitter_api_secret'
   | 'twitter_access_token'
-  | 'twitter_access_secret';
+  | 'twitter_access_secret'
+  // Phase 3 — GitHub
+  | 'github_pat'
+  | 'github_webhook_secret'
+  // Phase 6 — Telegram
+  | 'telegram_bot_token'
+  // Phase 8 — Slack
+  | 'slack_bot_token'
+  // Phase 9 — Jira
+  | 'jira_api_token'
+  // Phase 10 — Push Notifications
+  | 'ntfy_token'
+  | 'pushover_app_token'
+  // Phase 11 — Linear
+  | 'linear_api_key'
+  // Phase 12 — Discord
+  | 'discord_bot_token'
+  // Phase 17 — Dispatch
+  | 'dispatch_token'
+  // Phase 28 — Workspace-scoped credential mirrors
+  | 'ws_github_pat'
+  | 'ws_slack_bot_token'
+  | 'ws_jira_api_token'
+  | 'ws_linear_api_key'
+  | 'ws_ntfy_token'
+  | 'ws_pushover_app_token';
 
 export interface SmtpConfig {
   host: string;
@@ -56,6 +81,14 @@ export class CredentialManager {
     const all: CredentialKey[] = [
       'smtp_host', 'smtp_port', 'smtp_user', 'smtp_pass', 'smtp_from', 'smtp_from_name',
       'twitter_api_key', 'twitter_api_secret', 'twitter_access_token', 'twitter_access_secret',
+      'github_pat', 'github_webhook_secret',
+      'telegram_bot_token',
+      'slack_bot_token',
+      'jira_api_token',
+      'ntfy_token',
+      'pushover_app_token',
+      'linear_api_key',
+      'discord_bot_token',
     ];
     const set: CredentialKey[] = [];
     for (const k of all) {

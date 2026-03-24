@@ -2,6 +2,33 @@
 
 export type TaskCategory = 'email' | 'social' | 'research' | 'files' | 'trading' | 'general';
 
+// ── Inbound Task Trust Gate (Phase 2) ─────────────────────────────────────────
+
+/** Where a task originated. Used by the inbound trust gate and audit trail. */
+export type InboundTaskSource =
+  | 'local_ui'        // created directly from the renderer UI
+  | 'localhost_api'   // created via the Control Plane HTTP API
+  | 'webhook_local'   // triggered via the local webhook server
+  | 'github'          // future: GitHub webhook adapter
+  | 'telegram';       // future: Telegram bot adapter
+
+/** Pre-flight risk classification for inbound tasks before AgentLoop executes. */
+export type InboundRiskClass =
+  | 'informational'    // read-only research, safe to pass through directly
+  | 'skill_execution'  // invokes a skill — requires approval gate
+  | 'write_action'     // sends, posts, creates, deletes — goes through AgentLoop trust gate
+  | 'high_risk';       // obvious destructive intent — blocked at pre-flight
+
+/** Result of the pre-flight inbound task trust gate. */
+export interface InboundTaskDecision {
+  source: InboundTaskSource;
+  riskClass: InboundRiskClass;
+  blocked: boolean;
+  blockReason?: string;
+  requiresApproval: boolean;
+  auditId: string;
+}
+
 export type TaskStatus =
   | 'queued'             // created, not yet started
   | 'planning'           // plan being generated
@@ -29,7 +56,10 @@ export type TaskToolName =
   | 'it_diagnostics' | 'it_network_doctor' | 'it_event_logs'
   | 'it_services' | 'it_processes' | 'it_script_runner' | 'it_patch_advisor'
   // Autonomous Tool Execution Layer
-  | 'read_file' | 'write_file' | 'append_file' | 'run_command' | 'fetch_url' | 'search_workspace';
+  | 'read_file' | 'write_file' | 'append_file' | 'run_command' | 'fetch_url' | 'search_workspace'
+  // Income Operator actions (Phase 4B)
+  | 'launch_experiment' | 'spend_budget' | 'publish_content' | 'kill_experiment'
+  | 'scale_experiment' | 'connect_platform' | 'install_tool';
 
 export type AuditEventType =
   | 'TASK_CREATED' | 'TASK_STARTED' | 'TASK_COMPLETED' | 'TASK_FAILED'
@@ -83,7 +113,122 @@ export type AuditEventType =
   | 'CODE_APPROVED' | 'CODE_BLOCKED' | 'SCOPE_DRIFT_DETECTED'
   | 'VERIFICATION_STARTED' | 'CHECK_PASSED' | 'CHECK_FAILED' | 'VERIFICATION_COMPLETE'
   | 'GIT_GATE_EVALUATED' | 'COMMIT_PREPARED' | 'COMMIT_EXECUTED'
-  | 'PUSH_REQUESTED' | 'PUSH_EXECUTED';
+  | 'PUSH_REQUESTED' | 'PUSH_EXECUTED'
+  // Phase 2 — Inbound Trust Gate + Control Plane + Skill Trust
+  | 'INBOUND_TASK_RECEIVED'  | 'INBOUND_TASK_BLOCKED'  | 'INBOUND_TASK_APPROVED'
+  | 'SKILL_ANALYZED'         | 'SKILL_BLOCKED'
+  | 'CONTROL_PLANE_STARTED'  | 'CONTROL_PLANE_STOPPED' | 'CONTROL_PLANE_TASK_CREATED'
+  // Phase 3 — GitHub Integration
+  | 'GITHUB_PR_REVIEW_REQUESTED' | 'GITHUB_PR_REVIEW_COMPLETED'
+  | 'GITHUB_COMMENT_POSTED'      | 'GITHUB_COMMENT_BLOCKED'
+  | 'GITHUB_ISSUE_TRIAGE_REQUESTED' | 'GITHUB_ISSUE_TRIAGE_COMPLETED'
+  | 'GITHUB_WEBHOOK_RECEIVED'    | 'GITHUB_WEBHOOK_DISPATCHED'
+  | 'GITHUB_REVIEW_APPROVED'     | 'GITHUB_REVIEW_DISMISSED'
+  // Phase 4 — Local Model Pipeline
+  | 'LOCAL_MODEL_SELECTED'       | 'LOCAL_MODEL_FALLBACK'
+  | 'LOCAL_SKILL_ANALYZED'
+  // Phase 5 — Skill Store
+  | 'SKILL_INSTALLED'            | 'SKILL_UNINSTALLED'
+  | 'SKILL_EXECUTED'             | 'SKILL_INSTALL_BLOCKED'
+  // Phase 6 — Telegram Messaging
+  | 'TELEGRAM_BOT_STARTED'       | 'TELEGRAM_BOT_STOPPED'
+  | 'TELEGRAM_MESSAGE_RECEIVED'  | 'TELEGRAM_MESSAGE_BLOCKED'
+  | 'TELEGRAM_TASK_CREATED'      | 'TELEGRAM_REPLY_SENT'
+  | 'TELEGRAM_REPLY_BLOCKED'     | 'TELEGRAM_APPROVAL_PENDING'
+  // Phase 7 — Approval Policy Engine
+  | 'POLICY_RULE_MATCHED'        | 'POLICY_RULE_FALLBACK'
+  | 'POLICY_RULE_CREATED'        | 'POLICY_RULE_UPDATED'
+  | 'POLICY_RULE_DELETED'        | 'POLICY_DEFAULTS_RESET'
+  // Phase 8 — Slack Messaging
+  | 'SLACK_BOT_STARTED'          | 'SLACK_BOT_STOPPED'
+  | 'SLACK_MESSAGE_RECEIVED'     | 'SLACK_MESSAGE_BLOCKED'
+  | 'SLACK_TASK_CREATED'         | 'SLACK_REPLY_SENT'
+  | 'SLACK_REPLY_BLOCKED'        | 'SLACK_APPROVAL_PENDING'
+  | 'SLACK_SUMMARY_SENT'
+  // Phase 9 — Jira Integration
+  | 'JIRA_CONNECTED'             | 'JIRA_ISSUE_READ'
+  | 'JIRA_ACTION_QUEUED'         | 'JIRA_ACTION_APPROVED'
+  | 'JIRA_ACTION_DISMISSED'      | 'JIRA_COMMENT_POSTED'
+  | 'JIRA_ISSUE_CREATED'         | 'JIRA_STATUS_TRANSITIONED'
+  | 'JIRA_TRIAGE_STARTED'        | 'JIRA_SUMMARY_SENT'
+  // Phase 10 — Push Notifications
+  | 'PUSH_SENT'                  | 'PUSH_FAILED'
+  // Phase 12 — Discord Integration
+  | 'DISCORD_BOT_STARTED'        | 'DISCORD_BOT_STOPPED'
+  | 'DISCORD_MESSAGE_RECEIVED'   | 'DISCORD_MESSAGE_BLOCKED'
+  | 'DISCORD_TASK_CREATED'       | 'DISCORD_REPLY_SENT'
+  | 'DISCORD_REPLY_BLOCKED'      | 'DISCORD_APPROVAL_PENDING'
+  // Phase 11 — Linear Integration
+  | 'LINEAR_CONNECTED'           | 'LINEAR_ISSUE_READ'
+  | 'LINEAR_ISSUE_SEARCHED'      | 'LINEAR_ACTION_QUEUED'
+  | 'LINEAR_ACTION_APPROVED'     | 'LINEAR_ACTION_DISMISSED'
+  | 'LINEAR_COMMENT_POSTED'      | 'LINEAR_ISSUE_CREATED'
+  | 'LINEAR_STATUS_UPDATED'      | 'LINEAR_TRIAGE_STARTED'
+  | 'LINEAR_SUMMARY_SENT'
+  // Phase 13 — Automation Recipes
+  | 'RECIPE_STARTED'             | 'RECIPE_COMPLETED'
+  | 'RECIPE_FAILED'
+  // Phase 26 — Dispatch thread collaboration
+  | 'THREAD_INVITE_CREATED'      | 'THREAD_INVITE_CLAIMED'
+  | 'THREAD_COLLAB_REMOVED'      | 'THREAD_COMMENT_ADDED'
+  | 'THREAD_COMMENT_DELETED'     | 'THREAD_ATTRIBUTION_RECORDED'
+  // Phase 27 — Workspace / org management
+  | 'WORKSPACE_CREATED'          | 'WORKSPACE_INVITE_CREATED'
+  | 'WORKSPACE_INVITE_CLAIMED'   | 'WORKSPACE_MEMBER_REMOVED'
+  | 'WORKSPACE_ROLE_CHANGED'     | 'WORKSPACE_POLICY_UPDATED'
+  // Phase 28 — Workspace-owned integrations + scoped secrets
+  | 'WS_INTEGRATION_CONFIGURED'  | 'WS_INTEGRATION_REVOKED'
+  | 'WS_INTEGRATION_TESTED'      | 'WS_INTEGRATION_USED'
+  | 'WS_RECIPE_RUN'              | 'WS_CRED_RESOLUTION'
+  // Phase 29 — Workspace policy enforcement
+  | 'WS_POLICY_RULE_MATCHED'     | 'WS_APPROVAL_DENIED'
+  | 'WS_APPROVAL_GRANTED'        | 'WS_APPROVAL_MATRIX_UPDATED'
+  | 'DISPATCH_PAIRED'            | 'DISPATCH_REVOKED'
+  // Phase 30 — Workspace automation governance
+  | 'WS_RECIPE_CREATED'          | 'WS_RECIPE_EDITED'
+  | 'WS_RECIPE_DELETED'          | 'WS_RECIPE_BLOCKED'
+  | 'WS_RECIPE_RUNNER_BLOCKED'   | 'WS_RECIPE_REMOTE_DENIED'
+  | 'WS_DELEGATED_OP_ASSIGNED'   | 'WS_DELEGATED_OP_REVOKED'
+  | 'WS_AUTOMATION_POLICY_SET'   | 'WS_RECIPE_POLICY_SET'
+  // Phase 31 — Workspace runbooks + incident mode
+  | 'RUNBOOK_CREATED'            | 'RUNBOOK_UPDATED'
+  | 'RUNBOOK_DELETED'            | 'RUNBOOK_STARTED'
+  | 'RUNBOOK_COMPLETED'          | 'RUNBOOK_FAILED'
+  | 'RUNBOOK_STEP_STARTED'       | 'RUNBOOK_STEP_COMPLETED'
+  | 'RUNBOOK_STEP_FAILED'        | 'RUNBOOK_STEP_ATTENTION'
+  | 'RUNBOOK_ESCALATED'          | 'INCIDENT_MODE_CHANGED'
+  // Phase 32 — Pause/resume + handoff queue
+  | 'RUNBOOK_PAUSED'             | 'RUNBOOK_RESUMED'
+  | 'RUNBOOK_ABORTED'            | 'HANDOFF_CREATED'
+  | 'HANDOFF_RESOLVED'           | 'HANDOFF_EXPIRED'
+  // Phase 33 — Conditions, branching, deadlines
+  | 'RUNBOOK_BRANCH_TAKEN'       | 'RUNBOOK_CONDITION_EVALUATED'
+  | 'RUNBOOK_DEADLINE_MISSED'    | 'RUNBOOK_DEADLINE_ESCALATED'
+  | 'RUNBOOK_STEP_RETRIED'       | 'RUNBOOK_STEP_SKIPPED'
+  // Phase 34 — Variables, templates, reusable playbooks
+  | 'RUNBOOK_VAR_MISSING'        | 'RUNBOOK_VARS_RESOLVED'
+  | 'RUNBOOK_OUTPUT_CAPTURED'    | 'RUNBOOK_TEMPLATE_RUN'
+  // Phase 35 — Runbook packs + import/export + versioning
+  | 'PACK_IMPORTED'              | 'PACK_INSTALLED'
+  | 'PACK_UPDATED'               | 'PACK_UNINSTALLED'
+  | 'PACK_ROLLBACK'              | 'RUNBOOK_UPGRADED'
+  | 'RUNBOOK_DOWNGRADED'         | 'PACK_EXPORTED'
+  // Phase 36 — Pack trust, signing, and update safety
+  | 'PACK_SIGNATURE_VERIFIED'    | 'PACK_SIGNATURE_FAILED'
+  | 'PACK_UNSIGNED_ALLOWED'      | 'PACK_UNSIGNED_BLOCKED'
+  | 'PACK_UPDATE_RISK_INCREASED' | 'PACK_POLICY_BLOCKED'
+  | 'TRUSTED_SIGNER_ADDED'       | 'TRUSTED_SIGNER_REMOVED'
+  | 'TRUSTED_SIGNER_REVOKED'     | 'PACK_SIGNED'
+  // Income Operator (Phase 4B)
+  | 'INCOME_APPROVAL_CREATED'    | 'INCOME_APPROVAL_APPROVED'   | 'INCOME_APPROVAL_DENIED'
+  | 'INCOME_EXPERIMENT_LAUNCHED' | 'INCOME_EXPERIMENT_KILLED'   | 'INCOME_EXPERIMENT_SCALED'
+  | 'INCOME_PLATFORM_CONNECTED'  | 'INCOME_CONTENT_PUBLISHED'   | 'INCOME_TOOL_INSTALLED'
+  // Phase 38 — Enterprise admin + policy inheritance
+  | 'ORG_CREATED'                | 'ORG_UPDATED'
+  | 'ORG_POLICY_UPDATED'         | 'ORG_SIGNER_ADDED'
+  | 'ORG_SIGNER_REVOKED'         | 'ORG_SIGNER_REMOVED'
+  | 'ORG_INTEGRATION_BLOCKED'    | 'ORG_INTEGRATION_ALLOWED'
+  | 'AUDIT_EXPORTED'             | 'POLICY_HISTORY_EXPORTED';
 
 // ── Execution Result (Phase 4) ─────────────────────────────────────────────────
 
@@ -353,4 +498,24 @@ export type EngineEvent =
   | { type: 'COMMIT_PREPARED';       sessionId: string; message: string; fileCount: number }
   | { type: 'COMMIT_EXECUTED';       sessionId: string; commitHash: string }
   | { type: 'PUSH_REQUESTED';        sessionId: string; remote: string; branch: string }
-  | { type: 'PUSH_EXECUTED';         sessionId: string; remote: string; branch: string };
+  | { type: 'PUSH_EXECUTED';         sessionId: string; remote: string; branch: string }
+  // Phase 2 — Inbound Trust Gate
+  | { type: 'INBOUND_TASK_RECEIVED'; source: InboundTaskSource; riskClass: InboundRiskClass; goal: string }
+  | { type: 'INBOUND_TASK_BLOCKED';  source: InboundTaskSource; blockReason: string; goal: string }
+  | { type: 'INBOUND_TASK_APPROVED'; source: InboundTaskSource; taskId: string }
+  // Phase 2 — Skill Trust
+  | { type: 'SKILL_ANALYZED';  name: string; riskLevel: string; blocked: boolean }
+  | { type: 'SKILL_BLOCKED';   name: string; blockReason: string }
+  // Phase 2 — Control Plane
+  | { type: 'CONTROL_PLANE_STARTED'; port: number }
+  | { type: 'CONTROL_PLANE_STOPPED' }
+  | { type: 'CONTROL_PLANE_TASK_CREATED'; taskId: string; goal: string; source: InboundTaskSource }
+  // Phase 3 — GitHub
+  | { type: 'GITHUB_PR_REVIEW_REQUESTED';    owner: string; repo: string; prNumber: number }
+  | { type: 'GITHUB_PR_REVIEW_COMPLETED';    owner: string; repo: string; prNumber: number; reviewId: string }
+  | { type: 'GITHUB_COMMENT_POSTED';         owner: string; repo: string; number: number; commentUrl: string }
+  | { type: 'GITHUB_COMMENT_BLOCKED';        owner: string; repo: string; number: number; reason: string }
+  | { type: 'GITHUB_ISSUE_TRIAGE_COMPLETED'; owner: string; repo: string; issueNumber: number; reviewId: string }
+  | { type: 'GITHUB_WEBHOOK_RECEIVED';       event: string; owner: string; repo: string; number: number }
+  | { type: 'GITHUB_REVIEW_APPROVED';        reviewId: string; commentUrl: string }
+  | { type: 'GITHUB_REVIEW_DISMISSED';       reviewId: string };

@@ -1,4 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 interface ForgeScore {
   confidence: number;
@@ -20,9 +22,25 @@ interface LedgerEntry {
   starred: boolean;
 }
 
-const RISK_COLORS: Record<string, string> = { Low: '#10a37f', Medium: '#f59e0b', High: '#ef4444' };
-const PROVIDER_COLORS: Record<string, string> = { openai: '#10a37f', claude: '#d97706', grok: '#6366f1' };
-const PROVIDER_LABELS: Record<string, string> = { openai: 'OpenAI', claude: 'Claude', grok: 'Grok' };
+// ledger:get can return an array or an error object — handle both
+type LedgerResult = LedgerEntry[] | { error: string };
+
+const safeEntries = (v: unknown): LedgerEntry[] =>
+  Array.isArray(v) ? (v as LedgerEntry[]) : [];
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const PAGE_SIZE = 50;
+
+const RISK_COLORS: Record<string, string> = {
+  Low: '#10a37f', Medium: '#f59e0b', High: '#ef4444',
+};
+const PROVIDER_COLORS: Record<string, string> = {
+  openai: '#10a37f', claude: '#d97706', grok: '#6366f1',
+};
+const PROVIDER_LABELS: Record<string, string> = {
+  openai: 'OpenAI', claude: 'Claude', grok: 'Grok',
+};
 
 function formatAge(ts: number): string {
   const d = Math.floor((Date.now() - ts) / 86400000);
@@ -32,44 +50,75 @@ function formatAge(ts: number): string {
   return new Date(ts).toLocaleDateString();
 }
 
+// ── Props ─────────────────────────────────────────────────────────────────────
+
 interface LedgerProps {
   tier: string;
   onUpgradeClick: () => void;
 }
 
+// ── Ledger ────────────────────────────────────────────────────────────────────
+
 export function Ledger({ tier, onUpgradeClick }: LedgerProps) {
-  const [entries, setEntries] = useState<LedgerEntry[]>([]);
-  const [search, setSearch] = useState('');
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [entries, setEntries]     = useState<LedgerEntry[]>([]);
+  const [search, setSearch]       = useState('');
+  const [expanded, setExpanded]   = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<Record<string, number>>({});
   const [exporting, setExporting] = useState<string | null>(null);
+  const [loading, setLoading]     = useState(false);
+  const [page, setPage]           = useState(1);
+  const [hasMore, setHasMore]     = useState(false);
+  const searchRef                 = useRef(search);
+  searchRef.current               = search;
 
   const isLocked = tier === 'free';
 
-  const safeEntries = (v: unknown): LedgerEntry[] => (Array.isArray(v) ? v : []);
+  // ── Fetch ──────────────────────────────────────────────────────────────────
 
+  const fetchEntries = useCallback(async (currentSearch: string, currentPage: number) => {
+    setLoading(true);
+    try {
+      const limit  = currentPage * PAGE_SIZE;
+      const result = await window.triforge.ledger.get(currentSearch || undefined, limit + 1);
+      const all    = safeEntries(result as LedgerResult);
+      setHasMore(all.length > limit);
+      setEntries(all.slice(0, limit));
+    } catch {
+      // non-fatal — leave existing entries in place
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // Debounced search + page reset
   useEffect(() => {
     if (isLocked) return;
-    const timer = setTimeout(() => {
-      window.triforge.ledger.get(search || undefined).then(v => setEntries(safeEntries(v)));
-    }, search ? 300 : 0);
+    setPage(1);
+    const timer = setTimeout(() => fetchEntries(search, 1), search ? 280 : 0);
     return () => clearTimeout(timer);
-  }, [search, isLocked]);
+  }, [search, isLocked, fetchEntries]);
 
-  const reload = async () => {
-    const updated = await window.triforge.ledger.get(search || undefined);
-    setEntries(safeEntries(updated));
-  };
+  // Re-fetch when page advances
+  useEffect(() => {
+    if (isLocked || page === 1) return;
+    void fetchEntries(searchRef.current, page);
+  }, [page, isLocked, fetchEntries]);
+
+  const refresh = useCallback(() => {
+    void fetchEntries(searchRef.current, page);
+  }, [fetchEntries, page]);
+
+  // ── Mutations ─────────────────────────────────────────────────────────────
 
   const handleStar = async (id: string, starred: boolean) => {
-    const updated = await window.triforge.ledger.star(id, !starred);
-    setEntries(safeEntries(updated));
+    const result = await window.triforge.ledger.star(id, !starred);
+    setEntries(safeEntries(result as LedgerResult));
   };
 
   const handleDelete = async (id: string) => {
-    if (!window.confirm('Remove this decision from your ledger?')) return;
-    const updated = await window.triforge.ledger.delete(id);
-    setEntries(safeEntries(updated));
+    if (!window.confirm('Remove this entry from the ledger?')) return;
+    const result = await window.triforge.ledger.delete(id);
+    setEntries(safeEntries(result as LedgerResult));
     if (expanded === id) setExpanded(null);
   };
 
@@ -79,9 +128,13 @@ export function Ledger({ tier, onUpgradeClick }: LedgerProps) {
     try { await window.triforge.ledger.export(id, format); } finally { setExporting(null); }
   };
 
+  // ── Derived ───────────────────────────────────────────────────────────────
+
   const starred = entries.filter(e => e.starred);
-  const rest = entries.filter(e => !e.starred);
-  const sorted = [...starred, ...rest];
+  const rest    = entries.filter(e => !e.starred);
+  const sorted  = [...starred, ...rest];
+
+  // ── Upgrade gate ──────────────────────────────────────────────────────────
 
   if (isLocked) {
     return (
@@ -91,59 +144,85 @@ export function Ledger({ tier, onUpgradeClick }: LedgerProps) {
           <div style={s.upgradeTitle}>Decision Ledger</div>
           <div style={s.upgradeDesc}>
             Every Think Tank answer is automatically saved, searchable, and exportable — all in one place.
-            This feature is available on Pro and Business plans.
+            Available on Pro and Business plans.
           </div>
           <div style={s.upgradeFeatures}>
-            <span style={s.upgradeFeature}>✓ Auto-save every Think Tank result</span>
-            <span style={s.upgradeFeature}>✓ Search and filter all decisions</span>
-            <span style={s.upgradeFeature}>✓ Star important entries</span>
-            <span style={s.upgradeFeature}>✓ Export to Markdown &amp; PDF</span>
+            <span style={s.upgradeFeature}>Auto-save every Think Tank result</span>
+            <span style={s.upgradeFeature}>Search and filter all decisions</span>
+            <span style={s.upgradeFeature}>Star important entries</span>
+            <span style={s.upgradeFeature}>Export to Markdown and PDF</span>
           </div>
           <button style={s.upgradeBtn} onClick={onUpgradeClick}>
-            ⭐ Upgrade to Pro — $19/mo
+            Upgrade to unlock the Ledger
           </button>
         </div>
       </div>
     );
   }
 
+  // ── Main view ─────────────────────────────────────────────────────────────
+
   return (
     <div style={s.page}>
+
       {/* Header */}
       <div style={s.header}>
         <div>
           <h2 style={s.title}>Decision Ledger</h2>
-          <p style={s.subtitle}>Every Think Tank result is automatically saved here. Searchable, exportable, starred.</p>
+          <p style={s.subtitle}>Every Think Tank result is automatically saved here. Searchable, starred, exportable.</p>
         </div>
         <div style={s.headerActions}>
           <button
-            style={{ ...s.exportBtn, ...(exporting === 'allmd' ? s.exportBtnDisabled : {}) }}
-            onClick={() => handleExport(null, 'md')} disabled={!!exporting || entries.length === 0}
-          >{exporting === 'allmd' ? 'Saving…' : '⬇ Export All MD'}</button>
+            style={{ ...s.exportBtn, ...(exporting === 'allmd' || entries.length === 0 ? s.exportBtnDisabled : {}) }}
+            onClick={() => handleExport(null, 'md')}
+            disabled={!!exporting || entries.length === 0}
+          >
+            Export All MD
+          </button>
           <button
-            style={{ ...s.exportBtn, ...s.exportBtnPrimary, ...(exporting === 'allpdf' ? s.exportBtnDisabled : {}) }}
-            onClick={() => handleExport(null, 'pdf')} disabled={!!exporting || entries.length === 0}
-          >{exporting === 'allpdf' ? 'Saving…' : '⬇ Export All PDF'}</button>
+            style={{ ...s.exportBtn, ...s.exportBtnPrimary, ...(exporting === 'allpdf' || entries.length === 0 ? s.exportBtnDisabled : {}) }}
+            onClick={() => handleExport(null, 'pdf')}
+            disabled={!!exporting || entries.length === 0}
+          >
+            Export All PDF
+          </button>
         </div>
       </div>
 
-      {/* Search */}
+      {/* Search + refresh */}
       <div style={s.searchRow}>
         <input
           style={s.searchInput}
-          placeholder="Search decisions, workflows, or any keyword…"
+          placeholder="Search decisions, workflows, or any keyword..."
           value={search}
           onChange={e => setSearch(e.target.value)}
         />
         {search && (
-          <button style={s.clearSearch} onClick={() => setSearch('')}>✕</button>
+          <button style={s.clearSearch} onClick={() => setSearch('')}>x</button>
         )}
-        <span style={s.entryCount}>{entries.length} {entries.length === 1 ? 'entry' : 'entries'}</span>
+        <button
+          style={{ ...s.refreshBtn, ...(loading ? s.refreshBtnSpinning : {}) }}
+          onClick={refresh}
+          title="Refresh"
+          disabled={loading}
+        >
+          {loading ? '...' : 'Refresh'}
+        </button>
+        <span style={s.entryCount}>
+          {entries.length}{hasMore ? '+' : ''} {entries.length === 1 ? 'entry' : 'entries'}
+        </span>
       </div>
 
-      {/* Entries */}
+      {/* Entry list */}
       <div style={s.list}>
-        {sorted.length === 0 && (
+
+        {/* Loading — first load only (no entries yet) */}
+        {loading && entries.length === 0 && (
+          <div style={s.loadingState}>Loading ledger...</div>
+        )}
+
+        {/* Empty state */}
+        {!loading && sorted.length === 0 && (
           <div style={s.emptyState}>
             <div style={s.emptyIcon}>≡</div>
             <div style={s.emptyTitle}>
@@ -151,32 +230,41 @@ export function Ledger({ tier, onUpgradeClick }: LedgerProps) {
             </div>
             <div style={s.emptyDesc}>
               {search
-                ? 'Try a different search term'
+                ? 'Try a different search term.'
                 : 'Every Think Tank answer is automatically saved here. Ask the Think Tank anything to get started.'}
             </div>
           </div>
         )}
 
+        {/* Entries */}
         {sorted.map(entry => {
           const isExpanded = expanded === entry.id;
-          const riskColor = entry.forgeScore ? (RISK_COLORS[entry.forgeScore.risk] ?? '#f59e0b') : null;
-          const tab = activeTab[entry.id] ?? 0;
+          const riskColor  = entry.forgeScore ? (RISK_COLORS[entry.forgeScore.risk] ?? '#f59e0b') : null;
+          const tab        = activeTab[entry.id] ?? 0;
 
           return (
-            <div key={entry.id} style={{ ...s.entryCard, ...(isExpanded ? s.entryCardOpen : {}), ...(entry.starred ? s.entryCardStarred : {}) }}>
+            <div
+              key={entry.id}
+              style={{
+                ...s.entryCard,
+                ...(isExpanded ? s.entryCardOpen : {}),
+                ...(entry.starred ? s.entryCardStarred : {}),
+              }}
+            >
               {/* Collapsed header row */}
               <div style={s.entryRow}>
-                {/* Star */}
-                <button style={s.starBtn} onClick={() => handleStar(entry.id, entry.starred)}
-                  title={entry.starred ? 'Unstar' : 'Star'}>
+                <button
+                  style={s.starBtn}
+                  onClick={() => handleStar(entry.id, entry.starred)}
+                  title={entry.starred ? 'Unstar' : 'Star'}
+                >
                   {entry.starred ? '★' : '☆'}
                 </button>
 
-                {/* Content summary */}
                 <div style={s.entrySummary} onClick={() => setExpanded(isExpanded ? null : entry.id)}>
                   <div style={s.entryRequest}>
                     {entry.workflow && <span style={s.workflowBadge}>{entry.workflow}</span>}
-                    {entry.request.slice(0, 120)}{entry.request.length > 120 ? '…' : ''}
+                    {(entry.request ?? '').slice(0, 120)}{(entry.request?.length ?? 0) > 120 ? '...' : ''}
                   </div>
                   <div style={s.entryMeta}>
                     <span style={s.entryAge}>{formatAge(entry.timestamp)}</span>
@@ -194,7 +282,6 @@ export function Ledger({ tier, onUpgradeClick }: LedgerProps) {
                   </div>
                 </div>
 
-                {/* Expand chevron */}
                 <button style={s.chevronBtn} onClick={() => setExpanded(isExpanded ? null : entry.id)}>
                   {isExpanded ? '▲' : '▼'}
                 </button>
@@ -206,20 +293,20 @@ export function Ledger({ tier, onUpgradeClick }: LedgerProps) {
 
                   {/* Synthesis */}
                   <div style={s.detailSection}>
-                    <div style={s.detailSectionLabel}>SYNTHESIS</div>
+                    <div style={s.detailSectionLabel}>Synthesis</div>
                     <div style={s.synthesisText}>{entry.synthesis}</div>
                   </div>
 
                   {/* Forge Score */}
                   {entry.forgeScore && (
                     <div style={s.detailSection}>
-                      <div style={s.detailSectionLabel}>FORGE SCORE</div>
+                      <div style={s.detailSectionLabel}>Forge Score</div>
                       <div style={s.forgeGrid}>
                         <ForgeBar confidence={entry.forgeScore.confidence} />
-                        {entry.forgeScore.agreement    && <ForgeDetailRow icon="✓" label="Agreement"    text={entry.forgeScore.agreement} />}
-                        {entry.forgeScore.disagreement && <ForgeDetailRow icon="✗" label="Disagreement" text={entry.forgeScore.disagreement} />}
-                        {entry.forgeScore.assumptions  && <ForgeDetailRow icon="≈" label="Assumptions"  text={entry.forgeScore.assumptions} />}
-                        {entry.forgeScore.verify       && <ForgeDetailRow icon="→" label="Verify"       text={entry.forgeScore.verify} />}
+                        {entry.forgeScore.agreement    && <ForgeDetailRow icon="+" label="Agreement"    text={entry.forgeScore.agreement} />}
+                        {entry.forgeScore.disagreement && <ForgeDetailRow icon="-" label="Disagreement" text={entry.forgeScore.disagreement} />}
+                        {entry.forgeScore.assumptions  && <ForgeDetailRow icon="~" label="Assumptions"  text={entry.forgeScore.assumptions} />}
+                        {entry.forgeScore.verify       && <ForgeDetailRow icon=">" label="Verify"       text={entry.forgeScore.verify} />}
                       </div>
                     </div>
                   )}
@@ -227,12 +314,14 @@ export function Ledger({ tier, onUpgradeClick }: LedgerProps) {
                   {/* Individual AI responses */}
                   {entry.responses && entry.responses.length > 1 && (
                     <div style={s.detailSection}>
-                      <div style={s.detailSectionLabel}>INDIVIDUAL AI RESPONSES</div>
+                      <div style={s.detailSectionLabel}>Individual AI Responses</div>
                       <div style={s.tabBar}>
                         {entry.responses.map((r, i) => (
-                          <button key={r.provider}
+                          <button
+                            key={r.provider}
                             style={{ ...s.tab, ...(tab === i ? s.tabActive : {}) }}
-                            onClick={() => setActiveTab(t => ({ ...t, [entry.id]: i }))}>
+                            onClick={() => setActiveTab(t => ({ ...t, [entry.id]: i }))}
+                          >
                             <span style={{ color: PROVIDER_COLORS[r.provider.toLowerCase()] ?? 'var(--accent)' }}>●</span>
                             {' '}{PROVIDER_LABELS[r.provider.toLowerCase()] ?? r.provider}
                           </button>
@@ -244,15 +333,19 @@ export function Ledger({ tier, onUpgradeClick }: LedgerProps) {
 
                   {/* Actions */}
                   <div style={s.entryActions}>
-                    <button style={s.actionBtn}
+                    <button
+                      style={s.actionBtn}
                       disabled={!!exporting}
-                      onClick={() => handleExport(entry.id, 'md')}>
-                      {exporting === entry.id + 'md' ? 'Saving…' : '⬇ MD'}
+                      onClick={() => handleExport(entry.id, 'md')}
+                    >
+                      {exporting === entry.id + 'md' ? 'Saving...' : 'Export MD'}
                     </button>
-                    <button style={{ ...s.actionBtn, ...s.actionBtnPrimary }}
+                    <button
+                      style={{ ...s.actionBtn, ...s.actionBtnPrimary }}
                       disabled={!!exporting}
-                      onClick={() => handleExport(entry.id, 'pdf')}>
-                      {exporting === entry.id + 'pdf' ? 'Saving…' : '⬇ PDF'}
+                      onClick={() => handleExport(entry.id, 'pdf')}
+                    >
+                      {exporting === entry.id + 'pdf' ? 'Saving...' : 'Export PDF'}
                     </button>
                     <div style={{ flex: 1 }} />
                     <button style={s.deleteBtn} onClick={() => handleDelete(entry.id)}>
@@ -265,12 +358,25 @@ export function Ledger({ tier, onUpgradeClick }: LedgerProps) {
             </div>
           );
         })}
+
+        {/* Load more */}
+        {hasMore && !loading && (
+          <button style={s.loadMoreBtn} onClick={() => setPage(p => p + 1)}>
+            Load more entries
+          </button>
+        )}
+
+        {/* Loading indicator for subsequent pages */}
+        {loading && entries.length > 0 && (
+          <div style={s.loadingMore}>Loading...</div>
+        )}
+
       </div>
     </div>
   );
 }
 
-// ── Sub-components ───────────────────────────────────────────────────────────
+// ── Sub-components ────────────────────────────────────────────────────────────
 
 function ForgeBar({ confidence }: { confidence: number }) {
   const color = confidence >= 75 ? '#10a37f' : confidence >= 50 ? '#f59e0b' : '#ef4444';
@@ -288,86 +394,158 @@ function ForgeBar({ confidence }: { confidence: number }) {
 function ForgeDetailRow({ icon, label, text }: { icon: string; label: string; text: string }) {
   return (
     <div style={{ display: 'flex', gap: 6, fontSize: 12, lineHeight: 1.5 }}>
-      <span style={{ width: 18, flexShrink: 0 }}>{icon}</span>
+      <span style={{ width: 14, flexShrink: 0, color: 'var(--text-muted)' }}>{icon}</span>
       <span style={{ color: 'var(--text-muted)', flexShrink: 0, fontWeight: 600 }}>{label}: </span>
       <span style={{ color: 'var(--text-secondary)' }}>{text}</span>
     </div>
   );
 }
 
-// ── Styles ───────────────────────────────────────────────────────────────────
+// ── Styles ────────────────────────────────────────────────────────────────────
 
 const s: Record<string, React.CSSProperties> = {
-  page: { display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', background: 'var(--bg-base)' },
+  page: {
+    display: 'flex', flexDirection: 'column', height: '100%',
+    overflow: 'hidden', background: 'var(--bg-base)',
+  },
 
-  header: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', padding: '20px 24px 0', flexShrink: 0 },
-  title: { fontSize: 18, fontWeight: 700, color: 'var(--text-primary)', margin: '0 0 4px' },
+  // Header
+  header: {
+    display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
+    padding: '20px 24px 0', flexShrink: 0,
+  },
+  title:    { fontSize: 18, fontWeight: 700, color: 'var(--text-primary)', margin: '0 0 4px' },
   subtitle: { fontSize: 12, color: 'var(--text-secondary)', margin: 0 },
   headerActions: { display: 'flex', gap: 8, flexShrink: 0, marginTop: 4 },
 
-  exportBtn: { background: 'var(--bg-elevated)', border: '1px solid var(--border)', color: 'var(--text-secondary)', borderRadius: 8, padding: '6px 14px', fontSize: 12, cursor: 'pointer' },
-  exportBtnPrimary: { background: 'var(--accent)', color: '#fff', border: 'none', fontWeight: 600 },
+  exportBtn: {
+    background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+    color: 'var(--text-secondary)', borderRadius: 8, padding: '6px 14px',
+    fontSize: 12, cursor: 'pointer',
+  },
+  exportBtnPrimary: {
+    background: 'var(--accent)', color: '#fff', border: 'none', fontWeight: 600,
+  },
   exportBtnDisabled: { opacity: 0.4, cursor: 'not-allowed' },
 
-  searchRow: { display: 'flex', alignItems: 'center', gap: 8, padding: '16px 24px 12px', flexShrink: 0 },
-  searchInput: { flex: 1, background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text-primary)', fontSize: 13, padding: '8px 14px', outline: 'none' },
-  clearSearch: { background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: 14, cursor: 'pointer', padding: '4px 8px' },
+  // Search bar
+  searchRow: {
+    display: 'flex', alignItems: 'center', gap: 8,
+    padding: '16px 24px 12px', flexShrink: 0,
+  },
+  searchInput: {
+    flex: 1, background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+    borderRadius: 8, color: 'var(--text-primary)', fontSize: 13,
+    padding: '8px 14px', outline: 'none',
+  },
+  clearSearch: {
+    background: 'none', border: 'none', color: 'var(--text-muted)',
+    fontSize: 14, cursor: 'pointer', padding: '4px 8px',
+  },
+  refreshBtn: {
+    background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+    borderRadius: 7, color: 'var(--text-secondary)', cursor: 'pointer',
+    fontSize: 11, fontWeight: 600, padding: '6px 12px', flexShrink: 0,
+  },
+  refreshBtnSpinning: { opacity: 0.5, cursor: 'not-allowed' },
   entryCount: { fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' },
 
-  list: { flex: 1, overflowY: 'auto', padding: '0 24px 32px', display: 'flex', flexDirection: 'column', gap: 8 },
+  // List
+  list: {
+    flex: 1, overflowY: 'auto', padding: '0 24px 32px',
+    display: 'flex', flexDirection: 'column', gap: 8,
+  },
+  loadingState: {
+    color: 'var(--text-muted)', fontSize: 12,
+    padding: '40px 0', textAlign: 'center',
+  },
+  loadingMore: {
+    color: 'var(--text-muted)', fontSize: 11,
+    padding: '10px 0', textAlign: 'center',
+  },
+  loadMoreBtn: {
+    alignSelf: 'center', background: 'var(--bg-elevated)',
+    border: '1px solid var(--border)', borderRadius: 8,
+    color: 'var(--text-secondary)', cursor: 'pointer',
+    fontSize: 12, fontWeight: 600, padding: '8px 24px', marginTop: 4,
+  },
 
-  emptyState: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, padding: 60, textAlign: 'center' },
-  emptyIcon: { fontSize: 48 },
+  // Empty state
+  emptyState: {
+    display: 'flex', flexDirection: 'column', alignItems: 'center',
+    justifyContent: 'center', gap: 12, padding: 60, textAlign: 'center',
+  },
+  emptyIcon:  { fontSize: 48 },
   emptyTitle: { fontSize: 17, fontWeight: 700, color: 'var(--text-primary)' },
-  emptyDesc: { fontSize: 13, color: 'var(--text-secondary)', maxWidth: 400, lineHeight: 1.6 },
+  emptyDesc:  { fontSize: 13, color: 'var(--text-secondary)', maxWidth: 400, lineHeight: 1.6 },
 
-  entryCard: { background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' },
-  entryCardOpen: { border: '1px solid var(--accent)44' },
+  // Entry cards
+  entryCard:        { background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' },
+  entryCardOpen:    { border: '1px solid var(--accent)44' },
   entryCardStarred: { border: '1px solid #f59e0b44', background: '#f59e0b05' },
 
-  entryRow: { display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px' },
-  starBtn: { background: 'none', border: 'none', fontSize: 16, cursor: 'pointer', flexShrink: 0, padding: '0 2px', opacity: 0.8 },
+  entryRow:     { display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px' },
+  starBtn:      { background: 'none', border: 'none', fontSize: 16, cursor: 'pointer', flexShrink: 0, padding: '0 2px', opacity: 0.8 },
   entrySummary: { flex: 1, cursor: 'pointer', minWidth: 0 },
   entryRequest: { fontSize: 13, color: 'var(--text-primary)', fontWeight: 500, lineHeight: 1.4, marginBottom: 4, wordBreak: 'break-word' },
-  entryMeta: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
-  entryAge: { fontSize: 11, color: 'var(--text-muted)' },
-  riskPill: { fontSize: 10, fontWeight: 700, borderRadius: 20, padding: '1px 7px', textTransform: 'uppercase', letterSpacing: '0.04em' },
-  confPill: { fontSize: 11, color: 'var(--text-muted)' },
+  entryMeta:    { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  entryAge:     { fontSize: 11, color: 'var(--text-muted)' },
+  riskPill:     { fontSize: 10, fontWeight: 700, borderRadius: 20, padding: '1px 7px', textTransform: 'uppercase', letterSpacing: '0.04em' },
+  confPill:     { fontSize: 11, color: 'var(--text-muted)' },
   providerPill: { fontSize: 11, color: 'var(--text-muted)' },
-  workflowBadge: { display: 'inline-block', fontSize: 10, fontWeight: 700, color: 'var(--accent)', background: 'var(--accent-dim)', borderRadius: 4, padding: '1px 6px', marginRight: 6, textTransform: 'uppercase', letterSpacing: '0.04em' },
-  chevronBtn: { background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: 11, cursor: 'pointer', padding: '4px 8px', flexShrink: 0 },
+  workflowBadge: {
+    display: 'inline-block', fontSize: 10, fontWeight: 700,
+    color: 'var(--accent)', background: 'var(--accent-dim)', borderRadius: 4,
+    padding: '1px 6px', marginRight: 6, textTransform: 'uppercase', letterSpacing: '0.04em',
+  },
+  chevronBtn: {
+    background: 'none', border: 'none', color: 'var(--text-muted)',
+    fontSize: 11, cursor: 'pointer', padding: '4px 8px', flexShrink: 0,
+  },
 
-  entryDetail: { borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 0 },
-  detailSection: { padding: '14px 16px', borderBottom: '1px solid var(--border)' },
-  detailSectionLabel: { fontSize: 9, fontWeight: 800, color: 'var(--accent)', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 8 },
+  // Expanded detail
+  entryDetail:      { borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 0 },
+  detailSection:    { padding: '14px 16px', borderBottom: '1px solid var(--border)' },
+  detailSectionLabel: {
+    fontSize: 9, fontWeight: 800, color: 'var(--accent)',
+    letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 8,
+  },
   synthesisText: { fontSize: 13, color: 'var(--text-primary)', lineHeight: 1.7, whiteSpace: 'pre-wrap' },
-  forgeGrid: { display: 'flex', flexDirection: 'column', gap: 6 },
+  forgeGrid:     { display: 'flex', flexDirection: 'column', gap: 6 },
 
   tabBar: { display: 'flex', gap: 4, marginBottom: 10 },
-  tab: { fontSize: 11, fontWeight: 600, padding: '4px 10px', borderRadius: 20, background: 'var(--bg-base)', border: '1px solid var(--border)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 },
-  tabActive: { background: 'var(--accent)22', border: '1px solid var(--accent)55', color: 'var(--text-primary)' },
+  tab: {
+    fontSize: 11, fontWeight: 600, padding: '4px 10px', borderRadius: 20,
+    background: 'var(--bg-base)', border: '1px solid var(--border)',
+    color: 'var(--text-secondary)', cursor: 'pointer',
+    display: 'flex', alignItems: 'center', gap: 4,
+  },
+  tabActive:  { background: 'var(--accent)22', border: '1px solid var(--accent)55', color: 'var(--text-primary)' },
   tabContent: { fontSize: 12, lineHeight: 1.6, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', maxHeight: 220, overflowY: 'auto' },
 
-  entryActions: { display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px' },
-  actionBtn: { background: 'var(--bg-base)', border: '1px solid var(--border)', color: 'var(--text-secondary)', borderRadius: 6, padding: '5px 12px', fontSize: 12, cursor: 'pointer' },
+  entryActions:    { display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px' },
+  actionBtn:       { background: 'var(--bg-base)', border: '1px solid var(--border)', color: 'var(--text-secondary)', borderRadius: 6, padding: '5px 12px', fontSize: 12, cursor: 'pointer' },
   actionBtnPrimary: { background: 'var(--accent)', color: '#fff', border: 'none', fontWeight: 600 },
-  deleteBtn: { background: 'none', border: '1px solid var(--border)', color: '#ef4444', borderRadius: 6, padding: '5px 12px', fontSize: 12, cursor: 'pointer' },
+  deleteBtn:       { background: 'none', border: '1px solid var(--border)', color: '#ef4444', borderRadius: 6, padding: '5px 12px', fontSize: 12, cursor: 'pointer' },
 
   // Upgrade gate
   upgradeGate: {
-    display: 'flex', flexDirection: 'column' as const, alignItems: 'center', gap: 16,
-    maxWidth: 420, textAlign: 'center' as const, padding: 32,
+    display: 'flex', flexDirection: 'column' as const, alignItems: 'center',
+    gap: 16, maxWidth: 420, textAlign: 'center' as const, padding: 32,
     background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 16,
   },
-  upgradeIcon: { fontSize: 48 },
+  upgradeIcon:  { fontSize: 48 },
   upgradeTitle: { fontSize: 20, fontWeight: 800, color: 'var(--text-primary)' },
-  upgradeDesc: { fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6 },
-  upgradeFeatures: { display: 'flex', flexDirection: 'column' as const, gap: 6, alignItems: 'flex-start', width: '100%' },
+  upgradeDesc:  { fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6 },
+  upgradeFeatures: {
+    display: 'flex', flexDirection: 'column' as const, gap: 6,
+    alignItems: 'flex-start', width: '100%',
+  },
   upgradeFeature: { fontSize: 13, color: '#10a37f', fontWeight: 500 },
   upgradeBtn: {
     background: 'linear-gradient(135deg, var(--accent), var(--purple))',
     color: '#fff', border: 'none', borderRadius: 10,
-    padding: '12px 28px', fontSize: 14, fontWeight: 700, cursor: 'pointer',
-    width: '100%', marginTop: 4,
+    padding: '12px 28px', fontSize: 14, fontWeight: 700,
+    cursor: 'pointer', width: '100%', marginTop: 4,
   },
 };

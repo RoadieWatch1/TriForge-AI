@@ -23,8 +23,9 @@ export interface Mission extends MissionDefinition {
 // ── MissionManager ─────────────────────────────────────────────────────────────
 
 export class MissionManager {
-  private _missions  = new Map<string, Mission>();
-  private _tickTimer: ReturnType<typeof setInterval> | null = null;
+  private _missions    = new Map<string, Mission>();
+  private _tickTimer:  ReturnType<typeof setInterval> | null = null;
+  private _lastTickAt: number | null = null;
 
   constructor(
     private _store:     MissionStore,
@@ -111,11 +112,24 @@ export class MissionManager {
     if (this._missions.size > 0) this._ensureTickerRunning();
   }
 
+  /** Public start — idempotent wrapper around _ensureTickerRunning. */
+  start(): void {
+    this._ensureTickerRunning();
+  }
+
   stop(): void {
     if (this._tickTimer) {
       clearInterval(this._tickTimer);
       this._tickTimer = null;
     }
+  }
+
+  isRunning(): boolean {
+    return this._tickTimer !== null;
+  }
+
+  getLastTickAt(): number | null {
+    return this._lastTickAt;
   }
 
   // ── Internal scheduler ─────────────────────────────────────────────────────
@@ -128,6 +142,7 @@ export class MissionManager {
 
   private _tick(): void {
     const now = Date.now();
+    this._lastTickAt = now;
     for (const [id, mission] of this._missions) {
       if (!mission.schedule || !mission.enabled) continue;
       const def = this._store.get(id);

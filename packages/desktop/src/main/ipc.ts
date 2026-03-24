@@ -1,4 +1,5 @@
-import { ipcMain, shell, dialog, app, BrowserWindow, clipboard, desktopCapturer } from 'electron';
+import { ipcMain, shell, dialog, app, BrowserWindow, clipboard, desktopCapturer, Notification } from 'electron';
+import crypto from 'crypto';
 import fs from 'fs';
 import https from 'https';
 import http from 'http';
@@ -44,7 +45,85 @@ import { initCouncilNotify, sendRemoteUpdate } from './councilNotify';
 import { evaluateProactiveOpportunity, resetProactiveCooldown } from './proactiveCouncil';
 import { MissionManager } from '../core/missions/missionManager';
 import { MissionStore } from '../core/missions/missionStore';
+import { startWebhookServer, stopWebhookServer, isWebhookServerRunning, registerGitHubWebhookHandler, unregisterGitHubWebhookHandler } from './webhookServer';
+import { ControlPlaneServer } from './controlPlane';
+import { analyzeSkill, evaluateSkillPolicy } from '@triforge/engine';
+import type { InboundTaskSource, InboundRiskClass, InboundTaskDecision } from '@triforge/engine';
+import * as githubAdapter from './integrations/githubAdapter';
+import { GitHubReviewStore } from './integrations/githubReviewStore';
+import { handleGitHubWebhook } from './integrations/githubWebhook';
+import { SkillStoreManager } from './skillStore';
+import type { InstalledSkill } from './skillStore';
+import { GovernanceStore } from './governanceStore';
+import { resolveGovernance } from '@triforge/engine';
+import type { GovSource, GovRiskClass } from '@triforge/engine';
+import { TelegramAdapter } from './messaging/telegramAdapter';
+import type { TgMessage } from './messaging/telegramAdapter';
+import { SlackAdapter } from './messaging/slackAdapter';
+import type { SlackMessage } from './messaging/slackAdapter';
+import { DiscordAdapter } from './messaging/discordAdapter';
+import type { DiscordMessage } from './messaging/discordAdapter';
+import { JiraAdapter } from './jiraAdapter';
+import type { JiraIssue, JiraProject, JiraTransition, JiraComment } from './jiraAdapter';
+import { LinearAdapter } from './linearAdapter';
+import type { LinearIssue, LinearTeam, LinearWorkflowState, LinearComment } from './linearAdapter';
+import { PushNotifier, DEFAULT_EVENT_SETTINGS, ALL_NOTIFY_EVENTS, EVENT_LABELS } from './pushNotifier';
+import type { NotifyEvent, NotifyPriority, NotifyProvider } from './pushNotifier';
+import { BUILTIN_RECIPES } from './automationRecipes';
+import type { RecipeDef, RecipeState, RecipeView } from './automationRecipes';
+import { WorkspaceCredentialResolver } from './workspaceCredentialResolver';
+import type { IntegrationName } from './workspaceCredentialResolver';
+import type { WorkspaceIntegrationConfig } from './store';
+import { WorkspacePolicyEngine, DEFAULT_APPROVAL_MATRIX, categoryForSource } from './workspacePolicyEngine';
+import type { ActionCategory, WorkspaceApprovalRule } from './workspacePolicyEngine';
+import { WorkspaceAutomationGate } from './workspaceAutomationGate';
+import { DEFAULT_AUTOMATION_POLICY } from './store';
+import type { WorkspaceRecipePolicy, DelegatedOperator, WorkspaceAutomationPolicy } from './store';
+import { RunbookExecutor } from './runbookExecutor';
+import { RunbookScheduler } from './runbookScheduler';
+import type { RunbookDef, RunbookStep, HandoffQueueItem } from './runbooks';
+import { makeRunbookId, makeStepId } from './runbooks';
+import type { DispatchRunbookItem, DispatchRunbookExecution, DispatchHandoffItem } from './dispatchServer';
+// Phase 35 — Runbook Packs
+import { buildPack, serializePack, deserializePack } from './runbookPackSerializer';
+import { previewPack, installPack, uninstallPack, rollbackPack } from './runbookPackInstaller';
+// Phase 36 — Pack trust, signing, and update safety
+import { getOrCreateLocalKey, signPack, computeKeyId } from './packSigner';
+import type { TrustedSigner } from './runbookPack';
+// Phase 37 — Workspace analytics
+import { generateReport, formatReportText, windowFromTs } from './analyticsEngine';
+import type { AnalyticsWindow } from './analyticsEngine';
+// Phase 38 — Enterprise admin + policy inheritance
+import { makeOrgId, DEFAULT_ORG_POLICY } from './orgConfig';
+import type { OrgConfig, OrgPolicy, OrgSignerEntry } from './orgConfig';
+import { resolveOrgEffective } from './inheritanceResolver';
+import { exportAuditLog, exportPolicyHistory } from './auditExporter';
+import type { AuditExportFormat } from './auditExporter';
+// Phase 40 — Reliability, Backup, Recovery, Migrations
+import {
+  createBackupFile, restoreBackupFile, getLastBackupAt,
+  createSnapshot, listSnapshots, rollbackSnapshot, deleteSnapshot,
+  getIncidents, recordCrash, resetIncident,
+} from './backupEngine';
+import { validateStore, validateAndRepairStore } from './storeValidator';
+import { runMigrations, getMigrationHistory, getCurrentSchemaVersion } from './migrationEngine';
+import { computeKeyId } from './packSigner';
+import {
+  resolveRepo, resolveChannel, resolveProject,
+  upsertRepo, deleteRepo, upsertChannel, deleteChannel, upsertProject, deleteProject,
+} from './sharedContext';
+import type { RepoMapping, ChannelMapping, ProjectNote, ContextCategory } from './sharedContext';
+import { MessageLog } from './messaging/messageLog';
 import { autonomyController } from '../core/autonomy/AutonomyController';
+import { DispatchServer, generateDispatchToken, generateQrDataUrl } from './dispatchServer';
+import type { DispatchHandlers, DispatchActionItem, DispatchHistoryEntry, DispatchRecipeItem, DispatchMissionItem, DispatchOpsOverview, RemoteActionContext, ActionResult, DispatchTask, DispatchTaskParams, DispatchTaskStep, DispatchTaskEvent, DispatchArtifact, ArtifactType, DispatchArtifactBundle, BundleDestination, BundleStatus, DispatchThread, DispatchMessage, ThreadStatus, MessageRole, TaskCategory, CollaboratorRole, ThreadVisibility, ThreadCollaborator, ThreadInvite, ThreadComment, ApprovalAttribution, WorkspaceRole, WorkspaceMember, WorkspaceInvite, WorkspacePolicy, Workspace } from './dispatchServer';
+import { DEFAULT_WORKSPACE_POLICY, WORKSPACE_ROLE_RANK } from './dispatchServer';
+import {
+  generatePairingCode,
+  toDeviceView,
+  isRiskAllowed,
+} from './dispatchSession';
+import type { PairedDevice, RiskLevel, PendingConfirmation, DeviceView } from './dispatchSession';
 import { BlueprintLoader } from '../core/blueprints/BlueprintLoader';
 import { BLUEPRINT_IDS, isValidBlueprintId } from '../core/blueprints/BlueprintRegistry';
 import { applyBlueprint, deactivateBlueprint, getActiveBlueprint } from '../core/blueprints/applyBlueprint';
@@ -64,6 +143,19 @@ import type { CouncilVote } from '@triforge/engine';
 import { ResultStore } from './resultStore';
 import { ValueEngine, CampaignStore, MetricsStore, CompoundEngine } from '@triforge/engine';
 import { GrowthService } from './growthService';
+import { runCapabilityScan, inferConnectedPlatforms } from './capabilityScanner';
+import { analyzeGaps, rankLanes } from './toolGapAnalyzer';
+import type { ToolGap } from './toolGapAnalyzer';
+import type { IncomeLaneId } from './store';
+import { listForgeHubSkills, getForgeHubSkill, getSkillsForLane, getSkillMarkdown, syncBuiltinSkills } from '@triforge/engine';
+import { mcpRegistry } from '@triforge/engine';
+import { ExperimentManager } from './experimentManager';
+import { generateRecommendations, LANE_PLATFORMS } from './incomeDecisionEngine';
+import type { DecisionInput } from './incomeDecisionEngine';
+import { IncomeAutopilot } from './incomeAutopilot';
+import { ok as incomeOk, fail as incomeFail } from './utils/actionResult';
+import { withRetry } from './utils/retry';
+import { setExperimentManager } from './systemPrompt';
 import {
   ProviderManager,
   IntentEngine,
@@ -110,6 +202,9 @@ import {
 let providerManager: ProviderManager | null = null;
 let intentEngine: IntentEngine | null = null;
 
+// Module-level store ref — set on setupIpc, used by exported helpers
+let _ipcStore: Store | null = null;
+
 // ── Task Engine singletons (lazy-init inside handlers) ─────────────────────────
 let _taskStore: TaskStore | null = null;
 let _auditLedger: AuditLedger | null = null;
@@ -141,6 +236,251 @@ let _memGraph: CouncilMemoryGraph | null = null;
 let _councilRuntime: CouncilRuntime | null = null;
 let _insightEngine: InsightEngine | null = null;
 let _insightRouter: InsightRouter | null = null;
+
+// ── Phase 2: Control Plane singleton ────────────────────────────────────────
+let _controlPlane: ControlPlaneServer | null = null;
+
+// ── Phase 3: GitHub singletons ───────────────────────────────────────────────
+let _githubReviewStore: GitHubReviewStore | null = null;
+let _githubWebhookEnabled = false;
+
+// ── Phase 5: Skill Store singleton ──────────────────────────────────────────
+let _skillStoreManager: SkillStoreManager | null = null;
+function _getSkillStore(): SkillStoreManager {
+  if (!_skillStoreManager) _skillStoreManager = new SkillStoreManager(_getDataDir());
+  return _skillStoreManager;
+}
+
+// ── Income Operator: ExperimentManager singleton ──────────────────────────────
+let _experimentManager: ExperimentManager | null = null;
+function _getExperimentManager(store: Store): ExperimentManager {
+  if (!_experimentManager) {
+    _experimentManager = new ExperimentManager(store, _getDataDir());
+    setExperimentManager(_experimentManager);
+  }
+  return _experimentManager;
+}
+
+// ── Income Operator: Autopilot singleton (Phase 5) ────────────────────────────
+let _incomeAutopilot: IncomeAutopilot | null = null;
+function _getAutopilot(store: Store): IncomeAutopilot {
+  if (!_incomeAutopilot) {
+    // Entitlement callback — checked each cycle before creating approvals.
+    // Uses sync store.get() so the autopilot loop never needs to await tier resolution.
+    const canCreateApproval = () => {
+      const license = store.get<{ tier?: string }>('license', {});
+      const t = (license?.tier ?? 'free') as 'free' | 'pro' | 'business';
+      return hasCapability('INCOME_OPERATOR', t) || hasCapability('INCOME_LANES', t);
+    };
+    _incomeAutopilot = new IncomeAutopilot(
+      store,
+      _getExperimentManager(store),
+      _getApprovalStore(),
+      _getDataDir(),
+      undefined, // use default interval
+      canCreateApproval,
+    );
+  }
+  return _incomeAutopilot;
+}
+
+// ── Phase 6: Telegram singletons ─────────────────────────────────────────────
+let _telegramBot: TelegramAdapter | null = null;
+const _messageLog = new MessageLog();
+
+// ── Phase 8: Slack singletons ─────────────────────────────────────────────────
+let _slackAdapter: SlackAdapter | null = null;
+let _slackSummaryTimer: ReturnType<typeof setInterval> | null = null;
+
+// ── Phase 12: Discord singleton ───────────────────────────────────────────────
+let _discordAdapter: DiscordAdapter | null = null;
+
+// ── Phase 13: Automation Recipe timers ────────────────────────────────────────
+const _recipeTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
+
+// ── Phase 17: TriForge Dispatch singleton ──────────────────────────────────────
+let _dispatchServer: DispatchServer | null = null;
+
+// ── Phase 33: Runbook Scheduler singleton ─────────────────────────────────────
+let _runbookScheduler: RunbookScheduler | null = null;
+
+// ── Phase 15: Action Center — acknowledged in-memory set ──────────────────────
+// Items from immutable sources (blocked audit events, failed push, message log)
+// are acknowledged by adding their prefixed ID here. Cleared on restart.
+const _acknowledgedActionIds: Set<string> = new Set();
+
+// ── Phase 9: Jira singletons ──────────────────────────────────────────────────
+
+interface JiraQueuedAction {
+  id:           string;
+  type:         'comment' | 'create' | 'transition' | 'update';
+  issueKey?:    string;
+  projectKey?:  string;
+  issueTypeId?: string;
+  summary:      string;      // human-readable label for the queue
+  body:         string;      // draft text / description / comment body
+  transitionId?: string;
+  toStatus?:     string;
+  status:       'pending' | 'approved' | 'dismissed';
+  createdAt:    number;
+  processedAt?: number;
+}
+
+class JiraActionQueue {
+  private _items: JiraQueuedAction[] = [];
+  private _seq = 0;
+
+  enqueue(action: Omit<JiraQueuedAction, 'id' | 'status' | 'createdAt'>): JiraQueuedAction {
+    const item: JiraQueuedAction = { ...action, id: `jq_${++this._seq}`, status: 'pending', createdAt: Date.now() };
+    this._items.push(item);
+    if (this._items.length > 200) this._items.shift();
+    return item;
+  }
+
+  approve(id: string): JiraQueuedAction | null {
+    const item = this._items.find(i => i.id === id);
+    if (!item || item.status !== 'pending') return null;
+    item.status = 'approved';
+    item.processedAt = Date.now();
+    return item;
+  }
+
+  dismiss(id: string): boolean {
+    const item = this._items.find(i => i.id === id);
+    if (!item || item.status !== 'pending') return false;
+    item.status = 'dismissed';
+    item.processedAt = Date.now();
+    return true;
+  }
+
+  list(includeProcessed = false): JiraQueuedAction[] {
+    return includeProcessed
+      ? [...this._items].reverse()
+      : this._items.filter(i => i.status === 'pending').reverse();
+  }
+}
+
+let _jiraActionQueue: JiraActionQueue | null = null;
+function _getJiraQueue(): JiraActionQueue {
+  if (!_jiraActionQueue) _jiraActionQueue = new JiraActionQueue();
+  return _jiraActionQueue;
+}
+
+function _getJiraAdapter(): JiraAdapter | null {
+  return null;
+}
+
+// ── Phase 11: Linear action queue ─────────────────────────────────────────────
+
+interface LinearQueuedAction {
+  id:          string;
+  type:        'comment' | 'create' | 'update';
+  issueId?:    string;
+  teamId?:     string;
+  summary:     string;
+  body:        string;
+  // update-specific
+  stateId?:    string;
+  assigneeId?: string;
+  priority?:   number;
+  status:      'pending' | 'approved' | 'dismissed';
+  createdAt:   number;
+  processedAt?: number;
+}
+
+class LinearActionQueue {
+  private _items: LinearQueuedAction[] = [];
+  private _seq = 0;
+
+  enqueue(action: Omit<LinearQueuedAction, 'id' | 'status' | 'createdAt'>): LinearQueuedAction {
+    const item: LinearQueuedAction = { ...action, id: `lq_${++this._seq}`, status: 'pending', createdAt: Date.now() };
+    this._items.push(item);
+    if (this._items.length > 200) this._items.shift();
+    return item;
+  }
+
+  approve(id: string): LinearQueuedAction | null {
+    const item = this._items.find(i => i.id === id);
+    if (!item || item.status !== 'pending') return null;
+    item.status = 'approved';
+    item.processedAt = Date.now();
+    return item;
+  }
+
+  dismiss(id: string): boolean {
+    const item = this._items.find(i => i.id === id);
+    if (!item || item.status !== 'pending') return false;
+    item.status = 'dismissed';
+    item.processedAt = Date.now();
+    return true;
+  }
+
+  list(includeProcessed = false): LinearQueuedAction[] {
+    return includeProcessed
+      ? [...this._items].reverse()
+      : this._items.filter(i => i.status === 'pending').reverse();
+  }
+}
+
+let _linearActionQueue: LinearActionQueue | null = null;
+function _getLinearQueue(): LinearActionQueue {
+  if (!_linearActionQueue) _linearActionQueue = new LinearActionQueue();
+  return _linearActionQueue;
+}
+
+// ── Phase 10: Push Notification singleton ─────────────────────────────────────
+const _pushNotifier = new PushNotifier();
+
+async function _refreshPushConfig(): Promise<void> {
+  // Phase 28: prefer workspace push credentials if configured
+  const wsResult = await _getWsCredResolver().resolve('push');
+  let pushProvider: string;
+  let ntfyTopic: string | undefined;
+  let ntfyServer: string | undefined;
+  let ntfyToken:  string | undefined;
+  let pushoverApp: string | undefined;
+  let pushoverUser: string | undefined;
+
+  if (wsResult.scopeUsed === 'workspace') {
+    pushProvider = wsResult.pushProvider ?? 'disabled';
+    ntfyTopic    = wsResult.pushTopic;
+    ntfyServer   = wsResult.pushServer;
+    ntfyToken    = wsResult.token;
+    pushoverApp  = wsResult.pushoverApp;
+    pushoverUser = wsResult.pushoverUser;
+    _getAuditLedger().log('WS_INTEGRATION_USED', {
+      metadata: { integration: 'push', scope: 'workspace', fallbackUsed: wsResult.fallbackUsed, workspaceId: _ipcStore!.getWorkspace()?.id },
+    });
+  } else {
+    const creds = new CredentialManager(_ipcStore!);
+    pushProvider  = _ipcStore!.getPushProvider();
+    ntfyTopic     = _ipcStore!.getPushNtfyTopic();
+    ntfyServer    = _ipcStore!.getPushNtfyServer();
+    ntfyToken     = await creds.get('ntfy_token');
+    pushoverApp   = await creds.get('pushover_app_token');
+    pushoverUser  = _ipcStore!.getPushoverUserKey();
+  }
+
+  _pushNotifier.configure({
+    provider:    pushProvider as 'ntfy' | 'pushover' | 'disabled',
+    ntfyTopic:   ntfyTopic   ?? '',
+    ntfyServer:  ntfyServer  || 'https://ntfy.sh',
+    ntfyToken,
+    pushoverApp,
+    pushoverUser: pushoverUser ?? '',
+  });
+  const saved = _ipcStore!.getPushEventSettings();
+  if (Object.keys(saved).length > 0) {
+    _pushNotifier.setAllEventSettings(saved as Record<NotifyEvent, { enabled: boolean; priority: NotifyPriority }>);
+  }
+}
+
+// ── Phase 7: Governance singleton ────────────────────────────────────────────
+let _governanceStore: GovernanceStore | null = null;
+function _getGovernanceStore(): GovernanceStore {
+  if (!_governanceStore) _governanceStore = new GovernanceStore(_getDataDir());
+  return _governanceStore;
+}
 
 // ── Learning / Expert / Evolution / Placement singletons ────────────────────
 let _learningOrchestrator: InstanceType<typeof import('@triforge/engine').LearningOrchestrator> | null = null;
@@ -232,6 +572,86 @@ async function _getCouncilExecutor(): Promise<InstanceType<typeof CouncilExecuto
 function _getCredentialManager(store: Store): CredentialManager {
   if (!_credentialManager) _credentialManager = new CredentialManager(store);
   return _credentialManager;
+}
+
+let _wsCredResolver: WorkspaceCredentialResolver | null = null;
+function _getWsCredResolver(): WorkspaceCredentialResolver {
+  if (!_wsCredResolver) _wsCredResolver = new WorkspaceCredentialResolver(_ipcStore!);
+  return _wsCredResolver;
+}
+
+let _wsPolicyEngine: WorkspacePolicyEngine | null = null;
+function _getPolicyEngine(): WorkspacePolicyEngine {
+  if (!_wsPolicyEngine) _wsPolicyEngine = new WorkspacePolicyEngine(_ipcStore!);
+  return _wsPolicyEngine;
+}
+
+let _wsAutomationGate: WorkspaceAutomationGate | null = null;
+function _getAutomationGate(): WorkspaceAutomationGate {
+  if (!_wsAutomationGate) _wsAutomationGate = new WorkspaceAutomationGate(_ipcStore!);
+  return _wsAutomationGate;
+}
+
+function _buildRunbookExecutor(): RunbookExecutor {
+  return new RunbookExecutor(_ipcStore!, {
+    async runRecipe(id, via) {
+      return _executeRecipe(id, { source: via }, { isAdmin: true });
+    },
+    async runMission(id) {
+      try {
+        await _getMissionManager(_ipcStore!).runMission(id);
+        return { ok: true };
+      } catch (e: unknown) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+    async sendSlack(channel, text) {
+      try {
+        if (!_slackAdapter) return { ok: false, error: 'Slack not configured' };
+        const ok = await _slackAdapter.postMessage(channel, text);
+        return { ok };
+      } catch (e: unknown) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+    async createJira(projectKey, issueType, summary, body) {
+      try {
+        const adapter = await _buildJiraAdapter();
+        if (!adapter) return { ok: false, error: 'Jira not configured' };
+        await adapter.createIssue(projectKey, issueType, summary, body);
+        return { ok: true };
+      } catch (e: unknown) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+    async createLinear(teamId, title, description) {
+      try {
+        const adapter = await _buildLinearAdapter();
+        if (!adapter) return { ok: false, error: 'Linear not configured' };
+        await adapter.createIssue({ teamId, title, description });
+        return { ok: true };
+      } catch (e: unknown) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+    async notifyPush(title, body) {
+      try {
+        const ok = await _pushNotifier.fire('runbook', title, body);
+        return { ok };
+      } catch (e: unknown) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+    addHandoffItem(item: HandoffQueueItem) {
+      _ipcStore!.addHandoffItem(item);
+    },
+    resolveHandoffItem(id: string, resolution: string, resolvedBy?: string) {
+      return _ipcStore!.resolveHandoffItem(id, resolution, resolvedBy);
+    },
+    auditLog(type, meta) {
+      _getAuditLedger().log(type as any, { metadata: meta });
+    },
+  });
 }
 
 function _getResultStore(): ResultStore {
@@ -507,6 +927,21 @@ function ledgerMarkdownToHtml(md: string): string {
 }
 
 export function setupIpc(store: Store): void {
+  _ipcStore = store;
+
+  // ── Skill registry: sync ForgeHub built-ins on startup ─────────────────────
+  try { syncBuiltinSkills(_getSkillStore()); } catch { /* non-fatal */ }
+
+  // ── Phase 10: init push notifier from persisted config ─────────────────────
+  void _refreshPushConfig();
+
+  // ── Phase 10: eventBus → push notification hooks ───────────────────────────
+  eventBus.onAny((event) => {
+    const e = event as Record<string, unknown>;
+    if (e.type === 'TASK_COMPLETED') {
+      void _pushNotifier.fire('task_completed', 'Task Completed', String(e.goal ?? e.taskId ?? 'A task finished').slice(0, 100));
+    }
+  });
 
   // ── Bootstrap engine on first call ─────────────────────────────────────────
   async function getEngine() {
@@ -608,6 +1043,8 @@ export function setupIpc(store: Store): void {
       _getValueEngine();
       // Phase 6 — start Growth Engine daily runner
       _getGrowthService().startDailyRunner();
+      // Income Operator Phase 5 — resume autopilot if previously enabled
+      _getAutopilot(store).resume();
     } catch (e) {
       console.error('[startup-resume]', e);
     }
@@ -1506,6 +1943,72 @@ VERIFY: [1-3 specific things the user should double-check]
       return { models };
     } catch (err: unknown) {
       return { models: [], error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ── Local Model: persistent config + routing ─────────────────────────────────
+
+  ipcMain.handle('local:config:get', () => {
+    return {
+      enabled:  store.getLocalModelEnabled(),
+      baseUrl:  store.getLocalModelBaseUrl(),
+      model:    store.getLocalModelName(),
+      fallback: store.getLocalModelFallback(),
+    };
+  });
+
+  ipcMain.handle('local:config:set', async (_e, baseUrl: string, model: string) => {
+    store.setLocalModelBaseUrl(baseUrl.trim());
+    store.setLocalModelName(model.trim());
+    return { ok: true };
+  });
+
+  ipcMain.handle('local:routing:enable', () => {
+    store.setLocalModelEnabled(true);
+    _getAuditLedger().log('LOCAL_MODEL_SELECTED', { metadata: { model: store.getLocalModelName(), event: 'routing_enabled' } });
+    return { ok: true };
+  });
+
+  ipcMain.handle('local:routing:disable', () => {
+    store.setLocalModelEnabled(false);
+    return { ok: true };
+  });
+
+  ipcMain.handle('local:routing:setFallback', (_e, v: boolean) => {
+    store.setLocalModelFallback(v);
+    return { ok: true };
+  });
+
+  // ── Local Skill Analysis ─────────────────────────────────────────────────────
+  // Runs SKILL.md content through the local model for a privacy-preserving
+  // pre-analysis pass before (or instead of) the cloud-based evaluator.
+
+  ipcMain.handle('local:skillAnalyze', async (_e, markdown: string) => {
+    const enabled  = store.getLocalModelEnabled();
+    const baseUrl  = store.getLocalModelBaseUrl();
+    const model    = store.getLocalModelName();
+    if (!enabled || !model) {
+      return { ok: false, error: 'Local routing not configured' };
+    }
+    try {
+      const p = new OllamaProvider({ baseUrl, model });
+      const prompt = [
+        { role: 'system', content: 'You are a security auditor reviewing AI skill definitions. Analyze the SKILL.md content below for dangerous patterns: shell execution, network exfiltration, credential scraping, policy bypass, self-modification. Respond with JSON: { riskLevel: "low"|"medium"|"high"|"critical", findings: string[], summary: string }' },
+        { role: 'user',   content: markdown.slice(0, 8000) },
+      ];
+      const raw  = await p.chat(prompt);
+      // Extract JSON from model response (may be wrapped in markdown)
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      let parsed: { riskLevel?: string; findings?: string[]; summary?: string } = {};
+      if (jsonMatch) {
+        try { parsed = JSON.parse(jsonMatch[0]); } catch { /* keep empty */ }
+      }
+      _getAuditLedger().log('LOCAL_SKILL_ANALYZED', { metadata: { model, riskLevel: parsed.riskLevel ?? 'unknown' } });
+      return { ok: true, riskLevel: parsed.riskLevel, findings: parsed.findings ?? [], summary: parsed.summary ?? raw.slice(0, 300) };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      _getAuditLedger().log('LOCAL_MODEL_FALLBACK', { metadata: { model, reason: msg } });
+      return { ok: false, error: msg };
     }
   });
 
@@ -3755,37 +4258,117 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     return { requests };
   });
 
-  ipcMain.handle('approvals:approve', async (_event, approvalId: string) => {
-    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+  // Income tool set — used to decide whether to write approve/deny events to income JSONL
+  const _INCOME_APPROVAL_TOOLS = new Set([
+    'launch_experiment', 'spend_budget', 'publish_content',
+    'kill_experiment', 'scale_experiment', 'connect_platform', 'install_tool',
+  ]);
+
+  // Write a compact entry to income-ledger.jsonl for income-tool approval decisions.
+  // Non-fatal — approval events should not block on JSONL write errors.
+  const _logIncomeApprovalEvent = (req: import('@triforge/engine').ApprovalRequest, action: 'approved' | 'denied') => {
+    if (!_INCOME_APPROVAL_TOOLS.has(req.tool)) return;
     try {
+      const ledgerPath = path.join(_getDataDir(), 'income-ledger.jsonl');
+      const entry = JSON.stringify({
+        ts:           Date.now(),
+        type:         action === 'approved' ? 'approval_approved' : 'approval_denied',
+        label:        action === 'approved' ? 'Approval approved' : 'Approval denied',
+        detail:       `${req.stepId}`,
+        experimentId: req.taskId,
+      });
+      fs.appendFileSync(ledgerPath, entry + '\n', 'utf8');
+    } catch { /* non-fatal */ }
+  };
+
+  ipcMain.handle('approvals:approve', async (_event, approvalId: string) => {
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return incomeFail(lockedError('AGENT_TASKS'));
+    try {
+      // Server-side guard: verify still pending before executing
+      const req = _getApprovalStore().get(approvalId);
+      if (!req) return incomeFail('Approval not found.');
+      if (req.status !== 'pending') return incomeFail(`Approval is already ${req.status} — no action taken.`);
+
       const loop = _getAgentLoop(store);
       await loop.approveApprovalRequest(approvalId);
       // Resume task in background
-      const req = _getApprovalStore().get(approvalId);
-      if (req?.taskId) {
+      if (req.taskId) {
         loop.runTask(req.taskId).catch((err: unknown) => console.error('[approvals:approve]', err));
       }
-      return { ok: true };
+      _logIncomeApprovalEvent(req, 'approved');
+      return incomeOk();
     } catch (err) {
-      return { error: String(err) };
+      return incomeFail(err instanceof Error ? err.message : String(err));
     }
   });
 
   ipcMain.handle('approvals:deny', async (_event, approvalId: string, reason?: string) => {
-    if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
+    if (!hasCapability('AGENT_TASKS', await _agentTier())) return incomeFail(lockedError('AGENT_TASKS'));
     try {
-      const loop = _getAgentLoop(store);
+      // Server-side guard: verify still pending before executing
       const req = _getApprovalStore().get(approvalId);
+      if (!req) return incomeFail('Approval not found.');
+      if (req.status !== 'pending') return incomeFail(`Approval is already ${req.status} — no action taken.`);
+
+      const loop = _getAgentLoop(store);
       await loop.denyApprovalRequest(approvalId, reason);
       // Continue remaining steps in background
-      if (req?.taskId) {
+      if (req.taskId) {
         loop.runTask(req.taskId).catch((err: unknown) => console.error('[approvals:deny]', err));
       }
-      return { ok: true };
+      _logIncomeApprovalEvent(req, 'denied');
+      return incomeOk();
     } catch (err) {
-      return { error: String(err) };
+      return incomeFail(err instanceof Error ? err.message : String(err));
     }
   });
+
+  // ── Income Operator approval creation (Phase 4B) ─────────────────────────────
+  // Income actions (launch, scale, kill, etc.) are gated through the same ApprovalStore
+  // as agent task approvals, using experimentId as taskId and action as stepId.
+
+  ipcMain.handle(
+    'approval:income:create',
+    async (
+      _event,
+      experimentId: string,
+      action: string,
+      args: Record<string, unknown>,
+      riskLevel: 'low' | 'medium' | 'high',
+    ) => {
+      if (!hasCapability('INCOME_OPERATOR', await _agentTier()) && !hasCapability('INCOME_LANES', await _agentTier())) {
+        return incomeFail(lockedError('INCOME_OPERATOR'));
+      }
+      try {
+        // Dedup: return the existing pending approval if one already exists for this experiment+action.
+        const existing = _getApprovalStore().getByStep(experimentId, action);
+        if (existing) return incomeOk({ approvalId: existing.id });
+
+        const TOOL_MAP: Record<string, string> = {
+          launch_experiment: 'launch_experiment',
+          spend_budget:      'spend_budget',
+          publish_content:   'publish_content',
+          kill_experiment:   'kill_experiment',
+          scale_experiment:  'scale_experiment',
+          connect_platform:  'connect_platform',
+          install_tool:      'install_tool',
+        };
+        const tool = (TOOL_MAP[action] ?? 'spend_budget') as import('@triforge/engine').TaskToolName;
+        const approval = _getApprovalStore().create({
+          taskId:              experimentId,
+          stepId:              action,
+          tool,
+          args,
+          riskLevel,
+          estimatedCostCents:  0,
+          expiresAt:           Date.now() + 24 * 60 * 60 * 1000, // 24h
+        });
+        return incomeOk({ approvalId: approval.id });
+      } catch (err) {
+        return incomeFail(err instanceof Error ? err.message : String(err));
+      }
+    },
+  );
 
   // ── Task pause / resume ───────────────────────────────────────────────────────
 
@@ -4884,6 +5467,68 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     ts: Date.now(),
   }));
 
+  // ── App metadata ──────────────────────────────────────────────────────────────
+  ipcMain.handle('app:version', () => app.getVersion());
+  ipcMain.handle('app:name',    () => app.getName());
+
+  // ── Setup wizard — role persistence ──────────────────────────────────────────
+  ipcMain.handle('setup:getRole', () => store.get<string>('wizard:role', 'solo'));
+  ipcMain.handle('setup:setRole', (_e, role: string) => {
+    store.update('wizard:role', role);
+    return { ok: true };
+  });
+
+  // ── Phase 40 — Backup / Restore ───────────────────────────────────────────────
+  ipcMain.handle('recovery:createBackup', async () => createBackupFile(store));
+  ipcMain.handle('recovery:restoreBackup', async () => restoreBackupFile(store));
+  ipcMain.handle('recovery:getLastBackupAt', () => getLastBackupAt(store));
+
+  // ── Phase 40 — Snapshots ──────────────────────────────────────────────────────
+  ipcMain.handle('recovery:listSnapshots', () => listSnapshots(store));
+  ipcMain.handle('recovery:createSnapshot', async (_e, trigger: string, label: string) => {
+    try { return await createSnapshot(store, trigger ?? 'manual', label ?? 'Manual snapshot'); }
+    catch (e) { return { ok: false, error: String(e) }; }
+  });
+  ipcMain.handle('recovery:rollbackSnapshot', async (_e, id: string) => {
+    if (!id) return { ok: false, error: 'No snapshot id provided' };
+    try { return await rollbackSnapshot(store, id); }
+    catch (e) { return { ok: false, error: String(e) }; }
+  });
+  ipcMain.handle('recovery:deleteSnapshot', (_e, id: string) => {
+    if (!id) return false;
+    try { return deleteSnapshot(store, id); }
+    catch { return false; }
+  });
+
+  // ── Phase 40 — Store validation ───────────────────────────────────────────────
+  ipcMain.handle('recovery:validateStore', async () => {
+    try { return await validateStore(store); }
+    catch (e) { return { valid: false, issues: [{ severity: 'error', field: 'validator', message: String(e), repairable: false }], checkedAt: Date.now(), repairedCount: 0 }; }
+  });
+  ipcMain.handle('recovery:repairStore',   async () => {
+    try { return await validateAndRepairStore(store); }
+    catch (e) { return { valid: false, issues: [{ severity: 'error', field: 'validator', message: String(e), repairable: false }], checkedAt: Date.now(), repairedCount: 0 }; }
+  });
+
+  // ── Phase 40 — Migration engine ───────────────────────────────────────────────
+  ipcMain.handle('recovery:runMigrations', async () => {
+    try { return await runMigrations(store); }
+    catch (e) { return { ran: 0, errors: [String(e)] }; }
+  });
+  ipcMain.handle('recovery:getMigrationHistory',() => {
+    try { return getMigrationHistory(store); } catch { return []; }
+  });
+  ipcMain.handle('recovery:getSchemaVersion', () => {
+    try { return getCurrentSchemaVersion(store); } catch { return 0; }
+  });
+
+  // ── Phase 40 — Crash guard ────────────────────────────────────────────────────
+  ipcMain.handle('recovery:getIncidents',   () => getIncidents(store));
+  ipcMain.handle('recovery:resetIncident',  (_e, serviceId: string) => {
+    resetIncident(store, serviceId);
+    return { ok: true };
+  });
+
   // ── Council Demo — startup demonstration for new users ───────────────────────
   // Only runs when no API keys are configured yet (first-run / onboarding scenario)
   setTimeout(async () => {
@@ -5548,6 +6193,687 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('venture:get', (_event, id: string) => {
     return store.getVentureProposal(id) ?? null;
+  });
+
+  // ── Income Operator: Capability Scanner ─────────────────────────────────
+
+  ipcMain.handle('scanner:run', async () => {
+    try {
+      if (!hasCapability('INCOME_SCANNER', tier)) return { error: lockedError('INCOME_SCANNER') };
+
+      // Infer connected platforms from saved credential keys
+      const credMgr = _credentialManager ?? new CredentialManager(store);
+      const knownKeys = [
+        'youtube_client_id', 'tiktok_access_token', 'gumroad_access_token',
+        'itch_api_key', 'twitter_api_key', 'slack_token', 'github_token',
+        'smtp_host', 'telegram_bot_token',
+      ];
+      const setKeys: string[] = [];
+      for (const k of knownKeys) {
+        const val = await credMgr.get(k as never).catch(() => null);
+        if (val) setKeys.push(k);
+      }
+
+      const result = await runCapabilityScan(setKeys);
+      store.setKv('lastCapabilityScan', JSON.stringify(result));
+      store.setKv('lastCapabilityScanAt', String(result.scannedAt));
+
+      return { result };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('scanner:result:get', () => {
+    try {
+      const raw = store.getKv('lastCapabilityScan');
+      if (!raw) return { result: null };
+      return { result: JSON.parse(raw) };
+    } catch {
+      return { result: null };
+    }
+  });
+
+  ipcMain.handle('scanner:platforms:detected', () => {
+    try {
+      const raw = store.getKv('lastCapabilityScan');
+      if (!raw) return { platforms: [] };
+      const scan = JSON.parse(raw);
+      return { platforms: scan.connectedPlatforms ?? [] };
+    } catch {
+      return { platforms: [] };
+    }
+  });
+
+  // ── Income Operator: Tool Gap Analyzer ──────────────────────────────────
+
+  ipcMain.handle('toolGap:analyze', (_event, laneId: IncomeLaneId) => {
+    try {
+      if (!hasCapability('INCOME_SCANNER', tier)) return { error: lockedError('INCOME_SCANNER') };
+      const raw = store.getKv('lastCapabilityScan');
+      if (!raw) return { error: 'Run scanner:run first to detect installed tools.' };
+      const scan = JSON.parse(raw);
+      const gaps = analyzeGaps(scan, laneId);
+      return { gaps };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('toolGap:install', async (_event, gap: ToolGap) => {
+    try {
+      if (!hasCapability('INCOME_SCANNER', tier)) return { error: lockedError('INCOME_SCANNER') };
+
+      // Safety: only 'full' mode (winget) runs a command — guided opens URL
+      if (gap.installMode === 'guided') {
+        if (gap.installUrl) {
+          shell.openExternal(gap.installUrl);
+          return { ok: true, mode: 'guided', message: `Opened ${gap.installUrl} in browser. Install ${gap.toolName} then click Verify.` };
+        }
+        return { ok: false, error: 'No install URL available for this tool.' };
+      }
+
+      if (gap.installMode === 'full' && gap.wingetId) {
+        // NOTE: winget installs to Program Files require UAC elevation.
+        // The user will see a Windows UAC prompt after approving here.
+        // We spawn winget via shell:true so Windows can elevate as needed.
+        try {
+          execSync(`winget install --id ${gap.wingetId} --silent --accept-package-agreements --accept-source-agreements`, {
+            timeout: 120_000,
+            windowsHide: false, // UAC prompt must be visible
+            shell: true,
+          });
+          return { ok: true, mode: 'full', message: `${gap.toolName} installed successfully.` };
+        } catch (installErr) {
+          return { ok: false, error: `Install failed: ${installErr instanceof Error ? installErr.message : String(installErr)}` };
+        }
+      }
+
+      return { ok: false, error: 'No install method available for this tool.' };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('toolGap:verify', async (_event, toolName: string) => {
+    try {
+      // Re-run a fresh scan and check if the tool now appears
+      const raw = store.getKv('lastCapabilityScan');
+      const prevScan = raw ? JSON.parse(raw) : null;
+      const prevSetKeys = prevScan ? (prevScan.connectedPlatforms ?? []) : [];
+
+      const freshScan = await runCapabilityScan(prevSetKeys);
+      store.setKv('lastCapabilityScan', JSON.stringify(freshScan));
+      store.setKv('lastCapabilityScanAt', String(freshScan.scannedAt));
+
+      const found = freshScan.installedApps.some(a => a.name === toolName);
+      return { found, scan: freshScan };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ── Income Operator: Lane Ranking ────────────────────────────────────────
+
+  ipcMain.handle('income:lanes:rank', () => {
+    try {
+      if (!hasCapability('INCOME_LANES', tier)) return { error: lockedError('INCOME_LANES') };
+      const raw = store.getKv('lastCapabilityScan');
+      if (!raw) return { error: 'Run scanner:run first.' };
+      const scan = JSON.parse(raw);
+      const ranked = rankLanes(scan);
+      return { lanes: ranked };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ── Income Operator: Experiment Manager ─────────────────────────────────
+
+  ipcMain.handle('experiment:setBudget', (_event, params: {
+    totalBudget: number; maxPerExperiment: number; dailyLimit: number; reservePct?: number;
+  }) => {
+    try {
+      if (!hasCapability('INCOME_OPERATOR', tier)) return incomeFail(lockedError('INCOME_OPERATOR'));
+      const budget = _getExperimentManager(store).setBudget(params);
+      return incomeOk({ budget });
+    } catch (err) {
+      return incomeFail(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  ipcMain.handle('experiment:getBudget', () => {
+    try {
+      return { budget: _getExperimentManager(store).getBudget() };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('experiment:create', (_event, params: {
+    laneId: string; name: string; rationale: string; budgetAsk: number;
+    autoKillRule?: { budgetPctSpent: number; afterDays: number };
+  }) => {
+    try {
+      if (!hasCapability('INCOME_OPERATOR', tier)) return incomeFail(lockedError('INCOME_OPERATOR'));
+      const result = _getExperimentManager(store).createExperiment(params as never) as Record<string, unknown>;
+      if (result.error) return incomeFail(result.error as string);
+      return incomeOk(result);
+    } catch (err) {
+      return incomeFail(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  ipcMain.handle('experiment:transition', (_event, id: string, to: string, reason?: string) => {
+    try {
+      if (!hasCapability('INCOME_OPERATOR', tier)) return incomeFail(lockedError('INCOME_OPERATOR'));
+      const result = _getExperimentManager(store).transition(id, to as never, reason) as Record<string, unknown>;
+      if (result.error) return incomeFail(result.error as string);
+      return incomeOk(result);
+    } catch (err) {
+      return incomeFail(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  ipcMain.handle('experiment:recordSpend', (_event, id: string, amount: number, reason: string) => {
+    try {
+      if (!hasCapability('INCOME_OPERATOR', tier)) return incomeFail(lockedError('INCOME_OPERATOR'));
+      const result = _getExperimentManager(store).recordSpend(id, amount, reason) as Record<string, unknown>;
+      if (result.error) return incomeFail(result.error as string);
+      return incomeOk(result);
+    } catch (err) {
+      return incomeFail(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  ipcMain.handle('experiment:recordRevenue', (_event, id: string, amount: number, source: string) => {
+    try {
+      if (!hasCapability('REVENUE_TRACKER', tier)) return incomeFail(lockedError('REVENUE_TRACKER'));
+      const result = _getExperimentManager(store).recordRevenue(id, amount, source) as Record<string, unknown>;
+      if (result.error) return incomeFail(result.error as string);
+      return incomeOk(result);
+    } catch (err) {
+      return incomeFail(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  ipcMain.handle('experiment:updateMetrics', (_event, id: string, patch: Record<string, number>) => {
+    try {
+      return _getExperimentManager(store).updateMetrics(id, patch as never);
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('experiment:evaluateAutoKill', (_event, id: string) => {
+    try {
+      return _getExperimentManager(store).evaluateAutoKill(id);
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('experiment:recordDecision', (_event, id: string, decision: string, reason: string) => {
+    try {
+      if (!hasCapability('INCOME_OPERATOR', tier)) return { error: lockedError('INCOME_OPERATOR') };
+      return _getExperimentManager(store).recordDecision(id, decision as never, reason);
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('experiment:get', (_event, id: string) => {
+    try {
+      return _getExperimentManager(store).getExperimentSummary(id);
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('experiment:list', () => {
+    try {
+      return { experiments: _getExperimentManager(store).getAllExperiments() };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('experiment:listActive', () => {
+    try {
+      return { experiments: _getExperimentManager(store).getActiveExperiments() };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ── Income Operator: Phase 4C execution handlers ─────────────────────────
+  // These are the execution bridges called after an income approval is granted,
+  // or directly for low-risk actions that don't require approval.
+
+  ipcMain.handle('experiment:kill', (_event, id: string, reason: string) => {
+    try {
+      if (!hasCapability('INCOME_OPERATOR', tier)) return incomeFail(lockedError('INCOME_OPERATOR'));
+      const mgr = _getExperimentManager(store);
+      const exp = mgr.getExperiment(id);
+      if (!exp) return incomeFail(`Experiment "${id}" not found.`);
+      if (exp.status === 'killed' || exp.status === 'completed') {
+        return incomeFail(`Experiment is already "${exp.status}" — no action needed.`);
+      }
+      const result = mgr.recordDecision(id, 'kill', reason || 'Killed via Income Operator');
+      if (result.error) return incomeFail(result.error);
+      store.addLedger({
+        id: `income-kill-${Date.now().toString(36)}`,
+        timestamp: Date.now(),
+        request: `Kill experiment: "${exp.name}"`,
+        synthesis: reason || 'Killed via Income Operator',
+        responses: [],
+        workflow: 'INCOME_EXPERIMENT_KILLED',
+        starred: false,
+      });
+      return incomeOk({ experiment: mgr.getExperiment(id) });
+    } catch (err) {
+      return incomeFail(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  ipcMain.handle('experiment:scale', (_event, id: string, reason: string) => {
+    try {
+      if (!hasCapability('INCOME_OPERATOR', tier)) return incomeFail(lockedError('INCOME_OPERATOR'));
+      const mgr = _getExperimentManager(store);
+      const exp = mgr.getExperiment(id);
+      if (!exp) return incomeFail(`Experiment "${id}" not found.`);
+      if (exp.status === 'killed' || exp.status === 'completed') {
+        return incomeFail(`Experiment is already "${exp.status}" — cannot scale.`);
+      }
+      if (exp.status !== 'measuring') {
+        return incomeFail(`Cannot scale experiment in "${exp.status}" state. Experiment must be in "measuring" status.`);
+      }
+      const result = mgr.recordDecision(id, 'scale', reason || 'Scaled via Income Operator');
+      if (result.error) return incomeFail(result.error);
+      store.addLedger({
+        id: `income-scale-${Date.now().toString(36)}`,
+        timestamp: Date.now(),
+        request: `Scale experiment: "${exp.name}"`,
+        synthesis: reason || 'Scaled via Income Operator',
+        responses: [],
+        workflow: 'INCOME_EXPERIMENT_SCALED',
+        starred: false,
+      });
+      return incomeOk({ experiment: mgr.getExperiment(id) });
+    } catch (err) {
+      return incomeFail(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  ipcMain.handle('experiment:launch', (_event, id: string, reason: string) => {
+    try {
+      if (!hasCapability('INCOME_OPERATOR', tier)) return incomeFail(lockedError('INCOME_OPERATOR'));
+      const mgr = _getExperimentManager(store);
+      const exp = mgr.getExperiment(id);
+      if (!exp) return incomeFail(`Experiment "${id}" not found.`);
+      if (exp.status === 'killed' || exp.status === 'completed') {
+        return incomeFail(`Experiment is already "${exp.status}" — cannot advance.`);
+      }
+      let targetStatus: string;
+      if (exp.status === 'proposed')      targetStatus = 'approved';
+      else if (exp.status === 'approved') targetStatus = 'building';
+      else if (exp.status === 'building') targetStatus = 'launched';
+      else if (exp.status === 'launched') targetStatus = 'measuring';
+      else return incomeFail(`Cannot advance experiment in "${exp.status}" state.`);
+      const result = mgr.transition(id, targetStatus as never, reason || 'Advanced via Income Operator');
+      if (result.error) return incomeFail(result.error);
+      if (targetStatus === 'launched') {
+        store.addLedger({
+          id: `income-launch-${Date.now().toString(36)}`,
+          timestamp: Date.now(),
+          request: `Launch experiment: "${exp.name}"`,
+          synthesis: reason || 'Launched via Income Operator',
+          responses: [],
+          workflow: 'INCOME_EXPERIMENT_LAUNCHED',
+          starred: false,
+        });
+      }
+      return incomeOk({ experiment: mgr.getExperiment(id), targetStatus });
+    } catch (err) {
+      return incomeFail(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  ipcMain.handle('content:publish', (_event, id: string, platform: string, contentNote: string) => {
+    try {
+      if (!hasCapability('INCOME_OPERATOR', tier)) return incomeFail(lockedError('INCOME_OPERATOR'));
+      const mgr = _getExperimentManager(store);
+      const exp = mgr.getExperiment(id);
+      if (!exp) return incomeFail(`Experiment "${id}" not found.`);
+      if (exp.status === 'killed' || exp.status === 'completed') {
+        return incomeFail('Cannot publish content for a finished experiment.');
+      }
+      if (!platform || platform === 'unknown') return incomeFail('Platform is required to publish content.');
+      store.addLedger({
+        id: `income-publish-${Date.now().toString(36)}`,
+        timestamp: Date.now(),
+        request: `Publish content for "${exp.name}" on ${platform}`,
+        synthesis: contentNote || `Published on ${platform}`,
+        responses: [],
+        workflow: 'INCOME_CONTENT_PUBLISHED',
+        starred: false,
+      });
+      return incomeOk();
+    } catch (err) {
+      return incomeFail(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  ipcMain.handle('platform:connect', (_event, id: string, platform: string, url: string) => {
+    try {
+      if (!hasCapability('INCOME_OPERATOR', tier)) return incomeFail(lockedError('INCOME_OPERATOR'));
+      if (!platform) return incomeFail('Platform name is required.');
+      const mgr = _getExperimentManager(store);
+      // platform:connect accepts laneId OR experimentId as first param
+      // If no experiment found by id, treat id as laneId (for lane-level connections)
+      const exp = mgr.getExperiment(id);
+      store.addLedger({
+        id: `income-platform-${Date.now().toString(36)}`,
+        timestamp: Date.now(),
+        request: `Connect platform${exp ? ` for "${exp.name}"` : ` (lane: ${id})`}: ${platform}`,
+        synthesis: url || `Connected ${platform}`,
+        responses: [],
+        workflow: 'INCOME_PLATFORM_CONNECTED',
+        starred: false,
+      });
+      return incomeOk({ platform, connected: true });
+    } catch (err) {
+      return incomeFail(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  // ── Income: Decision engine — returns sorted recommendations ─────────────
+  ipcMain.handle('income:getRecommendations', (_event, pendingApprovalKeyList: string[]) => {
+    try {
+      if (!hasCapability('INCOME_OPERATOR', tier) && !hasCapability('INCOME_LANES', tier)) {
+        return { recommendations: [] };
+      }
+      const mgr         = _getExperimentManager(store);
+      const experiments = mgr.getActiveExperiments();
+      const budget      = mgr.getBudget();
+
+      // Build evaluations map
+      const evaluations: DecisionInput['evaluations'] = {};
+      for (const exp of experiments) {
+        evaluations[exp.id] = mgr.evaluateAutoKill(exp.id);
+      }
+
+      const input: DecisionInput = {
+        experiments,
+        evaluations,
+        budget,
+        pendingApprovalKeys: new Set(pendingApprovalKeyList),
+      };
+
+      return { recommendations: generateRecommendations(input) };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ── Income: per-experiment event history (reads income JSONL ledger) ─────
+  ipcMain.handle('experiment:getEvents', async (_event, id: string, limit = 30) => {
+    try {
+      const ledgerPath = path.join(_getDataDir(), 'income-ledger.jsonl');
+      if (!fs.existsSync(ledgerPath)) return { events: [] };
+      const raw  = await withRetry(() => Promise.resolve(fs.readFileSync(ledgerPath, 'utf8')));
+      const events = raw.trim().split('\n').filter(Boolean)
+        .map(line => { try { return JSON.parse(line) as Record<string, unknown>; } catch { return null; } })
+        .filter((e): e is Record<string, unknown> => e !== null && e['experimentId'] === id)
+        .reverse()
+        .slice(0, limit);
+      return { events };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ── Income: merged activity feed (JSONL + main Ledger INCOME_*) ──────────
+  ipcMain.handle('income:getActivity', async (_event, limit = 20) => {
+    try {
+      interface ActivityEvent { ts: number; label: string; detail: string; eventType: string; }
+      const events: ActivityEvent[] = [];
+      const mgr = _getExperimentManager(store);
+
+      // 1. Read income JSONL ledger — all experiment events (with retry for I/O)
+      const ledgerPath = path.join(_getDataDir(), 'income-ledger.jsonl');
+      if (fs.existsSync(ledgerPath)) {
+        const raw      = await withRetry(() => Promise.resolve(fs.readFileSync(ledgerPath, 'utf8')));
+        const expNames = Object.fromEntries(mgr.getAllExperiments().map(e => [e.id, e.name]));
+        raw.trim().split('\n').filter(Boolean).forEach(line => {
+          try {
+            const e = JSON.parse(line) as Record<string, unknown>;
+            const name = (expNames[e['experimentId'] as string] ?? e['experimentId']) as string;
+            const ts   = (e['ts'] as number) ?? 0;
+            if (e['type'] === 'spend') {
+              events.push({ ts, label: `Spend: $${(e['amount'] as number).toFixed(2)}`, detail: `${name} — ${(e['reason'] as string) ?? ''}`, eventType: 'spend' });
+            } else if (e['type'] === 'revenue') {
+              events.push({ ts, label: `Revenue: $${(e['amount'] as number).toFixed(2)}`, detail: `${name} — ${(e['source'] as string) ?? ''}`, eventType: 'revenue' });
+            } else if (e['type'] === 'status_change') {
+              events.push({ ts, label: `Status: ${e['from']} → ${e['to']}`, detail: name, eventType: 'status' });
+            } else if (e['type'] === 'decision') {
+              events.push({ ts, label: `Decision: ${e['decision']}`, detail: `${name}${e['decisionReason'] ? ` — ${e['decisionReason']}` : ''}`, eventType: 'decision' });
+            } else if (typeof e['type'] === 'string' && (e['type'] as string).startsWith('AUTOPILOT_')) {
+              // Phase 5 autopilot events — already have label + detail
+              events.push({ ts, label: e['label'] as string ?? e['type'], detail: e['detail'] as string ?? '', eventType: e['type'] as string });
+            }
+          } catch { /* skip malformed line */ }
+        });
+      }
+
+      // 2. Main Ledger INCOME_* workflow entries (from Phase 4C IPC handlers)
+      const incomeWorkflows = new Set([
+        'INCOME_EXPERIMENT_KILLED', 'INCOME_EXPERIMENT_SCALED', 'INCOME_EXPERIMENT_LAUNCHED',
+        'INCOME_CONTENT_PUBLISHED', 'INCOME_PLATFORM_CONNECTED',
+      ]);
+      const ledgerEntries = store.getLedger(500, 'INCOME_');
+      for (const entry of ledgerEntries) {
+        if (entry.workflow && incomeWorkflows.has(entry.workflow)) {
+          events.push({ ts: entry.timestamp, label: entry.request, detail: entry.synthesis ?? '', eventType: 'action' });
+        }
+      }
+
+      events.sort((a, b) => b.ts - a.ts);
+      return { events: events.slice(0, limit) };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ── Income: Lane readiness (Phase 4E) ────────────────────────────────────
+  // Returns skill + platform readiness per lane, comparing ForgeHub catalog
+  // to installed SkillStore skills and experiment.platformLinks.
+
+  ipcMain.handle('income:getReadiness', (_event, laneIds: string[]) => {
+    try {
+      const mgr           = _getExperimentManager(store);
+      const allExps       = mgr.getAllExperiments();
+      const installedList = _getSkillStore().list();
+      const installedIds  = new Set(installedList.map((s: InstalledSkill) => s.id));
+
+      const LANE_NAMES: Record<string, string> = {
+        digital_products:  'Digital Products',
+        client_services:   'Client Services',
+        affiliate_content: 'Affiliate Content',
+        faceless_youtube:  'Faceless YouTube',
+        short_form_brand:  'Short-Form Brand',
+        ai_music:          'AI Music',
+        mini_games:        'Mini Games',
+        asset_packs:       'Asset Packs',
+      };
+
+      const lanes = laneIds.map(laneId => {
+        // Active experiments for this lane (not killed/completed)
+        const laneExps = allExps.filter(
+          e => e.laneId === laneId && e.status !== 'killed' && e.status !== 'completed',
+        );
+
+        // Readiness from experiment statuses
+        let readiness: 'live' | 'building' | 'pending' = 'pending';
+        if (laneExps.some(e => ['launched', 'measuring', 'scaling'].includes(e.status))) {
+          readiness = 'live';
+        } else if (laneExps.some(e => ['building', 'approved'].includes(e.status))) {
+          readiness = 'building';
+        }
+
+        // Skills: ForgeHub catalog for this lane vs installed SkillStore
+        const hubSkills = getSkillsForLane(laneId);
+        const skills = hubSkills.map((s: { id: string; name: string }) => ({
+          id:        s.id,
+          name:      s.name,
+          installed: installedIds.has(s.id),
+        }));
+
+        // Platforms: LANE_PLATFORMS expectation vs experiment.platformLinks
+        const connectedSet = new Set(
+          laneExps.flatMap(e => Object.keys(e.platformLinks ?? {})),
+        );
+        const expectedPlatforms = LANE_PLATFORMS[laneId] ?? [];
+        const platforms = expectedPlatforms.map(p => ({
+          id:        p.id,
+          name:      p.name,
+          connected: connectedSet.has(p.id),
+        }));
+
+        return {
+          laneId,
+          laneName:  LANE_NAMES[laneId] ?? laneId,
+          readiness,
+          skills,
+          platforms,
+        };
+      });
+
+      return { lanes };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ── Income Operator: Autopilot (Phase 5) ─────────────────────────────────
+
+  ipcMain.handle('autopilot:enable', async () => {
+    try {
+      if (!hasCapability('INCOME_OPERATOR', await _agentTier()) && !hasCapability('INCOME_LANES', await _agentTier())) {
+        return incomeFail(lockedError('INCOME_OPERATOR'));
+      }
+      _getAutopilot(store).enable();
+      return incomeOk({ status: _getAutopilot(store).getStatus() });
+    } catch (err) {
+      return incomeFail(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  ipcMain.handle('autopilot:disable', () => {
+    try {
+      _getAutopilot(store).disable();
+      return incomeOk({ status: _getAutopilot(store).getStatus() });
+    } catch (err) {
+      return incomeFail(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  ipcMain.handle('autopilot:status', () => {
+    try {
+      return { status: _getAutopilot(store).getStatus() };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('autopilot:runNow', async () => {
+    try {
+      if (!hasCapability('INCOME_OPERATOR', await _agentTier()) && !hasCapability('INCOME_LANES', await _agentTier())) {
+        return incomeFail(lockedError('INCOME_OPERATOR'));
+      }
+      await _getAutopilot(store).runNow();
+      return incomeOk({ status: _getAutopilot(store).getStatus() });
+    } catch (err) {
+      return incomeFail(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  // ── ForgeHub: Curated skill catalog ─────────────────────────────────────
+
+  ipcMain.handle('forgeHub:list', () => {
+    return { skills: listForgeHubSkills() };
+  });
+
+  ipcMain.handle('forgeHub:get', (_event, id: string) => {
+    const skill = getForgeHubSkill(id);
+    return skill ? { skill } : { error: `Skill "${id}" not found in ForgeHub.` };
+  });
+
+  ipcMain.handle('forgeHub:forLane', (_event, laneId: string) => {
+    return { skills: getSkillsForLane(laneId) };
+  });
+
+  ipcMain.handle('forgeHub:getMarkdown', (_event, id: string) => {
+    const markdown = getSkillMarkdown(id);
+    return markdown ? { markdown } : { error: `No markdown found for skill "${id}".` };
+  });
+
+  // ── MCP Client: Model Context Protocol ──────────────────────────────────
+
+  ipcMain.handle('mcp:list', () => {
+    return { servers: mcpRegistry.listConnected() };
+  });
+
+  ipcMain.handle('mcp:connect', async (_event, config: {
+    id: string; label: string; command: string;
+    args?: string[]; cwd?: string; env?: Record<string, string>;
+  }) => {
+    try {
+      if (!hasCapability('AGENT_TASKS', tier)) return { error: lockedError('AGENT_TASKS') };
+      const info = await mcpRegistry.connect(config);
+      return { ok: true, serverInfo: info };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('mcp:disconnect', async (_event, id: string) => {
+    try {
+      await mcpRegistry.disconnect(id);
+      return { ok: true };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('mcp:listTools', (_event, serverId: string) => {
+    try {
+      const client = mcpRegistry.getClient(serverId);
+      if (!client) return { error: `MCP server "${serverId}" is not connected.` };
+      return { tools: client.tools };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('mcp:evaluateTool', (_event, serverId: string, toolName: string) => {
+    try {
+      const client = mcpRegistry.getClient(serverId);
+      if (!client) return { error: `MCP server "${serverId}" is not connected.` };
+      return client.evaluateToolCall(toolName, {});
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('mcp:callTool', async (_event, serverId: string, toolName: string, args: Record<string, unknown>, approved: boolean) => {
+    try {
+      if (!hasCapability('AGENT_TASKS', tier)) return { error: lockedError('AGENT_TASKS') };
+      const result = await mcpRegistry.callTool(serverId, toolName, args, approved);
+      return { ok: true, result };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
   });
 
   ipcMain.handle('venture:dailyPulse', async (_event, id: string) => {
@@ -6233,10 +7559,5983 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       return { error: err instanceof Error ? err.message : String(err) };
     }
   });
+
+  // ── Phase 1.5 — Always-On Background Agent ─────────────────────────────────
+
+  function _bgLoopStatus() {
+    const mgr = _getMissionManager(store);
+    return {
+      enabled:         store.getBackgroundLoopEnabled(),
+      running:         mgr.isRunning(),
+      lastTickAt:      mgr.getLastTickAt(),
+      lastFiredMission: store.getLastFiredMission(),
+    };
+  }
+
+  function broadcastBackgroundLoopStatus(): void {
+    const payload = _bgLoopStatus();
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('backgroundLoop:status', payload);
+    }
+  }
+
+  // Register the deterministic heartbeat verification mission (idempotent)
+  (() => {
+    const mgr = _getMissionManager(store);
+    const HEARTBEAT_ID = 'phase1_heartbeat_test';
+    const existing = mgr.list().find(m => m.id === HEARTBEAT_ID);
+    if (!existing) {
+      mgr.register({
+        id:          HEARTBEAT_ID,
+        name:        'Background Agent Heartbeat',
+        description: 'Deterministic verification mission — fires every 5 minutes when background agent is enabled.',
+        goal:        '__internal_heartbeat__',
+        category:    'research',
+        schedule:    'every@5m',
+        enabled:     true,
+        createdAt:   Date.now(),
+        task: async () => {
+          const firedAt = Date.now();
+          console.log('[Heartbeat] phase1_heartbeat_test fired at', new Date(firedAt).toISOString());
+
+          // Audit log evidence
+          const ledger = _getAuditLedger();
+          ledger.log('HEARTBEAT', {
+            missionId: HEARTBEAT_ID,
+            firedAt,
+            source:    'background_scheduler',
+          });
+
+          // Persist last fired mission
+          store.setLastFiredMission({ id: HEARTBEAT_ID, name: 'Background Agent Heartbeat', firedAt });
+
+          // Push live status to all open renderers
+          broadcastBackgroundLoopStatus();
+
+          // Desktop notification (no renderer required)
+          if (Notification.isSupported()) {
+            new Notification({
+              title: 'TriForge Background Agent',
+              body:  'Heartbeat mission fired — agent is running.',
+              silent: true,
+            }).show();
+          }
+        },
+      });
+    }
+  })();
+
+  ipcMain.handle('backgroundLoop:status', () => _bgLoopStatus());
+
+  ipcMain.handle('backgroundLoop:enable', () => {
+    store.setBackgroundLoopEnabled(true);
+    _getMissionManager(store).start();
+    broadcastBackgroundLoopStatus();
+    return _bgLoopStatus();
+  });
+
+  ipcMain.handle('backgroundLoop:disable', () => {
+    store.setBackgroundLoopEnabled(false);
+    _getMissionManager(store).stop();
+    broadcastBackgroundLoopStatus();
+    return _bgLoopStatus();
+  });
+
+  ipcMain.handle('webhook:status', () => {
+    return {
+      enabled: store.getWebhookEnabled(),
+      port:    store.getWebhookPort(),
+      token:   store.getWebhookToken() ? '***' : '',
+      running: isWebhookServerRunning(),
+    };
+  });
+
+  ipcMain.handle('webhook:start', async () => {
+    try {
+      // Auto-generate token if not set
+      let token = store.getWebhookToken();
+      if (!token) {
+        token = crypto.randomBytes(24).toString('hex');
+        store.setWebhookToken(token);
+      }
+      const port = store.getWebhookPort();
+      const result = await startWebhookServer(port, token, (missionId) =>
+        _getMissionManager(store).runMission(missionId),
+      );
+      if (result.ok) {
+        store.setWebhookEnabled(true);
+        return { ok: true, port, token };
+      }
+      return { ok: false, error: result.error };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('webhook:stop', async () => {
+    try {
+      await stopWebhookServer();
+      store.setWebhookEnabled(false);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // ── Phase 2: Inbound Task Trust Gate ────────────────────────────────────────
+  // Classifies any externally-originated task before it reaches AgentLoop.
+  // All non-UI task creation paths (control plane, webhook, future adapters)
+  // call this function first.
+
+  function _classifyInboundRisk(goal: string): InboundRiskClass {
+    const g = goal.toLowerCase();
+
+    // Hard-block patterns: destructive or obviously dangerous
+    if (
+      /\b(delete|remove|erase|wipe|format|destroy)\b.*\b(file|disk|drive|database|table|all)\b/.test(g) ||
+      /\brm\s+-rf\b/.test(g) ||
+      /\b(execute|run|launch)\b.*\b(script|binary|executable|malware)\b/.test(g) ||
+      /\b(install|uninstall)\b.*\b(package|software|driver)\b/.test(g) ||
+      /\b(modify|change|edit)\b.*\b(system|registry|host|kernel)\b/.test(g)
+    ) {
+      return 'high_risk';
+    }
+
+    // Skill execution patterns
+    if (/\b(run skill|execute skill|skill:)\b/.test(g)) {
+      return 'skill_execution';
+    }
+
+    // Write/action patterns: sends, posts, publishes, creates
+    if (
+      /\b(send|email|post|tweet|publish|upload|commit|deploy|create|write|overwrite)\b/.test(g) &&
+      !/\b(research|find|summarize|analyze|list|show|get|read|check)\b/.test(g)
+    ) {
+      return 'write_action';
+    }
+
+    return 'informational';
+  }
+
+  function _classifyInboundTask(
+    goal: string,
+    source: InboundTaskSource,
+    category?: string,
+  ): InboundTaskDecision {
+    const auditId   = crypto.randomUUID();
+    const riskClass = _classifyInboundRisk(goal);
+
+    // local_ui always bypasses governance — trusted source
+    if (source === 'local_ui') {
+      return { source, riskClass, blocked: false, requiresApproval: false, auditId };
+    }
+
+    // Evaluate against the governance rule set
+    const resolution = resolveGovernance(
+      _getGovernanceStore().listEnabled(),
+      source as GovSource,
+      riskClass as GovRiskClass,
+      category,
+    );
+
+    // Audit which rule fired
+    _getAuditLedger().log(
+      resolution.usedFallback ? 'POLICY_RULE_FALLBACK' : 'POLICY_RULE_MATCHED',
+      {
+        metadata: {
+          source, riskClass, category,
+          ruleId:   resolution.ruleId,
+          ruleName: resolution.ruleName,
+          action:   resolution.action,
+          auditId,
+        },
+      },
+    );
+
+    const blocked         = resolution.action === 'block';
+    const requiresApproval = resolution.action === 'approval' || resolution.action === 'council';
+
+    return {
+      source,
+      riskClass,
+      blocked,
+      blockReason: blocked
+        ? `Blocked by policy rule: ${resolution.ruleName ?? 'fallback'}.`
+        : undefined,
+      requiresApproval,
+      auditId,
+    };
+  }
+
+  async function _createExternalTask(
+    goal: string,
+    category: string,
+    source: InboundTaskSource,
+  ): Promise<{ ok: boolean; taskId?: string; blocked?: boolean; blockReason?: string; requiresApproval?: boolean; riskClass?: string; error?: string }> {
+    const decision = _classifyInboundTask(goal, source);
+    const ledger = _getAuditLedger();
+
+    ledger.log('INBOUND_TASK_RECEIVED', {
+      metadata: { source, riskClass: decision.riskClass, goal: goal.slice(0, 200), auditId: decision.auditId },
+    });
+
+    eventBus.emit({ type: 'INBOUND_TASK_RECEIVED', source, riskClass: decision.riskClass, goal });
+
+    if (decision.blocked) {
+      ledger.log('INBOUND_TASK_BLOCKED', {
+        metadata: { source, blockReason: decision.blockReason, auditId: decision.auditId },
+      });
+      eventBus.emit({ type: 'INBOUND_TASK_BLOCKED', source, blockReason: decision.blockReason!, goal });
+      return { ok: false, blocked: true, blockReason: decision.blockReason, riskClass: decision.riskClass };
+    }
+
+    const validCategories: string[] = ['email', 'social', 'research', 'files', 'trading', 'general'];
+    const safeCategory = validCategories.includes(category) ? category as import('@triforge/engine').TaskCategory : 'general';
+
+    try {
+      const task = _getAgentLoop(store).createTask(goal, safeCategory);
+      ledger.log('CONTROL_PLANE_TASK_CREATED', {
+        taskId: task.id,
+        metadata: { source, riskClass: decision.riskClass, auditId: decision.auditId, category: safeCategory },
+      });
+      ledger.log('INBOUND_TASK_APPROVED', {
+        taskId: task.id,
+        metadata: { source, auditId: decision.auditId },
+      });
+      eventBus.emit({ type: 'INBOUND_TASK_APPROVED', source, taskId: task.id });
+      eventBus.emit({ type: 'CONTROL_PLANE_TASK_CREATED', taskId: task.id, goal, source });
+      return {
+        ok: true,
+        taskId: task.id,
+        requiresApproval: decision.requiresApproval,
+        riskClass: decision.riskClass,
+      };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  // ── Phase 2: Control Plane IPC handlers ─────────────────────────────────────
+
+  function _cpStatus() {
+    return {
+      enabled:       store.getControlPlaneEnabled(),
+      running:       _controlPlane?.isRunning() ?? false,
+      port:          store.getControlPlanePort(),
+      token:         store.getControlPlaneToken(),
+      lastStartedAt: store.getControlPlaneLastStartedAt(),
+    };
+  }
+
+  function _getControlPlane(): ControlPlaneServer {
+    if (!_controlPlane) {
+      const mgr = _getMissionManager(store);
+      _controlPlane = new ControlPlaneServer({
+        getStatus: () => ({
+          backgroundLoop: {
+            enabled:     store.getBackgroundLoopEnabled(),
+            running:     mgr.isRunning(),
+            lastTickAt:  mgr.getLastTickAt(),
+          },
+          webhook: {
+            enabled: store.getWebhookEnabled(),
+            port:    store.getWebhookPort(),
+            running: isWebhookServerRunning(),
+          },
+          controlPlane: {
+            running:   _controlPlane?.isRunning() ?? false,
+            port:      store.getControlPlanePort(),
+            startedAt: _controlPlane?.getStartedAt() ?? null,
+          },
+          uptime: process.uptime() * 1000,
+        }),
+        getMissions: () => mgr.list().map(m => ({
+          id:          m.id,
+          name:        m.name,
+          description: m.description,
+          goal:        m.goal,
+          category:    m.category,
+          schedule:    m.schedule,
+          enabled:     m.enabled,
+        })),
+        createTask: (goal, category, source) =>
+          _createExternalTask(goal, category, source),
+        runMission: (missionId) => mgr.runMission(missionId),
+        getRecentEvents: () => {
+          // Return last 50 events from the eventBus ring buffer
+          return eventBus.since(0).slice(-50) as Array<Record<string, unknown>>;
+        },
+      });
+    }
+    return _controlPlane;
+  }
+
+  ipcMain.handle('controlPlane:status', () => _cpStatus());
+
+  ipcMain.handle('controlPlane:start', async () => {
+    try {
+      let token = store.getControlPlaneToken();
+      if (!token) {
+        token = crypto.randomBytes(24).toString('hex');
+        store.setControlPlaneToken(token);
+      }
+      const port = store.getControlPlanePort();
+      const cp = _getControlPlane();
+      const result = await cp.start(port, token);
+      if (result.ok) {
+        store.setControlPlaneEnabled(true);
+        store.setControlPlaneLastStartedAt(Date.now());
+        _getAuditLedger().log('CONTROL_PLANE_STARTED', { metadata: { port } });
+        eventBus.emit({ type: 'CONTROL_PLANE_STARTED', port });
+      }
+      return { ..._cpStatus(), ok: result.ok, error: result.error };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('controlPlane:stop', async () => {
+    try {
+      await (_controlPlane?.stop() ?? Promise.resolve());
+      store.setControlPlaneEnabled(false);
+      _getAuditLedger().log('CONTROL_PLANE_STOPPED', {});
+      eventBus.emit({ type: 'CONTROL_PLANE_STOPPED' });
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('controlPlane:generateToken', () => {
+    const token = crypto.randomBytes(24).toString('hex');
+    store.setControlPlaneToken(token);
+    // Restart server with new token if running
+    if (_controlPlane?.isRunning()) {
+      const port = store.getControlPlanePort();
+      _controlPlane.stop().then(() => {
+        _controlPlane = null; // force rebuild with new token
+        _getControlPlane().start(port, token).catch(console.error);
+      }).catch(console.error);
+    }
+    return { token };
+  });
+
+  // ── Phase 3: GitHub helpers ───────────────────────────────────────────────────
+
+  function _getGitHubReviewStore(): GitHubReviewStore {
+    if (!_githubReviewStore) _githubReviewStore = new GitHubReviewStore(_getDataDir());
+    return _githubReviewStore;
+  }
+
+  async function _getGitHubPat(): Promise<string> {
+    const result = await _getWsCredResolver().resolve('github');
+    if (result.scopeUsed === 'none' || !result.token) {
+      throw new Error('GitHub PAT not configured. Add it in Settings → GitHub.');
+    }
+    if (result.scopeUsed === 'workspace') {
+      _getAuditLedger().log('WS_INTEGRATION_USED', {
+        metadata: { integration: 'github', scope: 'workspace', fallbackUsed: result.fallbackUsed, workspaceId: store.getWorkspace()?.id },
+      });
+    }
+    return result.token;
+  }
+
+  /** Runs a PR diff or issue body through the active council providers and returns per-provider text + synthesis. */
+  async function _runCouncilReview(
+    prompt: string,
+    systemContext: string,
+  ): Promise<{ responses: Array<{ provider: string; text: string }>; synthesis: string }> {
+    const { providerManager: pm } = await getEngine();
+    const providers = await pm.getActiveProviders();
+    if (providers.length === 0) throw new Error('No API keys configured.');
+
+    const responses: Array<{ provider: string; text: string }> = [];
+
+    const COUNCIL_ROLES = ['architect', 'critic', 'pragmatist'];
+
+    await Promise.allSettled(providers.map(async (p, i) => {
+      const role = COUNCIL_ROLES[Math.min(i, COUNCIL_ROLES.length - 1)];
+      const messages = [
+        {
+          role: 'system',
+          content: `You are the ${role.charAt(0).toUpperCase() + role.slice(1)} on the TriForge AI Council. ${systemContext} Be specific, structured, and direct.`,
+        },
+        { role: 'user', content: prompt },
+      ];
+      let text = '';
+      try {
+        await p.chatStream(messages as Array<{ role: string; content: string }>, (chunk: string) => { text += chunk; });
+      } catch (e) {
+        text = `[${p.name} failed: ${e instanceof Error ? e.message : String(e)}]`;
+      }
+      responses.push({ provider: p.name, text: text.trim() });
+    }));
+
+    // Synthesize: use first working provider
+    let synthesis = '';
+    const synthesisProvider = providers[0];
+    if (synthesisProvider && responses.some(r => !r.text.startsWith('['))) {
+      const responseSummary = responses
+        .filter(r => !r.text.startsWith('['))
+        .map(r => `**${r.provider}**: ${r.text.slice(0, 1200)}`)
+        .join('\n\n---\n\n');
+
+      const synthMessages = [
+        {
+          role: 'system',
+          content: 'You are synthesizing a council review. Merge the perspectives below into a single cohesive, well-structured GitHub comment. Keep all important points. Use markdown formatting.',
+        },
+        { role: 'user', content: responseSummary },
+      ];
+      try {
+        await synthesisProvider.chatStream(synthMessages as Array<{ role: string; content: string }>, (chunk: string) => { synthesis += chunk; });
+      } catch {
+        synthesis = responses.filter(r => !r.text.startsWith('[')).map(r => r.text).join('\n\n---\n\n');
+      }
+    } else {
+      synthesis = responses.map(r => r.text).join('\n\n---\n\n');
+    }
+
+    return { responses, synthesis: synthesis.trim() };
+  }
+
+  // ── GitHub IPC handlers ───────────────────────────────────────────────────────
+
+  ipcMain.handle('github:setCredential', async (_event, key: 'pat' | 'webhook_secret', value: string) => {
+    const credKey = key === 'pat' ? 'github_pat' : 'github_webhook_secret';
+    if (value.trim()) {
+      await _getCredentialManager(store).set(credKey, value.trim());
+    } else {
+      await _getCredentialManager(store).delete(credKey);
+    }
+    return { ok: true };
+  });
+
+  ipcMain.handle('github:testConnection', async () => {
+    try {
+      const pat = await _getGitHubPat();
+      const user = await githubAdapter.testConnection(pat);
+      return { ok: true, login: user.login, name: user.name, publicRepos: user.public_repos };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('github:listRepos', async (_event, page = 1) => {
+    try {
+      const pat = await _getGitHubPat();
+      const repos = await githubAdapter.listRepos(pat, page);
+      return { repos };
+    } catch (e) {
+      return { repos: [], error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('github:listPRs', async (_event, owner: string, repo: string) => {
+    try {
+      const pat = await _getGitHubPat();
+      const prs = await githubAdapter.listPullRequests(pat, owner, repo);
+      return { prs };
+    } catch (e) {
+      return { prs: [], error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('github:listIssues', async (_event, owner: string, repo: string) => {
+    try {
+      const pat = await _getGitHubPat();
+      const issues = await githubAdapter.listIssues(pat, owner, repo);
+      return { issues };
+    } catch (e) {
+      return { issues: [], error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('github:reviewPR', async (_event, owner: string, repo: string, prNumber: number) => {
+    try {
+      const pat = await _getGitHubPat();
+
+      _getAuditLedger().log('GITHUB_PR_REVIEW_REQUESTED', {
+        metadata: { owner, repo, prNumber },
+      });
+      eventBus.emit({ type: 'GITHUB_PR_REVIEW_REQUESTED', owner, repo, prNumber });
+
+      // Fetch PR metadata + diff
+      const [prs, diff] = await Promise.all([
+        githubAdapter.listPullRequests(pat, owner, repo),
+        githubAdapter.getPRDiff(pat, owner, repo, prNumber),
+      ]);
+      const pr = prs.find(p => p.number === prNumber);
+      const title = pr?.title ?? `PR #${prNumber}`;
+
+      // Phase 16: inject repo-specific review instructions from shared context
+      const _repoCtx = resolveRepo(store.getSharedContext(), `${owner}/${repo}`);
+      const _reviewInstructions = _repoCtx.mapping?.reviewInstructions;
+      const _projectCtxNote = _repoCtx.projectNote?.automationContext;
+
+      const prompt =
+        `## Pull Request: ${title} (${owner}/${repo} #${prNumber})\n\n` +
+        `**Author:** ${pr?.user ?? 'unknown'} | **Branch:** ${pr?.head_ref ?? '?'} → ${pr?.base_ref ?? '?'}\n` +
+        `**Changes:** +${pr?.additions ?? '?'} -${pr?.deletions ?? '?'} in ${pr?.changed_files ?? '?'} file(s)\n\n` +
+        (pr?.body ? `**Description:**\n${pr.body.slice(0, 500)}\n\n` : '') +
+        (_reviewInstructions ? `## Repository Review Instructions\n${_reviewInstructions.slice(0, 1000)}\n\n` : '') +
+        (_projectCtxNote ? `## Project Context\n${_projectCtxNote.slice(0, 500)}\n\n` : '') +
+        `## Diff\n\`\`\`diff\n${diff.slice(0, 35_000)}\n\`\`\`\n\n` +
+        `Provide a structured code review with: 1) Summary of changes, 2) Potential issues or bugs, 3) Security considerations, 4) Suggestions for improvement. Be specific and cite line numbers where possible.`;
+
+      const systemContext = 'You are reviewing a GitHub Pull Request as part of a three-head AI council.';
+      const { responses, synthesis } = await _runCouncilReview(prompt, systemContext);
+
+      const reviewStore = _getGitHubReviewStore();
+      const review = reviewStore.create({
+        type: 'pr_review',
+        owner, repo,
+        number: prNumber,
+        title,
+        htmlUrl: pr?.html_url ?? `https://github.com/${owner}/${repo}/pull/${prNumber}`,
+        responses,
+        synthesis,
+        source: 'manual',
+      });
+
+      _getAuditLedger().log('GITHUB_PR_REVIEW_COMPLETED', {
+        metadata: { owner, repo, prNumber, reviewId: review.id },
+      });
+      eventBus.emit({ type: 'GITHUB_PR_REVIEW_COMPLETED', owner, repo, prNumber, reviewId: review.id });
+
+      return { ok: true, reviewId: review.id, review };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('github:triageIssue', async (_event, owner: string, repo: string, issueNumber: number) => {
+    try {
+      const pat = await _getGitHubPat();
+
+      const issues = await githubAdapter.listIssues(pat, owner, repo, 'open');
+      const issue = issues.find(i => i.number === issueNumber);
+      const title = issue?.title ?? `Issue #${issueNumber}`;
+
+      const prompt =
+        `## GitHub Issue: ${title} (${owner}/${repo} #${issueNumber})\n\n` +
+        `**Author:** ${issue?.user ?? 'unknown'} | **Labels:** ${issue?.labels?.join(', ') || 'none'}\n\n` +
+        `**Body:**\n${(issue?.body ?? '(no description)').slice(0, 2000)}\n\n` +
+        `Analyze this issue and provide:\n` +
+        `1. **Priority** (critical/high/medium/low) with reasoning\n` +
+        `2. **Suggested labels** (max 3)\n` +
+        `3. **Summary** (2-3 sentences for a comment)\n` +
+        `4. **Suggested next steps** for the maintainer\n`;
+
+      const systemContext = 'You are triaging a GitHub issue as part of a three-head AI council.';
+      const { responses, synthesis } = await _runCouncilReview(prompt, systemContext);
+
+      const reviewStore = _getGitHubReviewStore();
+      const review = reviewStore.create({
+        type: 'issue_triage',
+        owner, repo,
+        number: issueNumber,
+        title,
+        htmlUrl: issue?.html_url ?? `https://github.com/${owner}/${repo}/issues/${issueNumber}`,
+        responses,
+        synthesis,
+        source: 'manual',
+      });
+
+      _getAuditLedger().log('GITHUB_ISSUE_TRIAGE_COMPLETED', {
+        metadata: { owner, repo, issueNumber, reviewId: review.id },
+      });
+      eventBus.emit({ type: 'GITHUB_ISSUE_TRIAGE_COMPLETED', owner, repo, issueNumber, reviewId: review.id });
+
+      return { ok: true, reviewId: review.id, review };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('github:pendingReviews', () => {
+    return { reviews: _getGitHubReviewStore().listPending() };
+  });
+
+  ipcMain.handle('github:approveReview', async (_event, reviewId: string) => {
+    try {
+      const pat = await _getGitHubPat();
+      const reviewStore = _getGitHubReviewStore();
+      const review = reviewStore.get(reviewId);
+      if (!review) return { ok: false, error: 'Review not found' };
+      if (review.status !== 'pending') return { ok: false, error: `Review is already ${review.status}` };
+
+      const comment = await githubAdapter.postComment(
+        pat, review.owner, review.repo, review.number, review.synthesis,
+      );
+
+      reviewStore.update(reviewId, {
+        status: 'posted',
+        commentUrl: comment.html_url,
+        approvedAt: Date.now(),
+      });
+
+      _getAuditLedger().log('GITHUB_COMMENT_POSTED', {
+        metadata: { owner: review.owner, repo: review.repo, number: review.number, commentUrl: comment.html_url },
+      });
+      eventBus.emit({ type: 'GITHUB_COMMENT_POSTED', owner: review.owner, repo: review.repo, number: review.number, commentUrl: comment.html_url });
+      eventBus.emit({ type: 'GITHUB_REVIEW_APPROVED', reviewId, commentUrl: comment.html_url });
+
+      return { ok: true, commentUrl: comment.html_url };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('github:dismissReview', (_event, reviewId: string) => {
+    const store_ = _getGitHubReviewStore();
+    const review = store_.get(reviewId);
+    if (!review) return { ok: false, error: 'Review not found' };
+    store_.update(reviewId, { status: 'dismissed' });
+    eventBus.emit({ type: 'GITHUB_REVIEW_DISMISSED', reviewId });
+    return { ok: true };
+  });
+
+  ipcMain.handle('github:webhookStatus', async () => {
+    const hasSecret = !!(await _getCredentialManager(store).get('github_webhook_secret'));
+    return { enabled: _githubWebhookEnabled, hasSecret, port: store.getWebhookPort() };
+  });
+
+  function _registerGitHubWebhookRoute(): void {
+    registerGitHubWebhookHandler(async (req, res, body) => {
+      const secret = await _getCredentialManager(store).get('github_webhook_secret') ?? '';
+      await handleGitHubWebhook(req, res, body, secret, async (eventType, payload) => {
+        _getAuditLedger().log('GITHUB_WEBHOOK_RECEIVED', {
+          metadata: { event: eventType, ...payload },
+        });
+        eventBus.emit({ type: 'GITHUB_WEBHOOK_RECEIVED', event: eventType, owner: payload.owner, repo: payload.repo, number: payload.number });
+
+        // Dispatch through the inbound trust gate
+        const goal = eventType === 'pr_opened'
+          ? `Review PR #${payload.number} "${payload.title}" in ${payload.owner}/${payload.repo}`
+          : `Triage issue #${payload.number} "${payload.title}" in ${payload.owner}/${payload.repo}`;
+
+        const decision = _classifyInboundTask(goal, 'webhook_local');
+        if (!decision.blocked) {
+          const task = _getAgentLoop(store).createTask(goal, 'research');
+          _getAuditLedger().log('INBOUND_TASK_APPROVED', {
+            taskId: task.id,
+            metadata: { source: 'webhook_local', event: eventType, auditId: decision.auditId },
+          });
+          eventBus.emit({ type: 'INBOUND_TASK_APPROVED', source: 'webhook_local', taskId: task.id });
+        }
+      });
+    });
+  }
+
+  ipcMain.handle('github:webhookEnable', async () => {
+    _githubWebhookEnabled = true;
+    _registerGitHubWebhookRoute();
+    return { ok: true };
+  });
+
+  ipcMain.handle('github:webhookDisable', () => {
+    _githubWebhookEnabled = false;
+    unregisterGitHubWebhookHandler();
+    return { ok: true };
+  });
+
+  // ── Phase 2: Skill Trust IPC handler ────────────────────────────────────────
+
+  ipcMain.handle('skillTrust:analyze', (_event, rawMarkdown: string) => {
+    if (typeof rawMarkdown !== 'string' || rawMarkdown.length > 512_000) {
+      return { error: 'Invalid input' };
+    }
+    try {
+      const result = analyzeSkill(rawMarkdown);
+      const decision = evaluateSkillPolicy(result);
+
+      const skillName = result.frontmatter.name ?? 'unknown';
+      _getAuditLedger().log('SKILL_ANALYZED', {
+        metadata: { name: skillName, riskLevel: result.riskLevel, blocked: result.blocked },
+      });
+      eventBus.emit({ type: 'SKILL_ANALYZED', name: skillName, riskLevel: result.riskLevel, blocked: result.blocked });
+
+      if (result.blocked) {
+        _getAuditLedger().log('SKILL_BLOCKED', {
+          metadata: { name: skillName, blockReason: result.blockReason },
+        });
+        eventBus.emit({ type: 'SKILL_BLOCKED', name: skillName, blockReason: result.blockReason! });
+      }
+
+      return { result, decision };
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // ── Phase 5: Skill Store IPC handlers ────────────────────────────────────────
+
+  // skill:list — all installed skills
+  ipcMain.handle('skill:list', () => {
+    return { skills: _getSkillStore().list() };
+  });
+
+  // skill:install — analyze, gate, then persist if allowed/approved
+  ipcMain.handle('skill:install', (_e, rawMarkdown: string, source: string, sourceUrl?: string) => {
+    if (typeof rawMarkdown !== 'string' || rawMarkdown.length > 512_000) {
+      return incomeFail('Invalid input');
+    }
+    try {
+      const result   = analyzeSkill(rawMarkdown);
+      const decision = evaluateSkillPolicy(result);
+      const name     = result.frontmatter.name ?? 'unnamed-skill';
+
+      if (!decision.allowed) {
+        _getAuditLedger().log('SKILL_INSTALL_BLOCKED', {
+          metadata: { name, riskLevel: result.riskLevel, blockReason: decision.blockReason },
+        });
+        return incomeFail(decision.blockReason ?? `Skill "${name}" is blocked by policy.`);
+      }
+
+      const skill = _getSkillStore().install({
+        name:                   name,
+        version:                result.frontmatter.version,
+        description:            result.frontmatter.description,
+        author:                 result.frontmatter.author,
+        source:                 (source as InstalledSkill['source']) || 'paste',
+        sourceUrl,
+        rawMarkdown,
+        riskLevel:              result.riskLevel,
+        blocked:                result.blocked,
+        requiresApproval:       result.requiresApproval,
+        councilReviewRequired:  result.councilReviewRequired,
+        declaredCapabilities:   result.declaredCapabilities,
+        detectedCapabilities:   result.detectedCapabilities,
+        reviewSummary:          result.reviewSummary,
+        enabled:                true,
+      });
+
+      _getAuditLedger().log('SKILL_INSTALLED', {
+        metadata: { id: skill.id, name: skill.name, riskLevel: skill.riskLevel, source: skill.source },
+      });
+
+      return incomeOk({ skill, decision, result });
+    } catch (e) {
+      return incomeFail(e instanceof Error ? e.message : String(e));
+    }
+  });
+
+  // skill:enable / skill:disable
+  ipcMain.handle('skill:enable',  (_e, id: string) => ({ ok: _getSkillStore().setEnabled(id, true)  }));
+  ipcMain.handle('skill:disable', (_e, id: string) => ({ ok: _getSkillStore().setEnabled(id, false) }));
+
+  // skill:uninstall
+  ipcMain.handle('skill:uninstall', (_e, id: string) => {
+    const skill = _getSkillStore().get(id);
+    const ok    = _getSkillStore().uninstall(id);
+    if (ok && skill) {
+      _getAuditLedger().log('SKILL_UNINSTALLED', { metadata: { id, name: skill.name } });
+    }
+    return { ok };
+  });
+
+  // skill:run — execute via normal task path (respects all trust/approval rules)
+  ipcMain.handle('skill:run', async (_e, id: string, goal?: string) => {
+    const skill = _getSkillStore().get(id);
+    if (!skill) return { ok: false, error: 'Skill not found' };
+    if (!skill.enabled) return { ok: false, error: 'Skill is disabled' };
+
+    // Compose task goal from skill name + optional user goal
+    const taskGoal = goal?.trim()
+      ? `${goal.trim()} (using skill: ${skill.name})`
+      : `Run skill: ${skill.name} — ${skill.description ?? ''}`.trim();
+
+    try {
+      const { taskEngine } = await getEngine();
+      const task = await taskEngine.createTask({
+        goal:     taskGoal,
+        category: 'ops',
+        metadata: { skillId: id, skillName: skill.name, source: 'skill_store' },
+      });
+      _getSkillStore().recordRun(id);
+      _getAuditLedger().log('SKILL_EXECUTED', { taskId: task.id, metadata: { skillId: id, name: skill.name } });
+      return { ok: true, taskId: task.id };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // skill:fetchUrl — download raw SKILL.md content from a URL
+  ipcMain.handle('skill:fetchUrl', async (_e, url: string) => {
+    if (!url.startsWith('https://') && !url.startsWith('http://')) {
+      return { ok: false, error: 'Only http/https URLs are supported' };
+    }
+    return new Promise<{ ok: boolean; markdown?: string; error?: string }>((resolve) => {
+      const mod = url.startsWith('https://') ? https : http;
+      let raw = '';
+      const req = mod.get(url, { timeout: 10_000 }, (res) => {
+        if ((res.statusCode ?? 0) >= 400) {
+          resolve({ ok: false, error: `HTTP ${res.statusCode}` });
+          return;
+        }
+        res.setEncoding('utf8');
+        res.on('data', (c: string) => { raw += c; if (raw.length > 256_000) { req.destroy(); resolve({ ok: false, error: 'Response too large (>256KB)' }); } });
+        res.on('end', () => resolve({ ok: true, markdown: raw }));
+      });
+      req.on('error', (e) => resolve({ ok: false, error: e.message }));
+      req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'Request timed out' }); });
+    });
+  });
+
+  // skill:examples — built-in safe example skills
+  ipcMain.handle('skill:examples', () => {
+    return { examples: BUNDLED_SKILL_EXAMPLES };
+  });
+
+  // ── Phase 6: Telegram IPC handlers ───────────────────────────────────────────
+
+  // Internal: handle one inbound Telegram message through the trust gate
+  async function _handleTelegramMessage(msg: TgMessage): Promise<void> {
+    const text   = msg.text ?? '';
+    const chatId = msg.chat.id;
+    const chatName = msg.chat.username ?? msg.chat.title ?? msg.chat.first_name ?? String(chatId);
+    const ledger = _getAuditLedger();
+
+    // Record inbound
+    const logEntry = _messageLog.push({
+      direction: 'inbound',
+      channel:   'telegram',
+      chatId,
+      chatName,
+      text: text.slice(0, 500),
+      status: 'received',
+    });
+
+    store.setTelegramLastMessageAt(Date.now());
+
+    ledger.log('TELEGRAM_MESSAGE_RECEIVED', {
+      metadata: { chatId, chatName, textLen: text.length },
+    });
+
+    // ── 1. Allowlist check ────────────────────────────────────────────────────
+    const allowed = store.getTelegramAllowedChats();
+    if (allowed.length > 0 && !allowed.includes(chatId)) {
+      _messageLog.update(logEntry.id, { status: 'blocked', blockedReason: 'Chat ID not in allowlist' });
+      ledger.log('TELEGRAM_MESSAGE_BLOCKED', {
+        metadata: { chatId, reason: 'not_in_allowlist' },
+      });
+      // Silently ignore — do not respond to unknown chats
+      return;
+    }
+
+    // ── 2. Prompt injection detection ─────────────────────────────────────────
+    if (_detectPromptInjection(text)) {
+      _messageLog.update(logEntry.id, { status: 'blocked', blockedReason: 'Prompt injection detected' });
+      ledger.log('TELEGRAM_MESSAGE_BLOCKED', {
+        metadata: { chatId, reason: 'prompt_injection' },
+      });
+      if (_telegramBot) {
+        await _telegramBot.sendMessage(chatId, 'This request cannot be processed.');
+      }
+      return;
+    }
+
+    // ── 3. Risk classification ────────────────────────────────────────────────
+    const riskClass = _classifyInboundRisk(text);
+    _messageLog.update(logEntry.id, { status: 'classified', riskClass });
+
+    ledger.log('TELEGRAM_MESSAGE_RECEIVED', {
+      metadata: { chatId, riskClass },
+    });
+
+    // Hard-block high_risk via external channel
+    if (riskClass === 'high_risk') {
+      _messageLog.update(logEntry.id, { status: 'blocked', blockedReason: 'High-risk request blocked' });
+      ledger.log('TELEGRAM_MESSAGE_BLOCKED', {
+        metadata: { chatId, reason: 'high_risk', riskClass },
+      });
+      void _pushNotifier.fire('high_risk_blocked', 'High-Risk Request Blocked', `Blocked Telegram message from chat ${chatId}: ${text.slice(0, 80)}`);
+      if (_telegramBot) {
+        await _telegramBot.sendMessage(chatId, 'This request cannot be processed via this channel.');
+      }
+      return;
+    }
+
+    // write_action requires approval before reply
+    if (riskClass === 'write_action' || riskClass === 'skill_execution') {
+      _messageLog.update(logEntry.id, { status: 'approval_pending' });
+      ledger.log('TELEGRAM_APPROVAL_PENDING', {
+        metadata: { chatId, riskClass, text: text.slice(0, 200) },
+      });
+      _fireEventRecipes('event:approval_required', { label: 'Approval Required — Telegram', body: `${riskClass} task from chat ${chatId}: ${text.slice(0, 80)}` });
+      void _pushNotifier.fire('approval_required', 'Approval Required — Telegram', `${riskClass} task from chat ${chatId}: ${text.slice(0, 80)}`).then(ok => {
+        if (ok) _getAuditLedger().log('PUSH_SENT', { metadata: { event: 'approval_required', channel: 'telegram' } });
+      });
+      if (_telegramBot) {
+        await _telegramBot.sendMessage(
+          chatId,
+          `Your request requires approval before I can proceed.\nRisk class: ${riskClass}\n\nA human will review and approve this action in TriForge.`,
+        );
+      }
+      // Still create the task so it appears in the approval queue
+    }
+
+    // ── 4. Create task ────────────────────────────────────────────────────────
+    try {
+      const task = _getAgentLoop(store).createTask(text, 'research');
+      _messageLog.update(logEntry.id, { status: 'task_created', taskId: task.id });
+
+      ledger.log('TELEGRAM_TASK_CREATED', {
+        taskId:   task.id,
+        metadata: { chatId, riskClass },
+      });
+
+      // For informational tasks: set up a one-shot reply when the task completes
+      if (riskClass === 'informational') {
+        const unsub = eventBus.onAny((event) => {
+          if (event.type === 'TASK_COMPLETED' && (event as Record<string, unknown>).taskId === task.id) {
+            unsub();
+            const result = (event as Record<string, unknown>).result as string | undefined;
+            const reply  = result ? result.slice(0, 3000) : 'Task completed.';
+            if (_telegramBot) {
+              _telegramBot.sendMessage(chatId, reply).then(ok => {
+                if (ok) {
+                  _messageLog.push({ direction: 'outbound', channel: 'telegram', chatId, chatName, text: reply, status: 'replied', taskId: task.id });
+                  ledger.log('TELEGRAM_REPLY_SENT', { taskId: task.id, metadata: { chatId } });
+                }
+              }).catch(() => {/* no-op */});
+            }
+          }
+        });
+      }
+    } catch (err) {
+      console.error('[Telegram] Failed to create task:', err);
+    }
+  }
+
+  // telegram:setToken — save bot token
+  ipcMain.handle('telegram:setToken', async (_e, token: string) => {
+    const creds = new CredentialManager(store);
+    await creds.set('telegram_bot_token', token.trim());
+    return { ok: true };
+  });
+
+  // telegram:testConnection — validate token, return bot info
+  ipcMain.handle('telegram:testConnection', async () => {
+    const creds = new CredentialManager(store);
+    const token = await creds.get('telegram_bot_token');
+    if (!token) return { ok: false, error: 'No bot token saved' };
+    try {
+      const bot  = new TelegramAdapter(token);
+      const info = await bot.getMe();
+      store.setTelegramBotUsername(info.username);
+      return { ok: true, username: info.username, firstName: info.first_name, id: info.id };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // telegram:start — begin polling
+  ipcMain.handle('telegram:start', async () => {
+    if (_telegramBot?.isRunning()) return { ok: true, already: true };
+    const creds = new CredentialManager(store);
+    const token = await creds.get('telegram_bot_token');
+    if (!token) return { ok: false, error: 'No bot token configured' };
+    try {
+      // Validate token first
+      const adapter = new TelegramAdapter(token);
+      const info    = await adapter.getMe();
+      store.setTelegramBotUsername(info.username);
+      store.setTelegramEnabled(true);
+      _telegramBot = adapter;
+      _telegramBot.start((msg) => { void _handleTelegramMessage(msg); });
+      _getAuditLedger().log('TELEGRAM_BOT_STARTED', { metadata: { username: info.username } });
+      return { ok: true, username: info.username };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // telegram:stop
+  ipcMain.handle('telegram:stop', () => {
+    _telegramBot?.stop();
+    _telegramBot = null;
+    store.setTelegramEnabled(false);
+    _getAuditLedger().log('TELEGRAM_BOT_STOPPED', {});
+    return { ok: true };
+  });
+
+  // telegram:status
+  ipcMain.handle('telegram:status', () => {
+    return {
+      enabled:       store.getTelegramEnabled(),
+      running:       _telegramBot?.isRunning() ?? false,
+      botUsername:   store.getTelegramBotUsername(),
+      allowedChats:  store.getTelegramAllowedChats(),
+      lastMessageAt: store.getTelegramLastMessageAt(),
+    };
+  });
+
+  // telegram:addAllowedChat
+  ipcMain.handle('telegram:addAllowedChat', (_e, chatId: number) => {
+    const current = store.getTelegramAllowedChats();
+    if (!current.includes(chatId)) {
+      store.setTelegramAllowedChats([...current, chatId]);
+    }
+    return { ok: true, allowedChats: store.getTelegramAllowedChats() };
+  });
+
+  // telegram:removeAllowedChat
+  ipcMain.handle('telegram:removeAllowedChat', (_e, chatId: number) => {
+    store.setTelegramAllowedChats(store.getTelegramAllowedChats().filter(id => id !== chatId));
+    return { ok: true, allowedChats: store.getTelegramAllowedChats() };
+  });
+
+  // telegram:sendMessage — manual test send
+  ipcMain.handle('telegram:sendMessage', async (_e, chatId: number, text: string) => {
+    if (!_telegramBot?.isRunning()) return { ok: false, error: 'Bot not running' };
+    const ok = await _telegramBot.sendMessage(chatId, text.slice(0, 4096));
+    if (ok) {
+      _messageLog.push({ direction: 'outbound', channel: 'telegram', chatId, text: text.slice(0, 500), status: 'replied' });
+      _getAuditLedger().log('TELEGRAM_REPLY_SENT', { metadata: { chatId, manual: true } });
+    }
+    return { ok };
+  });
+
+  // telegram:listMessages — recent message log
+  ipcMain.handle('telegram:listMessages', (_e, limit = 50) => {
+    return { messages: _messageLog.list(limit) };
+  });
+
+  // ── Phase 7: Governance / Policy IPC handlers ─────────────────────────────────
+
+  // policy:list — all rules ordered by priority
+  ipcMain.handle('policy:list', () => {
+    return { rules: _getGovernanceStore().list() };
+  });
+
+  // policy:create — add a new custom rule
+  ipcMain.handle('policy:create', (_e, fields: {
+    name: string; description?: string; priority: number; enabled: boolean;
+    matchSource: string; matchRiskClass: string; matchCategory?: string;
+    action: string; preferLocal?: boolean;
+  }) => {
+    const rule = _getGovernanceStore().create({
+      name:          fields.name,
+      description:   fields.description,
+      priority:      Number(fields.priority),
+      enabled:       Boolean(fields.enabled),
+      matchSource:   fields.matchSource as GovSource,
+      matchRiskClass: fields.matchRiskClass as GovRiskClass,
+      matchCategory: fields.matchCategory,
+      action:        fields.action as import('@triforge/engine').GovAction,
+      preferLocal:   fields.preferLocal ?? false,
+    });
+    _getAuditLedger().log('POLICY_RULE_CREATED', { metadata: { ruleId: rule.id, name: rule.name } });
+    return { ok: true, rule };
+  });
+
+  // policy:update — patch an existing rule
+  ipcMain.handle('policy:update', (_e, id: string, patch: Partial<{
+    name: string; description: string; priority: number; enabled: boolean;
+    matchSource: string; matchRiskClass: string; matchCategory: string;
+    action: string; preferLocal: boolean;
+  }>) => {
+    const rule = _getGovernanceStore().update(id, patch as Record<string, unknown> as Parameters<ReturnType<typeof _getGovernanceStore>['update']>[1]);
+    if (!rule) return { ok: false, error: 'Rule not found' };
+    _getAuditLedger().log('POLICY_RULE_UPDATED', { metadata: { ruleId: id, patch } });
+    return { ok: true, rule };
+  });
+
+  // policy:delete — remove a custom (non-default) rule
+  ipcMain.handle('policy:delete', (_e, id: string) => {
+    const ok = _getGovernanceStore().delete(id);
+    if (ok) _getAuditLedger().log('POLICY_RULE_DELETED', { metadata: { ruleId: id } });
+    return { ok };
+  });
+
+  // policy:enable / policy:disable
+  ipcMain.handle('policy:enable',  (_e, id: string) => ({ ok: _getGovernanceStore().setEnabled(id, true)  }));
+  ipcMain.handle('policy:disable', (_e, id: string) => ({ ok: _getGovernanceStore().setEnabled(id, false) }));
+
+  // policy:setPriority
+  ipcMain.handle('policy:setPriority', (_e, id: string, priority: number) => ({
+    ok: _getGovernanceStore().setPriority(id, Number(priority)),
+  }));
+
+  // policy:reset — restore all default rules
+  ipcMain.handle('policy:reset', () => {
+    _getGovernanceStore().resetDefaults();
+    _getAuditLedger().log('POLICY_DEFAULTS_RESET', {});
+    return { ok: true };
+  });
+
+  // policy:simulate — evaluate source+riskClass+category against current rules
+  ipcMain.handle('policy:simulate', (_e, source: string, riskClass: string, category?: string) => {
+    const resolution = resolveGovernance(
+      _getGovernanceStore().listEnabled(),
+      source as GovSource,
+      riskClass as GovRiskClass,
+      category,
+    );
+    return { resolution };
+  });
+
+  // ── Phase 8: Slack IPC handlers ───────────────────────────────────────────────
+
+  // Internal: handle one inbound Slack message through the trust gate
+  async function _handleSlackMessage(msg: SlackMessage): Promise<void> {
+    const text      = msg.text ?? '';
+    const channelId = msg.channelId;
+    const ledger    = _getAuditLedger();
+
+    // Record inbound
+    const logEntry = _messageLog.push({
+      direction: 'inbound',
+      channel:   'slack',
+      chatId:    0,
+      channelId,
+      chatName:  `#${channelId}`,
+      text:      text.slice(0, 500),
+      status:    'received',
+    });
+
+    store.setSlackLastMessageAt(Date.now());
+    ledger.log('SLACK_MESSAGE_RECEIVED', { metadata: { channelId, userId: msg.userId, textLen: text.length } });
+
+    // ── 1. Allowlist checks ───────────────────────────────────────────────────
+    const allowedChannels = store.getSlackAllowedChannels();
+    if (allowedChannels.length > 0 && !allowedChannels.includes(channelId)) {
+      _messageLog.update(logEntry.id, { status: 'blocked', blockedReason: 'Channel not in allowlist' });
+      ledger.log('SLACK_MESSAGE_BLOCKED', { metadata: { channelId, reason: 'not_in_allowlist' } });
+      return;
+    }
+
+    const allowedUsers = store.getSlackAllowedUsers();
+    if (allowedUsers.length > 0 && !allowedUsers.includes(msg.userId)) {
+      _messageLog.update(logEntry.id, { status: 'blocked', blockedReason: 'User not in allowlist' });
+      ledger.log('SLACK_MESSAGE_BLOCKED', { metadata: { channelId, userId: msg.userId, reason: 'user_not_in_allowlist' } });
+      return;
+    }
+
+    // ── 2. Prompt injection detection ─────────────────────────────────────────
+    if (_detectPromptInjection(text)) {
+      _messageLog.update(logEntry.id, { status: 'blocked', blockedReason: 'Prompt injection detected' });
+      ledger.log('SLACK_MESSAGE_BLOCKED', { metadata: { channelId, reason: 'prompt_injection' } });
+      if (_slackAdapter) {
+        await _slackAdapter.postMessage(channelId, 'This request cannot be processed.');
+      }
+      return;
+    }
+
+    // ── 3. Risk classification via governance ─────────────────────────────────
+    const { blocked, requiresApproval, riskClass } = _classifyInboundTask(text, 'slack');
+    _messageLog.update(logEntry.id, { status: 'classified', riskClass });
+
+    if (blocked) {
+      _messageLog.update(logEntry.id, { status: 'blocked', blockedReason: 'Blocked by policy' });
+      ledger.log('SLACK_MESSAGE_BLOCKED', { metadata: { channelId, riskClass, reason: 'policy_block' } });
+      if (riskClass === 'high_risk') void _pushNotifier.fire('high_risk_blocked', 'High-Risk Request Blocked', `Blocked Slack message in ${channelId}: ${text.slice(0, 80)}`);
+      if (_slackAdapter) {
+        await _slackAdapter.postMessage(channelId, 'This request cannot be processed via this channel.');
+      }
+      return;
+    }
+
+    if (requiresApproval) {
+      _messageLog.update(logEntry.id, { status: 'approval_pending' });
+      ledger.log('SLACK_APPROVAL_PENDING', { metadata: { channelId, riskClass, text: text.slice(0, 200) } });
+      _fireEventRecipes('event:approval_required', { label: 'Approval Required — Slack', body: `${riskClass} task in ${channelId}: ${text.slice(0, 80)}` });
+      void _pushNotifier.fire('approval_required', 'Approval Required — Slack', `${riskClass} task in ${channelId}: ${text.slice(0, 80)}`);
+      if (_slackAdapter) {
+        await _slackAdapter.postMessage(
+          channelId,
+          `Your request requires approval before I can proceed.\nRisk class: *${riskClass}*\n\nA human will review this action in TriForge.`,
+        );
+      }
+      // Still create the task so it appears in the approval queue
+    }
+
+    // ── 4. Create task ────────────────────────────────────────────────────────
+    try {
+      const task = _getAgentLoop(store).createTask(text, 'research');
+      _messageLog.update(logEntry.id, { status: 'task_created', taskId: task.id });
+      ledger.log('SLACK_TASK_CREATED', { taskId: task.id, metadata: { channelId, riskClass } });
+
+      // For informational tasks: auto-reply when the task completes
+      if (riskClass === 'informational') {
+        const unsub = eventBus.onAny((event) => {
+          if (event.type === 'TASK_COMPLETED' && (event as Record<string, unknown>).taskId === task.id) {
+            unsub();
+            const result = (event as Record<string, unknown>).result as string | undefined;
+            const reply  = result ? result.slice(0, 3000) : 'Task completed.';
+            if (_slackAdapter) {
+              _slackAdapter.postMessage(channelId, reply).then(ok => {
+                if (ok) {
+                  _messageLog.push({ direction: 'outbound', channel: 'slack', chatId: 0, channelId, chatName: `#${channelId}`, text: reply, status: 'replied', taskId: task.id });
+                  ledger.log('SLACK_REPLY_SENT', { taskId: task.id, metadata: { channelId } });
+                }
+              }).catch(() => {/* no-op */});
+            }
+          }
+        });
+      }
+    } catch (err) {
+      console.error('[Slack] Failed to create task:', err);
+    }
+  }
+
+  // Internal: build and send a scheduled summary to the configured channel
+  async function _sendSlackSummary(): Promise<void> {
+    if (!_slackAdapter?.isRunning()) return;
+    const channelId = store.getSlackSummaryChannel();
+    if (!channelId) return;
+    const ledger = _getAuditLedger();
+    try {
+      const missions = missionController.list ? missionController.list() : [];
+      const active   = (missions as Array<{ status?: string }>).filter(m => m.status === 'active').length;
+      const pending  = (missions as Array<{ status?: string }>).filter(m => m.status === 'pending').length;
+      const summary  = [
+        `*TriForge Daily Summary — ${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}*`,
+        `• Active missions: *${active}*`,
+        `• Pending missions: *${pending}*`,
+        `• Message log entries today: *${_messageLog.list(200).filter(m => Date.now() - m.timestamp < 86_400_000).length}*`,
+      ].join('\n');
+      const ok = await _slackAdapter.postMessage(channelId, summary);
+      if (ok) {
+        ledger.log('SLACK_SUMMARY_SENT', { metadata: { channelId } });
+        _messageLog.push({ direction: 'outbound', channel: 'slack', chatId: 0, channelId, chatName: `#${channelId}`, text: summary, status: 'replied' });
+      }
+    } catch (err) {
+      console.error('[Slack] Failed to send summary:', err);
+    }
+  }
+
+  // Internal: restart summary scheduler based on current store config
+  function _resetSlackSummarySchedule(): void {
+    if (_slackSummaryTimer) { clearInterval(_slackSummaryTimer); _slackSummaryTimer = null; }
+    const schedule = store.getSlackSummarySchedule();
+    if (schedule === 'disabled') return;
+    const ms = schedule === 'daily' ? 86_400_000 : 7 * 86_400_000;
+    _slackSummaryTimer = setInterval(() => { void _sendSlackSummary(); }, ms);
+  }
+
+  // Phase 28 — resolve Slack token via workspace credential resolver
+  async function _getSlackToken(): Promise<{ token: string; scopeUsed: 'workspace' | 'personal' } | null> {
+    const result = await _getWsCredResolver().resolve('slack');
+    if (result.scopeUsed === 'none' || !result.token) return null;
+    if (result.scopeUsed === 'workspace') {
+      _getAuditLedger().log('WS_INTEGRATION_USED', {
+        metadata: { integration: 'slack', scope: 'workspace', fallbackUsed: result.fallbackUsed, workspaceId: store.getWorkspace()?.id },
+      });
+    }
+    return { token: result.token, scopeUsed: result.scopeUsed };
+  }
+
+  // slack:setToken — save bot token
+  ipcMain.handle('slack:setToken', async (_e, token: string) => {
+    const creds = new CredentialManager(store);
+    await creds.set('slack_bot_token', token.trim());
+    return { ok: true };
+  });
+
+  // slack:testConnection — validate token, return workspace info
+  ipcMain.handle('slack:testConnection', async () => {
+    const creds = new CredentialManager(store);
+    const token = await creds.get('slack_bot_token');
+    if (!token) return { ok: false, error: 'No bot token saved' };
+    try {
+      const adapter = new SlackAdapter(token);
+      const info    = await adapter.authTest();
+      store.setSlackWorkspaceName(info.workspaceName);
+      store.setSlackBotUserId(info.botUserId);
+      store.setSlackBotUserName(info.botUserName);
+      return { ok: true, botUserId: info.botUserId, botUserName: info.botUserName, workspaceName: info.workspaceName, workspaceId: info.workspaceId };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // slack:start — begin polling
+  ipcMain.handle('slack:start', async () => {
+    if (_slackAdapter?.isRunning()) return { ok: true, already: true };
+    const slackCred = await _getSlackToken();
+    if (!slackCred) return { ok: false, error: 'No bot token configured' };
+    const token = slackCred.token;
+    try {
+      const adapter  = new SlackAdapter(token);
+      const info     = await adapter.authTest();
+      store.setSlackWorkspaceName(info.workspaceName);
+      store.setSlackBotUserId(info.botUserId);
+      store.setSlackBotUserName(info.botUserName);
+      store.setSlackEnabled(true);
+      _slackAdapter  = adapter;
+      const channels = store.getSlackAllowedChannels();
+      _slackAdapter.start(channels, (msg) => { void _handleSlackMessage(msg); });
+      _resetSlackSummarySchedule();
+      _getAuditLedger().log('SLACK_BOT_STARTED', { metadata: { workspace: info.workspaceName, botUser: info.botUserName } });
+      return { ok: true, workspaceName: info.workspaceName, botUserName: info.botUserName };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // slack:stop
+  ipcMain.handle('slack:stop', () => {
+    _slackAdapter?.stop();
+    _slackAdapter = null;
+    if (_slackSummaryTimer) { clearInterval(_slackSummaryTimer); _slackSummaryTimer = null; }
+    store.setSlackEnabled(false);
+    _getAuditLedger().log('SLACK_BOT_STOPPED', {});
+    return { ok: true };
+  });
+
+  // slack:status
+  ipcMain.handle('slack:status', () => {
+    return {
+      enabled:          store.getSlackEnabled(),
+      running:          _slackAdapter?.isRunning() ?? false,
+      workspaceName:    store.getSlackWorkspaceName(),
+      botUserName:      store.getSlackBotUserName(),
+      allowedChannels:  store.getSlackAllowedChannels(),
+      allowedUsers:     store.getSlackAllowedUsers(),
+      summaryChannel:   store.getSlackSummaryChannel(),
+      summarySchedule:  store.getSlackSummarySchedule(),
+      lastMessageAt:    store.getSlackLastMessageAt(),
+    };
+  });
+
+  // slack:listChannels — enumerate channels the bot can see
+  ipcMain.handle('slack:listChannels', async () => {
+    const creds = new CredentialManager(store);
+    const token = await creds.get('slack_bot_token');
+    if (!token) return { ok: false, channels: [], error: 'No token' };
+    try {
+      const adapter  = _slackAdapter ?? new SlackAdapter(token);
+      const channels = await adapter.listChannels();
+      return { ok: true, channels };
+    } catch (err) {
+      return { ok: false, channels: [], error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // slack:addAllowedChannel
+  ipcMain.handle('slack:addAllowedChannel', (_e, channelId: string) => {
+    const current = store.getSlackAllowedChannels();
+    if (!current.includes(channelId)) {
+      const updated = [...current, channelId];
+      store.setSlackAllowedChannels(updated);
+      _slackAdapter?.setChannels(updated);
+    }
+    return { ok: true, allowedChannels: store.getSlackAllowedChannels() };
+  });
+
+  // slack:removeAllowedChannel
+  ipcMain.handle('slack:removeAllowedChannel', (_e, channelId: string) => {
+    const updated = store.getSlackAllowedChannels().filter(id => id !== channelId);
+    store.setSlackAllowedChannels(updated);
+    _slackAdapter?.setChannels(updated);
+    return { ok: true, allowedChannels: store.getSlackAllowedChannels() };
+  });
+
+  // slack:addAllowedUser
+  ipcMain.handle('slack:addAllowedUser', (_e, userId: string) => {
+    const current = store.getSlackAllowedUsers();
+    if (!current.includes(userId)) store.setSlackAllowedUsers([...current, userId]);
+    return { ok: true, allowedUsers: store.getSlackAllowedUsers() };
+  });
+
+  // slack:removeAllowedUser
+  ipcMain.handle('slack:removeAllowedUser', (_e, userId: string) => {
+    store.setSlackAllowedUsers(store.getSlackAllowedUsers().filter(id => id !== userId));
+    return { ok: true, allowedUsers: store.getSlackAllowedUsers() };
+  });
+
+  // slack:sendMessage — manual test send
+  ipcMain.handle('slack:sendMessage', async (_e, channelId: string, text: string) => {
+    if (!_slackAdapter?.isRunning()) return { ok: false, error: 'Slack bot not running' };
+    const ok = await _slackAdapter.postMessage(channelId, text.slice(0, 3000));
+    if (ok) {
+      _messageLog.push({ direction: 'outbound', channel: 'slack', chatId: 0, channelId, text: text.slice(0, 500), status: 'replied' });
+      _getAuditLedger().log('SLACK_REPLY_SENT', { metadata: { channelId, manual: true } });
+    }
+    return { ok };
+  });
+
+  // slack:listMessages — recent message log (Slack-only)
+  ipcMain.handle('slack:listMessages', (_e, limit = 50) => {
+    return { messages: _messageLog.list(limit).filter(m => m.channel === 'slack') };
+  });
+
+  // slack:setSummaryChannel
+  ipcMain.handle('slack:setSummaryChannel', (_e, channelId: string) => {
+    store.setSlackSummaryChannel(channelId);
+    _resetSlackSummarySchedule();
+    return { ok: true };
+  });
+
+  // slack:setSummarySchedule
+  ipcMain.handle('slack:setSummarySchedule', (_e, schedule: 'disabled' | 'daily' | 'weekly') => {
+    store.setSlackSummarySchedule(schedule);
+    _resetSlackSummarySchedule();
+    return { ok: true };
+  });
+
+  // slack:sendSummaryNow — trigger an immediate summary
+  ipcMain.handle('slack:sendSummaryNow', async () => {
+    await _sendSlackSummary();
+    return { ok: true };
+  });
+
+  // ── Phase 9: Jira IPC handlers ────────────────────────────────────────────────
+
+  // Internal: build a JiraAdapter from stored credentials
+  async function _buildJiraAdapter(): Promise<JiraAdapter | null> {
+    const result = await _getWsCredResolver().resolve('jira');
+    if (result.scopeUsed === 'none' || !result.token || !result.url || !result.email) return null;
+    if (result.scopeUsed === 'workspace') {
+      _getAuditLedger().log('WS_INTEGRATION_USED', {
+        metadata: { integration: 'jira', scope: 'workspace', fallbackUsed: result.fallbackUsed, workspaceId: store.getWorkspace()?.id },
+      });
+    }
+    return new JiraAdapter(result.url, result.email, result.token);
+  }
+
+  // jira:setCredentials — persist workspace URL, email, and API token
+  ipcMain.handle('jira:setCredentials', async (_e, workspaceUrl: string, email: string, apiToken: string) => {
+    store.setJiraWorkspaceUrl(workspaceUrl.trim());
+    store.setJiraEmail(email.trim());
+    const creds = new CredentialManager(store);
+    await creds.set('jira_api_token', apiToken.trim());
+    return { ok: true };
+  });
+
+  // jira:testConnection — validate credentials and return user info
+  ipcMain.handle('jira:testConnection', async () => {
+    const adapter = await _buildJiraAdapter();
+    if (!adapter) return { ok: false, error: 'Credentials not configured' };
+    try {
+      const user = await adapter.getMyself();
+      store.setJiraUserDisplayName(user.displayName);
+      store.setJiraEnabled(true);
+      _getAuditLedger().log('JIRA_CONNECTED', { metadata: { displayName: user.displayName, email: user.emailAddress } });
+      return { ok: true, displayName: user.displayName, emailAddress: user.emailAddress, accountId: user.accountId };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // jira:status — current connection state
+  ipcMain.handle('jira:status', () => {
+    return {
+      enabled:        store.getJiraEnabled(),
+      workspaceUrl:   store.getJiraWorkspaceUrl(),
+      email:          store.getJiraEmail(),
+      displayName:    store.getJiraUserDisplayName(),
+      allowedProjects:store.getJiraAllowedProjects(),
+      summarySlackChannel: store.getJiraSummarySlackChannel(),
+    };
+  });
+
+  // jira:listProjects — fetch projects visible to the bot
+  ipcMain.handle('jira:listProjects', async () => {
+    const adapter = await _buildJiraAdapter();
+    if (!adapter) return { ok: false, projects: [], error: 'Not configured' };
+    try {
+      const projects = await adapter.listProjects(100);
+      _getAuditLedger().log('JIRA_ISSUE_READ', { metadata: { action: 'listProjects', count: projects.length } });
+      return { ok: true, projects };
+    } catch (err) {
+      return { ok: false, projects: [], error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // jira:searchIssues — JQL search
+  ipcMain.handle('jira:searchIssues', async (_e, jql: string, maxResults = 30) => {
+    const adapter = await _buildJiraAdapter();
+    if (!adapter) return { ok: false, issues: [], error: 'Not configured' };
+    const safe = jql.slice(0, 1000);
+    try {
+      const issues = await adapter.searchIssues(safe, maxResults);
+      _getAuditLedger().log('JIRA_ISSUE_READ', { metadata: { action: 'searchIssues', jql: safe, count: issues.length } });
+      return { ok: true, issues };
+    } catch (err) {
+      return { ok: false, issues: [], error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // jira:getIssue — full issue details + comments + transitions
+  ipcMain.handle('jira:getIssue', async (_e, issueKey: string) => {
+    const adapter = await _buildJiraAdapter();
+    if (!adapter) return { ok: false, error: 'Not configured' };
+    try {
+      const [issue, comments, transitions] = await Promise.all([
+        adapter.getIssue(issueKey),
+        adapter.getComments(issueKey, 5),
+        adapter.listTransitions(issueKey),
+      ]);
+      _getAuditLedger().log('JIRA_ISSUE_READ', { metadata: { action: 'getIssue', issueKey } });
+      return { ok: true, issue, comments, transitions };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // jira:queueComment — enqueue a comment for approval
+  ipcMain.handle('jira:queueComment', (_e, issueKey: string, body: string) => {
+    const { blocked, requiresApproval } = _classifyInboundTask(
+      `Comment on ${issueKey}: ${body.slice(0, 100)}`,
+      'jira',
+    );
+    if (blocked) return { ok: false, error: 'Blocked by policy' };
+    const action = _getJiraQueue().enqueue({
+      type: 'comment', issueKey,
+      summary: `Comment on ${issueKey}`,
+      body: body.slice(0, 4000),
+    });
+    _getAuditLedger().log('JIRA_ACTION_QUEUED', { metadata: { type: 'comment', issueKey, actionId: action.id, requiresApproval } });
+    void _pushNotifier.fire('jira_action_queued', 'Jira Action Queued', `Comment on ${issueKey} needs approval`);
+    return { ok: true, actionId: action.id, requiresApproval };
+  });
+
+  // jira:queueCreate — enqueue issue creation for approval
+  ipcMain.handle('jira:queueCreate', (_e, projectKey: string, issueTypeId: string, summary: string, description?: string) => {
+    const { blocked } = _classifyInboundTask(`Create issue in ${projectKey}: ${summary}`, 'jira');
+    if (blocked) return { ok: false, error: 'Blocked by policy' };
+    const action = _getJiraQueue().enqueue({
+      type: 'create', projectKey, issueTypeId,
+      summary: `Create [${projectKey}] ${summary.slice(0, 80)}`,
+      body: description ?? '',
+    });
+    _getAuditLedger().log('JIRA_ACTION_QUEUED', { metadata: { type: 'create', projectKey, summary: summary.slice(0, 80), actionId: action.id } });
+    void _pushNotifier.fire('jira_action_queued', 'Jira Action Queued', `Create issue in ${projectKey}: ${summary.slice(0, 60)} needs approval`);
+    return { ok: true, actionId: action.id };
+  });
+
+  // jira:queueTransition — enqueue a status transition for approval
+  ipcMain.handle('jira:queueTransition', (_e, issueKey: string, transitionId: string, toStatus: string) => {
+    const { blocked } = _classifyInboundTask(`Transition ${issueKey} → ${toStatus}`, 'jira');
+    if (blocked) return { ok: false, error: 'Blocked by policy' };
+    const action = _getJiraQueue().enqueue({
+      type: 'transition', issueKey, transitionId, toStatus,
+      summary: `Transition ${issueKey} → ${toStatus}`,
+      body: '',
+    });
+    _getAuditLedger().log('JIRA_ACTION_QUEUED', { metadata: { type: 'transition', issueKey, toStatus, actionId: action.id } });
+    void _pushNotifier.fire('jira_action_queued', 'Jira Action Queued', `Transition ${issueKey} → ${toStatus} needs approval`);
+    return { ok: true, actionId: action.id };
+  });
+
+  // jira:approveAction — execute an approved action against the Jira API
+  ipcMain.handle('jira:approveAction', async (_e, actionId: string) => {
+    const queue   = _getJiraQueue();
+    const action  = queue.approve(actionId);
+    if (!action) return { ok: false, error: 'Action not found or already processed' };
+    const adapter = await _buildJiraAdapter();
+    if (!adapter) return { ok: false, error: 'Jira not configured' };
+    const ledger  = _getAuditLedger();
+    try {
+      if (action.type === 'comment' && action.issueKey) {
+        await adapter.addComment(action.issueKey, action.body);
+        ledger.log('JIRA_COMMENT_POSTED', { metadata: { issueKey: action.issueKey, actionId } });
+      } else if (action.type === 'create' && action.projectKey && action.issueTypeId) {
+        const r = await adapter.createIssue(action.projectKey, action.issueTypeId, action.summary, action.body || undefined);
+        ledger.log('JIRA_ISSUE_CREATED', { metadata: { key: r.key, projectKey: action.projectKey, actionId } });
+      } else if (action.type === 'transition' && action.issueKey && action.transitionId) {
+        await adapter.doTransition(action.issueKey, action.transitionId);
+        ledger.log('JIRA_STATUS_TRANSITIONED', { metadata: { issueKey: action.issueKey, toStatus: action.toStatus, actionId } });
+      }
+      ledger.log('JIRA_ACTION_APPROVED', { metadata: { type: action.type, actionId } });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // jira:dismissAction
+  ipcMain.handle('jira:dismissAction', (_e, actionId: string) => {
+    const ok = _getJiraQueue().dismiss(actionId);
+    if (ok) _getAuditLedger().log('JIRA_ACTION_DISMISSED', { metadata: { actionId } });
+    return { ok };
+  });
+
+  // jira:listQueue — list queued actions
+  ipcMain.handle('jira:listQueue', (_e, includeProcessed = false) => {
+    return { actions: _getJiraQueue().list(includeProcessed) };
+  });
+
+  // jira:triageIssue — create a task to let TriForge analyse the issue
+  ipcMain.handle('jira:triageIssue', async (_e, issueKey: string) => {
+    const adapter = await _buildJiraAdapter();
+    if (!adapter) return { ok: false, error: 'Not configured' };
+    try {
+      const issue = await adapter.getIssue(issueKey);
+      // Phase 16: inject project context from shared memory
+      const _jiraCtx = resolveProject(store.getSharedContext(), issue.projectKey ?? '');
+      const prompt = [
+        `Triage Jira issue ${issue.key} from project ${issue.projectName}.`,
+        `Type: ${issue.issueType} | Priority: ${issue.priority} | Status: ${issue.status}`,
+        `Summary: ${issue.summary}`,
+        issue.description ? `Description: ${issue.description.slice(0, 600)}` : '',
+        issue.assigneeName ? `Assignee: ${issue.assigneeName}` : 'Unassigned.',
+        _jiraCtx?.automationContext ? `\nProject Context: ${_jiraCtx.automationContext.slice(0, 400)}` : '',
+        `\nProvide: (1) Risk/impact assessment, (2) Recommended next action, (3) Suggested comment draft if appropriate.`,
+      ].filter(Boolean).join('\n');
+      const task = _getAgentLoop(store).createTask(prompt, 'research');
+      _getAuditLedger().log('JIRA_TRIAGE_STARTED', { taskId: task.id, metadata: { issueKey } });
+      return { ok: true, taskId: task.id };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // jira:setSummarySlackChannel
+  ipcMain.handle('jira:setSummarySlackChannel', (_e, channelId: string) => {
+    store.setJiraSummarySlackChannel(channelId);
+    return { ok: true };
+  });
+
+  // jira:sendSummaryNow — post issue summary to the configured Slack channel
+  ipcMain.handle('jira:sendSummaryNow', async (_e, jql?: string) => {
+    const channelId = store.getJiraSummarySlackChannel();
+    if (!channelId) return { ok: false, error: 'No Slack summary channel configured' };
+    if (!_slackAdapter?.isRunning()) return { ok: false, error: 'Slack bot not running' };
+    const adapter = await _buildJiraAdapter();
+    if (!adapter) return { ok: false, error: 'Jira not configured' };
+    try {
+      const searchJql = jql ?? 'assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC';
+      const issues    = await adapter.searchIssues(searchJql, 10);
+      const lines     = issues.map(i => `• *${i.key}* — ${i.summary.slice(0, 80)} _(${i.status})_`);
+      const text      = [
+        `*Jira Issue Summary — ${new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}*`,
+        lines.length ? lines.join('\n') : '_No open issues found._',
+      ].join('\n');
+      const ok = await _slackAdapter.postMessage(channelId, text);
+      if (ok) _getAuditLedger().log('JIRA_SUMMARY_SENT', { metadata: { channelId, issueCount: issues.length } });
+      return { ok };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // jira:setAllowedProjects
+  ipcMain.handle('jira:setAllowedProjects', (_e, projectKeys: string[]) => {
+    store.setJiraAllowedProjects(projectKeys);
+    return { ok: true };
+  });
+
+  // ── Phase 10: Push Notification IPC handlers ──────────────────────────────────
+
+  // push:configure — save provider config and refresh the notifier
+  ipcMain.handle('push:configure', async (_e, config: {
+    provider:      'ntfy' | 'pushover' | 'disabled';
+    ntfyTopic?:    string;
+    ntfyServer?:   string;
+    ntfyToken?:    string;
+    pushoverApp?:  string;
+    pushoverUser?: string;
+  }) => {
+    store.setPushProvider(config.provider);
+    if (config.ntfyTopic    !== undefined) store.setPushNtfyTopic(config.ntfyTopic);
+    if (config.ntfyServer   !== undefined) store.setPushNtfyServer(config.ntfyServer);
+    if (config.pushoverUser !== undefined) store.setPushoverUserKey(config.pushoverUser);
+    const creds = new CredentialManager(store);
+    if (config.ntfyToken   !== undefined) await creds.set('ntfy_token',          config.ntfyToken);
+    if (config.pushoverApp !== undefined) await creds.set('pushover_app_token',   config.pushoverApp);
+    await _refreshPushConfig();
+    return { ok: true };
+  });
+
+  // push:status — return non-secret config + provider state
+  ipcMain.handle('push:status', () => {
+    return {
+      ...(_pushNotifier.getConfig()),
+      eventSettings: _pushNotifier.getEventSettings(),
+    };
+  });
+
+  // push:setEventSetting — toggle or reprioritise a single event
+  ipcMain.handle('push:setEventSetting', (_e, event: string, enabled: boolean, priority: string) => {
+    const setting = { enabled, priority: priority as NotifyPriority };
+    _pushNotifier.setEventSetting(event as NotifyEvent, setting);
+    // Persist
+    const all = _pushNotifier.getEventSettings() as Record<string, { enabled: boolean; priority: string }>;
+    store.setPushEventSettings(all);
+    return { ok: true };
+  });
+
+  // push:getEventSettings — all event definitions + current settings
+  ipcMain.handle('push:getEventSettings', () => {
+    const settings = _pushNotifier.getEventSettings();
+    return {
+      events: ALL_NOTIFY_EVENTS.map(key => ({
+        key,
+        label:       EVENT_LABELS[key].label,
+        description: EVENT_LABELS[key].description,
+        enabled:     settings[key]?.enabled ?? DEFAULT_EVENT_SETTINGS[key].enabled,
+        priority:    settings[key]?.priority ?? DEFAULT_EVENT_SETTINGS[key].priority,
+      })),
+    };
+  });
+
+  // push:sendTest — fire a test notification
+  ipcMain.handle('push:sendTest', async () => {
+    // Temporarily enable to ensure test always goes through
+    const prev = _pushNotifier.getEventSettings()['agent_unhealthy'];
+    _pushNotifier.setEventSetting('agent_unhealthy', { enabled: true, priority: prev?.priority ?? 'normal' });
+    const ok = await _pushNotifier.fire('agent_unhealthy', 'TriForge Test Notification', 'Push notifications are working.');
+    // Restore
+    if (prev) _pushNotifier.setEventSetting('agent_unhealthy', prev);
+    const ledger = _getAuditLedger();
+    if (ok) ledger.log('PUSH_SENT', { metadata: { event: 'test' } });
+    else    ledger.log('PUSH_FAILED', { metadata: { event: 'test' } });
+    return { ok, error: ok ? undefined : 'Notification failed — check provider config' };
+  });
+
+  // push:getLog — recent push notification log
+  ipcMain.handle('push:getLog', (_e, limit = 50) => {
+    return { entries: _pushNotifier.getLog(limit) };
+  });
+
+  // ── Phase 11: Linear IPC handlers ──────────────────────────────────────────
+
+  async function _buildLinearAdapter(): Promise<LinearAdapter | null> {
+    const result = await _getWsCredResolver().resolve('linear');
+    if (result.scopeUsed === 'none' || !result.token) return null;
+    if (result.scopeUsed === 'workspace') {
+      _getAuditLedger().log('WS_INTEGRATION_USED', {
+        metadata: { integration: 'linear', scope: 'workspace', fallbackUsed: result.fallbackUsed, workspaceId: store.getWorkspace()?.id },
+      });
+    }
+    return new LinearAdapter(result.token);
+  }
+
+  // linear:setApiKey — persist the Personal API key
+  ipcMain.handle('linear:setApiKey', async (_e, apiKey: string) => {
+    const creds = new CredentialManager(store);
+    await creds.set('linear_api_key', apiKey.trim());
+    return { ok: true };
+  });
+
+  // linear:testConnection — validate the key and return viewer info
+  ipcMain.handle('linear:testConnection', async () => {
+    const adapter = await _buildLinearAdapter();
+    if (!adapter) return { ok: false, error: 'API key not configured' };
+    try {
+      const user = await adapter.getViewer();
+      store.setLinearUserName(user.name);
+      store.setLinearEnabled(true);
+      _getAuditLedger().log('LINEAR_CONNECTED', { metadata: { name: user.name, email: user.email } });
+      return { ok: true, name: user.name, email: user.email, id: user.id };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // linear:status — return current connection state
+  ipcMain.handle('linear:status', () => ({
+    enabled:             store.getLinearEnabled(),
+    userName:            store.getLinearUserName(),
+    workspaceName:       store.getLinearWorkspaceName(),
+    allowedTeams:        store.getLinearAllowedTeams(),
+    summarySlackChannel: store.getLinearSummarySlackChannel(),
+  }));
+
+  // linear:listTeams — fetch teams visible to the API key holder
+  ipcMain.handle('linear:listTeams', async () => {
+    const adapter = await _buildLinearAdapter();
+    if (!adapter) return { ok: false, teams: [], error: 'Not configured' };
+    try {
+      const teams = await adapter.listTeams();
+      return { ok: true, teams };
+    } catch (err) {
+      return { ok: false, teams: [], error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // linear:searchIssues — full-text search, optional team filter
+  ipcMain.handle('linear:searchIssues', async (_e, query: string, teamId?: string, limit = 25) => {
+    const adapter = await _buildLinearAdapter();
+    if (!adapter) return { ok: false, issues: [], error: 'Not configured' };
+    const safeQ = query.slice(0, 500);
+    try {
+      const issues = await adapter.searchIssues(safeQ, teamId, limit);
+      _getAuditLedger().log('LINEAR_ISSUE_SEARCHED', { metadata: { query: safeQ, teamId, count: issues.length } });
+      return { ok: true, issues };
+    } catch (err) {
+      return { ok: false, issues: [], error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // linear:getIssue — full issue detail + comments + workflow states
+  ipcMain.handle('linear:getIssue', async (_e, id: string) => {
+    const adapter = await _buildLinearAdapter();
+    if (!adapter) return { ok: false, error: 'Not configured' };
+    try {
+      const [issue, comments] = await Promise.all([
+        adapter.getIssue(id),
+        adapter.getComments(id, 5),
+      ]);
+      const states = await adapter.listWorkflowStates(issue.teamId);
+      _getAuditLedger().log('LINEAR_ISSUE_READ', { metadata: { identifier: issue.identifier } });
+      return { ok: true, issue, comments, states };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // linear:listWorkflowStates — states for a given team
+  ipcMain.handle('linear:listWorkflowStates', async (_e, teamId: string) => {
+    const adapter = await _buildLinearAdapter();
+    if (!adapter) return { ok: false, states: [], error: 'Not configured' };
+    try {
+      const states = await adapter.listWorkflowStates(teamId);
+      return { ok: true, states };
+    } catch (err) {
+      return { ok: false, states: [], error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // linear:queueComment — enqueue a comment for approval
+  ipcMain.handle('linear:queueComment', (_e, issueId: string, identifier: string, body: string) => {
+    const { blocked, requiresApproval } = _classifyInboundTask(
+      `Comment on ${identifier}: ${body.slice(0, 100)}`,
+      'linear',
+    );
+    if (blocked) return { ok: false, error: 'Blocked by policy' };
+    const action = _getLinearQueue().enqueue({
+      type: 'comment', issueId,
+      summary: `Comment on ${identifier}`,
+      body: body.slice(0, 4000),
+    });
+    _getAuditLedger().log('LINEAR_ACTION_QUEUED', { metadata: { type: 'comment', identifier, actionId: action.id, requiresApproval } });
+    void _pushNotifier.fire('jira_action_queued', 'Linear Action Queued', `Comment on ${identifier} needs approval`);
+    return { ok: true, actionId: action.id, requiresApproval };
+  });
+
+  // linear:queueCreate — enqueue issue creation for approval
+  ipcMain.handle('linear:queueCreate', (_e, teamId: string, teamKey: string, title: string, description?: string, stateId?: string, assigneeId?: string, priority?: number) => {
+    const { blocked } = _classifyInboundTask(`Create issue in [${teamKey}]: ${title}`, 'linear');
+    if (blocked) return { ok: false, error: 'Blocked by policy' };
+    const action = _getLinearQueue().enqueue({
+      type: 'create', teamId,
+      summary: `Create [${teamKey}] ${title.slice(0, 80)}`,
+      body: description ?? '',
+      stateId, assigneeId, priority,
+    });
+    _getAuditLedger().log('LINEAR_ACTION_QUEUED', { metadata: { type: 'create', teamKey, title: title.slice(0, 80), actionId: action.id } });
+    void _pushNotifier.fire('jira_action_queued', 'Linear Action Queued', `Create issue [${teamKey}]: ${title.slice(0, 60)} needs approval`);
+    return { ok: true, actionId: action.id };
+  });
+
+  // linear:queueUpdate — enqueue a status/assignee/priority update for approval
+  ipcMain.handle('linear:queueUpdate', (_e, issueId: string, identifier: string, patch: { stateId?: string; stateName?: string; assigneeId?: string; priority?: number; title?: string }) => {
+    const desc = patch.stateName ? `→ ${patch.stateName}` : patch.title ? `rename: ${patch.title.slice(0, 40)}` : 'update fields';
+    const { blocked } = _classifyInboundTask(`Update ${identifier}: ${desc}`, 'linear');
+    if (blocked) return { ok: false, error: 'Blocked by policy' };
+    const action = _getLinearQueue().enqueue({
+      type: 'update', issueId,
+      summary: `Update ${identifier}: ${desc}`,
+      body: JSON.stringify(patch),
+      stateId:    patch.stateId,
+      assigneeId: patch.assigneeId,
+      priority:   patch.priority,
+    });
+    _getAuditLedger().log('LINEAR_ACTION_QUEUED', { metadata: { type: 'update', identifier, desc, actionId: action.id } });
+    void _pushNotifier.fire('jira_action_queued', 'Linear Action Queued', `Update ${identifier}: ${desc} needs approval`);
+    return { ok: true, actionId: action.id };
+  });
+
+  // linear:approveAction — execute the staged action against the Linear API
+  ipcMain.handle('linear:approveAction', async (_e, actionId: string) => {
+    const queue   = _getLinearQueue();
+    const action  = queue.approve(actionId);
+    if (!action) return { ok: false, error: 'Action not found or already processed' };
+    const adapter = await _buildLinearAdapter();
+    if (!adapter) return { ok: false, error: 'Linear not configured' };
+    const ledger  = _getAuditLedger();
+    try {
+      if (action.type === 'comment' && action.issueId) {
+        await adapter.createComment(action.issueId, action.body);
+        ledger.log('LINEAR_COMMENT_POSTED', { metadata: { issueId: action.issueId, actionId } });
+      } else if (action.type === 'create' && action.teamId) {
+        const r = await adapter.createIssue({
+          teamId:      action.teamId,
+          title:       action.summary.replace(/^Create \[.*?\] /, ''),
+          description: action.body || undefined,
+          stateId:     action.stateId,
+          assigneeId:  action.assigneeId,
+          priority:    action.priority,
+        });
+        ledger.log('LINEAR_ISSUE_CREATED', { metadata: { identifier: r.identifier, teamId: action.teamId, actionId } });
+      } else if (action.type === 'update' && action.issueId) {
+        const patch = JSON.parse(action.body) as { stateId?: string; assigneeId?: string; priority?: number; title?: string };
+        const r     = await adapter.updateIssue(action.issueId, patch);
+        ledger.log('LINEAR_STATUS_UPDATED', { metadata: { identifier: r.identifier, stateName: r.stateName, actionId } });
+      }
+      ledger.log('LINEAR_ACTION_APPROVED', { metadata: { type: action.type, actionId } });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // linear:dismissAction
+  ipcMain.handle('linear:dismissAction', (_e, actionId: string) => {
+    const ok = _getLinearQueue().dismiss(actionId);
+    if (ok) _getAuditLedger().log('LINEAR_ACTION_DISMISSED', { metadata: { actionId } });
+    return { ok };
+  });
+
+  // linear:listQueue
+  ipcMain.handle('linear:listQueue', (_e, includeProcessed = false) => {
+    return { actions: _getLinearQueue().list(includeProcessed) };
+  });
+
+  // linear:triageIssue — create a TriForge research task for this issue
+  ipcMain.handle('linear:triageIssue', async (_e, issueId: string) => {
+    const adapter = await _buildLinearAdapter();
+    if (!adapter) return { ok: false, error: 'Not configured' };
+    try {
+      const issue  = await adapter.getIssue(issueId);
+      // Phase 16: inject project context from shared memory (by Linear team ID)
+      const _linearCtx = resolveProject(store.getSharedContext(), issue.teamId ?? '');
+      const prompt = [
+        `Triage Linear issue ${issue.identifier} from team ${issue.teamName}.`,
+        `Priority: ${issue.priorityLabel} | Status: ${issue.stateName}`,
+        `Title: ${issue.title}`,
+        issue.description ? `Description: ${issue.description.slice(0, 600)}` : '',
+        issue.assigneeName ? `Assignee: ${issue.assigneeName}` : 'Unassigned.',
+        _linearCtx?.automationContext ? `\nProject Context: ${_linearCtx.automationContext.slice(0, 400)}` : '',
+        `\nProvide: (1) Risk/impact assessment, (2) Recommended next action, (3) Suggested comment draft if appropriate.`,
+      ].filter(Boolean).join('\n');
+      const task = _getAgentLoop(store).createTask(prompt, 'research');
+      _getAuditLedger().log('LINEAR_TRIAGE_STARTED', { taskId: task.id, metadata: { identifier: issue.identifier } });
+      return { ok: true, taskId: task.id };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // linear:setAllowedTeams — restrict which teams are browsable
+  ipcMain.handle('linear:setAllowedTeams', (_e, teamIds: string[]) => {
+    store.setLinearAllowedTeams(teamIds);
+    return { ok: true };
+  });
+
+  // linear:setSummarySlackChannel
+  ipcMain.handle('linear:setSummarySlackChannel', (_e, channelId: string) => {
+    store.setLinearSummarySlackChannel(channelId);
+    return { ok: true };
+  });
+
+  // linear:sendSummaryNow — post a Linear issue digest to Slack
+  ipcMain.handle('linear:sendSummaryNow', async (_e, query?: string, teamId?: string) => {
+    const channelId = store.getLinearSummarySlackChannel();
+    if (!channelId) return { ok: false, error: 'No Slack summary channel configured' };
+    if (!_slackAdapter?.isRunning()) return { ok: false, error: 'Slack bot not running' };
+    const adapter = await _buildLinearAdapter();
+    if (!adapter) return { ok: false, error: 'Linear not configured' };
+    try {
+      const issues = await adapter.searchIssues(query ?? '', teamId, 10);
+      const lines  = issues.map(i => `• *${i.identifier}* — ${i.title.slice(0, 80)} _(${i.stateName})_`);
+      const text   = [
+        `*Linear Issue Summary — ${new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}*`,
+        lines.length ? lines.join('\n') : '_No issues found._',
+      ].join('\n');
+      const ok = await _slackAdapter.postMessage(channelId, text);
+      if (ok) _getAuditLedger().log('LINEAR_SUMMARY_SENT', { metadata: { channelId, issueCount: issues.length } });
+      return { ok };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // ── Phase 12: Discord IPC handlers ─────────────────────────────────────────
+
+  /** Inbound Discord message handler — mirrors _handleSlackMessage exactly. */
+  async function _handleDiscordMessage(msg: DiscordMessage): Promise<void> {
+    const text      = msg.content ?? '';
+    const channelId = msg.channelId;
+    const ledger    = _getAuditLedger();
+
+    const logEntry = _messageLog.push({
+      direction: 'inbound',
+      channel:   'discord',
+      chatId:    0,
+      channelId,
+      chatName:  `#${channelId}`,
+      text:      text.slice(0, 500),
+      status:    'received',
+    });
+
+    store.setDiscordLastMessageAt(Date.now());
+    ledger.log('DISCORD_MESSAGE_RECEIVED', { metadata: { channelId, userId: msg.authorId, textLen: text.length } });
+
+    // ── 1. Allowlist checks ───────────────────────────────────────────────────
+    const allowedChannels = store.getDiscordAllowedChannels();
+    if (allowedChannels.length > 0 && !allowedChannels.includes(channelId)) {
+      _messageLog.update(logEntry.id, { status: 'blocked', blockedReason: 'Channel not in allowlist' });
+      ledger.log('DISCORD_MESSAGE_BLOCKED', { metadata: { channelId, reason: 'not_in_allowlist' } });
+      return;
+    }
+
+    const allowedUsers = store.getDiscordAllowedUsers();
+    if (allowedUsers.length > 0 && !allowedUsers.includes(msg.authorId)) {
+      _messageLog.update(logEntry.id, { status: 'blocked', blockedReason: 'User not in allowlist' });
+      ledger.log('DISCORD_MESSAGE_BLOCKED', { metadata: { channelId, userId: msg.authorId, reason: 'user_not_in_allowlist' } });
+      return;
+    }
+
+    // ── 2. Prompt injection detection ─────────────────────────────────────────
+    if (_detectPromptInjection(text)) {
+      _messageLog.update(logEntry.id, { status: 'blocked', blockedReason: 'Prompt injection detected' });
+      ledger.log('DISCORD_MESSAGE_BLOCKED', { metadata: { channelId, reason: 'prompt_injection' } });
+      if (_discordAdapter) {
+        await _discordAdapter.sendMessage(channelId, 'This request cannot be processed.');
+      }
+      return;
+    }
+
+    // ── 3. Risk classification via governance ─────────────────────────────────
+    const { blocked, requiresApproval, riskClass } = _classifyInboundTask(text, 'discord');
+    _messageLog.update(logEntry.id, { status: 'classified', riskClass });
+
+    if (blocked) {
+      _messageLog.update(logEntry.id, { status: 'blocked', blockedReason: 'Blocked by policy' });
+      ledger.log('DISCORD_MESSAGE_BLOCKED', { metadata: { channelId, riskClass, reason: 'policy_block' } });
+      if (riskClass === 'high_risk') void _pushNotifier.fire('high_risk_blocked', 'High-Risk Request Blocked', `Blocked Discord message in ${channelId}: ${text.slice(0, 80)}`);
+      if (_discordAdapter) {
+        await _discordAdapter.sendMessage(channelId, 'This request cannot be processed via this channel.');
+      }
+      return;
+    }
+
+    if (requiresApproval) {
+      _messageLog.update(logEntry.id, { status: 'approval_pending' });
+      ledger.log('DISCORD_APPROVAL_PENDING', { metadata: { channelId, riskClass, text: text.slice(0, 200) } });
+      _fireEventRecipes('event:approval_required', { label: 'Approval Required — Discord', body: `${riskClass} task in Discord ${channelId}: ${text.slice(0, 80)}` });
+      void _pushNotifier.fire('approval_required', 'Approval Required — Discord', `${riskClass} task in Discord ${channelId}: ${text.slice(0, 80)}`);
+      if (_discordAdapter) {
+        await _discordAdapter.sendMessage(
+          channelId,
+          `Your request requires approval before I can proceed. Risk class: **${riskClass}**\nA human will review this in TriForge.`,
+        );
+      }
+    }
+
+    // ── 4. Create task ────────────────────────────────────────────────────────
+    try {
+      const task = _getAgentLoop(store).createTask(text, 'research');
+      _messageLog.update(logEntry.id, { status: 'task_created', taskId: task.id });
+      ledger.log('DISCORD_TASK_CREATED', { taskId: task.id, metadata: { channelId, riskClass } });
+
+      if (riskClass === 'informational') {
+        const unsub = eventBus.onAny((event) => {
+          if (event.type === 'TASK_COMPLETED' && (event as Record<string, unknown>).taskId === task.id) {
+            unsub();
+            const result = (event as Record<string, unknown>).result as string | undefined;
+            const reply  = result ? result.slice(0, 2000) : 'Task completed.';
+            if (_discordAdapter) {
+              _discordAdapter.sendMessage(channelId, reply).then(() => {
+                _messageLog.push({ direction: 'outbound', channel: 'discord', chatId: 0, channelId, chatName: `#${channelId}`, text: reply, status: 'replied', taskId: task.id });
+                ledger.log('DISCORD_REPLY_SENT', { taskId: task.id, metadata: { channelId } });
+              }).catch(() => {/* no-op */});
+            }
+          }
+        });
+      }
+    } catch (err) {
+      console.error('[Discord] Failed to create task:', err);
+    }
+  }
+
+  // discord:setToken
+  ipcMain.handle('discord:setToken', async (_e, token: string) => {
+    const creds = new CredentialManager(store);
+    await creds.set('discord_bot_token', token.trim());
+    return { ok: true };
+  });
+
+  // discord:testConnection — validate token and return bot user info
+  ipcMain.handle('discord:testConnection', async () => {
+    const creds = new CredentialManager(store);
+    const token = await creds.get('discord_bot_token');
+    if (!token) return { ok: false, error: 'No bot token saved' };
+    try {
+      const adapter = new DiscordAdapter(token);
+      const me      = await adapter.getMe();
+      store.setDiscordBotUserId(me.id);
+      store.setDiscordBotUserName(me.username);
+      return { ok: true, id: me.id, username: me.username, discriminator: me.discriminator };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // discord:start — begin polling
+  ipcMain.handle('discord:start', async () => {
+    if (_discordAdapter?.isRunning()) return { ok: true, already: true };
+    const creds = new CredentialManager(store);
+    const token = await creds.get('discord_bot_token');
+    if (!token) return { ok: false, error: 'No bot token configured' };
+    try {
+      const adapter = new DiscordAdapter(token);
+      const me      = await adapter.getMe();
+      store.setDiscordBotUserId(me.id);
+      store.setDiscordBotUserName(me.username);
+      store.setDiscordEnabled(true);
+      adapter.setBotId(me.id);
+      _discordAdapter = adapter;
+      const channels  = store.getDiscordAllowedChannels();
+      _discordAdapter.start(channels, (msg) => { void _handleDiscordMessage(msg); });
+      _getAuditLedger().log('DISCORD_BOT_STARTED', { metadata: { botUser: me.username } });
+      return { ok: true, username: me.username };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // discord:stop
+  ipcMain.handle('discord:stop', () => {
+    _discordAdapter?.stop();
+    _discordAdapter = null;
+    store.setDiscordEnabled(false);
+    _getAuditLedger().log('DISCORD_BOT_STOPPED', {});
+    return { ok: true };
+  });
+
+  // discord:status
+  ipcMain.handle('discord:status', () => ({
+    enabled:         store.getDiscordEnabled(),
+    running:         _discordAdapter?.isRunning() ?? false,
+    botUserName:     store.getDiscordBotUserName(),
+    botUserId:       store.getDiscordBotUserId(),
+    allowedChannels: store.getDiscordAllowedChannels(),
+    allowedUsers:    store.getDiscordAllowedUsers(),
+    lastMessageAt:   store.getDiscordLastMessageAt(),
+  }));
+
+  // discord:listGuilds — list servers the bot is in
+  ipcMain.handle('discord:listGuilds', async () => {
+    const creds = new CredentialManager(store);
+    const token = await creds.get('discord_bot_token');
+    if (!token) return { ok: false, guilds: [], error: 'No token' };
+    try {
+      const adapter = _discordAdapter ?? new DiscordAdapter(token);
+      const guilds  = await adapter.listGuilds();
+      return { ok: true, guilds };
+    } catch (err) {
+      return { ok: false, guilds: [], error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // discord:listChannels — text channels in a guild
+  ipcMain.handle('discord:listChannels', async (_e, guildId: string) => {
+    const creds = new CredentialManager(store);
+    const token = await creds.get('discord_bot_token');
+    if (!token) return { ok: false, channels: [], error: 'No token' };
+    try {
+      const adapter  = _discordAdapter ?? new DiscordAdapter(token);
+      const channels = await adapter.listChannels(guildId);
+      return { ok: true, channels };
+    } catch (err) {
+      return { ok: false, channels: [], error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // discord:addAllowedChannel
+  ipcMain.handle('discord:addAllowedChannel', (_e, channelId: string) => {
+    const current = store.getDiscordAllowedChannels();
+    if (!current.includes(channelId)) {
+      const updated = [...current, channelId];
+      store.setDiscordAllowedChannels(updated);
+      _discordAdapter?.setChannels(updated);
+    }
+    return { ok: true, allowedChannels: store.getDiscordAllowedChannels() };
+  });
+
+  // discord:removeAllowedChannel
+  ipcMain.handle('discord:removeAllowedChannel', (_e, channelId: string) => {
+    const updated = store.getDiscordAllowedChannels().filter(id => id !== channelId);
+    store.setDiscordAllowedChannels(updated);
+    _discordAdapter?.setChannels(updated);
+    return { ok: true, allowedChannels: store.getDiscordAllowedChannels() };
+  });
+
+  // discord:addAllowedUser
+  ipcMain.handle('discord:addAllowedUser', (_e, userId: string) => {
+    const current = store.getDiscordAllowedUsers();
+    if (!current.includes(userId)) store.setDiscordAllowedUsers([...current, userId]);
+    return { ok: true, allowedUsers: store.getDiscordAllowedUsers() };
+  });
+
+  // discord:removeAllowedUser
+  ipcMain.handle('discord:removeAllowedUser', (_e, userId: string) => {
+    store.setDiscordAllowedUsers(store.getDiscordAllowedUsers().filter(id => id !== userId));
+    return { ok: true, allowedUsers: store.getDiscordAllowedUsers() };
+  });
+
+  // discord:sendMessage — manual test send
+  ipcMain.handle('discord:sendMessage', async (_e, channelId: string, text: string) => {
+    if (!_discordAdapter?.isRunning()) return { ok: false, error: 'Discord bot not running' };
+    try {
+      await _discordAdapter.sendMessage(channelId, text.slice(0, 2000));
+      _messageLog.push({ direction: 'outbound', channel: 'discord', chatId: 0, channelId, chatName: `#${channelId}`, text: text.slice(0, 500), status: 'replied' });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // discord:listMessages
+  ipcMain.handle('discord:listMessages', (_e, limit = 50) => {
+    return { messages: _messageLog.list(limit).filter(m => m.channel === 'discord') };
+  });
+
+  // ── Phase 13: Automation Recipes ──────────────────────────────────────────────
+
+  function _getRecipeState(id: string): RecipeState {
+    const all = store.getRecipeStates();
+    return all[id] ?? { id, enabled: false, params: {} };
+  }
+
+  function _saveRecipeState(state: RecipeState): void {
+    const all = store.getRecipeStates();
+    all[state.id] = state;
+    store.setRecipeStates(all);
+  }
+
+  async function _executeRecipe(
+    id: string,
+    ctx?: Record<string, string>,
+    runCtx?: { deviceId?: string; isAdmin?: boolean; isRemote?: boolean },
+  ): Promise<{ ok: boolean; result?: string; error?: string }> {
+    const def   = BUILTIN_RECIPES.find(r => r.id === id);
+    const state = _getRecipeState(id);
+    if (!def) return { ok: false, error: 'Unknown recipe' };
+
+    // ── Phase 30: workspace automation gate ───────────────────────────────────
+    const recipeScope = store.getWorkspaceRecipeScopes()[id] ?? 'personal';
+    if (recipeScope === 'workspace' && store.getWorkspace()) {
+      const gateResult = _getAutomationGate().canRunRecipe(
+        runCtx?.deviceId ?? null,
+        id,
+        runCtx?.isAdmin ?? true,     // local IPC callers are always admin
+        runCtx?.isRemote ?? false,
+      );
+      const wsId = store.getWorkspace()?.id;
+      if (!gateResult.allowed) {
+        _getAuditLedger().log('WS_RECIPE_BLOCKED', {
+          metadata: { recipeId: id, blockedBy: gateResult.blockedBy, reason: gateResult.reason, actorId: runCtx?.deviceId, workspaceId: wsId },
+        });
+        return { ok: false, error: `Workspace automation policy blocked: ${gateResult.reason}` };
+      }
+    }
+    // ── End gate ──────────────────────────────────────────────────────────────
+
+    const params = { ...state.params, ...(ctx ?? {}) };
+    const ledger = _getAuditLedger();
+    const workspaceId  = store.getWorkspace()?.id;
+    ledger.log('RECIPE_STARTED', { metadata: { id, trigger: def.trigger, scope: recipeScope } });
+    if (recipeScope === 'workspace') {
+      ledger.log('WS_RECIPE_RUN', { metadata: { recipeId: id, trigger: def.trigger, workspaceId, action: 'run' } });
+    }
+    eventBus.emit({ type: 'RECIPE_STARTED', recipeId: id });
+
+    try {
+      let result = '';
+
+      if (id === 'builtin-pr-review-to-slack') {
+        const channel   = params['slack_channel'] ?? '#general';
+        const synthesis = ctx?.['synthesis'] ?? '(no synthesis available)';
+        const repo      = ctx?.['repo'] ?? 'unknown repo';
+        const prNumber  = ctx?.['prNumber'] ?? '?';
+        const msg = `*PR #${prNumber} Review — ${repo}*\n${synthesis.slice(0, 2000)}`;
+        if (!_slackAdapter) throw new Error('Slack not connected');
+        const ok = await _slackAdapter.postMessage(channel, msg);
+        if (!ok) throw new Error('Slack postMessage failed');
+        result = `Posted PR #${prNumber} review to ${channel}`;
+
+      } else if (id === 'builtin-jira-digest-daily') {
+        const channel = params['slack_channel'] ?? '#standup';
+        const jql     = params['jql'] ?? 'assignee = currentUser() AND status != Done ORDER BY updated DESC';
+        const adapter = await _buildJiraAdapter();
+        if (!adapter) throw new Error('Jira not configured');
+        const issues = await adapter.searchIssues(jql.slice(0, 500), 10);
+        if (!_slackAdapter) throw new Error('Slack not connected');
+        if (issues.length === 0) {
+          await _slackAdapter.postMessage(channel, '*Jira Daily Digest* — no open issues found.');
+        } else {
+          const lines = issues.map(i => `• <${i.url}|${i.key}> ${i.summary} [${i.status?.name ?? 'unknown'}]`);
+          await _slackAdapter.postMessage(channel, `*Jira Daily Digest* (${issues.length} issues)\n${lines.join('\n')}`);
+        }
+        result = `Posted Jira digest (${issues.length} issues) to ${channel}`;
+
+      } else if (id === 'builtin-linear-digest-daily') {
+        const channel = params['slack_channel'] ?? '#standup';
+        const query   = params['query'] ?? '';
+        const teamId  = params['team_id'] || undefined;
+        const adapter = await _buildLinearAdapter();
+        if (!adapter) throw new Error('Linear not configured');
+        const issues = await adapter.searchIssues(query, teamId, 10);
+        if (!_slackAdapter) throw new Error('Slack not connected');
+        if (issues.length === 0) {
+          await _slackAdapter.postMessage(channel, '*Linear Daily Digest* — no issues found.');
+        } else {
+          const lines = issues.map(i => `• <${i.url}|${i.identifier}> ${i.title} [${i.state.name}]`);
+          await _slackAdapter.postMessage(channel, `*Linear Daily Digest* (${issues.length} issues)\n${lines.join('\n')}`);
+        }
+        result = `Posted Linear digest (${issues.length} issues) to ${channel}`;
+
+      } else if (id === 'builtin-morning-brief') {
+        const channel = params['slack_channel'] ?? '#morning-brief';
+        if (!_slackAdapter) throw new Error('Slack not connected');
+        const parts: string[] = [`*Morning Brief — ${new Date().toLocaleDateString()}*`];
+
+        // GitHub pending reviews
+        try {
+          const pending = _getGitHubReviewStore().listPending();
+          if (pending.length > 0) {
+            parts.push(`*GitHub Reviews* (${pending.length} pending):\n` + pending.slice(0, 5).map(r => `• ${r.owner}/${r.repo} #${r.prNumber}`).join('\n'));
+          }
+        } catch { /* skip if not configured */ }
+
+        // Jira
+        try {
+          const jiraAdapter = await _buildJiraAdapter();
+          if (jiraAdapter) {
+            const jiraIssues = await jiraAdapter.searchIssues('assignee = currentUser() AND status != Done ORDER BY updated DESC', 5);
+            if (jiraIssues.length > 0) {
+              parts.push(`*Jira* (${jiraIssues.length} open):\n` + jiraIssues.map(i => `• ${i.key} ${i.summary}`).join('\n'));
+            }
+          }
+        } catch { /* skip */ }
+
+        // Linear
+        try {
+          const linearAdapter = await _buildLinearAdapter();
+          if (linearAdapter) {
+            const linearIssues = await linearAdapter.searchIssues('', undefined, 5);
+            if (linearIssues.length > 0) {
+              parts.push(`*Linear* (${linearIssues.length} open):\n` + linearIssues.map(i => `• ${i.identifier} ${i.title}`).join('\n'));
+            }
+          }
+        } catch { /* skip */ }
+
+        await _slackAdapter.postMessage(channel, parts.join('\n\n'));
+        result = `Posted morning brief to ${channel}`;
+
+      } else if (id === 'builtin-approval-alert') {
+        const label = ctx?.['label'] ?? 'Action Pending';
+        const body  = ctx?.['body']  ?? 'An action is waiting for your approval in TriForge.';
+        await _pushNotifier.fire('approval_required', label, body);
+        result = 'Push notification sent';
+      }
+
+      const updated: RecipeState = { ...state, lastRunAt: Date.now(), lastRunStatus: 'success', lastRunResult: result };
+      _saveRecipeState(updated);
+      ledger.log('RECIPE_COMPLETED', { metadata: { id, result: result.slice(0, 200) } });
+      eventBus.emit({ type: 'RECIPE_COMPLETED', recipeId: id, result });
+      return { ok: true, result };
+
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      const updated: RecipeState = { ...state, lastRunAt: Date.now(), lastRunStatus: 'failed', lastRunResult: error };
+      _saveRecipeState(updated);
+      ledger.log('RECIPE_FAILED', { metadata: { id, error } });
+      eventBus.emit({ type: 'RECIPE_FAILED', recipeId: id, error });
+      return { ok: false, error };
+    }
+  }
+
+  function _fireEventRecipes(trigger: string, ctx?: Record<string, string>): void {
+    const matching = BUILTIN_RECIPES.filter(r => r.trigger === trigger);
+    for (const def of matching) {
+      const state = _getRecipeState(def.id);
+      if (!state.enabled) continue;
+      void _executeRecipe(def.id, ctx);
+    }
+  }
+
+  function _scheduleRecipe(id: string): void {
+    if (_recipeTimers.has(id)) return;
+    // Run once per day — 24h interval
+    const timer = setInterval(() => { void _executeRecipe(id); }, 24 * 60 * 60 * 1000);
+    _recipeTimers.set(id, timer);
+  }
+
+  function _unscheduleRecipe(id: string): void {
+    const timer = _recipeTimers.get(id);
+    if (timer) { clearInterval(timer); _recipeTimers.delete(id); }
+  }
+
+  function _initRecipeSchedules(): void {
+    for (const def of BUILTIN_RECIPES) {
+      if (def.trigger !== 'schedule:daily') continue;
+      const state = _getRecipeState(def.id);
+      if (state.enabled) _scheduleRecipe(def.id);
+    }
+  }
+  _initRecipeSchedules();
+
+  // recipe:list — return all builtin recipes merged with persisted state
+  ipcMain.handle('recipe:list', (): RecipeView[] => {
+    return BUILTIN_RECIPES.map(def => {
+      const state = _getRecipeState(def.id);
+      return { ...def, ...state };
+    });
+  });
+
+  // recipe:toggle — enable or disable a recipe
+  ipcMain.handle('recipe:toggle', (_e, id: string, enabled: boolean) => {
+    const state   = _getRecipeState(id);
+    const updated = { ...state, enabled };
+    _saveRecipeState(updated);
+    const def = BUILTIN_RECIPES.find(r => r.id === id);
+    if (def?.trigger === 'schedule:daily') {
+      if (enabled) _scheduleRecipe(id);
+      else         _unscheduleRecipe(id);
+    }
+    return { ok: true };
+  });
+
+  // recipe:setParams — persist user-supplied param values
+  ipcMain.handle('recipe:setParams', (_e, id: string, params: Record<string, string>) => {
+    const state   = _getRecipeState(id);
+    const updated = { ...state, params: { ...state.params, ...params } };
+    _saveRecipeState(updated);
+    return { ok: true };
+  });
+
+  // recipe:run — manually trigger a recipe regardless of trigger type
+  ipcMain.handle('recipe:run', async (_e, id: string) => {
+    return _executeRecipe(id);
+  });
+
+  // Hook _fireEventRecipes into GitHub PR review completed
+  eventBus.onAny((event) => {
+    const e = event as Record<string, unknown>;
+    if (e.type === 'GITHUB_PR_REVIEW_COMPLETED') {
+      _fireEventRecipes('event:github_review_completed', {
+        repo:      String(e.repo ?? ''),
+        owner:     String(e.owner ?? ''),
+        prNumber:  String(e.prNumber ?? ''),
+        synthesis: String((e as Record<string, unknown>)['synthesis'] ?? ''),
+      });
+    }
+  });
+
+  // ── Phase 14: Ops / Analytics Dashboard ───────────────────────────────────────
+
+  /** Returns ms timestamp for the start of the requested window */
+  function _windowStart(window: '24h' | '7d' | '30d'): number {
+    const now = Date.now();
+    if (window === '7d')  return now - 7  * 24 * 60 * 60 * 1000;
+    if (window === '30d') return now - 30 * 24 * 60 * 60 * 1000;
+    return now - 24 * 60 * 60 * 1000; // default 24h
+  }
+
+  function _countBy(entries: Array<{ eventType: string }>, ...types: string[]): number {
+    return entries.filter(e => types.includes(e.eventType)).length;
+  }
+
+  function _topN(entries: Array<{ eventType: string; metadata?: Record<string, unknown> }>, metaKey: string, n = 5): Array<{ label: string; count: number }> {
+    const counts: Record<string, number> = {};
+    for (const e of entries) {
+      const val = String(e.metadata?.[metaKey] ?? '(unknown)');
+      counts[val] = (counts[val] ?? 0) + 1;
+    }
+    return Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, n)
+      .map(([label, count]) => ({ label, count }));
+  }
+
+  // ops:overview
+  ipcMain.handle('ops:overview', async (_e, window: '24h' | '7d' | '30d' = '24h') => {
+    const since   = _windowStart(window);
+    const entries = await _getAuditLedger().tailSince(since);
+    const pending = _approvalStore ? _getApprovalStore().listPending() : [];
+    return {
+      window,
+      tasksCreated:        _countBy(entries, 'TASK_CREATED'),
+      tasksCompleted:      _countBy(entries, 'TASK_COMPLETED'),
+      tasksFailed:         _countBy(entries, 'TASK_FAILED'),
+      approvalsPending:    pending.length,
+      highRiskBlocked:     _countBy(entries, 'INBOUND_TASK_BLOCKED', 'ACTION_BLOCKED', 'AGENT_BLOCKED'),
+      skillBlocked:        _countBy(entries, 'SKILL_BLOCKED', 'SKILL_INSTALL_BLOCKED'),
+      recipesCompleted:    _countBy(entries, 'RECIPE_COMPLETED'),
+      recipesFailed:       _countBy(entries, 'RECIPE_FAILED'),
+      pushSent:            _countBy(entries, 'PUSH_SENT'),
+      pushFailed:          _countBy(entries, 'PUSH_FAILED'),
+      localModelUses:      _countBy(entries, 'LOCAL_MODEL_SELECTED'),
+      cloudFallbacks:      _countBy(entries, 'LOCAL_MODEL_FALLBACK'),
+      githubReviewsDone:   _countBy(entries, 'GITHUB_PR_REVIEW_COMPLETED'),
+      policyMatches:       _countBy(entries, 'POLICY_RULE_MATCHED'),
+    };
+  });
+
+  // ops:channels
+  ipcMain.handle('ops:channels', async (_e, window: '24h' | '7d' | '30d' = '24h') => {
+    const since   = _windowStart(window);
+    const entries = await _getAuditLedger().tailSince(since);
+    const msgLog  = _messageLog.list(200);
+    const sinceMs = since;
+
+    function chanStats(prefix: string) {
+      const received  = _countBy(entries, `${prefix}_MESSAGE_RECEIVED`, `${prefix}_TASK_CREATED`);
+      const blocked   = _countBy(entries, `${prefix}_MESSAGE_BLOCKED`);
+      const replied   = _countBy(entries, `${prefix}_REPLY_SENT`);
+      const approvals = _countBy(entries, `${prefix}_APPROVAL_PENDING`);
+      const replyRate = received > 0 ? Math.round((replied / received) * 100) : 0;
+      return { received, blocked, replied, approvals, replyRate };
+    }
+
+    // in-memory breakdown since window (only available for current session)
+    const recent = msgLog.filter(m => m.timestamp >= sinceMs);
+    const byChannel: Record<string, { inbound: number; blocked: number; replyOk: number }> = {};
+    for (const m of recent) {
+      if (!byChannel[m.channel]) byChannel[m.channel] = { inbound: 0, blocked: 0, replyOk: 0 };
+      if (m.direction === 'inbound') byChannel[m.channel].inbound++;
+      if (m.status === 'blocked')   byChannel[m.channel].blocked++;
+      if (m.status === 'replied')   byChannel[m.channel].replyOk++;
+    }
+
+    return {
+      window,
+      telegram: chanStats('TELEGRAM'),
+      slack:    chanStats('SLACK'),
+      discord:  chanStats('DISCORD'),
+      recentMessages: recent.slice(0, 20).map(m => ({
+        channel:   m.channel,
+        direction: m.direction,
+        status:    m.status,
+        riskClass: m.riskClass,
+        text:      m.text.slice(0, 80),
+        timestamp: m.timestamp,
+      })),
+    };
+  });
+
+  // ops:governance
+  ipcMain.handle('ops:governance', async (_e, window: '24h' | '7d' | '30d' = '24h') => {
+    const since   = _windowStart(window);
+    const entries = await _getAuditLedger().tailSince(since);
+
+    const ruleMatches = entries.filter(e => e.eventType === 'POLICY_RULE_MATCHED');
+    const blocked     = entries.filter(e =>
+      ['INBOUND_TASK_BLOCKED', 'ACTION_BLOCKED', 'AGENT_BLOCKED',
+       'TELEGRAM_MESSAGE_BLOCKED', 'SLACK_MESSAGE_BLOCKED', 'DISCORD_MESSAGE_BLOCKED',
+       'GITHUB_COMMENT_BLOCKED', 'SKILL_BLOCKED'].includes(e.eventType)
+    );
+    const approvalEvents = entries.filter(e =>
+      ['TELEGRAM_APPROVAL_PENDING', 'SLACK_APPROVAL_PENDING', 'DISCORD_APPROVAL_PENDING',
+       'STEP_APPROVAL_REQUESTED', 'ACTION_APPROVAL_REQUIRED'].includes(e.eventType)
+    );
+
+    return {
+      window,
+      totalMatches:   ruleMatches.length,
+      totalBlocked:   blocked.length,
+      totalApprovals: approvalEvents.length,
+      topRules:       _topN(ruleMatches, 'ruleId'),
+      topSources:     _topN(blocked, 'source'),
+      topRiskClasses: _topN(
+        entries.filter(e => e.metadata?.['riskClass']),
+        'riskClass'
+      ),
+      recentBlocked: blocked.slice(-10).reverse().map(e => ({
+        eventType: e.eventType,
+        reason:    String(e.metadata?.['reason'] ?? e.metadata?.['riskClass'] ?? ''),
+        source:    String(e.metadata?.['source'] ?? ''),
+        timestamp: e.timestamp,
+      })),
+    };
+  });
+
+  // ops:integrations
+  ipcMain.handle('ops:integrations', async (_e, window: '24h' | '7d' | '30d' = '24h') => {
+    const since   = _windowStart(window);
+    const entries = await _getAuditLedger().tailSince(since);
+    return {
+      window,
+      github: {
+        reviewsCompleted: _countBy(entries, 'GITHUB_PR_REVIEW_COMPLETED'),
+        commentsPosted:   _countBy(entries, 'GITHUB_COMMENT_POSTED'),
+        commentsBlocked:  _countBy(entries, 'GITHUB_COMMENT_BLOCKED'),
+        webhooksReceived: _countBy(entries, 'GITHUB_WEBHOOK_RECEIVED'),
+        issuesTriaged:    _countBy(entries, 'GITHUB_ISSUE_TRIAGE_COMPLETED'),
+      },
+      jira: {
+        actionsQueued:   _countBy(entries, 'JIRA_ACTION_QUEUED'),
+        actionsApproved: _countBy(entries, 'JIRA_ACTION_APPROVED'),
+        actionsDismissed:_countBy(entries, 'JIRA_ACTION_DISMISSED'),
+        commentsPosted:  _countBy(entries, 'JIRA_COMMENT_POSTED'),
+        issuesCreated:   _countBy(entries, 'JIRA_ISSUE_CREATED'),
+        transitions:     _countBy(entries, 'JIRA_STATUS_TRANSITIONED'),
+      },
+      linear: {
+        actionsQueued:   _countBy(entries, 'LINEAR_ACTION_QUEUED'),
+        actionsApproved: _countBy(entries, 'LINEAR_ACTION_APPROVED'),
+        actionsDismissed:_countBy(entries, 'LINEAR_ACTION_DISMISSED'),
+        commentsPosted:  _countBy(entries, 'LINEAR_COMMENT_POSTED'),
+        issuesCreated:   _countBy(entries, 'LINEAR_ISSUE_CREATED'),
+        statusUpdates:   _countBy(entries, 'LINEAR_STATUS_UPDATED'),
+      },
+      skills: {
+        installed: _countBy(entries, 'SKILL_INSTALLED'),
+        executed:  _countBy(entries, 'SKILL_EXECUTED'),
+        blocked:   _countBy(entries, 'SKILL_BLOCKED'),
+      },
+      controlPlane: {
+        tasksCreated: _countBy(entries, 'CONTROL_PLANE_TASK_CREATED'),
+      },
+    };
+  });
+
+  // ops:recipes
+  ipcMain.handle('ops:recipes', (_e, window: '24h' | '7d' | '30d' = '24h') => {
+    const since  = _windowStart(window);
+    const states = store.getRecipeStates();
+    return {
+      window,
+      recipes: BUILTIN_RECIPES.map(def => {
+        const s = states[def.id];
+        return {
+          id:            def.id,
+          name:          def.name,
+          trigger:       def.triggerLabel,
+          enabled:       s?.enabled ?? false,
+          lastRunAt:     s?.lastRunAt,
+          lastRunStatus: s?.lastRunStatus,
+          lastRunResult: s?.lastRunResult?.slice(0, 120),
+          ranInWindow:   s?.lastRunAt != null && s.lastRunAt >= since,
+        };
+      }),
+    };
+  });
+
+  // ops:health
+  ipcMain.handle('ops:health', async () => {
+    const creds = new CredentialManager(store);
+    const ghPat = await creds.get('github_pat').catch(() => undefined);
+    return {
+      services: [
+        {
+          name: 'Telegram',
+          connected: store.getTelegramEnabled(),
+          running:   !!_telegramBot,
+          detail:    store.getTelegramEnabled() ? 'configured' : 'not configured',
+        },
+        {
+          name: 'Slack',
+          connected: store.getSlackEnabled(),
+          running:   !!_slackAdapter,
+          detail:    store.getSlackEnabled() ? 'configured' : 'not configured',
+        },
+        {
+          name: 'Discord',
+          connected: store.getDiscordEnabled(),
+          running:   _discordAdapter?.isRunning() ?? false,
+          detail:    store.getDiscordEnabled() ? 'configured' : 'not configured',
+        },
+        {
+          name: 'GitHub',
+          connected: !!ghPat,
+          running:   !!ghPat,
+          detail:    ghPat ? 'PAT configured' : 'no PAT',
+        },
+        {
+          name: 'Jira',
+          connected: store.getJiraEnabled(),
+          running:   store.getJiraEnabled(),
+          detail:    store.getJiraWorkspaceUrl() || 'not configured',
+        },
+        {
+          name: 'Linear',
+          connected: store.getLinearEnabled(),
+          running:   store.getLinearEnabled(),
+          detail:    store.getLinearWorkspaceName() || 'not configured',
+        },
+        {
+          name: 'Push',
+          connected: store.getPushProvider() !== 'disabled',
+          running:   store.getPushProvider() !== 'disabled',
+          detail:    store.getPushProvider(),
+        },
+        {
+          name: 'Control Plane',
+          connected: store.getControlPlaneEnabled(),
+          running:   store.getControlPlaneEnabled(),
+          detail:    store.getControlPlaneEnabled() ? `port ${store.getControlPlanePort()}` : 'disabled',
+        },
+      ],
+    };
+  });
+
+  // ── Phase 15: Action Center ────────────────────────────────────────────────────
+
+  // ActionItem — unified view model for the action center queue
+  interface ActionItem {
+    id:         string;   // prefixed: 'approval:uuid', 'jira:jq_...', 'linear:lq_...', 'message:msg_...', 'recipe:...', 'push:...', 'service:...', 'blocked:...'
+    source:     'approval' | 'jira' | 'linear' | 'message' | 'recipe' | 'push' | 'service' | 'blocked';
+    service:    string;   // 'agent' | 'jira' | 'linear' | 'telegram' | 'slack' | 'discord' | 'recipe' | 'push' | 'system'
+    severity:   'critical' | 'warning' | 'info';
+    title:      string;
+    body:       string;
+    canApprove: boolean;
+    canDismiss: boolean;
+    canRetry:   boolean;
+    createdAt:  number;
+    metadata:   Record<string, unknown>;
+  }
+
+  async function _buildActionQueue(): Promise<ActionItem[]> {
+    const items: ActionItem[] = [];
+    const creds = new CredentialManager(store);
+
+    // 0. Paused runbook handoff items (Phase 32) — incident items surface as critical
+    for (const handoff of store.getHandoffQueue()) {
+      if (handoff.status !== 'pending') continue;
+      if (_acknowledgedActionIds.has(`handoff:${handoff.id}`)) continue;
+      const isIncidentHandoff = handoff.isIncident;
+      const now               = Date.now();
+      const isOverdue         = !!(handoff.expiresAt && now >= handoff.expiresAt);
+      const isSoftOverdue     = !!(handoff.escalateAt && now >= handoff.escalateAt && !handoff.escalatedAt);
+      const severity: 'critical' | 'warning' | 'info' =
+        isIncidentHandoff || isOverdue ? 'critical' :
+        isSoftOverdue                  ? 'warning'  :
+        'warning';
+      const minutesRemaining = handoff.expiresAt
+        ? Math.round((handoff.expiresAt - now) / 60000)
+        : undefined;
+      const deadlineSuffix = isOverdue
+        ? ` [OVERDUE ${Math.abs(minutesRemaining ?? 0)}m]`
+        : minutesRemaining !== undefined && minutesRemaining <= 30
+        ? ` [${minutesRemaining}m left]`
+        : '';
+      items.push({
+        id:         `handoff:${handoff.id}`,
+        source:     'handoff' as any,
+        service:    'runbook',
+        severity,
+        title:      `${handoff.type === 'approval' ? 'Approval Required' : handoff.type === 'confirm' ? 'Confirm Required' : 'Manual Action Required'} — ${handoff.runbookTitle}${deadlineSuffix}`,
+        body:       `Step: ${handoff.stepLabel}${handoff.blockedReason !== handoff.stepLabel ? ` — ${handoff.blockedReason}` : ''}${isIncidentHandoff ? ' [INCIDENT]' : ''}`,
+        canApprove: handoff.type === 'approval',
+        canDismiss: handoff.type === 'confirm' || handoff.type === 'manual',
+        canRetry:   false,
+        createdAt:  handoff.createdAt,
+        metadata:   {
+          handoffId:        handoff.id,
+          executionId:      handoff.executionId,
+          runbookId:        handoff.runbookId,
+          stepId:           handoff.stepId,
+          type:             handoff.type,
+          isIncident:       handoff.isIncident,
+          overdue:          isOverdue,
+          minutesRemaining,
+          escalationCount:  handoff.escalationCount,
+        },
+      });
+    }
+
+    // 1. Agent-level pending approvals (step approvals from AgentLoop)
+    if (_approvalStore) {
+      for (const req of _getApprovalStore().listPending()) {
+        if (_acknowledgedActionIds.has(`approval:${req.id}`)) continue;
+        items.push({
+          id:         `approval:${req.id}`,
+          source:     'approval',
+          service:    'agent',
+          severity:   req.riskLevel === 'high' ? 'critical' : req.riskLevel === 'medium' ? 'warning' : 'info',
+          title:      `Approval Required — ${req.tool}`,
+          body:       `Task ${req.taskId.slice(0, 8)} · Step ${req.stepId.slice(0, 8)} · est. $${(req.estimatedCostCents / 100).toFixed(2)}`,
+          canApprove: true,
+          canDismiss: true,
+          canRetry:   false,
+          createdAt:  req.createdAt,
+          metadata:   { taskId: req.taskId, stepId: req.stepId, tool: req.tool, riskLevel: req.riskLevel },
+        });
+      }
+    }
+
+    // 2. Jira queued writes
+    for (const action of _getJiraQueue().list(false)) {
+      if (_acknowledgedActionIds.has(`jira:${action.id}`)) continue;
+      items.push({
+        id:         `jira:${action.id}`,
+        source:     'jira',
+        service:    'jira',
+        severity:   'warning',
+        title:      `Jira ${action.type.charAt(0).toUpperCase() + action.type.slice(1)} — ${action.summary.slice(0, 60)}`,
+        body:       action.body.slice(0, 120),
+        canApprove: true,
+        canDismiss: true,
+        canRetry:   false,
+        createdAt:  action.createdAt,
+        metadata:   { type: action.type, issueKey: action.issueKey, projectKey: action.projectKey },
+      });
+    }
+
+    // 3. Linear queued writes
+    for (const action of _getLinearQueue().list(false)) {
+      if (_acknowledgedActionIds.has(`linear:${action.id}`)) continue;
+      items.push({
+        id:         `linear:${action.id}`,
+        source:     'linear',
+        service:    'linear',
+        severity:   'warning',
+        title:      `Linear ${action.type.charAt(0).toUpperCase() + action.type.slice(1)} — ${action.summary.slice(0, 60)}`,
+        body:       action.body.slice(0, 120),
+        canApprove: true,
+        canDismiss: true,
+        canRetry:   false,
+        createdAt:  action.createdAt,
+        metadata:   { type: action.type, issueId: action.issueId, teamId: action.teamId },
+      });
+    }
+
+    // 4. Messaging approval-pending items (Telegram/Slack/Discord)
+    for (const msg of _messageLog.list(200)) {
+      if (msg.status !== 'approval_pending') continue;
+      if (_acknowledgedActionIds.has(`message:${msg.id}`)) continue;
+      items.push({
+        id:         `message:${msg.id}`,
+        source:     'message',
+        service:    msg.channel,
+        severity:   msg.riskClass === 'high_risk' ? 'critical' : 'warning',
+        title:      `${msg.channel.charAt(0).toUpperCase() + msg.channel.slice(1)} Message — Approval Pending`,
+        body:       msg.text.slice(0, 120),
+        canApprove: false,
+        canDismiss: true,
+        canRetry:   false,
+        createdAt:  msg.timestamp,
+        metadata:   { channel: msg.channel, riskClass: msg.riskClass, chatId: msg.chatId, channelId: msg.channelId },
+      });
+    }
+
+    // 5. Failed recipes
+    const recipeStates = store.getRecipeStates();
+    for (const def of BUILTIN_RECIPES) {
+      const s = recipeStates[def.id];
+      if (!s || s.lastRunStatus !== 'failed') continue;
+      if (_acknowledgedActionIds.has(`recipe:${def.id}`)) continue;
+      items.push({
+        id:         `recipe:${def.id}`,
+        source:     'recipe',
+        service:    'recipe',
+        severity:   'warning',
+        title:      `Recipe Failed — ${def.name}`,
+        body:       s.lastRunResult?.slice(0, 120) ?? 'Unknown error',
+        canApprove: false,
+        canDismiss: true,
+        canRetry:   true,
+        createdAt:  s.lastRunAt ?? Date.now(),
+        metadata:   { recipeId: def.id },
+      });
+    }
+
+    // 6. Failed push notifications
+    for (const entry of _pushNotifier.getLog(50)) {
+      if (entry.success) continue;
+      if (_acknowledgedActionIds.has(`push:${entry.id}`)) continue;
+      items.push({
+        id:         `push:${entry.id}`,
+        source:     'push',
+        service:    'push',
+        severity:   'info',
+        title:      `Push Failed — ${entry.title}`,
+        body:       entry.error ?? 'Delivery failed',
+        canApprove: false,
+        canDismiss: true,
+        canRetry:   true,
+        createdAt:  entry.timestamp,
+        metadata:   { event: entry.event, provider: entry.provider },
+      });
+    }
+
+    // 7. Unhealthy services
+    const ghPat = await creds.get('github_pat').catch(() => undefined);
+    const serviceChecks = [
+      { name: 'Telegram',      ok: !store.getTelegramEnabled() || !!_telegramBot },
+      { name: 'Slack',         ok: !store.getSlackEnabled() || !!_slackAdapter },
+      { name: 'Discord',       ok: !store.getDiscordEnabled() || (_discordAdapter?.isRunning() ?? false) },
+      { name: 'GitHub',        ok: !store.getControlPlaneEnabled() || !!ghPat },
+    ];
+    for (const svc of serviceChecks) {
+      if (svc.ok) continue;
+      const svcId = `service:${svc.name}`;
+      if (_acknowledgedActionIds.has(svcId)) continue;
+      items.push({
+        id:         svcId,
+        source:     'service',
+        service:    svc.name.toLowerCase(),
+        severity:   'critical',
+        title:      `Service Offline — ${svc.name}`,
+        body:       `${svc.name} is configured but not running. Check connection settings.`,
+        canApprove: false,
+        canDismiss: true,
+        canRetry:   false,
+        createdAt:  Date.now(),
+        metadata:   { service: svc.name },
+      });
+    }
+
+    // 8. Recent blocked events (last 2h from audit ledger)
+    const twoHoursAgo = Date.now() - 2 * 60 * 60 * 1000;
+    const recentEntries = await _getAuditLedger().tailSince(twoHoursAgo);
+    const blockTypes = new Set([
+      'INBOUND_TASK_BLOCKED', 'ACTION_BLOCKED', 'AGENT_BLOCKED',
+      'TELEGRAM_MESSAGE_BLOCKED', 'SLACK_MESSAGE_BLOCKED', 'DISCORD_MESSAGE_BLOCKED',
+      'GITHUB_COMMENT_BLOCKED', 'SKILL_BLOCKED',
+    ]);
+    for (const entry of recentEntries) {
+      if (!blockTypes.has(entry.eventType)) continue;
+      const itemId = `blocked:${entry.id}`;
+      if (_acknowledgedActionIds.has(itemId)) continue;
+      items.push({
+        id:         itemId,
+        source:     'blocked',
+        service:    String(entry.metadata?.['channel'] ?? entry.metadata?.['source'] ?? 'system'),
+        severity:   'critical',
+        title:      `Blocked — ${entry.eventType.replace(/_/g, ' ')}`,
+        body:       String(entry.metadata?.['reason'] ?? entry.metadata?.['riskClass'] ?? 'High-risk action was blocked'),
+        canApprove: false,
+        canDismiss: true,
+        canRetry:   false,
+        createdAt:  entry.timestamp,
+        metadata:   { eventType: entry.eventType, ...(entry.metadata ?? {}) },
+      });
+    }
+
+    // Sort: critical first, then by age (newest first)
+    const severityOrder = { critical: 0, warning: 1, info: 2 };
+    return items.sort((a, b) => {
+      const sd = severityOrder[a.severity] - severityOrder[b.severity];
+      return sd !== 0 ? sd : b.createdAt - a.createdAt;
+    });
+  }
+
+  // action:list — unified action queue with optional view filter
+  ipcMain.handle('action:list', async (_e, view: string = 'all') => {
+    const all = await _buildActionQueue();
+    let filtered = all;
+    if (view === 'needs-approval') filtered = all.filter(i => i.canApprove);
+    else if (view === 'blocked')   filtered = all.filter(i => i.source === 'blocked');
+    else if (view === 'failures')  filtered = all.filter(i => i.source === 'recipe' || i.source === 'push');
+    else if (view === 'alerts')    filtered = all.filter(i => i.source === 'service' || i.source === 'message');
+    return { items: filtered };
+  });
+
+  // action:count — total items needing attention (for badge)
+  ipcMain.handle('action:count', async () => {
+    const all = await _buildActionQueue();
+    return {
+      total:        all.length,
+      approvals:    all.filter(i => i.canApprove).length,
+      blocked:      all.filter(i => i.source === 'blocked').length,
+      failures:     all.filter(i => i.source === 'recipe' || i.source === 'push').length,
+      alerts:       all.filter(i => i.source === 'service' || i.source === 'message').length,
+    };
+  });
+
+  // action:approve — route to the appropriate approve handler
+  ipcMain.handle('action:approve', async (_e, itemId: string) => {
+    const [source, ...rest] = itemId.split(':');
+    const id = rest.join(':');
+    try {
+      if (source === 'approval') {
+        _getApprovalStore().update(id, { status: 'approved', respondedAt: Date.now() });
+        _getAuditLedger().log('STEP_APPROVED', { metadata: { approvalId: id, via: 'action_center' } });
+        return { ok: true };
+      }
+      if (source === 'jira') {
+        const queue  = _getJiraQueue();
+        const action = queue.approve(id);
+        if (!action) return { ok: false, error: 'Not found or already processed' };
+        const adapter = await _buildJiraAdapter();
+        if (!adapter) return { ok: false, error: 'Jira not configured' };
+        if (action.type === 'comment' && action.issueKey) {
+          await adapter.addComment(action.issueKey, action.body);
+          _getAuditLedger().log('JIRA_COMMENT_POSTED', { metadata: { issueKey: action.issueKey, via: 'action_center' } });
+        } else if (action.type === 'transition' && action.issueKey && action.transitionId) {
+          await adapter.doTransition(action.issueKey, action.transitionId);
+          _getAuditLedger().log('JIRA_STATUS_TRANSITIONED', { metadata: { issueKey: action.issueKey, via: 'action_center' } });
+        } else if (action.type === 'create' && action.projectKey) {
+          await adapter.createIssue(action.projectKey, action.issueTypeId ?? '10001', action.summary, action.body);
+          _getAuditLedger().log('JIRA_ISSUE_CREATED', { metadata: { projectKey: action.projectKey, via: 'action_center' } });
+        }
+        return { ok: true };
+      }
+      if (source === 'linear') {
+        const queue  = _getLinearQueue();
+        const action = queue.approve(id);
+        if (!action) return { ok: false, error: 'Not found or already processed' };
+        const adapter = await _buildLinearAdapter();
+        if (!adapter) return { ok: false, error: 'Linear not configured' };
+        if (action.type === 'comment' && action.issueId) {
+          await adapter.createComment(action.issueId, action.body);
+          _getAuditLedger().log('LINEAR_COMMENT_POSTED', { metadata: { issueId: action.issueId, via: 'action_center' } });
+        } else if (action.type === 'create' && action.teamId) {
+          await adapter.createIssue({ teamId: action.teamId, title: action.summary, description: action.body, priority: action.priority });
+          _getAuditLedger().log('LINEAR_ISSUE_CREATED', { metadata: { teamId: action.teamId, via: 'action_center' } });
+        } else if (action.type === 'update' && action.issueId) {
+          await adapter.updateIssue(action.issueId, { stateId: action.stateId, assigneeId: action.assigneeId, priority: action.priority });
+          _getAuditLedger().log('LINEAR_STATUS_UPDATED', { metadata: { issueId: action.issueId, via: 'action_center' } });
+        }
+        return { ok: true };
+      }
+      return { ok: false, error: `Source '${source}' does not support approve` };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  // action:dismiss — acknowledge or remove from queue
+  ipcMain.handle('action:dismiss', (_e, itemId: string) => {
+    const [source, ...rest] = itemId.split(':');
+    const id = rest.join(':');
+    if (source === 'approval') {
+      _getApprovalStore().update(id, { status: 'denied', respondedAt: Date.now() });
+      _getAuditLedger().log('STEP_DENIED', { metadata: { approvalId: id, via: 'action_center' } });
+    } else if (source === 'jira') {
+      _getJiraQueue().dismiss(id);
+      _getAuditLedger().log('JIRA_ACTION_DISMISSED', { metadata: { actionId: id, via: 'action_center' } });
+    } else if (source === 'linear') {
+      _getLinearQueue().dismiss(id);
+      _getAuditLedger().log('LINEAR_ACTION_DISMISSED', { metadata: { actionId: id, via: 'action_center' } });
+    } else {
+      // message, recipe, push, service, blocked — in-memory acknowledgement
+      _acknowledgedActionIds.add(itemId);
+    }
+    return { ok: true };
+  });
+
+  // action:retry — re-run a failed recipe or resend a failed push
+  ipcMain.handle('action:retry', async (_e, itemId: string) => {
+    const [source, ...rest] = itemId.split(':');
+    const id = rest.join(':');
+    _acknowledgedActionIds.delete(itemId); // ensure it shows again after retry
+    if (source === 'recipe') {
+      const result = await _executeRecipe(id);
+      return result;
+    }
+    if (source === 'push') {
+      // Re-fire the push event associated with this log entry
+      const entry = _pushNotifier.getLog(200).find(e => e.id === id);
+      if (!entry) return { ok: false, error: 'Log entry not found' };
+      const ok = await _pushNotifier.fire(entry.event, entry.title, 'Retry: ' + entry.title);
+      return { ok };
+    }
+    return { ok: false, error: `Retry not supported for source '${source}'` };
+  });
+
+  // ── Phase 16: Shared Context / Team Memory IPC ────────────────────────────────
+
+  function _ctx() { return store.getSharedContext(); }
+  function _saveCtx(data: ReturnType<typeof _ctx>) { store.setSharedContext(data); }
+
+  // context:getAll — return entire shared context blob
+  ipcMain.handle('context:getAll', () => _ctx());
+
+  // context:setEnabled — toggle per-category context usage
+  ipcMain.handle('context:setEnabled', (_e, category: ContextCategory, enabled: boolean) => {
+    const data = _ctx();
+    data.enabled = { ...data.enabled, [category]: enabled };
+    _saveCtx(data);
+    _getAuditLedger().log('WORKFLOW_FIRED', { metadata: { event: 'context:setEnabled', category, enabled } });
+    return { ok: true };
+  });
+
+  // context:upsertRepo — create or update a repo mapping
+  ipcMain.handle('context:upsertRepo', (_e, input: Partial<RepoMapping> & { repo: string }) => {
+    const next = upsertRepo(_ctx(), input);
+    _saveCtx(next);
+    _getAuditLedger().log('WORKFLOW_FIRED', { metadata: { event: 'context:upsertRepo', repo: input.repo } });
+    return { ok: true, repoMappings: next.repoMappings };
+  });
+
+  // context:deleteRepo
+  ipcMain.handle('context:deleteRepo', (_e, id: string) => {
+    const next = deleteRepo(_ctx(), id);
+    _saveCtx(next);
+    _getAuditLedger().log('WORKFLOW_FIRED', { metadata: { event: 'context:deleteRepo', id } });
+    return { ok: true };
+  });
+
+  // context:upsertChannel — create or update a channel mapping
+  ipcMain.handle('context:upsertChannel', (_e, input: Partial<ChannelMapping> & { channel: ChannelMapping['channel']; channelId: string }) => {
+    const next = upsertChannel(_ctx(), input);
+    _saveCtx(next);
+    _getAuditLedger().log('WORKFLOW_FIRED', { metadata: { event: 'context:upsertChannel', channel: input.channel, channelId: input.channelId } });
+    return { ok: true, channelMappings: next.channelMappings };
+  });
+
+  // context:deleteChannel
+  ipcMain.handle('context:deleteChannel', (_e, id: string) => {
+    const next = deleteChannel(_ctx(), id);
+    _saveCtx(next);
+    _getAuditLedger().log('WORKFLOW_FIRED', { metadata: { event: 'context:deleteChannel', id } });
+    return { ok: true };
+  });
+
+  // context:upsertProject — create or update a project note
+  ipcMain.handle('context:upsertProject', (_e, input: Partial<ProjectNote> & { projectKey: string }) => {
+    const next = upsertProject(_ctx(), input);
+    _saveCtx(next);
+    _getAuditLedger().log('WORKFLOW_FIRED', { metadata: { event: 'context:upsertProject', projectKey: input.projectKey } });
+    return { ok: true, projectNotes: next.projectNotes };
+  });
+
+  // context:deleteProject
+  ipcMain.handle('context:deleteProject', (_e, id: string) => {
+    const next = deleteProject(_ctx(), id);
+    _saveCtx(next);
+    _getAuditLedger().log('WORKFLOW_FIRED', { metadata: { event: 'context:deleteProject', id } });
+    return { ok: true };
+  });
+
+  // context:resolveRepo — resolve a "owner/repo" string to its mapping + project note
+  ipcMain.handle('context:resolveRepo', (_e, repo: string) => {
+    return resolveRepo(_ctx(), repo);
+  });
+
+  // context:resolveChannel — resolve a channel + channelId to its mapping + project note
+  ipcMain.handle('context:resolveChannel', (_e, channel: string, channelId: string) => {
+    return resolveChannel(_ctx(), channel, channelId);
+  });
+
+  // ── Phase 17: TriForge Dispatch ───────────────────────────────────────────────
+
+  // ── In-memory pending confirmations (desktop confirm flow) ────────────────────
+  const _pendingConfirmations = new Map<string, PendingConfirmation>();
+
+  // ── Phase 20: Context enrichment for dispatch action items ────────────────────
+
+  function _toolToSystem(tool: string): string {
+    if (tool.startsWith('jira'))               return 'Jira';
+    if (tool.startsWith('linear'))             return 'Linear';
+    if (tool.startsWith('github') || tool.startsWith('gh_')) return 'GitHub';
+    if (tool.startsWith('slack'))              return 'Slack';
+    if (tool.startsWith('telegram'))           return 'Telegram';
+    if (tool.startsWith('discord'))            return 'Discord';
+    if (tool === 'bash' || tool === 'shell')   return 'Terminal';
+    if (tool === 'browser')                    return 'Browser';
+    if (tool.startsWith('file') || tool.startsWith('fs')) return 'File system';
+    return tool.charAt(0).toUpperCase() + tool.slice(1);
+  }
+
+  function _enrichDispatchItem(
+    item:   ActionItem,
+    ctx:    ReturnType<typeof store.getSharedContext>,
+    policy: ReturnType<typeof store.getRemoteApprovePolicy>,
+  ): Partial<DispatchActionItem> {
+    const meta   = item.metadata ?? {};
+    const source = item.id.split(':')[0];
+    const result: Partial<DispatchActionItem> = {
+      needsDesktopConfirm: policy.requireDesktopConfirm && item.canApprove,
+      policyRule: policy.enabled
+        ? `Remote approve enabled · max risk: ${policy.maxRisk}${policy.requireDesktopConfirm ? ' · desktop confirm required' : ''}`
+        : 'Remote actions disabled — view only',
+    };
+
+    switch (source) {
+      case 'approval': {
+        const riskLevel = String(meta['riskLevel'] ?? 'low');
+        const tool      = String(meta['tool'] ?? 'unknown');
+        result.rationale    = `Risk level **${riskLevel}** — agent step requires human approval before executing tool: **${tool}**`;
+        result.triggeredBy  = `Risk classifier — ${riskLevel}`;
+        result.willTouch    = [_toolToSystem(tool)];
+        result.affectedTarget = `Task ${String(meta['taskId'] ?? '').slice(0, 8)}`;
+        result.isDestructive  = riskLevel === 'high';
+        break;
+      }
+      case 'jira': {
+        const type       = String(meta['type'] ?? 'write');
+        const issueKey   = String(meta['issueKey'] ?? '');
+        const projectKey = String(meta['projectKey'] ?? '');
+        const key        = projectKey || (issueKey ? issueKey.replace(/-\d+$/, '') : '');
+        const note       = key ? resolveProject(ctx, key) : undefined;
+        result.rationale    = type === 'comment'
+          ? `Jira comment pending approval — will post to **${issueKey || projectKey}**`
+          : type === 'create'
+            ? `New Jira issue pending approval — will create in project **${projectKey}**`
+            : `Jira ${type} pending approval for **${issueKey}**`;
+        result.triggeredBy  = 'Jira write gate — requires human approval';
+        result.willTouch    = ['Jira'];
+        result.affectedTarget = issueKey || projectKey;
+        result.relatedProject = note?.projectName ?? key;
+        result.contextNotes   = note?.automationContext;
+        break;
+      }
+      case 'linear': {
+        const type    = String(meta['type'] ?? 'write');
+        const issueId = String(meta['issueId'] ?? '');
+        const teamId  = String(meta['teamId'] ?? '');
+        const note    = teamId ? resolveProject(ctx, teamId) : undefined;
+        result.rationale    = type === 'comment'
+          ? `Linear comment pending approval — will post to issue **${issueId}**`
+          : type === 'create'
+            ? `New Linear issue pending approval in team **${teamId}**`
+            : `Linear issue update pending approval for **${issueId}**`;
+        result.triggeredBy  = 'Linear write gate — requires human approval';
+        result.willTouch    = ['Linear'];
+        result.affectedTarget = issueId || teamId;
+        result.relatedProject = note?.projectName ?? teamId;
+        result.contextNotes   = note?.automationContext;
+        break;
+      }
+      case 'message': {
+        const channel   = String(meta['channel'] ?? 'unknown');
+        const chatId    = String(meta['chatId'] ?? meta['channelId'] ?? '');
+        const riskClass = String(meta['riskClass'] ?? '');
+        const resolved  = chatId ? resolveChannel(ctx, channel, chatId) : {};
+        result.rationale    = `Inbound **${channel}** message classified **${riskClass}** — pending approval before agent responds`;
+        result.triggeredBy  = `${channel.charAt(0).toUpperCase() + channel.slice(1)} risk gate — ${riskClass}`;
+        result.willTouch    = [channel.charAt(0).toUpperCase() + channel.slice(1)];
+        result.affectedTarget = (resolved as any).mapping?.channelName ?? chatId;
+        result.relatedProject = (resolved as any).projectNote?.projectName ?? (resolved as any).mapping?.workstream;
+        result.contextNotes   = (resolved as any).projectNote?.automationContext;
+        break;
+      }
+      case 'recipe': {
+        result.rationale   = 'Recipe last run failed — retry will re-execute all automation steps';
+        result.triggeredBy = 'Recipe failure monitor';
+        result.willTouch   = ['Recipe engine'];
+        result.affectedTarget = String(meta['recipeId'] ?? '');
+        break;
+      }
+      case 'push': {
+        const event    = String(meta['event'] ?? '');
+        const provider = String(meta['provider'] ?? '');
+        result.rationale   = `Push notification delivery failed for event **${event}** via ${provider}`;
+        result.triggeredBy = 'Push delivery monitor';
+        result.willTouch   = ['Push notifications'];
+        break;
+      }
+      case 'service': {
+        const svc = String(meta['service'] ?? 'Unknown');
+        result.rationale   = `**${svc}** is configured but the connection is offline — check integration settings`;
+        result.triggeredBy = 'Service health monitor';
+        result.willTouch   = [svc];
+        result.affectedTarget = svc;
+        break;
+      }
+      case 'blocked': {
+        const riskClass = String(meta['riskClass'] ?? meta['reason'] ?? '');
+        result.rationale   = `Action was blocked by the **${riskClass}** risk policy — no further action required. Dismiss to acknowledge.`;
+        result.triggeredBy = `Risk policy — ${riskClass}`;
+        result.willTouch   = [];
+        const channel = String(meta['channel'] ?? meta['source'] ?? '');
+        if (channel) result.affectedTarget = channel;
+        break;
+      }
+    }
+    return result;
+  }
+
+  // ── Phase 20: History builder — recent dispatch events from audit ledger ──────
+
+  async function _buildDispatchHistory(): Promise<DispatchHistoryEntry[]> {
+    const since   = Date.now() - 48 * 60 * 60 * 1000;
+    const entries = await _getAuditLedger().tailSince(since);
+
+    const dispatchEventTypes = new Set([
+      'STEP_APPROVED', 'STEP_DENIED',
+      'JIRA_ACTION_APPROVED', 'JIRA_ACTION_DISMISSED',
+      'LINEAR_ACTION_APPROVED', 'LINEAR_ACTION_DISMISSED',
+      'MISSION_FIRED',
+    ]);
+
+    const results: DispatchHistoryEntry[] = [];
+    for (const e of entries) {
+      const meta = (e.metadata ?? {}) as Record<string, unknown>;
+      const isDispatch = dispatchEventTypes.has(e.eventType) ||
+                         meta['source'] === 'dispatch_remote';
+      if (!isDispatch) continue;
+
+      const et   = e.eventType ?? '';
+      const verb = (et.includes('APPROV') || String(meta['action'] ?? '').includes('approve')) ? 'approve'
+                 : (et.includes('DISMISS') || String(meta['action'] ?? '').includes('dismiss')) ? 'dismiss'
+                 : (et.includes('RETRY')   || String(meta['action'] ?? '').includes('retry'))   ? 'retry'
+                 : (et.includes('MISSION') || et.includes('RECIPE') ||
+                    String(meta['action'] ?? '').includes('run'))                                 ? 'run'
+                 : (et.includes('BLOCK'))                                                         ? 'blocked'
+                 : String(meta['action'] ?? 'action');
+
+      const rawLabel = String(meta['detail'] ?? meta['actionId'] ?? meta['action'] ?? et);
+      const deviceLabel = String(meta['deviceLabel'] ?? meta['via'] ?? '');
+
+      results.push({
+        id:          e.id,
+        timestamp:   e.timestamp,
+        verb,
+        label:       rawLabel,
+        source:      String(meta['source'] ?? et.toLowerCase()),
+        deviceLabel: deviceLabel || null,
+        isAdmin:     !!(meta['isAdmin']) || deviceLabel.startsWith('dispatch_admin'),
+        clientIp:    String(meta['ip'] ?? meta['clientIp'] ?? ''),
+        outcome:     'ok',
+      });
+    }
+
+    // Return newest first, capped at 50
+    return results.reverse().slice(0, 50);
+  }
+
+  function _buildDispatchHandlers(): DispatchHandlers {
+    return {
+      // ── Auth data ─────────────────────────────────────────────────────────────
+      async getMasterToken() {
+        return (await _getCredentialManager(store).get('dispatch_token')) ?? '';
+      },
+      getPairedDevices() { return store.getPairedDevices(); },
+      setPairedDevices(v) { store.setPairedDevices(v); },
+      getPairingCode()   { return store.getActivePairingCode(); },
+      setPairingCode(v)  { store.setActivePairingCode(v); },
+      getNetworkMode()   { return store.getDispatchNetworkMode(); },
+      getApprovePolicy() { return store.getRemoteApprovePolicy(); },
+      getSessionTtlMinutes() { return store.getDispatchSessionTtlMinutes(); },
+
+      // ── Action data ───────────────────────────────────────────────────────────
+      async getActions(): Promise<DispatchActionItem[]> {
+        const items  = await _buildActionQueue();
+        const ctx    = store.getSharedContext();
+        const policy = store.getRemoteApprovePolicy();
+        return items.map(item => ({
+          id:         item.id,
+          source:     item.id.split(':')[0],
+          label:      item.title,     // FIX: ActionItem uses .title not .label
+          detail:     item.body,      // FIX: ActionItem uses .body not .detail
+          severity:   item.severity as RiskLevel,
+          age:        Date.now() - item.createdAt,
+          canApprove: item.canApprove,
+          canDismiss: item.canDismiss,
+          canRetry:   item.canRetry,
+          ..._enrichDispatchItem(item, ctx, policy),
+        }));
+      },
+
+      // ── History ───────────────────────────────────────────────────────────────
+      async getHistory(): Promise<DispatchHistoryEntry[]> {
+        return _buildDispatchHistory();
+      },
+      async approveAction(itemId: string, ctx: RemoteActionContext): Promise<ActionResult> {
+        const [source, ...rest] = itemId.split(':');
+        const id = rest.join(':');
+        const via = ctx.isAdmin ? 'dispatch_admin' : `dispatch_remote:${ctx.deviceId ?? 'unknown'}`;
+        // ── Phase 29: workspace policy check ──────────────────────────────────
+        const category = categoryForSource(source);
+        const policyCheck = _getPolicyEngine().canApprove(ctx.deviceId ?? null, category, ctx.isAdmin);
+        const wsId = store.getWorkspace()?.id;
+        if (!policyCheck.allowed) {
+          _getAuditLedger().log('WS_APPROVAL_DENIED', {
+            metadata: { itemId, source, category, actorId: ctx.deviceId, actorRole: policyCheck.actorRole, reason: policyCheck.reason, workspaceId: wsId },
+          });
+          return { ok: false, error: `Workspace policy denied: ${policyCheck.reason}` };
+        }
+        _getAuditLedger().log('WS_POLICY_RULE_MATCHED', {
+          metadata: { itemId, source, category, actorId: ctx.deviceId, actorRole: policyCheck.actorRole, allowed: true, workspaceId: wsId },
+        });
+        // ── End policy check ──────────────────────────────────────────────────
+        try {
+          if (source === 'approval') {
+            _getApprovalStore().update(id, { status: 'approved', respondedAt: Date.now() });
+            _getAuditLedger().log('STEP_APPROVED', { metadata: { approvalId: id, via, ip: ctx.clientIp } });
+            return { ok: true };
+          }
+          if (source === 'jira') {
+            const queue  = _getJiraQueue();
+            const action = queue.approve(id);
+            if (!action) return { ok: false, error: 'Not found or already processed' };
+            const adapter = await _buildJiraAdapter();
+            if (!adapter) return { ok: false, error: 'Jira not configured' };
+            if (action.type === 'comment' && action.issueKey) {
+              await adapter.addComment(action.issueKey, action.body);
+            } else if (action.type === 'transition' && action.issueKey && action.transitionId) {
+              await adapter.doTransition(action.issueKey, action.transitionId);
+            } else if (action.type === 'create' && action.projectKey) {
+              await adapter.createIssue(action.projectKey, action.issueTypeId ?? '10001', action.summary, action.body);
+            }
+            _getAuditLedger().log('JIRA_ACTION_APPROVED', { metadata: { actionId: id, via, ip: ctx.clientIp } });
+            return { ok: true };
+          }
+          if (source === 'linear') {
+            const queue  = _getLinearQueue();
+            const action = queue.approve(id);
+            if (!action) return { ok: false, error: 'Not found or already processed' };
+            const adapter = await _buildLinearAdapter();
+            if (!adapter) return { ok: false, error: 'Linear not configured' };
+            if (action.type === 'comment' && action.issueId) {
+              await adapter.createComment(action.issueId, action.body);
+            } else if (action.type === 'create' && action.teamId) {
+              await adapter.createIssue({ teamId: action.teamId, title: action.summary, description: action.body, priority: action.priority });
+            } else if (action.type === 'update' && action.issueId) {
+              await adapter.updateIssue(action.issueId, { stateId: action.stateId, assigneeId: action.assigneeId, priority: action.priority });
+            }
+            _getAuditLedger().log('LINEAR_ACTION_APPROVED', { metadata: { actionId: id, via, ip: ctx.clientIp } });
+            return { ok: true };
+          }
+          return { ok: false, error: `Source '${source}' does not support approve` };
+        } catch (e: unknown) {
+          return { ok: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+      async dismissAction(itemId: string, ctx: RemoteActionContext): Promise<ActionResult> {
+        const [source, ...rest] = itemId.split(':');
+        const id = rest.join(':');
+        const via = ctx.isAdmin ? 'dispatch_admin' : `dispatch_remote:${ctx.deviceId ?? 'unknown'}`;
+        // ── Phase 29: workspace policy check ──────────────────────────────────
+        const _dismissCategory = categoryForSource(source);
+        const _dismissCheck = _getPolicyEngine().canApprove(ctx.deviceId ?? null, _dismissCategory, ctx.isAdmin);
+        const _dismissWsId = store.getWorkspace()?.id;
+        if (!_dismissCheck.allowed) {
+          _getAuditLedger().log('WS_APPROVAL_DENIED', {
+            metadata: { itemId, source, category: _dismissCategory, actorId: ctx.deviceId, actorRole: _dismissCheck.actorRole, reason: _dismissCheck.reason, workspaceId: _dismissWsId },
+          });
+          return { ok: false, error: `Workspace policy denied: ${_dismissCheck.reason}` };
+        }
+        // ── End policy check ──────────────────────────────────────────────────
+        if (source === 'approval') {
+          _getApprovalStore().update(id, { status: 'denied', respondedAt: Date.now() });
+          _getAuditLedger().log('STEP_DENIED', { metadata: { approvalId: id, via, ip: ctx.clientIp } });
+        } else if (source === 'jira') {
+          _getJiraQueue().dismiss(id);
+          _getAuditLedger().log('JIRA_ACTION_DISMISSED', { metadata: { actionId: id, via, ip: ctx.clientIp } });
+        } else if (source === 'linear') {
+          _getLinearQueue().dismiss(id);
+          _getAuditLedger().log('LINEAR_ACTION_DISMISSED', { metadata: { actionId: id, via, ip: ctx.clientIp } });
+        } else {
+          _acknowledgedActionIds.add(itemId);
+        }
+        return { ok: true };
+      },
+      async retryAction(itemId: string, ctx: RemoteActionContext): Promise<ActionResult> {
+        const [source, ...rest] = itemId.split(':');
+        const id = rest.join(':');
+        const via = ctx.isAdmin ? 'dispatch_admin' : `dispatch_remote:${ctx.deviceId ?? 'unknown'}`;
+        // ── Phase 29: workspace policy check ──────────────────────────────────
+        const _retryCategory = categoryForSource(source);
+        const _retryCheck = _getPolicyEngine().canApprove(ctx.deviceId ?? null, _retryCategory, ctx.isAdmin);
+        if (!_retryCheck.allowed) {
+          _getAuditLedger().log('WS_APPROVAL_DENIED', {
+            metadata: { itemId, source, category: _retryCategory, actorId: ctx.deviceId, actorRole: _retryCheck.actorRole, reason: _retryCheck.reason, workspaceId: store.getWorkspace()?.id },
+          });
+          return { ok: false, error: `Workspace policy denied: ${_retryCheck.reason}` };
+        }
+        // ── End policy check ──────────────────────────────────────────────────
+        _acknowledgedActionIds.delete(itemId);
+        if (source === 'recipe') {
+          const r = await _executeRecipe(id, { source: via });
+          return r;
+        }
+        if (source === 'push') {
+          const entry = _pushNotifier.getLog(200).find(e => e.id === id);
+          if (!entry) return { ok: false, error: 'Log entry not found' };
+          const ok = await _pushNotifier.fire(entry.event, entry.title, 'Retry: ' + entry.title);
+          return { ok };
+        }
+        return { ok: false, error: `Retry not supported for source '${source}'` };
+      },
+      async getOpsOverview(): Promise<DispatchOpsOverview> {
+        const actions = await _buildActionQueue();
+        const ledger  = _getAuditLedger();
+        const since24 = Date.now() - 24 * 60 * 60 * 1000;
+        const entries = await ledger.tailSince(since24);
+        const approvedToday  = entries.filter(e => e.type === 'TASK_APPROVED').length;
+        const blockedToday   = entries.filter(e => e.type === 'TASK_BLOCKED').length;
+        const failedRecipes  = entries.filter(e => e.type === 'RECIPE_FAILED').length;
+        const unhealthyCount = actions.filter(a => a.id.startsWith('health:')).length;
+        return {
+          actionsTotal:      actions.length,
+          approvedToday,
+          blockedToday,
+          failedRecipes,
+          unhealthyServices: unhealthyCount,
+        };
+      },
+      async getRecipes(): Promise<DispatchRecipeItem[]> {
+        const states = store.getRecipeStates();
+        return BUILTIN_RECIPES.map(r => {
+          const s = states[r.id] ?? { enabled: false, params: {} };
+          return {
+            id:            r.id,
+            name:          r.name,
+            trigger:       r.trigger,
+            enabled:       s.enabled,
+            lastRunAt:     s.lastRunAt,
+            lastRunStatus: s.lastRunStatus,
+          };
+        });
+      },
+      async runRecipe(id: string, ctx: RemoteActionContext): Promise<ActionResult> {
+        const via = ctx.isAdmin ? 'dispatch_admin' : `dispatch_remote:${ctx.deviceId ?? 'unknown'}`;
+        // ── Phase 29: workspace policy check ──────────────────────────────────
+        const _recipeCheck = _getPolicyEngine().canApprove(ctx.deviceId ?? null, 'recipe:run', ctx.isAdmin);
+        if (!_recipeCheck.allowed) {
+          _getAuditLedger().log('WS_APPROVAL_DENIED', {
+            metadata: { recipeId: id, category: 'recipe:run', actorId: ctx.deviceId, actorRole: _recipeCheck.actorRole, reason: _recipeCheck.reason, workspaceId: store.getWorkspace()?.id },
+          });
+          return { ok: false, error: `Workspace policy denied: ${_recipeCheck.reason}` };
+        }
+        // ── End policy check ──────────────────────────────────────────────────
+        try {
+          const r = await _executeRecipe(
+            id,
+            { source: via },
+            { deviceId: ctx.deviceId ?? undefined, isAdmin: ctx.isAdmin, isRemote: true },
+          );
+          return r;
+        } catch (e: unknown) {
+          return { ok: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+      async getMissions(): Promise<DispatchMissionItem[]> {
+        const defs = _getMissionStore().load();
+        return defs.map(m => ({
+          id:          m.id,
+          name:        m.name,
+          description: m.description,
+          category:    m.category,
+          enabled:     m.enabled,
+          schedule:    m.schedule,
+          lastRunAt:   m.lastRunAt,
+        }));
+      },
+      async runMission(id: string, ctx: RemoteActionContext): Promise<ActionResult> {
+        // ── Phase 29: workspace policy check ──────────────────────────────────
+        const _missionCheck = _getPolicyEngine().canApprove(ctx.deviceId ?? null, 'recipe:run', ctx.isAdmin);
+        if (!_missionCheck.allowed) {
+          _getAuditLedger().log('WS_APPROVAL_DENIED', {
+            metadata: { missionId: id, category: 'recipe:run', actorId: ctx.deviceId, actorRole: _missionCheck.actorRole, reason: _missionCheck.reason, workspaceId: store.getWorkspace()?.id },
+          });
+          return { ok: false, error: `Workspace policy denied: ${_missionCheck.reason}` };
+        }
+        // ── End policy check ──────────────────────────────────────────────────
+        try {
+          const mm = _getMissionManager(store);
+          await mm.runMission(id);
+          _getAuditLedger().log('MISSION_FIRED' as any, { metadata: { missionId: id, via: ctx.deviceId ?? 'admin', ip: ctx.clientIp } });
+          return { ok: true };
+        } catch (e: unknown) {
+          return { ok: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+      // Desktop confirmation queue
+      queueConfirmation(conf: PendingConfirmation) {
+        _pendingConfirmations.set(conf.id, conf);
+      },
+      resolveConfirmation(id: string): PendingConfirmation | undefined {
+        return _pendingConfirmations.get(id);
+      },
+      auditLog(action: string, detail: string, ctx: RemoteActionContext) {
+        _getAuditLedger().log('SYSTEM_EVENT' as any, {
+          metadata: {
+            action,
+            detail,
+            source:      'dispatch_remote',
+            deviceId:    ctx.deviceId,
+            deviceLabel: ctx.deviceLabel,
+            clientIp:    ctx.clientIp,
+            isAdmin:     ctx.isAdmin,
+          },
+        });
+      },
+      emitToRenderer(channel: string, payload: unknown) {
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) win.webContents.send(channel, payload);
+        }
+      },
+
+      // ── Phase 21 — remote task workbench ───────────────────────────────────
+      async listTasks(): Promise<DispatchTask[]> {
+        return store.getDispatchTasks().slice().reverse(); // newest first
+      },
+      async getTask(id: string): Promise<DispatchTask | null> {
+        return store.getDispatchTasks().find(t => t.id === id) ?? null;
+      },
+      // Phase 23 — artifact handlers
+      async listTaskArtifacts(taskId: string): Promise<DispatchArtifact[]> {
+        return store.getDispatchArtifacts().filter(a => a.taskId === taskId);
+      },
+      async getArtifact(id: string): Promise<DispatchArtifact | null> {
+        return store.getDispatchArtifacts().find(a => a.id === id) ?? null;
+      },
+      async approveArtifactSend(id: string, ctx: RemoteActionContext): Promise<ActionResult> {
+        const artifact = store.getDispatchArtifacts().find(a => a.id === id);
+        if (!artifact) return { ok: false, error: 'Artifact not found' };
+        if (artifact.meta?.status === 'sent') return { ok: false, error: 'Already sent' };
+        return _sendArtifact(artifact, ctx);
+      },
+      // Phase 24 — bundle handlers
+      async listTaskBundles(taskId: string): Promise<DispatchArtifactBundle[]> {
+        return store.getDispatchBundles().filter(b => b.taskId === taskId);
+      },
+      async getBundle(id: string): Promise<DispatchArtifactBundle | null> {
+        return store.getDispatchBundles().find(b => b.id === id) ?? null;
+      },
+      async sendBundle(
+        id: string,
+        mode: 'all' | 'safe' | 'selected',
+        selectedIds: string[],
+        ctx: RemoteActionContext,
+      ): Promise<ActionResult & { sent: string[]; held: string[] }> {
+        const bundle = store.getDispatchBundles().find(b => b.id === id);
+        if (!bundle) return { ok: false, error: 'Bundle not found', sent: [], held: [] };
+
+        const DRAFT_TYPES: ArtifactType[] = ['draft_slack', 'draft_jira', 'draft_linear', 'draft_github'];
+        const allArts = store.getDispatchArtifacts().filter(a => bundle.artifactIds.includes(a.id));
+        const candidates = allArts.filter(a => DRAFT_TYPES.includes(a.type) && a.meta?.status !== 'sent');
+
+        let targets: DispatchArtifact[];
+        if (mode === 'selected') {
+          targets = candidates.filter(a => selectedIds.includes(a.id));
+        } else if (mode === 'safe') {
+          // "safe" = non-destructive draft types (exclude github for now unless PAT configured)
+          targets = candidates.filter(a => a.type !== 'draft_github');
+        } else {
+          targets = candidates;
+        }
+
+        const sent: string[] = [];
+        const held: string[] = [];
+        const errors: string[] = [];
+
+        for (const art of targets) {
+          const r = await _sendArtifact(art, ctx);
+          if (r.ok) { sent.push(art.id); }
+          else { held.push(art.id); errors.push(`${art.title}: ${r.error}`); }
+        }
+
+        // Recalculate bundle status
+        const updatedArts = store.getDispatchArtifacts().filter(a => bundle.artifactIds.includes(a.id));
+        const newSentCount = updatedArts.filter(a => a.meta?.status === 'sent').length;
+        const DRAFT: ArtifactType[] = ['draft_slack', 'draft_jira', 'draft_linear', 'draft_github'];
+        const remaining = updatedArts.filter(a => DRAFT.includes(a.type) && a.meta?.status !== 'sent').length;
+        const newStatus: BundleStatus = remaining === 0 ? 'sent' : newSentCount > 0 ? 'partial' : 'pending';
+        const allBundles = store.getDispatchBundles();
+        const bidx = allBundles.findIndex(b => b.id === id);
+        if (bidx >= 0) {
+          allBundles[bidx] = { ...allBundles[bidx], status: newStatus, sentCount: newSentCount };
+          store.setDispatchBundles(allBundles);
+        }
+
+        // Update task's bundle reference
+        const tasks = store.getDispatchTasks();
+        const tidx  = tasks.findIndex(t => t.id === bundle.taskId);
+        if (tidx >= 0) { _updateDispatchTask(tasks[tidx]); }
+
+        _getAuditLedger().log('SYSTEM_EVENT' as any, {
+          metadata: { action: 'bundle_send', bundleId: id, mode, sent: sent.length, held: held.length, via: ctx.deviceId ?? 'admin' },
+        });
+
+        const ok = errors.length === 0;
+        return { ok, error: ok ? undefined : errors.join('; '), sent, held };
+      },
+      // Phase 25 — thread / inbox handlers
+      async listThreads(): Promise<DispatchThread[]> {
+        return store.getDispatchThreads().slice().reverse(); // newest first
+      },
+      async getThread(id: string): Promise<DispatchThread | null> {
+        return store.getDispatchThreads().find(t => t.id === id) ?? null;
+      },
+      async postThreadMessage(
+        threadId: string,
+        text: string,
+        category: TaskCategory,
+        ctx: RemoteActionContext,
+      ): Promise<{ message: DispatchMessage; task: DispatchTask }> {
+        const threads = store.getDispatchThreads();
+        const thread  = threads.find(t => t.id === threadId);
+        if (!thread) throw new Error('Thread not found');
+
+        // Add user message to thread
+        const userMsg = _appendThreadMessage(thread, { role: 'user', text });
+
+        // Create follow-up task carrying thread context forward
+        const id  = `task:${Date.now()}:${Math.random().toString(36).slice(2, 7)}`;
+        const now = Date.now();
+        const followUpTask: DispatchTask = {
+          id,
+          createdAt:   now,
+          updatedAt:   now,
+          goal:        text,
+          category,
+          status:      'queued',
+          ctx:         { ...thread.ctx },   // carry-forward context
+          deviceLabel: ctx.deviceLabel,
+          threadId:    thread.id,
+        };
+        _updateDispatchTask(followUpTask);
+
+        // Back-link task to thread
+        thread.taskIds.push(followUpTask.id);
+        thread.status  = 'active';
+        thread.updatedAt = Date.now();
+        // Update user message with taskId
+        const lastMsg = thread.messages[thread.messages.length - 1];
+        if (lastMsg.id === userMsg.id) lastMsg.taskId = followUpTask.id;
+        _updateThread(thread);
+
+        // Execute asynchronously
+        _executeDispatchTask(followUpTask, { goal: text, category, ctx: thread.ctx }).catch(() => {});
+        return { message: userMsg, task: followUpTask };
+      },
+
+      // Phase 27 — workspace management
+      async getWorkspace(): Promise<Workspace | null> {
+        return store.getWorkspace();
+      },
+
+      async createWorkspaceInvite(role: WorkspaceRole, ctx: RemoteActionContext): Promise<{ invite: WorkspaceInvite }> {
+        const ws = _ensureWorkspace('My Workspace', ctx.deviceId ?? 'desktop');
+        if (!ctx.isAdmin && !_hasWorkspaceRole(ctx.deviceId, 'admin')) {
+          throw new Error('Only admins and owners can create workspace invites');
+        }
+        if (!ws.invites) ws.invites = [];
+        const invite: WorkspaceInvite = {
+          code:      _generateInviteCode(),
+          createdAt: Date.now(),
+          expiresAt: Date.now() + 48 * 60 * 60 * 1000,
+          createdBy: ctx.deviceId ?? 'admin',
+          role,
+          revoked:   false,
+        };
+        ws.invites.push(invite);
+        ws.updatedAt = Date.now();
+        store.setWorkspace(ws);
+        _getAuditLedger().log('WORKSPACE_INVITE_CREATED', {
+          metadata: { workspaceId: ws.id, workspaceName: ws.name, actor: ctx.deviceId ?? 'admin', actorRole: _getWorkspaceRole(ctx.deviceId) ?? 'owner', targetRole: role, source: 'remote' },
+        });
+        return { invite };
+      },
+
+      async claimWorkspaceInvite(code: string, ctx: RemoteActionContext): Promise<{ workspace: Workspace }> {
+        const ws = store.getWorkspace();
+        if (!ws) throw new Error('No workspace exists yet');
+        const invite = (ws.invites ?? []).find(
+          i => i.code === code && !i.revoked && !i.claimedBy && i.expiresAt > Date.now()
+        );
+        if (!invite) throw new Error('Invite code not found, expired, already claimed, or revoked');
+        invite.claimedBy = ctx.deviceId ?? 'unknown';
+        invite.claimedAt = Date.now();
+        if (!ws.members) ws.members = [];
+        const existing = ws.members.find(m => m.deviceId === ctx.deviceId);
+        if (existing) {
+          existing.role = invite.role;
+        } else {
+          ws.members.push({
+            deviceId:    ctx.deviceId ?? 'unknown',
+            deviceLabel: ctx.deviceLabel,
+            role:        invite.role,
+            joinedAt:    Date.now(),
+            addedBy:     invite.createdBy,
+          });
+        }
+        ws.updatedAt = Date.now();
+        store.setWorkspace(ws);
+        _getAuditLedger().log('WORKSPACE_INVITE_CLAIMED', {
+          metadata: { workspaceId: ws.id, workspaceName: ws.name, actor: ctx.deviceId ?? 'unknown', actorLabel: ctx.deviceLabel, role: invite.role, source: 'remote' },
+        });
+        _dispatchServer?.broadcastTaskEvent({ type: 'workspace:update', timestamp: Date.now() });
+        return { workspace: ws };
+      },
+
+      async removeWorkspaceMember(targetDeviceId: string, ctx: RemoteActionContext): Promise<ActionResult> {
+        const ws = store.getWorkspace();
+        if (!ws) return { ok: false, error: 'No workspace' };
+        if (!ctx.isAdmin && !_hasWorkspaceRole(ctx.deviceId, 'admin')) {
+          return { ok: false, error: 'Only admins can remove members' };
+        }
+        if (targetDeviceId === ws.ownerId) return { ok: false, error: 'Cannot remove the workspace owner' };
+        ws.members = (ws.members ?? []).filter(m => m.deviceId !== targetDeviceId);
+        ws.updatedAt = Date.now();
+        store.setWorkspace(ws);
+        _getAuditLedger().log('WORKSPACE_MEMBER_REMOVED', {
+          metadata: { workspaceId: ws.id, workspaceName: ws.name, actor: ctx.deviceId ?? 'desktop', actorRole: _getWorkspaceRole(ctx.deviceId) ?? 'owner', target: targetDeviceId, source: ctx.isAdmin ? 'desktop' : 'remote' },
+        });
+        _dispatchServer?.broadcastTaskEvent({ type: 'workspace:update', timestamp: Date.now() });
+        return { ok: true };
+      },
+
+      async setWorkspaceMemberRole(targetDeviceId: string, role: WorkspaceRole, ctx: RemoteActionContext): Promise<ActionResult> {
+        const ws = store.getWorkspace();
+        if (!ws) return { ok: false, error: 'No workspace' };
+        if (!ctx.isAdmin && !_hasWorkspaceRole(ctx.deviceId, 'admin')) {
+          return { ok: false, error: 'Only admins can change roles' };
+        }
+        const member = ws.members.find(m => m.deviceId === targetDeviceId);
+        if (!member) return { ok: false, error: 'Member not found' };
+        const prevRole = member.role;
+        member.role = role;
+        ws.updatedAt = Date.now();
+        store.setWorkspace(ws);
+        _getAuditLedger().log('WORKSPACE_ROLE_CHANGED', {
+          metadata: { workspaceId: ws.id, workspaceName: ws.name, actor: ctx.deviceId ?? 'desktop', actorRole: _getWorkspaceRole(ctx.deviceId) ?? 'owner', target: targetDeviceId, prevRole, newRole: role, source: ctx.isAdmin ? 'desktop' : 'remote' },
+        });
+        _dispatchServer?.broadcastTaskEvent({ type: 'workspace:update', timestamp: Date.now() });
+        return { ok: true };
+      },
+
+      async updateWorkspacePolicy(patch: Partial<WorkspacePolicy>, ctx: RemoteActionContext): Promise<ActionResult> {
+        const ws = store.getWorkspace();
+        if (!ws) return { ok: false, error: 'No workspace' };
+        if (!ctx.isAdmin && !_hasWorkspaceRole(ctx.deviceId, 'admin')) {
+          return { ok: false, error: 'Only admins can update workspace policy' };
+        }
+        ws.policy = { ...ws.policy, ...patch };
+        ws.updatedAt = Date.now();
+        store.setWorkspace(ws);
+        _getAuditLedger().log('WORKSPACE_POLICY_UPDATED', {
+          metadata: { workspaceId: ws.id, workspaceName: ws.name, actor: ctx.deviceId ?? 'desktop', actorRole: _getWorkspaceRole(ctx.deviceId) ?? 'owner', patch, source: ctx.isAdmin ? 'desktop' : 'remote' },
+        });
+        _dispatchServer?.broadcastTaskEvent({ type: 'workspace:update', timestamp: Date.now() });
+        return { ok: true };
+      },
+
+      // Phase 26 — thread sharing + collaboration
+      async createThreadInvite(threadId: string, role: CollaboratorRole, ctx: RemoteActionContext): Promise<{ invite: ThreadInvite }> {
+        const threads = store.getDispatchThreads();
+        const thread  = threads.find(t => t.id === threadId);
+        if (!thread) throw new Error('Thread not found');
+        const callerRole = _getThreadRole(thread, ctx.deviceId);
+        if (callerRole !== 'owner' && callerRole !== 'operator' && !ctx.isAdmin) {
+          throw new Error('Only the thread owner or an operator can create invites');
+        }
+        if (!thread.invites) thread.invites = [];
+        const invite: ThreadInvite = {
+          code:      _generateInviteCode(),
+          createdAt: Date.now(),
+          expiresAt: Date.now() + 48 * 60 * 60 * 1000,
+          createdBy: ctx.deviceId ?? 'admin',
+          role,
+          revoked:   false,
+        };
+        thread.invites.push(invite);
+        _updateThread(thread);
+        _getAuditLedger().log('THREAD_INVITE_CREATED', {
+          metadata: { threadId, actor: ctx.deviceId ?? 'admin', actorRole: _getThreadRole(thread, ctx.deviceId) ?? 'owner', targetRole: role, workspaceId: store.getWorkspace()?.id, source: ctx.isAdmin ? 'desktop' : 'remote' },
+        });
+        return { invite };
+      },
+
+      async claimThreadInvite(code: string, ctx: RemoteActionContext): Promise<{ thread: DispatchThread }> {
+        const threads = store.getDispatchThreads();
+        for (const thread of threads) {
+          const invite = (thread.invites ?? []).find(
+            i => i.code === code && !i.revoked && !i.claimedBy && i.expiresAt > Date.now()
+          );
+          if (!invite) continue;
+          invite.claimedBy = ctx.deviceId ?? 'unknown';
+          invite.claimedAt = Date.now();
+          if (!thread.collaborators) thread.collaborators = [];
+          const existing = thread.collaborators.find(c => c.deviceId === ctx.deviceId);
+          if (existing) {
+            existing.role = invite.role;
+          } else {
+            thread.collaborators.push({
+              deviceId:    ctx.deviceId ?? 'unknown',
+              deviceLabel: ctx.deviceLabel,
+              role:        invite.role,
+              joinedAt:    Date.now(),
+            });
+          }
+          if (!thread.visibility || thread.visibility === 'private') {
+            thread.visibility = invite.role === 'operator' ? 'shared_approve' : 'shared_read';
+          }
+          _updateThread(thread);
+          _getAuditLedger().log('THREAD_INVITE_CLAIMED', {
+            metadata: { threadId: thread.id, actor: ctx.deviceId ?? 'unknown', actorLabel: ctx.deviceLabel, role: invite.role, workspaceId: store.getWorkspace()?.id, source: 'remote' },
+          });
+          _dispatchServer?.broadcastTaskEvent({
+            type:          'thread:update',
+            threadId:      thread.id,
+            collaborators: thread.collaborators,
+            timestamp:     Date.now(),
+          });
+          return { thread };
+        }
+        throw new Error('Invite code not found, expired, already claimed, or revoked');
+      },
+
+      async revokeCollaborator(threadId: string, targetDeviceId: string, ctx: RemoteActionContext): Promise<ActionResult> {
+        const threads = store.getDispatchThreads();
+        const thread  = threads.find(t => t.id === threadId);
+        if (!thread) return { ok: false, error: 'Thread not found' };
+        const callerRole = _getThreadRole(thread, ctx.deviceId);
+        if (callerRole !== 'owner' && !ctx.isAdmin) return { ok: false, error: 'Only the thread owner can revoke collaborators' };
+        thread.collaborators = (thread.collaborators ?? []).filter(c => c.deviceId !== targetDeviceId);
+        for (const inv of thread.invites ?? []) {
+          if (inv.claimedBy === targetDeviceId) inv.revoked = true;
+        }
+        _updateThread(thread);
+        _getAuditLedger().log('THREAD_COLLAB_REMOVED', {
+          metadata: { threadId, actor: ctx.deviceId ?? 'desktop', actorRole: _getThreadRole(thread, ctx.deviceId) ?? 'owner', target: targetDeviceId, workspaceId: store.getWorkspace()?.id, source: ctx.isAdmin ? 'desktop' : 'remote' },
+        });
+        _dispatchServer?.broadcastTaskEvent({
+          type:          'thread:update',
+          threadId:      thread.id,
+          collaborators: thread.collaborators,
+          timestamp:     Date.now(),
+        });
+        return { ok: true };
+      },
+
+      async listThreadComments(threadId: string, ctx: RemoteActionContext): Promise<ThreadComment[]> {
+        const thread = store.getDispatchThreads().find(t => t.id === threadId);
+        if (!thread) throw new Error('Thread not found');
+        const role = _getThreadRole(thread, ctx.deviceId);
+        if (!role && !ctx.isAdmin) throw new Error('No access to this thread');
+        return thread.comments ?? [];
+      },
+
+      async addThreadComment(
+        threadId: string,
+        text: string,
+        targetType: ThreadComment['targetType'],
+        targetId: string,
+        ctx: RemoteActionContext,
+      ): Promise<ThreadComment> {
+        const threads = store.getDispatchThreads();
+        const thread  = threads.find(t => t.id === threadId);
+        if (!thread) throw new Error('Thread not found');
+        const role = _getThreadRole(thread, ctx.deviceId);
+        if (!role && !ctx.isAdmin) throw new Error('No access to this thread');
+        if (role === 'viewer') throw new Error('Viewers cannot add comments');
+        if (!thread.comments) thread.comments = [];
+        const comment: ThreadComment = {
+          id:          `cmt:${Date.now()}:${Math.random().toString(36).slice(2, 6)}`,
+          threadId,
+          createdAt:   Date.now(),
+          authorId:    ctx.deviceId ?? 'admin',
+          authorLabel: ctx.deviceLabel,
+          text,
+          targetType,
+          targetId,
+        };
+        thread.comments.push(comment);
+        if (thread.comments.length > 100) thread.comments = thread.comments.slice(-100);
+        _updateThread(thread);
+        _getAuditLedger().log('THREAD_COMMENT_ADDED', {
+          metadata: { threadId, commentId: comment.id, actor: ctx.deviceId ?? 'admin', actorRole: _getThreadRole(thread, ctx.deviceId) ?? 'owner', targetType, targetId, workspaceId: store.getWorkspace()?.id, source: ctx.isAdmin ? 'desktop' : 'remote' },
+        });
+        _dispatchServer?.broadcastTaskEvent({
+          type:      'thread:update',
+          threadId:  thread.id,
+          comments:  thread.comments,
+          timestamp: Date.now(),
+        });
+        return comment;
+      },
+
+      async deleteThreadComment(threadId: string, commentId: string, ctx: RemoteActionContext): Promise<ActionResult> {
+        const threads = store.getDispatchThreads();
+        const thread  = threads.find(t => t.id === threadId);
+        if (!thread) return { ok: false, error: 'Thread not found' };
+        const comment = (thread.comments ?? []).find(c => c.id === commentId);
+        if (!comment) return { ok: false, error: 'Comment not found' };
+        const isAuthor = comment.authorId === ctx.deviceId;
+        const isOwner  = _getThreadRole(thread, ctx.deviceId) === 'owner';
+        if (!isAuthor && !isOwner && !ctx.isAdmin) return { ok: false, error: 'Insufficient permissions' };
+        thread.comments = (thread.comments ?? []).filter(c => c.id !== commentId);
+        _updateThread(thread);
+        _getAuditLedger().log('THREAD_COMMENT_DELETED', {
+          metadata: { threadId, commentId, actor: ctx.deviceId ?? 'admin', actorRole: _getThreadRole(thread, ctx.deviceId) ?? 'owner', workspaceId: store.getWorkspace()?.id, source: ctx.isAdmin ? 'desktop' : 'remote' },
+        });
+        _dispatchServer?.broadcastTaskEvent({
+          type:      'thread:update',
+          threadId:  thread.id,
+          comments:  thread.comments,
+          timestamp: Date.now(),
+        });
+        return { ok: true };
+      },
+
+      async getThreadAttributions(threadId: string, ctx: RemoteActionContext): Promise<ApprovalAttribution[]> {
+        const thread = store.getDispatchThreads().find(t => t.id === threadId);
+        if (!thread) throw new Error('Thread not found');
+        const role = _getThreadRole(thread, ctx.deviceId);
+        if (!role && !ctx.isAdmin) throw new Error('No access to this thread');
+        return thread.attributions ?? [];
+      },
+
+      recordThreadAttribution(threadId: string, partial: Omit<ApprovalAttribution, 'id' | 'threadId'>): void {
+        const thread = store.getDispatchThreads().find(t => t.id === threadId);
+        if (!thread) return;
+        _recordAttribution(thread, partial);
+      },
+
+      // ── Phase 31 — Runbook handlers ───────────────────────────────────────────
+
+      async listRunbooks(): Promise<DispatchRunbookItem[]> {
+        const executions = store.getRunbookExecutions(200);
+        return store.getRunbooks().map(rb => {
+          const lastExec = executions.filter(e => e.runbookId === rb.id).sort((a, b) => b.startedAt - a.startedAt)[0];
+          return {
+            id:                  rb.id,
+            title:               rb.title,
+            description:         rb.description,
+            trigger:             rb.trigger,
+            enabled:             rb.enabled,
+            incidentMode:        rb.incidentMode,
+            linkedIntegrations:  rb.linkedIntegrations,
+            allowedRunnerRoles:  rb.allowedRunnerRoles,
+            lastExecutionStatus: lastExec?.status,
+            lastExecutionAt:     lastExec?.startedAt,
+            stepCount:           rb.steps.length,
+            // Phase 35 — pack provenance
+            version:             rb.version,
+            packId:              rb.packId,
+            packVersion:         rb.packVersion,
+          };
+        });
+      },
+
+      async runRunbook(id: string, ctx: RemoteActionContext, vars: Record<string, string> = {}): Promise<ActionResult & { executionId?: string }> {
+        const def = store.getRunbook(id);
+        if (!def) return { ok: false, error: 'Runbook not found' };
+        if (!def.enabled) return { ok: false, error: 'Runbook is disabled' };
+        // Automation gate check — runbook treated as recipe:run category
+        const policyCheck = _getPolicyEngine().canApprove(ctx.deviceId ?? null, 'recipe:run', ctx.isAdmin);
+        if (!policyCheck.allowed) {
+          _getAuditLedger().log('WS_APPROVAL_DENIED', {
+            metadata: { runbookId: id, category: 'recipe:run', actorId: ctx.deviceId, reason: policyCheck.reason, workspaceId: store.getWorkspace()?.id },
+          });
+          return { ok: false, error: `Workspace policy denied: ${policyCheck.reason}` };
+        }
+        try {
+          const exec = await _buildRunbookExecutor().run(def, ctx.deviceId, ctx.deviceLabel ?? null, true, vars);
+          return { ok: exec.status !== 'failed', executionId: exec.id, error: exec.error };
+        } catch (e: unknown) {
+          return { ok: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+
+      async getRunbookExecution(executionId: string): Promise<DispatchRunbookExecution | null> {
+        const all  = store.getRunbookExecutions(200);
+        const exec = all.find(e => e.id === executionId);
+        if (!exec) return null;
+        return {
+          id:               exec.id,
+          runbookId:        exec.runbookId,
+          runbookTitle:     exec.runbookTitle,
+          status:           exec.status,
+          startedAt:        exec.startedAt,
+          completedAt:      exec.completedAt,
+          actorId:          exec.actorId,
+          isIncident:       exec.isIncident,
+          currentStepIdx:   exec.currentStepIdx,
+          currentStepId:    exec.currentStepId,
+          steps:            exec.steps,
+          error:            exec.error,
+          pausedAtStepIdx:  exec.pausedAtStepIdx,
+          pausedReason:     exec.pausedReason,
+          pauseTokenId:     exec.pauseTokenId,
+          pausedAt:         exec.pausedAt,
+          deadlineAt:       exec.deadlineAt,
+          escalatedAt:      exec.escalatedAt,
+          escalationCount:  exec.escalationCount,
+          branchDecisions:  exec.branchDecisions,
+          // Phase 35 — pack provenance
+          packId:           exec.packId,
+          packVersion:      exec.packVersion,
+        };
+      },
+
+      getIncidentMode() {
+        const s = store.getIncidentMode();
+        return { active: s.active, activatedAt: s.activatedAt, reason: s.reason };
+      },
+
+      // Phase 32/33 — Handoff queue (Dispatch surface)
+      async listHandoffItems(): Promise<DispatchHandoffItem[]> {
+        const now = Date.now();
+        return store.getHandoffQueue()
+          .filter(h => h.status === 'pending')
+          .map(h => {
+            const overdue          = !!(h.expiresAt && now >= h.expiresAt);
+            const msRemaining      = h.expiresAt ? h.expiresAt - now : undefined;
+            const minutesRemaining = msRemaining !== undefined ? Math.round(msRemaining / 60000) : undefined;
+            return {
+              id:               h.id,
+              executionId:      h.executionId,
+              runbookId:        h.runbookId,
+              runbookTitle:     h.runbookTitle,
+              stepId:           h.stepId,
+              stepLabel:        h.stepLabel,
+              type:             h.type,
+              status:           h.status,
+              blockedReason:    h.blockedReason,
+              actorNeeded:      h.actorNeeded,
+              isIncident:       h.isIncident,
+              createdAt:        h.createdAt,
+              expiresAt:        h.expiresAt,
+              escalateAt:       h.escalateAt,
+              escalatedAt:      h.escalatedAt,
+              escalationCount:  h.escalationCount,
+              overdue,
+              minutesRemaining,
+              hasTimeout:       !!h.expiresAt,
+              hasEscalation:    !!h.escalateAt,
+              onRejection:      h.onRejection,
+              onTimeout:        h.onTimeout,
+            };
+          });
+      },
+
+      async resolveHandoffItem(id: string, resolution: string, ctx: RemoteActionContext): Promise<{ ok: boolean; error?: string }> {
+        const queue = store.getHandoffQueue();
+        const handoff = queue.find(h => h.id === id);
+        if (!handoff) return { ok: false, error: 'Handoff item not found' };
+        if (handoff.status !== 'pending') return { ok: false, error: 'Handoff item already resolved' };
+        // Resolve in store
+        store.resolveHandoffItem(id, resolution, ctx.deviceId ?? undefined);
+        // Resume or reject the execution
+        const exec = await _buildRunbookExecutor().resumeExecution(
+          handoff.executionId,
+          ctx.deviceId,
+          ctx.deviceLabel,
+          resolution,
+        );
+        if (!exec) return { ok: false, error: 'Execution not found' };
+        _getAuditLedger().log('HANDOFF_RESOLVED', {
+          metadata: { handoffId: id, executionId: handoff.executionId, resolution, actorId: ctx.deviceId, isIncident: handoff.isIncident },
+        });
+        return { ok: true };
+      },
+
+      async createTask(params: DispatchTaskParams, ctx: RemoteActionContext): Promise<DispatchTask> {
+        const id   = `task:${Date.now()}:${Math.random().toString(36).slice(2, 7)}`;
+        const now  = Date.now();
+        const task: DispatchTask = {
+          id,
+          createdAt:   now,
+          updatedAt:   now,
+          goal:        params.goal,
+          category:    params.category,
+          status:      'queued',
+          ctx:         params.ctx ?? {},
+          deviceLabel: ctx.deviceLabel,
+        };
+        _updateDispatchTask(task);
+        // Phase 25 — create a thread for this task
+        const thread = _createThreadForTask(task, params, ctx);
+        task.threadId = thread.id;
+        _updateDispatchTask(task);
+        // Execute asynchronously — don't await so HTTP responds immediately
+        _executeDispatchTask(task, params).catch(() => { /* errors stored on task */ });
+        return task;
+      },
+    };
+  }
+
+  /** Persist a task (upsert by id). */
+  function _updateDispatchTask(task: DispatchTask): void {
+    const tasks = store.getDispatchTasks();
+    const idx   = tasks.findIndex(t => t.id === task.id);
+    if (idx >= 0) tasks[idx] = task;
+    else tasks.push(task);
+    store.setDispatchTasks(tasks);
+  }
+
+  // ── Phase 25 — Thread helpers ───────────────────────────────────────────────
+
+  function _updateThread(thread: DispatchThread): void {
+    const threads = store.getDispatchThreads();
+    const idx = threads.findIndex(t => t.id === thread.id);
+    if (idx >= 0) threads[idx] = thread;
+    else threads.push(thread);
+    store.setDispatchThreads(threads);
+  }
+
+  function _appendThreadMessage(
+    thread: DispatchThread,
+    partial: Omit<DispatchMessage, 'id' | 'threadId' | 'createdAt'>,
+  ): DispatchMessage {
+    const message: DispatchMessage = {
+      id:        `msg:${Date.now()}:${Math.random().toString(36).slice(2, 6)}`,
+      threadId:  thread.id,
+      createdAt: Date.now(),
+      ...partial,
+    };
+    thread.messages.push(message);
+    thread.updatedAt = Date.now();
+    _updateThread(thread);
+    _dispatchServer?.broadcastTaskEvent({
+      type:      'thread:message',
+      threadId:  thread.id,
+      message,
+      timestamp: Date.now(),
+    });
+    return message;
+  }
+
+  function _getTaskThread(task: DispatchTask): DispatchThread | null {
+    if (!task.threadId) return null;
+    return store.getDispatchThreads().find(t => t.id === task.threadId) ?? null;
+  }
+
+  function _appendTaskResultToThread(task: DispatchTask): void {
+    if (!task.threadId || !task.result) return;
+    const thread = _getTaskThread(task);
+    if (!thread) return;
+    _appendThreadMessage(thread, { role: 'assistant', text: task.result, taskId: task.id });
+    thread.status = 'active'; // stays open for follow-ups
+    _updateThread(thread);
+  }
+
+  function _appendTaskErrorToThread(task: DispatchTask, errorText: string): void {
+    if (!task.threadId) return;
+    const thread = _getTaskThread(task);
+    if (!thread) return;
+    _appendThreadMessage(thread, { role: 'system', text: `Task failed: ${errorText}`, taskId: task.id });
+    thread.status = 'active'; // allow retry follow-ups
+    _updateThread(thread);
+  }
+
+  function _createThreadForTask(task: DispatchTask, params: DispatchTaskParams, ctx: RemoteActionContext): DispatchThread {
+    const thread: DispatchThread = {
+      id:           `thr:${Date.now()}:${Math.random().toString(36).slice(2, 6)}`,
+      createdAt:    Date.now(),
+      updatedAt:    Date.now(),
+      title:        params.goal.slice(0, 80),
+      status:       'active',
+      taskIds:      [task.id],
+      artifactIds:  [],
+      bundleIds:    [],
+      messages:     [],
+      ctx:          params.ctx ?? {},
+      deviceLabel:  ctx.deviceLabel,
+      // Phase 26 — collaboration
+      owner:        ctx.deviceId ?? undefined,
+      visibility:   'private',
+      collaborators: [],
+      invites:      [],
+      comments:     [],
+      attributions: [],
+    };
+    // First message = user's request
+    thread.messages.push({
+      id:        `msg:${Date.now()}:${Math.random().toString(36).slice(2, 6)}`,
+      threadId:  thread.id,
+      createdAt: Date.now(),
+      role:      'user',
+      text:      params.goal,
+      taskId:    task.id,
+    });
+    _updateThread(thread);
+    return thread;
+  }
+
+  // ── Phase 27 — Workspace permission helpers ───────────────────────────────────
+
+  function _getWorkspaceRole(deviceId: string | null): WorkspaceRole | null {
+    if (!deviceId) return null;
+    const ws = store.getWorkspace();
+    if (!ws) return null;
+    if (ws.ownerId === deviceId) return 'owner';
+    return ws.members.find(m => m.deviceId === deviceId)?.role ?? null;
+  }
+
+  function _hasWorkspaceRole(deviceId: string | null, minRole: WorkspaceRole): boolean {
+    const role = _getWorkspaceRole(deviceId);
+    if (!role) return false;
+    return WORKSPACE_ROLE_RANK[role] >= WORKSPACE_ROLE_RANK[minRole];
+  }
+
+  function _ensureWorkspace(name = 'My Workspace', ownerId = 'desktop'): Workspace {
+    const existing = store.getWorkspace();
+    if (existing) return existing;
+    const ws: Workspace = {
+      id:        `ws:${Date.now()}`,
+      name,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      ownerId,
+      members:   [],
+      invites:   [],
+      policy:    { ...DEFAULT_WORKSPACE_POLICY },
+    };
+    store.setWorkspace(ws);
+    _getAuditLedger().log('WORKSPACE_CREATED', {
+      metadata: { workspaceId: ws.id, workspaceName: ws.name, ownerId, source: 'desktop' },
+    });
+    return ws;
+  }
+
+  // ── Phase 26 — Collaboration helpers ─────────────────────────────────────────
+
+  function _getThreadRole(
+    thread: DispatchThread,
+    deviceId: string | null,
+  ): CollaboratorRole | 'owner' | null {
+    if (!deviceId) return null;
+    if (thread.owner === deviceId) return 'owner';
+    const collab = (thread.collaborators ?? []).find(c => c.deviceId === deviceId);
+    return collab?.role ?? null;
+  }
+
+  function _generateInviteCode(): string {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no O/0, I/1 ambiguity
+    return Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  }
+
+  function _recordAttribution(
+    thread: DispatchThread,
+    partial: Omit<ApprovalAttribution, 'id' | 'threadId'>,
+  ): void {
+    if (!thread.attributions) thread.attributions = [];
+    const attr: ApprovalAttribution = {
+      id:       `attr:${Date.now()}:${Math.random().toString(36).slice(2, 6)}`,
+      threadId: thread.id,
+      ...partial,
+    };
+    thread.attributions.push(attr);
+    if (thread.attributions.length > 100) thread.attributions = thread.attributions.slice(-100);
+    _updateThread(thread);
+    _getAuditLedger().log('THREAD_ATTRIBUTION_RECORDED', {
+      metadata: { threadId: thread.id, attributionId: attr.id, action: partial.action, actor: partial.actorId, actorRole: partial.actorRole, workspaceId: store.getWorkspace()?.id },
+    });
+    _dispatchServer?.broadcastTaskEvent({
+      type:         'thread:update',
+      threadId:     thread.id,
+      attributions: thread.attributions,
+      timestamp:    Date.now(),
+    });
+  }
+
+  /** Phase 22 — append a step to task.timeline, persist, and broadcast SSE event. */
+  function _emitTaskStep(task: DispatchTask, label: string, opts?: { done?: boolean; partial?: string }): void {
+    if (!task.timeline) task.timeline = [];
+    // Mark previous in-progress step as done
+    const prev = task.timeline[task.timeline.length - 1];
+    if (prev && prev.done === undefined) prev.done = true;
+    task.timeline.push({ ts: Date.now(), label, done: opts?.done });
+    task.currentStep  = label;
+    task.lastActivity = Date.now();
+    if (opts?.partial !== undefined) task.partialOutput = opts.partial;
+    _updateDispatchTask(task);
+    const event: DispatchTaskEvent = {
+      type:      opts?.done === false ? 'task:error' : (opts?.done === true ? 'task:done' : 'task:step'),
+      taskId:    task.id,
+      step:      label,
+      partial:   opts?.partial,
+      status:    task.status,
+      timeline:  task.timeline,
+      timestamp: Date.now(),
+    };
+    _dispatchServer?.broadcastTaskEvent(event);
+  }
+
+  /** Execute a dispatch task based on its category.
+   *  - informational → AI chat answer (no side effects)
+   *  - recipe        → run matching recipe by name-substring
+   *  - mission       → run matching mission by name-substring
+   *  - write         → queue as waiting_approval; desktop must confirm
+   */
+  async function _executeDispatchTask(task: DispatchTask, params: DispatchTaskParams): Promise<void> {
+    const update = (patch: Partial<DispatchTask>) => {
+      Object.assign(task, patch, { updatedAt: Date.now() });
+      _updateDispatchTask(task);
+    };
+
+    const step = (label: string, done?: boolean, partial?: string) =>
+      _emitTaskStep(task, label, { done, partial });
+
+    update({ status: 'running', timeline: [] });
+    step('Initializing');
+
+    try {
+      if (params.category === 'informational') {
+        step('Resolving context');
+        if (!providerManager) providerManager = new ProviderManager(store);
+        const providers = await providerManager.getActiveProviders();
+        if (providers.length === 0) {
+          step('No AI provider configured', false);
+          update({ status: 'error', error: 'No AI provider configured' });
+          return;
+        }
+        const sysPrompt = buildSystemPrompt(store);
+        const contextParts: string[] = [];
+        if (task.ctx.repo)    contextParts.push(`Repo: ${task.ctx.repo}`);
+        if (task.ctx.project) contextParts.push(`Project: ${task.ctx.project}`);
+        if (task.ctx.channel) contextParts.push(`Channel: ${task.ctx.channel}`);
+        if (task.ctx.target)  contextParts.push(`Target: ${task.ctx.target}`);
+        const userMsg = contextParts.length > 0
+          ? `Context: ${contextParts.join(', ')}\n\nTask: ${params.goal}`
+          : params.goal;
+        step(`Querying ${providers[0].name ?? 'AI'}…`);
+        const result = await providers[0].chat([
+          { role: 'system', content: sysPrompt },
+          { role: 'user',   content: userMsg   },
+        ]);
+        step('Done', true);
+        update({ status: 'done', result });
+        _dispatchServer?.broadcastTaskEvent({ type: 'task:done', taskId: task.id, status: 'done', timeline: task.timeline, timestamp: Date.now() });
+        _appendTaskResultToThread(task);
+        _createTaskArtifacts(task);
+        return;
+      }
+
+      if (params.category === 'recipe') {
+        step('Matching recipe');
+        const recipes = BUILTIN_RECIPES.filter(r =>
+          r.name.toLowerCase().includes(params.goal.toLowerCase()) ||
+          r.id.toLowerCase().includes(params.goal.toLowerCase()),
+        );
+        if (recipes.length === 0) {
+          step(`No recipe matches "${params.goal}"`, false);
+          update({ status: 'error', error: `No recipe matches "${params.goal}"` });
+          return;
+        }
+        step(`Running "${recipes[0].name}"`);
+        const r = await _executeRecipe(recipes[0].id, { source: `dispatch_task:${task.id}` });
+        if (r.ok) {
+          step('Done', true);
+          update({ status: 'done', result: `Recipe "${recipes[0].name}" executed successfully` });
+          _dispatchServer?.broadcastTaskEvent({ type: 'task:done', taskId: task.id, status: 'done', timeline: task.timeline, timestamp: Date.now() });
+        _appendTaskResultToThread(task);
+        _createTaskArtifacts(task);
+        } else {
+          step(r.error ?? 'Recipe failed', false);
+          update({ status: 'error', error: r.error ?? 'Recipe failed' });
+        }
+        return;
+      }
+
+      if (params.category === 'mission') {
+        step('Matching mission');
+        const defs = _getMissionStore().load();
+        const match = defs.find(m =>
+          m.name.toLowerCase().includes(params.goal.toLowerCase()) ||
+          m.id.toLowerCase().includes(params.goal.toLowerCase()),
+        );
+        if (!match) {
+          step(`No mission matches "${params.goal}"`, false);
+          update({ status: 'error', error: `No mission matches "${params.goal}"` });
+          return;
+        }
+        step(`Starting mission "${match.name}"`);
+        await _getMissionManager(store).runMission(match.id);
+        step('Mission started', true);
+        update({ status: 'done', result: `Mission "${match.name}" started` });
+        _dispatchServer?.broadcastTaskEvent({ type: 'task:done', taskId: task.id, status: 'done', timeline: task.timeline, timestamp: Date.now() });
+        _appendTaskResultToThread(task);
+        _createTaskArtifacts(task);
+        return;
+      }
+
+      if (params.category === 'write') {
+        const policy = store.getRemoteApprovePolicy();
+        if (policy.requireDesktopConfirm) {
+          step('Awaiting desktop approval');
+          const { generateConfirmationId } = await import('./dispatchSession');
+          const confId = generateConfirmationId();
+          _pendingConfirmations.set(confId, {
+            id:        confId,
+            itemId:    task.id,
+            riskLevel: 'high',
+            label:     task.goal,
+            createdAt: Date.now(),
+            status:    'pending',
+          });
+          for (const win of BrowserWindow.getAllWindows()) {
+            if (!win.isDestroyed()) win.webContents.send('dispatch:confirm-request', {
+              confirmId: confId, label: task.goal, source: 'remote-task',
+            });
+          }
+          update({ status: 'waiting_approval', confirmId: confId });
+          const deadline = Date.now() + 5 * 60 * 1000;
+          while (Date.now() < deadline) {
+            await new Promise(r => setTimeout(r, 3000));
+            const conf = _pendingConfirmations.get(confId);
+            if (conf?.status === 'approved') { update({ status: 'running' }); step('Approved — executing'); break; }
+            if (conf?.status === 'denied')   { step('Denied by desktop', false); update({ status: 'error', error: 'Denied by desktop' }); return; }
+          }
+          if (task.status !== 'running') {
+            step('Approval timed out', false);
+            update({ status: 'error', error: 'Desktop confirmation timed out' });
+            return;
+          }
+        }
+        step('Resolving context');
+        if (!providerManager) providerManager = new ProviderManager(store);
+        const providers = await providerManager.getActiveProviders();
+        if (providers.length === 0) {
+          step('No AI provider configured', false);
+          update({ status: 'error', error: 'No AI provider configured' });
+          return;
+        }
+        step(`Executing via ${providers[0].name ?? 'AI'}…`);
+        const sysPrompt = buildSystemPrompt(store);
+        const result = await providers[0].chat([
+          { role: 'system', content: `${sysPrompt}\n\nYou are executing a write-category remote task. Be concise and confirm what was done.` },
+          { role: 'user',   content: params.goal },
+        ]);
+        step('Done', true);
+        update({ status: 'done', result });
+        _dispatchServer?.broadcastTaskEvent({ type: 'task:done', taskId: task.id, status: 'done', timeline: task.timeline, timestamp: Date.now() });
+        _appendTaskResultToThread(task);
+        _createTaskArtifacts(task);
+        return;
+      }
+
+      step(`Unknown category: ${params.category}`, false);
+      update({ status: 'error', error: `Unknown category: ${params.category}` });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      step(msg, false);
+      update({ status: 'error', error: msg });
+      _dispatchServer?.broadcastTaskEvent({ type: 'task:error', taskId: task.id, status: 'error', timeline: task.timeline, timestamp: Date.now() });
+      _appendTaskErrorToThread(task, msg);
+    }
+  }
+
+  /** Phase 23 — build and persist artifacts from a completed task. */
+  function _createTaskArtifacts(task: DispatchTask): void {
+    if (!task.result) return;
+    const now  = Date.now();
+    const arts: DispatchArtifact[] = [];
+    const uid  = () => `art:${Date.now()}:${Math.random().toString(36).slice(2, 6)}`;
+    const mk = (type: ArtifactType, title: string, content: string, meta?: DispatchArtifact['meta']): DispatchArtifact => ({
+      id:        uid(),
+      taskId:    task.id,
+      threadId:  task.threadId,
+      createdAt: now,
+      type,
+      title:     title.slice(0, 100),
+      preview:   content.slice(0, 200),
+      content,
+      meta,
+    });
+
+    if (task.category === 'informational') {
+      arts.push(mk('report', `Report: ${task.goal.slice(0, 60)}`, task.result));
+      if (task.ctx.channel) {
+        const digest = `*${task.goal}*\n\n${task.result.slice(0, 800)}`;
+        arts.push(mk('draft_slack', `Slack: ${task.ctx.channel}`, digest, { channel: task.ctx.channel, status: 'draft' }));
+      }
+      if (task.ctx.project) {
+        arts.push(mk('draft_jira', `Jira note: ${task.ctx.project}`, `h3. ${task.goal}\n\n${task.result}`, { projectKey: task.ctx.project, status: 'draft' }));
+      }
+    } else if (task.category === 'recipe') {
+      arts.push(mk('result_summary', `Recipe result: ${task.goal.slice(0, 60)}`, task.result));
+    } else if (task.category === 'mission') {
+      arts.push(mk('launch_summary', `Mission: ${task.goal.slice(0, 60)}`, task.result));
+    } else if (task.category === 'write') {
+      arts.push(mk('result_summary', `Write result: ${task.goal.slice(0, 60)}`, task.result, { status: 'sent' }));
+    }
+
+    if (arts.length === 0) return;
+    const all = store.getDispatchArtifacts();
+    all.push(...arts);
+    store.setDispatchArtifacts(all);
+
+    task.artifactIds = [...(task.artifactIds ?? []), ...arts.map(a => a.id)];
+    _updateDispatchTask(task);
+
+    // Broadcast artifact-available step
+    _emitTaskStep(task, `${arts.length} artifact${arts.length > 1 ? 's' : ''} created`, true);
+
+    // Phase 25 — add artifacts to thread
+    if (task.threadId) {
+      const thread = _getTaskThread(task);
+      if (thread) {
+        for (const art of arts) {
+          thread.artifactIds.push(art.id);
+          _appendThreadMessage(thread, { role: 'system', text: `Artifact ready: ${art.title}`, artifactId: art.id, taskId: task.id });
+        }
+      }
+    }
+
+    // Phase 24 — group artifacts into a bundle
+    _createTaskBundle(task, arts);
+  }
+
+  /** Phase 24 — group artifacts from a completed task into a single governed bundle. */
+  function _createTaskBundle(task: DispatchTask, arts: DispatchArtifact[]): void {
+    if (arts.length === 0) return;
+    const policy = store.getRemoteApprovePolicy();
+    const DRAFT_TYPES: ArtifactType[] = ['draft_slack', 'draft_jira', 'draft_linear', 'draft_github'];
+    const sendable = arts.filter(a => DRAFT_TYPES.includes(a.type));
+    const safe     = sendable.filter(a => a.meta?.status !== 'sent');
+
+    // Build destination list
+    const dests: BundleDestination[] = [];
+    for (const a of arts) {
+      if (a.type === 'draft_slack'  && a.meta?.channel)    dests.push({ system: 'slack',  label: a.meta.channel });
+      if (a.type === 'draft_jira'   && a.meta?.projectKey) dests.push({ system: 'jira',   label: a.meta.projectKey });
+      if (a.type === 'draft_linear' && a.meta?.teamId)     dests.push({ system: 'linear', label: a.meta.teamId });
+      if (a.type === 'draft_github' && a.meta?.repoOwner)  dests.push({ system: 'github', label: `${a.meta.repoOwner}/${a.meta.repoName ?? ''}` });
+    }
+
+    const needsApproval       = sendable.length > 0;
+    const needsDesktopConfirm = policy.requireDesktopConfirm && sendable.length > 0;
+    const safeCount = safe.length;
+    const policySummary = sendable.length === 0
+      ? `${arts.length} read-only artifact${arts.length > 1 ? 's' : ''}`
+      : needsDesktopConfirm
+        ? `${safeCount} safe · desktop confirm required`
+        : `${safeCount} ready to send · ${arts.length - safeCount} read-only`;
+
+    const bundle: DispatchArtifactBundle = {
+      id:          `bnd:${Date.now()}:${Math.random().toString(36).slice(2, 6)}`,
+      taskId:      task.id,
+      threadId:    task.threadId,
+      createdAt:   Date.now(),
+      title:       `Bundle: ${task.goal.slice(0, 70)}`,
+      artifactIds: arts.map(a => a.id),
+      destinations: dests,
+      status:      sendable.length === 0 ? 'sent' : 'pending',
+      needsApproval,
+      needsDesktopConfirm,
+      policySummary,
+      sentCount:   arts.filter(a => a.meta?.status === 'sent').length,
+      totalCount:  arts.length,
+    };
+
+    const all = store.getDispatchBundles();
+    all.push(bundle);
+    store.setDispatchBundles(all);
+
+    task.bundleIds = [...(task.bundleIds ?? []), bundle.id];
+    _updateDispatchTask(task);
+
+    // Phase 25 — add bundle to thread
+    if (task.threadId) {
+      const thread = _getTaskThread(task);
+      if (thread) {
+        thread.bundleIds.push(bundle.id);
+        _appendThreadMessage(thread, { role: 'system', text: `Bundle ready: ${bundle.title} · ${bundle.policySummary}`, bundleId: bundle.id, taskId: task.id });
+      }
+    }
+  }
+
+  /** Phase 23 — send a draft artifact to its target system. */
+  async function _sendArtifact(artifact: DispatchArtifact, ctx: RemoteActionContext): Promise<ActionResult> {
+    try {
+      if (artifact.type === 'draft_slack') {
+        const channel = artifact.meta?.channel;
+        if (!channel) return { ok: false, error: 'No Slack channel in artifact metadata' };
+        if (!_slackAdapter?.isRunning()) return { ok: false, error: 'Slack not connected' };
+        const ok = await _slackAdapter.postMessage(channel, artifact.content);
+        if (!ok) return { ok: false, error: 'Slack postMessage failed' };
+        // Mark sent
+        const all = store.getDispatchArtifacts();
+        const idx = all.findIndex(a => a.id === artifact.id);
+        if (idx >= 0) { all[idx] = { ...all[idx], meta: { ...all[idx].meta, status: 'sent' } }; store.setDispatchArtifacts(all); }
+        _getAuditLedger().log('SYSTEM_EVENT' as any, { metadata: { action: 'artifact_sent', artifactId: artifact.id, type: artifact.type, channel, via: ctx.deviceId ?? 'admin' } });
+        return { ok: true };
+      }
+
+      if (artifact.type === 'draft_jira') {
+        const adapter = await _buildJiraAdapter();
+        if (!adapter) return { ok: false, error: 'Jira not configured' };
+        const issueKey = artifact.meta?.issueKey;
+        if (issueKey) {
+          await adapter.addComment(issueKey, artifact.content);
+        } else {
+          const projectKey = artifact.meta?.projectKey;
+          if (!projectKey) return { ok: false, error: 'No Jira issue key or project key in artifact metadata' };
+          await adapter.createIssue(projectKey, '10001', artifact.title, artifact.content);
+        }
+        const all = store.getDispatchArtifacts();
+        const idx = all.findIndex(a => a.id === artifact.id);
+        if (idx >= 0) { all[idx] = { ...all[idx], meta: { ...all[idx].meta, status: 'sent' } }; store.setDispatchArtifacts(all); }
+        _getAuditLedger().log('SYSTEM_EVENT' as any, { metadata: { action: 'artifact_sent', artifactId: artifact.id, type: artifact.type, via: ctx.deviceId ?? 'admin' } });
+        return { ok: true };
+      }
+
+      if (artifact.type === 'draft_linear') {
+        const adapter = await _buildLinearAdapter();
+        if (!adapter) return { ok: false, error: 'Linear not configured' };
+        const issueId = artifact.meta?.issueId;
+        const teamId  = artifact.meta?.teamId;
+        if (issueId) {
+          await adapter.createComment(issueId, artifact.content);
+        } else if (teamId) {
+          await adapter.createIssue({ teamId, title: artifact.title, description: artifact.content });
+        } else {
+          return { ok: false, error: 'No Linear issue ID or team ID in artifact metadata' };
+        }
+        const all = store.getDispatchArtifacts();
+        const idx = all.findIndex(a => a.id === artifact.id);
+        if (idx >= 0) { all[idx] = { ...all[idx], meta: { ...all[idx].meta, status: 'sent' } }; store.setDispatchArtifacts(all); }
+        _getAuditLedger().log('SYSTEM_EVENT' as any, { metadata: { action: 'artifact_sent', artifactId: artifact.id, type: artifact.type, via: ctx.deviceId ?? 'admin' } });
+        return { ok: true };
+      }
+
+      if (artifact.type === 'draft_github') {
+        const owner = artifact.meta?.repoOwner;
+        const repo  = artifact.meta?.repoName;
+        const prNum = artifact.meta?.prNumber;
+        if (!owner || !repo) return { ok: false, error: 'No GitHub repo in artifact metadata' };
+        const pat = await _getGitHubPat().catch(() => null);
+        if (!pat) return { ok: false, error: 'GitHub PAT not configured' };
+        if (prNum) {
+          await githubAdapter.postComment(pat, owner, repo, prNum, artifact.content);
+        } else {
+          return { ok: false, error: 'No PR number in artifact metadata — open from desktop to select a PR' };
+        }
+        const all = store.getDispatchArtifacts();
+        const idx = all.findIndex(a => a.id === artifact.id);
+        if (idx >= 0) { all[idx] = { ...all[idx], meta: { ...all[idx].meta, status: 'sent' } }; store.setDispatchArtifacts(all); }
+        _getAuditLedger().log('SYSTEM_EVENT' as any, { metadata: { action: 'artifact_sent', artifactId: artifact.id, type: artifact.type, repo: `${owner}/${repo}`, pr: prNum, via: ctx.deviceId ?? 'admin' } });
+        return { ok: true };
+      }
+
+      return { ok: false, error: `Artifact type '${artifact.type}' does not support remote send` };
+    } catch (e: unknown) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  function _getDispatchServer(): DispatchServer {
+    if (!_dispatchServer) {
+      _dispatchServer = new DispatchServer(store.getDispatchPort(), _buildDispatchHandlers());
+    }
+    return _dispatchServer;
+  }
+
+  // ── Phase 17+18: Dispatch IPC handlers ───────────────────────────────────────
+
+  // dispatch:status — current server state + device count + policy
+  ipcMain.handle('dispatch:status', async () => {
+    const token   = await _getCredentialManager(store).get('dispatch_token');
+    const devices = store.getPairedDevices();
+    const policy  = store.getRemoteApprovePolicy();
+    return {
+      enabled:         store.getDispatchEnabled(),
+      running:         _dispatchServer?.isRunning ?? false,
+      port:            store.getDispatchPort(),
+      hasToken:        !!(token && token.length > 0),
+      networkMode:     store.getDispatchNetworkMode(),
+      deviceCount:     devices.length,
+      policy,
+      startedAt:       _dispatchServer?.startedAt ?? null,
+      publicUrl:       store.getDispatchPublicUrl(),
+      // backward compat
+      allowRemoteApprove: policy.enabled,
+    };
+  });
+
+  // dispatch:enable — start server (requires master token to exist)
+  ipcMain.handle('dispatch:enable', async (_e, port?: number) => {
+    if (port) store.setDispatchPort(port);
+    const token = await _getCredentialManager(store).get('dispatch_token');
+    if (!token) return { ok: false, error: 'Generate a master token first' };
+    store.setDispatchEnabled(true);
+    if (_dispatchServer) { await _dispatchServer.stop(); _dispatchServer = null; }
+    _dispatchServer = new DispatchServer(store.getDispatchPort(), _buildDispatchHandlers());
+    await _dispatchServer.start();
+    return { ok: true, port: _dispatchServer.port };
+  });
+
+  // dispatch:disable — stop server
+  ipcMain.handle('dispatch:disable', async () => {
+    store.setDispatchEnabled(false);
+    if (_dispatchServer) { await _dispatchServer.stop(); _dispatchServer = null; }
+    return { ok: true };
+  });
+
+  // dispatch:generateToken — generate master token (stored encrypted, not shown after)
+  ipcMain.handle('dispatch:generateToken', async () => {
+    const token = generateDispatchToken();
+    await _getCredentialManager(store).set('dispatch_token', token);
+    if (_dispatchServer?.isRunning) {
+      // Restart server so new token takes effect immediately
+      await _dispatchServer.stop();
+      _dispatchServer = new DispatchServer(store.getDispatchPort(), _buildDispatchHandlers());
+      await _dispatchServer.start();
+    }
+    // Return token once for the user to note — not stored in renderer
+    return { ok: true, token };
+  });
+
+  // dispatch:revokeToken — revoke master token and stop server (all devices also lose access)
+  ipcMain.handle('dispatch:revokeToken', async () => {
+    await _getCredentialManager(store).delete('dispatch_token');
+    store.setPairedDevices([]);         // all sessions invalidated
+    store.setActivePairingCode(null);
+    if (_dispatchServer) { await _dispatchServer.stop(); _dispatchServer = null; }
+    store.setDispatchEnabled(false);
+    return { ok: true };
+  });
+
+  // dispatch:getToken — retrieve master token for admin use (shown once or via this call)
+  ipcMain.handle('dispatch:getToken', async () => {
+    const token = await _getCredentialManager(store).get('dispatch_token');
+    return token ?? null;
+  });
+
+  // dispatch:setNetworkMode — restrict which IPs can reach the server
+  ipcMain.handle('dispatch:setNetworkMode', (_e, mode: string) => {
+    if (!['local', 'lan', 'remote'].includes(mode)) return { ok: false, error: 'Invalid mode' };
+    store.setDispatchNetworkMode(mode as any);
+    return { ok: true };
+  });
+
+  // dispatch:setApprovePolicy — granular remote-approve controls
+  ipcMain.handle('dispatch:setApprovePolicy', (_e, policy: { enabled?: boolean; maxRisk?: string; requireDesktopConfirm?: boolean }) => {
+    const current = store.getRemoteApprovePolicy();
+    store.setRemoteApprovePolicy({
+      enabled:              policy.enabled              ?? current.enabled,
+      maxRisk:              (policy.maxRisk as any)    ?? current.maxRisk,
+      requireDesktopConfirm: policy.requireDesktopConfirm ?? current.requireDesktopConfirm,
+    });
+    return { ok: true };
+  });
+
+  // dispatch:setAllowRemoteApprove — backward-compat shim
+  ipcMain.handle('dispatch:setAllowRemoteApprove', (_e, allow: boolean) => {
+    store.setDispatchAllowRemoteApprove(allow);
+    return { ok: true };
+  });
+
+  // dispatch:setSessionTtl — session lifetime in minutes
+  ipcMain.handle('dispatch:setSessionTtl', (_e, minutes: number) => {
+    if (minutes < 1 || minutes > 525600) return { ok: false, error: 'Invalid TTL' };
+    store.setDispatchSessionTtlMinutes(minutes);
+    return { ok: true };
+  });
+
+  // ── Phase 18: Pairing ──────────────────────────────────────────────────────
+
+  // dispatch:generatePairingCode — create a 6-digit code + QR
+  ipcMain.handle('dispatch:generatePairingCode', async () => {
+    if (!_dispatchServer?.isRunning) return { ok: false, error: 'Dispatch server not running' };
+    const code = generatePairingCode();
+    store.setActivePairingCode(code);
+    const port = store.getDispatchPort();
+    // Resolve LAN IP so phones on the same Wi-Fi can reach the server
+    let lanIp = 'localhost';
+    try {
+      const ifaces = os.networkInterfaces();
+      for (const name of Object.keys(ifaces)) {
+        for (const iface of (ifaces[name] ?? [])) {
+          if (iface.family === 'IPv4' && !iface.internal) { lanIp = iface.address; break; }
+        }
+        if (lanIp !== 'localhost') break;
+      }
+    } catch { /* fall back to localhost */ }
+    const pairUrl = `http://${lanIp}:${port}/dispatch/pair-page`;
+    let qrDataUrl: string | null = null;
+    try { qrDataUrl = await generateQrDataUrl(pairUrl); } catch { /* skip QR if error */ }
+    return { ok: true, code: code.code, expiresAt: code.expiresAt, pairUrl, qrDataUrl };
+  });
+
+  // dispatch:getPairingCode — get current pairing code (for UI refresh)
+  ipcMain.handle('dispatch:getPairingCode', () => {
+    const pc = store.getActivePairingCode();
+    if (!pc || pc.used || Date.now() > pc.expiresAt) return null;
+    return { code: pc.code, expiresAt: pc.expiresAt };
+  });
+
+  // ── Phase 18: Device management ───────────────────────────────────────────
+
+  // dispatch:listDevices — safe view of paired devices (no session tokens)
+  ipcMain.handle('dispatch:listDevices', () => {
+    return store.getPairedDevices().map(toDeviceView);
+  });
+
+  // dispatch:revokeDevice — revoke a single device session
+  ipcMain.handle('dispatch:revokeDevice', (_e, deviceId: string) => {
+    const devices = store.getPairedDevices().filter(d => d.id !== deviceId);
+    store.setPairedDevices(devices);
+    return { ok: true };
+  });
+
+  // ── Phase 18: Desktop confirmation ────────────────────────────────────────
+
+  // dispatch:listPendingConfirmations — get all pending desktop confirms
+  ipcMain.handle('dispatch:listPendingConfirmations', () => {
+    return Array.from(_pendingConfirmations.values())
+      .filter(c => c.status === 'pending')
+      .map(c => ({
+        id:          c.id,
+        action:      c.action,
+        itemId:      c.itemId,
+        verb:        c.verb,
+        deviceLabel: c.deviceLabel,
+        clientIp:    c.clientIp,
+        createdAt:   c.createdAt,
+      }));
+  });
+
+  // dispatch:desktopConfirm — desktop approves or denies a pending remote action
+  ipcMain.handle('dispatch:desktopConfirm', async (_e, confirmId: string, approved: boolean) => {
+    const ok = _dispatchServer?.resolveConf(confirmId, approved) ?? false;
+    if (!ok) {
+      // Try in-memory map directly (server may have been restarted)
+      const conf = _pendingConfirmations.get(confirmId);
+      if (!conf) return { ok: false, error: 'Confirmation not found' };
+      conf.status    = approved ? 'approved' : 'denied';
+      conf.resolvedAt = Date.now();
+    }
+    const conf = _pendingConfirmations.get(confirmId);
+    if (conf && approved) {
+      // Execute the deferred action now
+      const ctx: RemoteActionContext = {
+        isAdmin:    false,
+        deviceId:   conf.deviceId,
+        deviceLabel: conf.deviceLabel,
+        clientIp:   conf.clientIp,
+      };
+      const handlers = _buildDispatchHandlers();
+      if (conf.verb === 'approve') {
+        await handlers.approveAction(conf.itemId, ctx).catch(console.error);
+      }
+    }
+    _getAuditLedger().log('SYSTEM_EVENT' as any, {
+      metadata: {
+        action:    approved ? 'desktop_confirm_approved' : 'desktop_confirm_denied',
+        confirmId,
+        source:    'desktop',
+      },
+    });
+    return { ok: true };
+  });
+
+  // ── Phase 19: Public URL + ntfy deep-link wiring ─────────────────────────────
+
+  // dispatch:setPublicUrl — set (or clear) the public reachability URL for Dispatch.
+  // When set, ntfy push notifications for actionable events include an X-Click header
+  // so tapping the notification on mobile opens the Dispatch UI directly.
+  ipcMain.handle('dispatch:setPublicUrl', (_e, url: string) => {
+    const cleaned = url.trim().replace(/\/$/, '');
+    store.setDispatchPublicUrl(cleaned);
+    _pushNotifier.setDispatchBaseUrl(cleaned || null);
+    return { ok: true };
+  });
+
+  ipcMain.handle('dispatch:getPublicUrl', () => {
+    return { url: store.getDispatchPublicUrl() };
+  });
+
+  // ── Phase 27: Workspace IPC ───────────────────────────────────────────────
+
+  ipcMain.handle('workspace:get', () => store.getWorkspace());
+
+  ipcMain.handle('workspace:create', (_e, name: string) => {
+    const existing = store.getWorkspace();
+    if (existing) return { ok: false, error: 'Workspace already exists', workspace: existing };
+    const ws: Workspace = {
+      id:        `ws:${Date.now()}`,
+      name:      name.trim() || 'My Workspace',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      ownerId:   'desktop',
+      members:   [],
+      invites:   [],
+      policy:    { ...DEFAULT_WORKSPACE_POLICY },
+    };
+    store.setWorkspace(ws);
+    _getAuditLedger().log('WORKSPACE_CREATED', {
+      metadata: { workspaceId: ws.id, workspaceName: ws.name, ownerId: 'desktop', source: 'desktop' },
+    });
+    _dispatchServer?.broadcastTaskEvent({ type: 'workspace:update', timestamp: Date.now() });
+    return { ok: true, workspace: ws };
+  });
+
+  ipcMain.handle('workspace:rename', (_e, name: string) => {
+    const ws = store.getWorkspace();
+    if (!ws) return { ok: false, error: 'No workspace' };
+    ws.name = name.trim() || ws.name;
+    ws.updatedAt = Date.now();
+    store.setWorkspace(ws);
+    return { ok: true };
+  });
+
+  ipcMain.handle('workspace:invite', async (_e, role: WorkspaceRole) => {
+    const handlers = _buildDispatchHandlers();
+    const ctx: RemoteActionContext = { isAdmin: true, deviceId: 'desktop', deviceLabel: 'Desktop', clientIp: '127.0.0.1' };
+    try {
+      const result = await handlers.createWorkspaceInvite(role, ctx);
+      return { ok: true, ...result };
+    } catch (e) { return { ok: false, error: e instanceof Error ? e.message : String(e) }; }
+  });
+
+  ipcMain.handle('workspace:member:setRole', async (_e, targetDeviceId: string, role: WorkspaceRole) => {
+    const handlers = _buildDispatchHandlers();
+    const ctx: RemoteActionContext = { isAdmin: true, deviceId: 'desktop', deviceLabel: 'Desktop', clientIp: '127.0.0.1' };
+    return handlers.setWorkspaceMemberRole(targetDeviceId, role, ctx);
+  });
+
+  ipcMain.handle('workspace:member:remove', async (_e, targetDeviceId: string) => {
+    const handlers = _buildDispatchHandlers();
+    const ctx: RemoteActionContext = { isAdmin: true, deviceId: 'desktop', deviceLabel: 'Desktop', clientIp: '127.0.0.1' };
+    return handlers.removeWorkspaceMember(targetDeviceId, ctx);
+  });
+
+  ipcMain.handle('workspace:policy:update', async (_e, patch: Partial<WorkspacePolicy>) => {
+    const handlers = _buildDispatchHandlers();
+    const ctx: RemoteActionContext = { isAdmin: true, deviceId: 'desktop', deviceLabel: 'Desktop', clientIp: '127.0.0.1' };
+    return handlers.updateWorkspacePolicy(patch, ctx);
+  });
+
+  // ── Phase 28: Workspace Integration IPC ──────────────────────────────────────
+
+  /** Maps integration name to the workspace CredentialKey (for single-token integrations). */
+  function _wsCredKeyFor(integration: string): CredentialKey | null {
+    const map: Record<string, CredentialKey> = {
+      github: 'ws_github_pat',
+      slack:  'ws_slack_bot_token',
+      jira:   'ws_jira_api_token',
+      linear: 'ws_linear_api_key',
+      push:   'ws_ntfy_token',
+    };
+    return (map[integration] as CredentialKey | undefined) ?? null;
+  }
+
+  /** Check whether a personal credential exists for a given integration (for status display). */
+  async function _hasPersonalCred(integration: string): Promise<boolean> {
+    const creds = _getCredentialManager(store);
+    const map: Record<string, CredentialKey> = {
+      github: 'github_pat',
+      slack:  'slack_bot_token',
+      jira:   'jira_api_token',
+      linear: 'linear_api_key',
+      push:   'ntfy_token',
+    };
+    const key = map[integration] as CredentialKey | undefined;
+    if (!key) return false;
+    const val = await creds.get(key);
+    return !!val;
+  }
+
+  ipcMain.handle('workspaceIntegration:getStatus', async (_e, integration: string) => {
+    const wsConfig       = store.getWorkspaceIntegration(integration);
+    const hasPersonalCred = await _hasPersonalCred(integration);
+    return { config: wsConfig, hasPersonalCred };
+  });
+
+  ipcMain.handle('workspaceIntegration:setConfig', async (_e, integration: string, payload: Record<string, unknown>) => {
+    const ws = store.getWorkspace();
+    if (!ws) return { ok: false, error: 'No workspace configured. Create a workspace first.' };
+    const existing: WorkspaceIntegrationConfig = store.getWorkspaceIntegration(integration) ?? {
+      configured: false, useWorkspaceByDefault: true, allowPersonalFallback: true,
+    };
+    const creds = _getCredentialManager(store);
+    // Store token-type credential (GitHub PAT, Slack token, Linear key, Jira token, ntfy token)
+    if (typeof payload.token === 'string' && payload.token.trim()) {
+      let credKey: CredentialKey | null = null;
+      if (integration === 'push' && payload.pushProvider === 'pushover') {
+        credKey = 'ws_pushover_app_token';
+      } else {
+        credKey = _wsCredKeyFor(integration);
+      }
+      if (credKey) await creds.set(credKey, payload.token.trim());
+      existing.configured = true;
+    }
+    if (typeof payload.url    === 'string') existing.url    = payload.url.trim();
+    if (typeof payload.email  === 'string') existing.email  = payload.email.trim();
+    if (typeof payload.pushProvider  === 'string') existing.pushProvider  = payload.pushProvider as 'ntfy' | 'pushover' | 'disabled';
+    if (typeof payload.pushTopic     === 'string') existing.pushTopic     = payload.pushTopic.trim();
+    if (typeof payload.pushServer    === 'string') existing.pushServer    = payload.pushServer.trim();
+    if (typeof payload.pushoverUser  === 'string') existing.pushoverUser  = payload.pushoverUser.trim();
+    if (typeof payload.connectedLabel === 'string') existing.connectedLabel = payload.connectedLabel;
+    // Mark configured if essential non-token fields are present
+    if (integration === 'jira' && existing.url && existing.email) existing.configured = true;
+    if (integration === 'push' && existing.pushProvider && existing.pushProvider !== 'disabled') existing.configured = true;
+    store.setWorkspaceIntegration(integration, existing);
+    _getAuditLedger().log('WS_INTEGRATION_CONFIGURED', {
+      metadata: { workspaceId: ws.id, integration, actor: 'desktop', source: 'desktop' },
+    });
+    return { ok: true };
+  });
+
+  ipcMain.handle('workspaceIntegration:test', async (_e, integration: string) => {
+    const result = await _getWsCredResolver().resolve(integration as IntegrationName);
+    const ok     = result.scopeUsed !== 'none';
+    const existing = store.getWorkspaceIntegration(integration);
+    if (existing) {
+      existing.lastTestAt = Date.now();
+      existing.lastTestOk = ok;
+      store.setWorkspaceIntegration(integration, existing);
+    }
+    _getAuditLedger().log('WS_INTEGRATION_TESTED', {
+      metadata: { integration, ok, scope: result.scopeUsed, explanation: result.explanation, workspaceId: store.getWorkspace()?.id },
+    });
+    return { ok, scope: result.scopeUsed, explanation: result.explanation };
+  });
+
+  ipcMain.handle('workspaceIntegration:revoke', async (_e, integration: string) => {
+    const ws = store.getWorkspace();
+    if (!ws) return { ok: false, error: 'No workspace' };
+    const creds = _getCredentialManager(store);
+    const wsKey = _wsCredKeyFor(integration);
+    if (wsKey) await creds.delete(wsKey);
+    // Also revoke pushover app token for push
+    if (integration === 'push') await creds.delete('ws_pushover_app_token');
+    const existing = store.getWorkspaceIntegration(integration);
+    if (existing) {
+      existing.configured     = false;
+      existing.lastTestAt     = undefined;
+      existing.lastTestOk     = undefined;
+      existing.connectedLabel = undefined;
+      store.setWorkspaceIntegration(integration, existing);
+    }
+    _getAuditLedger().log('WS_INTEGRATION_REVOKED', {
+      metadata: { workspaceId: ws.id, integration, actor: 'desktop', source: 'desktop' },
+    });
+    return { ok: true };
+  });
+
+  ipcMain.handle('workspaceIntegration:setDefaults', async (_e, integration: string, defaults: { useWorkspaceByDefault: boolean; allowPersonalFallback: boolean }) => {
+    const existing: WorkspaceIntegrationConfig = store.getWorkspaceIntegration(integration) ?? {
+      configured: false, useWorkspaceByDefault: true, allowPersonalFallback: true,
+    };
+    existing.useWorkspaceByDefault = defaults.useWorkspaceByDefault;
+    existing.allowPersonalFallback = defaults.allowPersonalFallback;
+    store.setWorkspaceIntegration(integration, existing);
+    return { ok: true };
+  });
+
+  // ── Phase 28: Workspace recipe scope IPC ─────────────────────────────────────
+
+  ipcMain.handle('workspaceIntegration:getRecipeScope', (_e, recipeId: string) => {
+    const scopes = store.getWorkspaceRecipeScopes();
+    return { scope: scopes[recipeId] ?? 'personal' };
+  });
+
+  ipcMain.handle('workspaceIntegration:setRecipeScope', (_e, recipeId: string, scope: 'personal' | 'workspace') => {
+    const ws = store.getWorkspace();
+    store.setWorkspaceRecipeScope(recipeId, scope);
+    if (scope === 'workspace') {
+      _getAuditLedger().log('WS_RECIPE_RUN', {
+        metadata: { recipeId, action: 'scope_set', scope, workspaceId: ws?.id },
+      });
+    }
+    return { ok: true };
+  });
+
+  // ── Phase 29: Workspace Policy Matrix IPC ────────────────────────────────────
+
+  ipcMain.handle('workspacePolicy:getMatrix', () => {
+    const engine = _getPolicyEngine();
+    return { matrix: engine.getMatrix() };
+  });
+
+  ipcMain.handle('workspacePolicy:setRule', (_e, category: ActionCategory, patch: Partial<WorkspaceApprovalRule>) => {
+    const ws = store.getWorkspace();
+    const engine = _getPolicyEngine();
+    const current = engine.getMatrix();
+    const idx = current.findIndex(r => r.category === category);
+    if (idx < 0) return { ok: false, error: `Unknown category: ${category}` };
+    current[idx] = { ...current[idx], ...patch, category };
+    store.setApprovalMatrix(current);
+    _getAuditLedger().log('WS_APPROVAL_MATRIX_UPDATED', {
+      metadata: { category, patch, workspaceId: ws?.id, actor: 'desktop' },
+    });
+    return { ok: true };
+  });
+
+  ipcMain.handle('workspacePolicy:resetDefaults', () => {
+    store.resetApprovalMatrix();
+    _getAuditLedger().log('WS_APPROVAL_MATRIX_UPDATED', {
+      metadata: { action: 'reset_to_defaults', workspaceId: store.getWorkspace()?.id, actor: 'desktop' },
+    });
+    return { ok: true, matrix: DEFAULT_APPROVAL_MATRIX };
+  });
+
+  ipcMain.handle('workspacePolicy:simulate', (_e, roleOrDeviceId: string, category: ActionCategory) => {
+    const engine = _getPolicyEngine();
+    // If it looks like a deviceId (not a known role name), resolve via workspace membership
+    const knownRoles = ['owner', 'admin', 'operator', 'reviewer', 'viewer'];
+    if (knownRoles.includes(roleOrDeviceId)) {
+      const result = engine.simulate(roleOrDeviceId as any, category);
+      return result;
+    }
+    // Treat as deviceId
+    const result = engine.canApprove(roleOrDeviceId, category, false);
+    return result;
+  });
+
+  // ── Phase 30: Workspace Automation Governance IPC ────────────────────────────
+
+  ipcMain.handle('workspaceAutomation:getPolicy', () => {
+    return store.getWorkspaceAutomationPolicy();
+  });
+
+  ipcMain.handle('workspaceAutomation:setPolicy', (_e, patch: Partial<WorkspaceAutomationPolicy>) => {
+    const current = store.getWorkspaceAutomationPolicy();
+    const updated: WorkspaceAutomationPolicy = { ...current, ...patch };
+    store.setWorkspaceAutomationPolicy(updated);
+    _getAuditLedger().log('WS_AUTOMATION_POLICY_SET', {
+      metadata: { patch, workspaceId: store.getWorkspace()?.id, actor: 'desktop' },
+    });
+    return { ok: true, policy: updated };
+  });
+
+  ipcMain.handle('workspaceAutomation:getRecipePolicy', (_e, recipeId: string) => {
+    return { policy: store.getRecipePolicy(recipeId) };
+  });
+
+  ipcMain.handle('workspaceAutomation:setRecipePolicy', (_e, recipeId: string, patch: Partial<WorkspaceRecipePolicy>) => {
+    const ws = store.getWorkspace();
+    if (!ws) return { ok: false, error: 'No workspace configured' };
+    const existing: WorkspaceRecipePolicy = store.getRecipePolicy(recipeId) ?? {
+      recipeId,
+      maxRisk:               'medium',
+      allowRemoteRun:        false,
+      requireDesktopConfirm: false,
+      allowedDestinations:   ['any'],
+      allowedRunnerRoles:    ['operator'],
+      allowedRunnerDeviceIds:[],
+      editorDeviceIds:       [],
+      enabled:               true,
+    };
+    const updated: WorkspaceRecipePolicy = { ...existing, ...patch, recipeId };
+    store.setRecipePolicy(recipeId, updated);
+    _getAuditLedger().log('WS_RECIPE_POLICY_SET', {
+      metadata: { recipeId, patch, workspaceId: ws.id, actor: 'desktop' },
+    });
+    return { ok: true, policy: updated };
+  });
+
+  ipcMain.handle('workspaceAutomation:deleteRecipePolicy', (_e, recipeId: string) => {
+    store.deleteRecipePolicy(recipeId);
+    return { ok: true };
+  });
+
+  ipcMain.handle('workspaceAutomation:getDelegatedOperators', () => {
+    return { operators: store.getDelegatedOperators() };
+  });
+
+  ipcMain.handle('workspaceAutomation:assignDelegatedOperator', (_e, op: Omit<DelegatedOperator, 'assignedAt'>) => {
+    const ws = store.getWorkspace();
+    if (!ws) return { ok: false, error: 'No workspace configured' };
+    const full: DelegatedOperator = { ...op, assignedAt: Date.now() };
+    store.setDelegatedOperator(full);
+    _getAuditLedger().log('WS_DELEGATED_OP_ASSIGNED', {
+      metadata: { deviceId: op.deviceId, delegationType: op.delegationType, label: op.label, workspaceId: ws.id, actor: 'desktop' },
+    });
+    return { ok: true };
+  });
+
+  ipcMain.handle('workspaceAutomation:revokeDelegatedOperator', (_e, deviceId: string) => {
+    const ws = store.getWorkspace();
+    const removed = store.revokeDelegatedOperator(deviceId);
+    if (removed && ws) {
+      _getAuditLedger().log('WS_DELEGATED_OP_REVOKED', {
+        metadata: { deviceId, workspaceId: ws.id, actor: 'desktop' },
+      });
+    }
+    return { ok: removed };
+  });
+
+  ipcMain.handle('workspaceAutomation:simulateRun', (_e, deviceIdOrRole: string, recipeId: string, isRemote: boolean) => {
+    const gate = _getAutomationGate();
+    const knownRoles = ['owner', 'admin', 'operator', 'reviewer', 'viewer'];
+    if (knownRoles.includes(deviceIdOrRole)) {
+      // Synthetic check: create a temporary actor by simulating role membership
+      const ws = store.getWorkspace();
+      const syntheticDeviceId = ws?.members.find((m: { role: string }) => m.role === deviceIdOrRole)?.deviceId ?? null;
+      return gate.canRunRecipe(syntheticDeviceId, recipeId, false, isRemote);
+    }
+    return gate.canRunRecipe(deviceIdOrRole, recipeId, false, isRemote);
+  });
+
+  // ── Phase 31: Runbook IPC handlers ────────────────────────────────────────────
+
+  ipcMain.handle('runbook:list', () => {
+    return { runbooks: store.getRunbooks() };
+  });
+
+  ipcMain.handle('runbook:get', (_e, id: string) => {
+    return { runbook: store.getRunbook(id) };
+  });
+
+  ipcMain.handle('runbook:create', (_e, payload: Partial<RunbookDef>) => {
+    const ws = store.getWorkspace();
+    if (!ws) return { ok: false, error: 'No workspace configured' };
+    const now: number = Date.now();
+    const def: RunbookDef = {
+      id:                    makeRunbookId(),
+      title:                 payload.title ?? 'Untitled Runbook',
+      description:           payload.description ?? '',
+      scope:                 'workspace',
+      ownerDeviceId:         payload.ownerDeviceId,
+      trigger:               payload.trigger ?? 'manual',
+      steps:                 payload.steps ?? [],
+      allowedRunnerRoles:    payload.allowedRunnerRoles ?? ['operator'],
+      allowedRunnerDeviceIds:payload.allowedRunnerDeviceIds ?? [],
+      escalationChannel:     payload.escalationChannel,
+      linkedIntegrations:    payload.linkedIntegrations ?? [],
+      incidentMode:          payload.incidentMode ?? false,
+      enabled:               payload.enabled ?? true,
+      createdAt:             now,
+      updatedAt:             now,
+      // Phase 34 — declared variables
+      variables:             payload.variables ?? [],
+    };
+    store.saveRunbook(def);
+    _getAuditLedger().log('RUNBOOK_CREATED', { metadata: { runbookId: def.id, title: def.title, workspaceId: ws.id } });
+    return { ok: true, runbook: def };
+  });
+
+  ipcMain.handle('runbook:update', (_e, id: string, patch: Partial<RunbookDef>) => {
+    const existing = store.getRunbook(id);
+    if (!existing) return { ok: false, error: 'Runbook not found' };
+    const updated: RunbookDef = { ...existing, ...patch, id, scope: 'workspace', updatedAt: Date.now() };
+    store.saveRunbook(updated);
+    _getAuditLedger().log('RUNBOOK_UPDATED', { metadata: { runbookId: id, workspaceId: store.getWorkspace()?.id } });
+    return { ok: true, runbook: updated };
+  });
+
+  ipcMain.handle('runbook:delete', (_e, id: string) => {
+    const removed = store.deleteRunbook(id);
+    if (removed) _getAuditLedger().log('RUNBOOK_DELETED', { metadata: { runbookId: id, workspaceId: store.getWorkspace()?.id } });
+    return { ok: removed };
+  });
+
+  ipcMain.handle('runbook:run', async (_e, id: string, vars: Record<string, string> = {}) => {
+    const def = store.getRunbook(id);
+    if (!def) return { ok: false, error: 'Runbook not found' };
+    if (!def.enabled) return { ok: false, error: 'Runbook is disabled' };
+    try {
+      const exec = await _buildRunbookExecutor().run(def, null, 'desktop', false, vars);
+      return { ok: exec.status !== 'failed', executionId: exec.id, status: exec.status, missingVars: exec.error?.startsWith('Missing required') ? exec.error : undefined };
+    } catch (e: unknown) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('runbook:listExecutions', (_e, runbookId?: string) => {
+    const all = store.getRunbookExecutions(100);
+    return { executions: runbookId ? all.filter(e => e.runbookId === runbookId) : all };
+  });
+
+  ipcMain.handle('runbook:getExecution', (_e, executionId: string) => {
+    const all = store.getRunbookExecutions(200);
+    return { execution: all.find(e => e.id === executionId) ?? null };
+  });
+
+  ipcMain.handle('runbook:incidentMode:get', () => {
+    return store.getIncidentMode();
+  });
+
+  ipcMain.handle('runbook:incidentMode:set', (_e, active: boolean, reason?: string) => {
+    const state = { active, activatedAt: active ? Date.now() : undefined, reason };
+    store.setIncidentMode(state);
+    _getAuditLedger().log('INCIDENT_MODE_CHANGED', {
+      metadata: { active, reason, workspaceId: store.getWorkspace()?.id, actor: 'desktop' },
+    });
+    // Broadcast to renderer
+    for (const win of (require('electron') as typeof import('electron')).BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('runbook:incidentMode', state);
+    }
+    return { ok: true, state };
+  });
+
+  ipcMain.handle('runbook:addStep', (_e, runbookId: string, step: Omit<RunbookStep, 'id'>) => {
+    const def = store.getRunbook(runbookId);
+    if (!def) return { ok: false, error: 'Runbook not found' };
+    const newStep: RunbookStep = { ...step, id: makeStepId() };
+    def.steps.push(newStep);
+    def.updatedAt = Date.now();
+    store.saveRunbook(def);
+    return { ok: true, step: newStep };
+  });
+
+  ipcMain.handle('runbook:removeStep', (_e, runbookId: string, stepId: string) => {
+    const def = store.getRunbook(runbookId);
+    if (!def) return { ok: false, error: 'Runbook not found' };
+    def.steps = def.steps.filter(s => s.id !== stepId);
+    def.updatedAt = Date.now();
+    store.saveRunbook(def);
+    return { ok: true };
+  });
+
+  ipcMain.handle('runbook:reorderSteps', (_e, runbookId: string, stepIds: string[]) => {
+    const def = store.getRunbook(runbookId);
+    if (!def) return { ok: false, error: 'Runbook not found' };
+    const reordered = stepIds.map(sid => def.steps.find(s => s.id === sid)).filter(Boolean) as RunbookStep[];
+    def.steps = reordered;
+    def.updatedAt = Date.now();
+    store.saveRunbook(def);
+    return { ok: true };
+  });
+
+  // ── Phase 32 — Pause/Resume + Handoff Queue ────────────────────────────────
+
+  ipcMain.handle('runbook:getHandoffQueue', () => {
+    return { items: store.getHandoffQueue() };
+  });
+
+  ipcMain.handle('runbook:resume', async (_e, executionId: string, resolution: string) => {
+    const exec = await _buildRunbookExecutor().resumeExecution(executionId, null, 'desktop', resolution);
+    if (!exec) return { ok: false, error: 'Execution not found or not paused' };
+    return { ok: true, execution: exec };
+  });
+
+  ipcMain.handle('runbook:abort', async (_e, executionId: string) => {
+    const exec = await _buildRunbookExecutor().abortExecution(executionId, null);
+    if (!exec) return { ok: false, error: 'Execution not found' };
+    return { ok: true, execution: exec };
+  });
+
+  // ── Phase 35 — Runbook Packs ───────────────────────────────────────────────
+
+  ipcMain.handle('pack:list', () => {
+    return { packs: store.getPacks() };
+  });
+
+  ipcMain.handle('pack:export', (_e, runbookIds: string[], meta: Record<string, string>) => {
+    const ws = store.getWorkspace();
+    if (!ws) return { ok: false, error: 'No workspace configured' };
+    const runbooks = runbookIds
+      .map(id => store.getRunbook(id))
+      .filter((r): r is RunbookDef => r !== null);
+    if (runbooks.length === 0) return { ok: false, error: 'No runbooks found for the given ids' };
+    const pack = buildPack(runbooks, {
+      name:        meta.name        || runbooks[0].title,
+      version:     meta.version     || '1.0.0',
+      description: meta.description || '',
+      author:      meta.author,
+      changelog:   meta.changelog,
+    });
+    const json = serializePack(pack);
+    _getAuditLedger().log('PACK_EXPORTED', {
+      metadata: {
+        packId: pack.id, name: pack.name, version: pack.version,
+        runbookCount: runbooks.length, workspaceId: ws.id,
+      },
+    });
+    return { ok: true, json, pack };
+  });
+
+  ipcMain.handle('pack:previewImport', (_e, json: string) => {
+    const result = deserializePack(json);
+    if (result.error) return { ok: false, error: result.error };
+    const preview = previewPack(result.pack, store);
+    // Phase 36 audit: log trust result on preview
+    if (preview.trust.status === 'trusted') {
+      _getAuditLedger().log('PACK_SIGNATURE_VERIFIED', {
+        metadata: { packId: result.pack.id, keyId: preview.trust.keyId, signerName: preview.trust.signerName },
+      });
+    } else if (result.pack.signature && preview.trust.status === 'invalid') {
+      _getAuditLedger().log('PACK_SIGNATURE_FAILED', {
+        metadata: { packId: result.pack.id, keyId: preview.trust.keyId, error: preview.trust.error },
+      });
+    } else if (preview.trust.status === 'unsigned') {
+      _getAuditLedger().log('PACK_UNSIGNED_ALLOWED', {
+        metadata: { packId: result.pack.id },
+      });
+    }
+    if (preview.policyBlocked) {
+      _getAuditLedger().log('PACK_POLICY_BLOCKED', {
+        metadata: { packId: result.pack.id, reason: preview.policyBlockReason },
+      });
+    }
+    return { ok: true, preview };
+  });
+
+  ipcMain.handle('pack:import', (_e, json: string) => {
+    const ws = store.getWorkspace();
+    if (!ws) return { ok: false, error: 'No workspace configured' };
+    const result = deserializePack(json);
+    if (result.error) return { ok: false, error: result.error };
+    const isUpdate = !!store.getPack(result.pack.id);
+    const { installedIds, updatedIds } = installPack(result.pack, store);
+    const auditType = isUpdate ? 'PACK_UPDATED' : 'PACK_INSTALLED';
+    _getAuditLedger().log(auditType, {
+      metadata: {
+        packId: result.pack.id, name: result.pack.name, version: result.pack.version,
+        installedIds, updatedIds, workspaceId: ws.id,
+      },
+    });
+    if (isUpdate && updatedIds.length > 0) {
+      _getAuditLedger().log('RUNBOOK_UPGRADED', {
+        metadata: { packId: result.pack.id, runbookIds: updatedIds, workspaceId: ws.id },
+      });
+    }
+    // Phase 36 — log risk increase
+    const preview = previewPack(result.pack, store);
+    if (preview.diff?.riskIncreased) {
+      _getAuditLedger().log('PACK_UPDATE_RISK_INCREASED', {
+        metadata: {
+          packId: result.pack.id, destinationsAdded: preview.diff.destinationsAdded,
+          integrationsAdded: preview.diff.integrationsAdded,
+        },
+      });
+    }
+    return {
+      ok: true,
+      installedIds,
+      updatedIds,
+      pack: store.getPack(result.pack.id),
+    };
+  });
+
+  ipcMain.handle('pack:uninstall', (_e, packId: string) => {
+    const ws = store.getWorkspace();
+    const { removedIds, preservedIds, error } = uninstallPack(packId, store);
+    if (error) return { ok: false, error };
+    _getAuditLedger().log('PACK_UNINSTALLED', {
+      metadata: { packId, removedIds, preservedIds, workspaceId: ws?.id },
+    });
+    return { ok: true, removedIds, preservedIds };
+  });
+
+  ipcMain.handle('pack:rollback', (_e, packId: string) => {
+    const ws = store.getWorkspace();
+    const { restoredIds, version, error } = rollbackPack(packId, store);
+    if (error) return { ok: false, error };
+    _getAuditLedger().log('PACK_ROLLBACK', {
+      metadata: { packId, restoredIds, toVersion: version, workspaceId: ws?.id },
+    });
+    return { ok: true, restoredIds, version, pack: store.getPack(packId) };
+  });
+
+  // ── Phase 36 — Pack Trust, Signing, and Update Safety ─────────────────────
+
+  ipcMain.handle('pack:trust:getLocalKey', () => {
+    try {
+      const key = getOrCreateLocalKey(_getDataDir());
+      return { ok: true, keyId: key.keyId, publicKeyPem: key.publicKeyPem };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('pack:trust:signPack', (_e, json: string, signerName: string, signerEmail?: string) => {
+    try {
+      const result = deserializePack(json);
+      if (result.error) return { ok: false, error: result.error };
+      const key    = getOrCreateLocalKey(_getDataDir());
+      const signed = signPack(result.pack, key.privateKeyPem, key.publicKeyPem, signerName, signerEmail);
+      _getAuditLedger().log('PACK_SIGNED', {
+        metadata: { packId: signed.id, name: signed.name, keyId: key.keyId, signerName },
+      });
+      return { ok: true, json: serializePack(signed) };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('pack:trust:listSigners', () => {
+    return { signers: store.getTrustedSigners() };
+  });
+
+  ipcMain.handle('pack:trust:addSigner', (_e, signer: TrustedSigner) => {
+    try {
+      // Validate the public key is parseable before storing
+      const keyId = computeKeyId(signer.publicKeyPem);
+      const entry: TrustedSigner = { ...signer, keyId, addedAt: Date.now(), revoked: false };
+      store.saveTrustedSigner(entry);
+      _getAuditLedger().log('TRUSTED_SIGNER_ADDED', {
+        metadata: { keyId, signerName: signer.name },
+      });
+      return { ok: true, keyId };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('pack:trust:removeSigner', (_e, keyId: string) => {
+    const removed = store.removeTrustedSigner(keyId);
+    if (removed) {
+      _getAuditLedger().log('TRUSTED_SIGNER_REMOVED', { metadata: { keyId } });
+    }
+    return { ok: removed };
+  });
+
+  ipcMain.handle('pack:trust:revokeSigner', (_e, keyId: string) => {
+    const revoked = store.revokeTrustedSigner(keyId);
+    if (revoked) {
+      _getAuditLedger().log('TRUSTED_SIGNER_REVOKED', { metadata: { keyId } });
+    }
+    return { ok: revoked };
+  });
+
+  ipcMain.handle('pack:trust:getPolicy', () => {
+    return { policy: store.getPackTrustPolicy() };
+  });
+
+  ipcMain.handle('pack:trust:setPolicy', (_e, policy: Record<string, boolean>) => {
+    const current = store.getPackTrustPolicy();
+    store.setPackTrustPolicy({ ...current, ...policy });
+    return { ok: true };
+  });
+
+  // ── Phase 37 — Workspace Analytics ────────────────────────────────────────
+
+  ipcMain.handle('analytics:report', async (_e, win: string) => {
+    const w = (win === '24h' || win === '7d' || win === '30d' ? win : '7d') as AnalyticsWindow;
+    const now    = Date.now();
+    const fromTs = windowFromTs(w, now);
+    try {
+      const [audit, executions, runbooks, packs] = await Promise.all([
+        _getAuditLedger().scanRange(fromTs, now),
+        Promise.resolve(store.getRunbookExecutions(500)),
+        Promise.resolve(store.getRunbooks()),
+        Promise.resolve(store.getPacks()),
+      ]);
+      const report = generateReport(w, fromTs, now, executions, runbooks, packs, audit);
+      return { ok: true, report };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('analytics:exportText', async (_e, win: string) => {
+    const w = (win === '24h' || win === '7d' || win === '30d' ? win : '7d') as AnalyticsWindow;
+    const now    = Date.now();
+    const fromTs = windowFromTs(w, now);
+    try {
+      const [audit, executions, runbooks, packs] = await Promise.all([
+        _getAuditLedger().scanRange(fromTs, now),
+        Promise.resolve(store.getRunbookExecutions(500)),
+        Promise.resolve(store.getRunbooks()),
+        Promise.resolve(store.getPacks()),
+      ]);
+      const report = generateReport(w, fromTs, now, executions, runbooks, packs, audit);
+      return { ok: true, text: formatReportText(report) };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // ── Phase 38 — Enterprise Admin + Policy Inheritance ──────────────────────
+
+  // ── Org config ────────────────────────────────────────────────────────────
+
+  ipcMain.handle('org:get', () => {
+    return { org: store.getOrgConfig(), policy: store.getOrgPolicy() };
+  });
+
+  ipcMain.handle('org:create', (_e, name: string, plan: string, adminEmail?: string) => {
+    if (store.getOrgConfig()) return { ok: false, error: 'Org already exists' };
+    const org: OrgConfig = {
+      id:          makeOrgId(),
+      name:        name.trim(),
+      plan:        (plan === 'enterprise' ? 'enterprise' : 'team') as 'team' | 'enterprise',
+      adminEmail:  adminEmail?.trim(),
+      createdAt:   Date.now(),
+      updatedAt:   Date.now(),
+    };
+    store.setOrgConfig(org);
+    store.setOrgPolicy(JSON.parse(JSON.stringify(DEFAULT_ORG_POLICY)));
+    _getAuditLedger().log('ORG_CREATED', { metadata: { orgId: org.id, name: org.name, plan: org.plan } });
+    return { ok: true, org };
+  });
+
+  ipcMain.handle('org:update', (_e, patch: Partial<Pick<OrgConfig, 'name' | 'plan' | 'adminEmail' | 'description'>>) => {
+    const existing = store.getOrgConfig();
+    if (!existing) return { ok: false, error: 'No org configured' };
+    const updated: OrgConfig = { ...existing, ...patch, updatedAt: Date.now() };
+    store.setOrgConfig(updated);
+    _getAuditLedger().log('ORG_UPDATED', { metadata: { orgId: existing.id, changes: Object.keys(patch) } });
+    return { ok: true, org: updated };
+  });
+
+  // ── Org policy ────────────────────────────────────────────────────────────
+
+  ipcMain.handle('org:policy:get', () => {
+    return { policy: store.getOrgPolicy() };
+  });
+
+  ipcMain.handle('org:policy:set', (_e, domain: string, patch: Record<string, unknown>) => {
+    const org    = store.getOrgConfig();
+    const policy = store.getOrgPolicy();
+    if (!(domain in policy)) return { ok: false, error: `Unknown policy domain: ${domain}` };
+    (policy as any)[domain] = { ...(policy as any)[domain], ...patch };
+    store.setOrgPolicy(policy);
+    _getAuditLedger().log('ORG_POLICY_UPDATED', {
+      metadata: { orgId: org?.id, domain, changes: Object.keys(patch) },
+    });
+    return { ok: true, policy };
+  });
+
+  ipcMain.handle('org:policy:effective', () => {
+    const orgPolicy = store.getOrgPolicy();
+    const wsPolicy  = store.getPackTrustPolicy();
+    return { effective: resolveOrgEffective(orgPolicy, wsPolicy) };
+  });
+
+  // ── Org-level trusted signers ─────────────────────────────────────────────
+
+  ipcMain.handle('org:signers:list', () => {
+    const policy = store.getOrgPolicy();
+    return { signers: policy.signers.globalSigners };
+  });
+
+  ipcMain.handle('org:signers:add', (_e, signer: Omit<OrgSignerEntry, 'keyId' | 'addedAt' | 'revoked'>) => {
+    try {
+      const keyId = computeKeyId(signer.publicKeyPem);
+      const policy = store.getOrgPolicy();
+      const existing = policy.signers.globalSigners.findIndex(s => s.keyId === keyId);
+      const entry: OrgSignerEntry = { ...signer, keyId, addedAt: Date.now(), revoked: false };
+      if (existing >= 0) policy.signers.globalSigners[existing] = entry;
+      else               policy.signers.globalSigners.push(entry);
+      store.setOrgPolicy(policy);
+      _getAuditLedger().log('ORG_SIGNER_ADDED', { metadata: { keyId, name: signer.name } });
+      return { ok: true, keyId };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('org:signers:revoke', (_e, keyId: string) => {
+    const policy = store.getOrgPolicy();
+    const s = policy.signers.globalSigners.find(x => x.keyId === keyId);
+    if (!s) return { ok: false, error: 'Signer not found' };
+    s.revoked = true;
+    store.setOrgPolicy(policy);
+    _getAuditLedger().log('ORG_SIGNER_REVOKED', { metadata: { keyId } });
+    return { ok: true };
+  });
+
+  ipcMain.handle('org:signers:remove', (_e, keyId: string) => {
+    const policy = store.getOrgPolicy();
+    const idx = policy.signers.globalSigners.findIndex(s => s.keyId === keyId);
+    if (idx < 0) return { ok: false, error: 'Signer not found' };
+    policy.signers.globalSigners.splice(idx, 1);
+    store.setOrgPolicy(policy);
+    _getAuditLedger().log('ORG_SIGNER_REMOVED', { metadata: { keyId } });
+    return { ok: true };
+  });
+
+  // ── Org analytics rollup ──────────────────────────────────────────────────
+
+  ipcMain.handle('org:analytics', async (_e, win: string) => {
+    // Phase 38 v1: org analytics = workspace analytics (single-node)
+    // Future: aggregate across federated workspaces via control plane
+    const w      = (win === '24h' || win === '7d' || win === '30d' ? win : '7d') as AnalyticsWindow;
+    const now    = Date.now();
+    const fromTs = windowFromTs(w, now);
+    try {
+      const [audit, executions, runbooks, packs] = await Promise.all([
+        _getAuditLedger().scanRange(fromTs, now),
+        Promise.resolve(store.getRunbookExecutions(500)),
+        Promise.resolve(store.getRunbooks()),
+        Promise.resolve(store.getPacks()),
+      ]);
+      const report = generateReport(w, fromTs, now, executions, runbooks, packs, audit);
+      return { ok: true, report, workspaceCount: 1 };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // ── Audit export ──────────────────────────────────────────────────────────
+
+  ipcMain.handle('audit:export', async (_e, fromTs: number, toTs: number, format: string, filter?: string) => {
+    const fmt = (['json', 'csv', 'text'].includes(format) ? format : 'text') as AuditExportFormat;
+    try {
+      const text = await exportAuditLog(_getAuditLedger(), fromTs, toTs, fmt, filter);
+      const ws   = store.getWorkspace();
+      _getAuditLedger().log('AUDIT_EXPORTED', {
+        metadata: { from: fromTs, to: toTs, format: fmt, filter, workspaceId: ws?.id },
+      });
+      return { ok: true, text, entryCount: text.split('\n').filter(l => l.includes('T')).length };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  ipcMain.handle('audit:exportPolicyHistory', async (_e, fromTs: number, toTs: number) => {
+    try {
+      const text = await exportPolicyHistory(_getAuditLedger(), fromTs, toTs);
+      _getAuditLedger().log('POLICY_HISTORY_EXPORTED', { metadata: { from: fromTs, to: toTs } });
+      return { ok: true, text };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // Wire saved public URL into push notifier on startup
+  const _savedPublicUrl = store.getDispatchPublicUrl();
+  if (_savedPublicUrl) _pushNotifier.setDispatchBaseUrl(_savedPublicUrl);
+
+  // Auto-start dispatch server on setupIpc if previously enabled
+  (async () => {
+    if (store.getDispatchEnabled()) {
+      const token = await _getCredentialManager(store).get('dispatch_token');
+      if (token) {
+        _dispatchServer = new DispatchServer(store.getDispatchPort(), _buildDispatchHandlers());
+        _dispatchServer.start().catch(e => console.error('[Phase17] Dispatch auto-start failed:', e));
+      }
+    }
+  })();
+
+  // Phase 33 — Start runbook deadline scheduler
+  if (!_runbookScheduler) {
+    _runbookScheduler = new RunbookScheduler(store, () => _buildRunbookExecutor());
+    _runbookScheduler.start();
+  }
+}
+
+// ── Prompt injection detection ─────────────────────────────────────────────────
+// Runs before the inbound risk classifier on Telegram messages.
+function _detectPromptInjection(text: string): boolean {
+  const t = text.toLowerCase();
+  return (
+    /ignore (all )?(previous|above|prior) instructions?/.test(t) ||
+    /you are now (a |an )?(?!triforge)/i.test(t) ||
+    /\bact as\b.{0,30}\bai\b/i.test(t) ||
+    /pretend (you are|to be)/i.test(t) ||
+    /disregard (your|all) (previous|prior|system)/i.test(t) ||
+    /\bjailbreak\b/i.test(t) ||
+    /system prompt/.test(t) ||
+    /\bdan mode\b/i.test(t)
+  );
+}
+
+const BUNDLED_SKILL_EXAMPLES: Array<{ name: string; description: string; markdown: string }> = [
+  {
+    name: 'web-summary',
+    description: 'Fetch a URL and return a 3-bullet summary',
+    markdown: `---
+name: web-summary
+version: "1.0"
+description: Fetches a URL and returns a concise 3-bullet summary of the content.
+author: triforge-examples
+permissions: []
+network: true
+requiresApproval: false
+---
+
+# Web Summary Skill
+
+Fetch the provided URL and summarize the content in exactly 3 bullet points.
+Each bullet should capture a key insight. Keep each bullet under 25 words.
+
+## Input
+- url: the web page to summarize
+
+## Output
+3 markdown bullet points summarizing the page content.
+`,
+  },
+  {
+    name: 'daily-standup',
+    description: 'Draft a standup update from recent task activity',
+    markdown: `---
+name: daily-standup
+version: "1.0"
+description: Drafts a daily standup update based on recent completed tasks.
+author: triforge-examples
+permissions: []
+requiresApproval: false
+---
+
+# Daily Standup Skill
+
+Review the recent task history and draft a standup update in the format:
+- What I completed yesterday
+- What I am working on today
+- Any blockers
+
+Keep it concise, professional, and under 150 words total.
+`,
+  },
+  {
+    name: 'task-status-brief',
+    description: 'Produce a one-paragraph status brief for a running task',
+    markdown: `---
+name: task-status-brief
+version: "1.0"
+description: Produces a one-paragraph executive status brief for the current task queue.
+author: triforge-examples
+permissions: []
+requiresApproval: false
+---
+
+# Task Status Brief Skill
+
+Review the current task queue and produce a single-paragraph executive status brief.
+Include: number of tasks running, any blockers, expected completion signals.
+Write for a non-technical reader. Maximum 80 words.
+`,
+  },
+];
+
+// ── Exported background service bootstrap — called from index.ts after store init
+export async function restoreBackgroundServices(store: Store): Promise<void> {
+  if (store.getBackgroundLoopEnabled()) {
+    _getMissionManager(store).start();
+    console.log('[Phase1.5] Background agent loop auto-restored');
+  }
+
+  if (store.getWebhookEnabled()) {
+    const token = store.getWebhookToken();
+    const port  = store.getWebhookPort();
+    if (token) {
+      const result = await startWebhookServer(port, token, (missionId) =>
+        _getMissionManager(store).runMission(missionId),
+      );
+      if (result.ok) console.log(`[Phase1.5] Webhook server auto-restored on port ${port}`);
+      else console.error('[Phase1.5] Webhook server restore failed:', result.error);
+    }
+  }
+
+  if (store.getControlPlaneEnabled()) {
+    const token = store.getControlPlaneToken();
+    const port  = store.getControlPlanePort();
+    if (token) {
+      const cp = _getControlPlane();
+      const result = await cp.start(port, token);
+      if (result.ok) {
+        store.setControlPlaneLastStartedAt(Date.now());
+        console.log(`[Phase2] Control plane auto-restored on port ${port}`);
+      } else {
+        console.error('[Phase2] Control plane restore failed:', result.error);
+      }
+    }
+  }
+}
+
+// ── Exported supervisor health tick — called by index.ts 30s interval ────────
+export async function supervisorHealthTick(store: Store): Promise<void> {
+  if (store.getBackgroundLoopEnabled()) {
+    const mgr = _getMissionManager(store);
+    if (!mgr.isRunning()) {
+      console.error('[Phase1.5] Background agent loop stopped — supervisor restarting');
+      mgr.start();
+      broadcastBackgroundLoopStatus({ healthy: false, restarted: true });
+    }
+  }
+
+  if (store.getWebhookEnabled() && !isWebhookServerRunning()) {
+    const token = store.getWebhookToken();
+    const port  = store.getWebhookPort();
+    if (token) {
+      console.error('[Phase1.5] Webhook server stopped — supervisor restarting');
+      await startWebhookServer(port, token, (missionId) =>
+        _getMissionManager(store).runMission(missionId),
+      ).catch(console.error);
+    }
+  }
+
+  if (store.getControlPlaneEnabled() && !(_controlPlane?.isRunning())) {
+    const token = store.getControlPlaneToken();
+    const port  = store.getControlPlanePort();
+    if (token) {
+      console.error('[Phase2] Control plane stopped — supervisor restarting');
+      await _getControlPlane().start(port, token).catch(console.error);
+    }
+  }
+}
+
+// ── Exported broadcast helper — used by index.ts supervisor ─────────────────
+export function broadcastBackgroundLoopStatus(extra?: Record<string, unknown>): void {
+  if (!_ipcStore || !_missionManager) return;
+  const payload = {
+    enabled:          _ipcStore.getBackgroundLoopEnabled(),
+    running:          _missionManager.isRunning(),
+    lastTickAt:       _missionManager.getLastTickAt(),
+    lastFiredMission: _ipcStore.getLastFiredMission(),
+    ...extra,
+  };
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('backgroundLoop:status', payload);
+  }
 }
 
 // ── Singleton cleanup — call from app before-quit ─────────────────────────────
 export function disposeIpcSingletons(): void {
+  // Phase 17: Stop dispatch server
+  if (_dispatchServer?.isRunning) { _dispatchServer.stop().catch(console.error); _dispatchServer = null; }
+
   _expertTrafficController?.dispose();  // clears rebalance interval
   _expertTrafficController = null;
   _expertLoadTracker = null;
