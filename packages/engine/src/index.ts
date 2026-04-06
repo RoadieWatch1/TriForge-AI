@@ -537,6 +537,52 @@ export { ExpertTrafficController } from './placement/expertTrafficController';
 export { PlacementLearningBridge } from './placement/placementLearningBridge';
 export type { PlacementReportSection } from './placement/placementLearningBridge';
 
+// ── Section 5: Contextual Intelligence Contracts ─────────────────────────────
+export type {
+  WorkIntentCategory,
+  EnvironmentReadiness,
+  ContextEvidenceLevel,
+  MachineContextSignal,
+  ReasoningBlocker,
+  ApprovalPoint,
+  ContextFusionResult,
+  ReasoningPlanStep,
+  ReasoningPlan,
+  ReasoningExplanation,
+  ContextualIntelligenceResult,
+} from './contextual/types';
+
+// ── Section 5 Phase 2: Intent Classifier ─────────────────────────────────────
+export { classifyWorkIntent } from './contextual/IntentClassifier';
+export type { IntentClassificationResult } from './contextual/IntentClassifier';
+
+// ── Section 5 Phase 3: Machine Context Normalizer ────────────────────────────
+export { normalizeMachineContext } from './contextual/MachineContextNormalizer';
+export type { NormalizedMachineContext } from './contextual/MachineContextNormalizer';
+
+// ── Section 5 Phase 4: Context Fusion ────────────────────────────────────────
+export { fuseContext } from './contextual/ContextFusionEngine';
+export type { ContextFusionInput } from './contextual/ContextFusionEngine';
+
+// ── Section 5 Phase 5: Blocker Detection ─────────────────────────────────────
+export { detectBlockers } from './contextual/BlockerDetector';
+export type { BlockerDetectionInput, BlockerDetectionResult } from './contextual/BlockerDetector';
+
+// ── Section 5 Phase 6: Reasoning Plan Builder ────────────────────────────────
+export { buildReasoningPlan } from './contextual/ReasoningPlanBuilder';
+export type { ReasoningPlanInput } from './contextual/ReasoningPlanBuilder';
+
+// ── Section 5 Phase 7: Reasoning Explanation Layer ───────────────────────────
+export { buildReasoningExplanation } from './contextual/ReasoningExplainer';
+export type { ReasoningExplainerInput } from './contextual/ReasoningExplainer';
+
+// ── Section 5 Phase 8: Contextual Intelligence Orchestrator ──────────────────
+export { buildContextualIntelligence } from './contextual/ContextualIntelligenceEngine';
+export type { ContextualIntelligenceInput } from './contextual/ContextualIntelligenceEngine';
+
+// ── Section 5 Phase 9: Contextual Reasoning Addendum Builder ─────────────────
+export { buildContextualReasoningAddendum } from './contextual/buildContextualReasoningAddendum';
+
 // ── Vibe Coding ──────────────────────────────────────────────────────────────
 export type {
   VibeMode, VibeDimension, VibeSignal, VibeProfile, VibeAnchor,

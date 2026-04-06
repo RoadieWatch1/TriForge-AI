@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import type { ContextualIntelligenceResult } from '@triforge/engine';
 
 // Typed API exposed to the renderer via window.triforge
 const api = {
@@ -52,6 +53,7 @@ const api = {
         durationMs?: number;
         error?: string;
         tier?: string;
+        contextualIntelligence?: ContextualIntelligenceResult | null;
       }>,
   },
 
@@ -2513,6 +2515,17 @@ const api = {
         };
         error?: string;
         tier?: string;
+      }>,
+  },
+
+  // ── Section 4 — Goal 1: Machine Awareness ─────────────────────────────
+  machine: {
+    getContext: () =>
+      ipcRenderer.invoke('machine:getContext') as Promise<{
+        system: { os: string; platform: string };
+        apps: Array<{ name: string; path: string; present: boolean }>;
+        files: { desktop: string[]; documents: string[] };
+        error?: string;
       }>,
   },
 };

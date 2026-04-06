@@ -32,6 +32,8 @@ import { LiveTradeAdvisor } from './components/LiveTradeAdvisor';
 import { ImageGenerator } from './components/ImageGenerator';
 import { TrianglePresence } from './components/TrianglePresence';
 import { voiceService } from './voice/VoiceService';
+import { OperateScreen } from './screens/OperateScreen';
+import { SessionsScreen } from './screens/SessionsScreen';
 
 // ── Error Boundary ───────────────────────────────────────────────────────────
 export class ErrorBoundary extends React.Component<
@@ -58,12 +60,57 @@ export class ErrorBoundary extends React.Component<
   }
 }
 
+// ── Primary Shell Contract ─────────────────────────────────────────────────────
+// Authoritative definition of TriForge AI's five top-level product pillars.
+// This is the single source of truth for the app's primary navigation identity.
+// Phase 2+ work should rebuild visible navigation from this contract.
+//
+// Pillar descriptions:
+//   triforge  — the primary thinking/chat surface (default)
+//   operate   — unified action surface (Phase 2; not separate File/Inbox/Operator modes)
+//   sessions  — runtime/execution visibility (Phase 2; NOT a second chat lane)
+//   memory    — persistent memory management
+//   settings  — configuration and account settings
+
+export type PrimaryPillar = 'triforge' | 'operate' | 'sessions' | 'memory' | 'settings';
+
+export const PRIMARY_PILLARS: ReadonlyArray<{ key: PrimaryPillar; label: string }> = [
+  { key: 'triforge', label: 'TriForge' },
+  { key: 'operate',  label: 'Operate'  },
+  { key: 'sessions', label: 'Sessions' },
+  { key: 'memory',   label: 'Memory'   },
+  { key: 'settings', label: 'Settings' },
+] as const;
+
+export const DEFAULT_PRIMARY_PILLAR: PrimaryPillar = 'triforge';
+
+// Pillar → current Screen mapping (consumed by Phase 2 shell routing):
+//   triforge → 'chat'      (TriForge is the chat/thinking surface)
+//   operate  → (Phase 2)   currently served by legacy mode screens
+//   sessions → (Phase 2)   runtime/execution visibility; not a conversation surface
+//   memory   → 'memory'
+//   settings → 'settings'
+
+// ── Screen Router ──────────────────────────────────────────────────────────────
+// 'chat', 'memory', and 'settings' map directly to primary pillars.
+// All other values are legacy/internal destinations retained for routing continuity.
+// They are NOT part of the primary shell identity and will be reorganised in Phase 2+.
 type Screen =
-  | 'chat' | 'settings' | 'memory' | 'ledger' | 'plan' | 'builder'
-  | 'profiles' | 'missioncontrol' | 'agenthq'
-  | 'dashboard' | 'operator' | 'world' | 'files' | 'inbox' | 'automation' | 'hustle' | 'forgehub'
-  | 'forge' | 'phonelink' | 'tradeDesk' | 'liveTradeAdvisor' | 'ventures' | 'vibeCoding'
-  | 'imageGenerator'
+  // Primary pillar screens
+  | 'chat'                                                        // pillar: triforge (default)
+  | 'memory'                                                      // pillar: memory
+  | 'settings'                                                    // pillar: settings
+  // Primary pillar wrapper screens (Phase 2)
+  | 'operate' | 'sessions'
+  // Internal / secondary screens (not primary shell)
+  | 'ledger' | 'plan' | 'builder' | 'profiles'
+  | 'missioncontrol' | 'agenthq'
+  // Legacy destinations — retained for routing, hidden from future primary nav
+  | 'dashboard' | 'operator' | 'world' | 'files' | 'inbox'
+  | 'automation' | 'hustle' | 'forgehub'
+  | 'forge' | 'phonelink' | 'tradeDesk' | 'liveTradeAdvisor'
+  | 'ventures' | 'vibeCoding' | 'imageGenerator'
+  // System / diagnostic screens
   | 'health' | 'recovery' | 'docs' | 'readiness';
 
 const LOCK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
@@ -75,6 +122,7 @@ export function App() {
   const [keyStatus, setKeyStatus] = useState<Record<string, boolean>>({ openai: false, claude: false, grok: false });
   const [mode, setMode] = useState('none');
   const [screen, setScreen] = useState<Screen>('chat');
+  const [primaryPillar, setPrimaryPillar] = useState<PrimaryPillar>(DEFAULT_PRIMARY_PILLAR);
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({ openai: '', claude: '', grok: '' });
   const [saving, setSaving] = useState<string | null>(null);
   const [tier, setTier] = useState<string>('free');
@@ -89,6 +137,20 @@ export function App() {
     setVoiceMode(on);
     localStorage.setItem('triforge-voice-mode', on ? 'on' : 'off');
   };
+
+  // ── Primary pillar navigation ─────────────────────────────────────────────────
+  // This is the authoritative top-level routing function for the five-pillar shell.
+  // Internal/legacy screen navigation via setScreen() still works for sub-routes.
+  const navigateToPillar = useCallback((pillar: PrimaryPillar) => {
+    setPrimaryPillar(pillar);
+    switch (pillar) {
+      case 'triforge': setScreen('chat');     break;
+      case 'operate':  setScreen('operate');  break;
+      case 'sessions': setScreen('sessions'); break;
+      case 'memory':   setScreen('memory');   break;
+      case 'settings': setScreen('settings'); break;
+    }
+  }, []);
 
   // Window state
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -194,6 +256,7 @@ export function App() {
   useEffect(() => {
     const handler = () => {
       voiceService.disable();
+      setPrimaryPillar('triforge');
       setScreen('chat');
       setPendingSessionName('Commander');
     };
@@ -240,6 +303,7 @@ export function App() {
 
   const handleDiscussInChat = useCallback((prompt: string) => {
     setChatPrefill(prompt);
+    setPrimaryPillar('triforge');
     setScreen('chat');
   }, []);
 
@@ -316,42 +380,23 @@ export function App() {
 
       {/* Body */}
       <div style={styles.body}>
-        {/* Sidebar */}
+        {/* Sidebar — five-pillar primary navigation */}
         <nav style={styles.sidebar}>
           {/* Council presence indicator — reflects wake/listening/thinking/speaking/consensus */}
           <TrianglePresence />
-          {/* Agent Modes */}
-          <NavBtn icon="⬡" label="TriForge"  active={screen === 'chat'}           onClick={() => setScreen('chat')} />
-          <NavBtn icon="◉" label="Command"   active={screen === 'forge'}          onClick={() => setScreen('forge')} />
-          <NavBtn icon="◈" label="Dashboard" active={screen === 'dashboard'}      onClick={() => setScreen('dashboard')} />
-          <NavBtn icon="⬡" label="Launch"   active={screen === 'profiles'}       onClick={() => setScreen('profiles')} />
-          <NavBtn icon="↗" label="Operate"  active={screen === 'operator'}       onClick={() => setScreen('operator')} />
-          <NavBtn icon="○" label="World"    active={screen === 'world'}          onClick={() => setScreen('world')} />
-          <NavBtn icon="⊡" label="Files"    active={screen === 'files'}          onClick={() => setScreen('files')} />
-          <NavBtn icon="⊟" label="Inbox"    active={screen === 'inbox'}          onClick={() => setScreen('inbox')} />
-          <NavBtn icon="∞" label="Automate" active={screen === 'automation'}     onClick={() => setScreen('automation')} />
-          <NavBtn icon="◇" label="Hustle"   active={screen === 'hustle'}         onClick={() => setScreen('hustle')} />
-          <NavBtn icon="◆" label="Ventures" active={screen === 'ventures'}       onClick={() => setScreen('ventures')} />
-          <NavBtn icon="⊙" label="Vibe"     active={screen === 'vibeCoding'}     onClick={() => setScreen('vibeCoding')} />
-          <NavBtn icon="⬛" label="Visual"   active={screen === 'imageGenerator'} onClick={() => setScreen('imageGenerator')} />
-          <NavBtn icon="◎" label="Memory"   active={screen === 'memory'}         onClick={() => setScreen('memory')} />
-          <NavBtn icon="≡" label="Ledger"   active={screen === 'ledger'}         onClick={() => setScreen('ledger')} />
-          {/* Divider */}
-          <div style={styles.navDivider} />
-          <NavBtn icon="⊞" label="Builder"  active={screen === 'builder'}        onClick={() => setScreen('builder')} />
-          <NavBtn icon="⊕" label="Control"  active={screen === 'missioncontrol'} onClick={() => setScreen('missioncontrol')} />
-          <NavBtn icon="⚙" label="Settings" active={screen === 'settings'}       onClick={() => setScreen('settings')} />
-          <NavBtn icon="⊛" label="Phone"    active={screen === 'phonelink'}      onClick={() => setScreen('phonelink')} />
-          <NavBtn icon="◈" label="Health"     active={screen === 'health'}     onClick={() => setScreen('health')} />
-          <NavBtn icon="⊘" label="Recovery"  active={screen === 'recovery'}    onClick={() => setScreen('recovery')} />
-          <NavBtn icon="?" label="Docs"      active={screen === 'docs'}        onClick={() => setScreen('docs')} />
-          <NavBtn icon="✓" label="Readiness" active={screen === 'readiness'}   onClick={() => setScreen('readiness')} />
+          <NavBtn icon="⬡" label="TriForge" active={primaryPillar === 'triforge'} onClick={() => navigateToPillar('triforge')} />
+          <NavBtn icon="▣"  label="Operate"  active={primaryPillar === 'operate'}  onClick={() => navigateToPillar('operate')} />
+          <NavBtn icon="◉" label="Sessions" active={primaryPillar === 'sessions'} onClick={() => navigateToPillar('sessions')} />
           <div style={{ flex: 1 }} />
-          <NavBtn icon="▷" label="Plan"     active={screen === 'plan'}           onClick={() => setScreen('plan')} />
+          <div style={styles.navDivider} />
+          <NavBtn icon="◎" label="Memory"   active={primaryPillar === 'memory'}   onClick={() => navigateToPillar('memory')} />
+          <NavBtn icon="⚙" label="Settings" active={primaryPillar === 'settings'} onClick={() => navigateToPillar('settings')} />
         </nav>
 
         {/* Main content */}
         <main style={styles.main}>
+          {screen === 'operate'    && <OperateScreen  onNavigate={s => setScreen(s as Screen)} tier={tier} />}
+          {screen === 'sessions'   && <SessionsScreen />}
           {screen === 'dashboard'  && <Dashboard      onNavigate={s => setScreen(s as Screen)} tier={tier} />}
           {screen === 'operator'   && <OperatorMode   onNavigate={s => setScreen(s as Screen)} />}
           {screen === 'world'      && <WorldMode      onNavigate={s => setScreen(s as Screen)} />}
@@ -361,7 +406,7 @@ export function App() {
           {screen === 'hustle'     && <HustleMode     onNavigate={s => setScreen(s as Screen)} />}
           {screen === 'forgehub'   && <ForgeHubCatalog onBack={() => setScreen('hustle')} />}
           {screen === 'ventures'       && <VentureDiscovery tier={tier} />}
-          {screen === 'vibeCoding'     && <VibeCoding tier={tier} onUpgradeClick={() => setScreen('settings')} />}
+          {screen === 'vibeCoding'     && <VibeCoding tier={tier} onUpgradeClick={() => navigateToPillar('settings')} />}
           {screen === 'imageGenerator' && <ImageGenerator tier={tier} onBack={() => setScreen('operator')} />}
           {screen === 'tradeDesk'        && <TradeDesk         onBack={() => setScreen('hustle')} />}
           {screen === 'liveTradeAdvisor' && <LiveTradeAdvisor   onBack={() => setScreen('hustle')} />}
@@ -372,7 +417,7 @@ export function App() {
               tier={tier}
               messagesThisMonth={messagesThisMonth}
               onMessageSent={() => setMessagesThisMonth(n => n + 1)}
-              onUpgradeClick={() => setScreen('settings')}
+              onUpgradeClick={() => navigateToPillar('settings')}
               onBuildApp={() => setScreen('builder')}
               activeProfileId={activeProfileId}
               onProfileSwitch={() => setScreen('profiles')}
@@ -394,7 +439,7 @@ export function App() {
               tier={tier}
               messagesThisMonth={messagesThisMonth}
               onMessageSent={() => setMessagesThisMonth(n => n + 1)}
-              onUpgradeClick={() => setScreen('settings')}
+              onUpgradeClick={() => navigateToPillar('settings')}
               onDiscussInChat={handleDiscussInChat}
             />
           )}
@@ -404,7 +449,7 @@ export function App() {
               tier={tier}
               activeProfileId={activeProfileId}
               onProfileChange={(id) => setActiveProfileId(id)}
-              onSendToChat={(prompt) => { setChatPrefill(prompt); setScreen('chat'); }}
+              onSendToChat={(prompt) => { setChatPrefill(prompt); navigateToPillar('triforge'); }}
               onUpgradeClick={() => setScreen('plan')}
             />
           )}

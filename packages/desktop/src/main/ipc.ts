@@ -137,7 +137,7 @@ import { getToolExecutor, newRequestId } from '../core/tools/toolExecutor';
 import { healthMonitor } from '../core/health/healthMonitor';
 import { MemoryStore } from '../core/memory/memoryStore';
 import { getMemoryManager } from '../core/memory/memoryManager';
-import { ImageService, getImageHistoryStore, systemStateService, buildCouncilAwarenessAddendum, buildLiveTradeAdvice, buildTradeLevels, searchWeb, needsWebSearch } from '@triforge/engine';
+import { ImageService, getImageHistoryStore, systemStateService, buildCouncilAwarenessAddendum, buildLiveTradeAdvice, buildTradeLevels, searchWeb, needsWebSearch, buildContextualIntelligence, buildContextualReasoningAddendum } from '@triforge/engine';
 import type { CouncilVote } from '@triforge/engine';
 
 import { ResultStore } from './resultStore';
@@ -153,6 +153,7 @@ import { ExperimentManager } from './experimentManager';
 import { generateRecommendations, LANE_PLATFORMS } from './incomeDecisionEngine';
 import type { DecisionInput } from './incomeDecisionEngine';
 import { IncomeAutopilot } from './incomeAutopilot';
+import { getMachineContext } from './services/machineContext';
 import { ok as incomeOk, fail as incomeFail } from './utils/actionResult';
 import { withRetry } from './utils/retry';
 import { setExperimentManager } from './systemPrompt';
@@ -1800,13 +1801,34 @@ VERIFY: [1-3 specific things the user should double-check]
 
     updateTaskContext(message);
     routeCouncil(message, pm);  // intent-based provider order (CouncilRouter)
+
+    // ── Section 5: Contextual Intelligence ───────────────────────────────────
+    // Build a reasoning-only contextual understanding of the user's request and
+    // current machine state, then compress it into a compact prompt addendum.
+    // Fails soft — if reasoning throws, chat continues without the addendum.
+    let contextualIntelligence: ReturnType<typeof buildContextualIntelligence> | null = null;
+    let contextualAddendum = '';
+    try {
+      const activeMissionTitle = _getMissionCtxMgr(store).get()?.mission ?? null;
+      contextualIntelligence = buildContextualIntelligence({
+        rawUserRequest: message,
+        snapshot:       snapshotV,
+        activeMissionTitle,
+      });
+      contextualAddendum = '\n\n' + buildContextualReasoningAddendum(contextualIntelligence);
+    } catch {
+      // Non-fatal — reasoning layer is advisory only
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     const basePrompt = await buildSystemPrompt(store, _professionEngine?.getSystemPromptAdditions());
     const awarenessAddendum = buildCouncilAwarenessAddendum(snapshotV);
     const systemPrompt = basePrompt
       + '\n\n' + awarenessAddendum
       + buildTaskContextAddendum()
       + _getMissionCtxMgr(store).buildAddendum()
-      + _getMemGraph(store).buildContextAddendum(message);
+      + _getMemGraph(store).buildContextAddendum(message)
+      + contextualAddendum;
 
     const planner = new ThinkTankPlanner(pm);
     const engine = new CouncilConversationEngine(pm, planner);
@@ -1877,7 +1899,7 @@ VERIFY: [1-3 specific things the user should double-check]
         });
       }
 
-      return { responses: result.responses, synthesis: result.synthesis, durationMs: result.durationMs };
+      return { responses: result.responses, synthesis: result.synthesis, durationMs: result.durationMs, contextualIntelligence };
     } catch (err: unknown) {
       return { error: err instanceof Error ? err.message : String(err) };
     }
@@ -6231,6 +6253,16 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       return { platforms: scan.connectedPlatforms ?? [] };
     } catch {
       return { platforms: [] };
+    }
+  });
+
+  // ── Section 4 — Goal 1: Machine Awareness ───────────────────────────────
+
+  ipcMain.handle('machine:getContext', async () => {
+    try {
+      return getMachineContext();
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
     }
   });
 

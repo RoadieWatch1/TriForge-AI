@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 
 interface HealthItem {
   id: string;
@@ -244,6 +244,8 @@ export function SystemHealth({ onNavigate }: SystemHealthProps) {
           </div>
         ))
       )}
+
+      <MachineContextPanel />
     </div>
   );
 }
@@ -283,6 +285,111 @@ function HealthRow({ item, onNavigate }: { item: HealthItem; onNavigate: (s: str
         <button style={s.actionBtn} onClick={() => onNavigate(item.action!.screen!)}>
           {item.action.label}
         </button>
+      )}
+    </div>
+  );
+}
+
+// ── MachineContextPanel ───────────────────────────────────────────────────────
+// Section 4 — Goal 3: Controlled Exposure Layer
+// Read-only. Fetches once on mount. No polling. No actions.
+
+type MachineContext = {
+  system: { os: string; platform: string };
+  apps: Array<{ name: string; path: string; present: boolean }>;
+  files: { desktop: string[]; documents: string[] };
+  error?: string;
+};
+
+function MachineContextPanel() {
+  const [ctx,     setCtx]     = useState<MachineContext | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [failed,  setFailed]  = useState(false);
+  const mounted = useRef(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setFailed(false);
+    try {
+      const result = await window.triforge.machine.getContext();
+      if (!mounted.current) return;
+      if (!result || result.error) { setFailed(true); setCtx(null); }
+      else setCtx(result);
+    } catch {
+      if (mounted.current) setFailed(true);
+    } finally {
+      if (mounted.current) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    mounted.current = true;
+    load();
+    return () => { mounted.current = false; };
+  }, [load]);
+
+  return (
+    <div style={s.section}>
+      <div style={{ ...s.sectionLabel, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span>Machine Environment</span>
+        <button style={s.refreshBtn} onClick={load} disabled={loading}>
+          {loading ? 'Loading…' : 'Refresh'}
+        </button>
+      </div>
+
+      {loading && (
+        <div style={s.mcRow}>
+          <span style={s.mcMuted}>Reading machine context…</span>
+        </div>
+      )}
+
+      {!loading && failed && (
+        <div style={s.mcRow}>
+          <span style={s.mcMuted}>Machine context unavailable right now.</span>
+        </div>
+      )}
+
+      {!loading && !failed && ctx && (
+        <>
+          {/* System */}
+          <div style={s.mcRow}>
+            <span style={s.mcLabel}>System</span>
+            <span style={s.mcValue}>{ctx.system.os}</span>
+            <span style={s.mcSub}>{ctx.system.platform}</span>
+          </div>
+
+          {/* Apps */}
+          <div style={s.mcBlock}>
+            <span style={s.mcBlockLabel}>Detected Apps</span>
+            {ctx.apps.length === 0
+              ? <span style={s.mcEmpty}>No apps detected</span>
+              : ctx.apps.map(app => (
+                  <div key={app.name} style={s.mcItem}>
+                    <span style={s.mcItemName}>{app.name}</span>
+                    <span style={s.mcItemSub}>{app.path}</span>
+                  </div>
+                ))
+            }
+          </div>
+
+          {/* Desktop */}
+          <div style={s.mcBlock}>
+            <span style={s.mcBlockLabel}>Desktop</span>
+            {ctx.files.desktop.length === 0
+              ? <span style={s.mcEmpty}>No Desktop items found</span>
+              : <span style={s.mcFileList}>{ctx.files.desktop.join('  ·  ')}</span>
+            }
+          </div>
+
+          {/* Documents */}
+          <div style={s.mcBlock}>
+            <span style={s.mcBlockLabel}>Documents</span>
+            {ctx.files.documents.length === 0
+              ? <span style={s.mcEmpty}>No Documents items found</span>
+              : <span style={s.mcFileList}>{ctx.files.documents.join('  ·  ')}</span>
+            }
+          </div>
+        </>
       )}
     </div>
   );
@@ -352,5 +459,40 @@ const s: Record<string, React.CSSProperties> = {
     background: 'transparent', border: '1px solid var(--accent)',
     borderRadius: 4, color: 'var(--accent)', fontSize: 11,
     cursor: 'pointer', flexShrink: 0,
+  },
+
+  // MachineContextPanel styles
+  mcRow: {
+    display: 'flex', alignItems: 'center', gap: 10,
+    padding: '10px 12px',
+    background: 'var(--surface)',
+    border: '1px solid var(--border)',
+    borderRadius: 6, marginBottom: 4,
+  },
+  mcLabel:  { fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', minWidth: 60 },
+  mcValue:  { fontSize: 13, color: 'var(--text-primary)' },
+  mcSub:    { fontSize: 11, color: 'var(--text-muted)' },
+  mcMuted:  { fontSize: 12, color: 'var(--text-muted)' },
+
+  mcBlock: {
+    padding: '10px 12px',
+    background: 'var(--surface)',
+    border: '1px solid var(--border)',
+    borderRadius: 6, marginBottom: 4,
+    display: 'flex', flexDirection: 'column' as const, gap: 6,
+  },
+  mcBlockLabel: {
+    fontSize: 11, fontWeight: 700, color: 'var(--text-muted)',
+    textTransform: 'uppercase' as const, letterSpacing: '0.06em',
+  },
+  mcEmpty: { fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic' as const },
+
+  mcItem: { display: 'flex', flexDirection: 'column' as const, gap: 1 },
+  mcItemName: { fontSize: 13, color: 'var(--text-primary)' },
+  mcItemSub:  { fontSize: 10, color: 'var(--text-muted)' },
+
+  mcFileList: {
+    fontSize: 11, color: 'var(--text-secondary)',
+    lineHeight: '1.7', wordBreak: 'break-word' as const,
   },
 };

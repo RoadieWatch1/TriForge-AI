@@ -1,6 +1,14 @@
-# triforge-ai README
+# TriForge AI
 
-This is the README for your extension "triforge-ai". After writing up a brief description, we recommend including the following sections.
+## Current Product Direction
+
+TriForge AI is being consolidated around a single focused identity: a **desktop AI council and remote computer operator**. It exists to help users think through work and carry out tasks directly inside their own apps, files, browser, and workflows.
+
+All future development must align to this direction. Screens, features, and navigation that do not serve "think with the user" or "do work for the user" are out of scope.
+
+See [`docs/product-identity.md`](docs/product-identity.md) for the full locked identity definition.
+
+---
 
 ## Features
 

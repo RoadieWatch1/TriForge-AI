@@ -37,13 +37,8 @@ interface ScheduledJob {
 
 const MODES: Array<{ label: string; screen: string }> = [
   { label: 'Home',     screen: 'dashboard' },
-  { label: 'Launch',   screen: 'profiles' },
-  { label: 'Operate',  screen: 'operator' },
-  { label: 'World',    screen: 'world' },
   { label: 'Files',    screen: 'files' },
   { label: 'Inbox',    screen: 'inbox' },
-  { label: 'Automate', screen: 'automation' },
-  { label: 'Hustle',   screen: 'hustle' },
 ];
 
 // ── Dashboard Component ──────────────────────────────────────────────────────

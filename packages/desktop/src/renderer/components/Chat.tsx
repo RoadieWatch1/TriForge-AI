@@ -3,6 +3,8 @@ import { VoiceButton } from './VoiceButton';
 import { VoiceConversation } from './VoiceConversation';
 import { UpgradeGate } from './UpgradeGate';
 import { ExecutionPlanView, type ExecutionPlan } from './ExecutionPlanView';
+import { ContextualPlanView } from './ContextualPlanView';
+import type { ContextualIntelligenceResult } from '@triforge/engine';
 import { ForgeChamber } from './ForgeChamber';
 import { CouncilChamber } from './forge/CouncilChamber';
 import { loadLastMission, type LastMissionSummary } from '../forge/ForgeContextStore';
@@ -59,6 +61,8 @@ interface Message {
   // Document finder results
   docResults?: DocResult[];
   docQuery?: string;
+  // Section 5 contextual intelligence (set after council conversation)
+  contextualIntelligence?: ContextualIntelligenceResult | null;
 }
 
 interface DocEntry {
@@ -2151,6 +2155,9 @@ function MessageBubble({ msg, isSpeaking, canSpeak, onSpeak, onRetry, onRunActio
         }
         {msg.executionPlan && (
           <ExecutionPlanView plan={msg.executionPlan} autoRun={true} />
+        )}
+        {!isUser && msg.contextualIntelligence && (
+          <ContextualPlanView result={msg.contextualIntelligence} />
         )}
         {runAction && onRunAction && (
           <button
