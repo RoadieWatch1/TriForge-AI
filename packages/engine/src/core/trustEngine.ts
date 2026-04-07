@@ -67,6 +67,8 @@ export function evaluateStepTrust(
     return {
       allowed: true,
       requiresApproval: !isAutopass,
+      // autopassApplied signals the caller to emit an AUTOPASS_EXECUTED audit event
+      autopassApplied: isAutopass,
       reason: isAutopass
         ? 'Auto-approved (safe read-only tool)'
         : isPaperTrade ? 'Requires approval (paper trade)' : 'Requires manual approval',

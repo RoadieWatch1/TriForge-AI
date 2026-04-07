@@ -18,7 +18,7 @@ export function OperatorMode({ onNavigate }: Props) {
 
   return (
     <ModeShell
-      title="Operator Mode"
+      title="Environment"
       subtitle="Run your active business — post content, reach out to leads, and follow up automatically."
       extra={extra}
     >

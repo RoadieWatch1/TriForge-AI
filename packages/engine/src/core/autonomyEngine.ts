@@ -114,6 +114,25 @@ export class AutonomyEngine {
 
   setRiskPolicy(policy: Partial<RiskPolicy>): void {
     this.riskPolicy = { ...DEFAULT_RISK_POLICY, ...policy };
+    // Section 10: Re-validate all pending actions against the new policy.
+    // Any action now hard-blocked by the updated policy is purged immediately
+    // so it cannot be approved and executed later under the old (permissive) policy.
+    for (const [actionId, pending] of this.pendingActions) {
+      const recheck = this.enforcePolicy(pending.action);
+      if (!recheck.allowed && !('requiresApproval' in recheck && recheck.requiresApproval)) {
+        // Hard block — policy now forbids this entirely; discard it
+        this.pendingActions.delete(actionId);
+        this._ledger.log('ACTION_BLOCKED', {
+          metadata: {
+            workflowId:   pending.workflowId,
+            workflowName: pending.workflowName,
+            actionType:   pending.action.type,
+            actionId,
+            reason:       'policy_tightened_while_pending',
+          },
+        }).catch(() => {});
+      }
+    }
   }
 
   getRiskPolicy(): RiskPolicy {

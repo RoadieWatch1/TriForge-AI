@@ -49,7 +49,7 @@ export function WorldMode({ onNavigate: _onNavigate }: Props) {
 
   return (
     <ModeShell
-      title="World Mode"
+      title="World Feed"
       subtitle="Stay informed — receive daily briefings on topics that matter to your business."
       extra={extra}
     >

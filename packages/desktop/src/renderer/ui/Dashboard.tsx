@@ -78,14 +78,13 @@ export function Dashboard({ onNavigate }: DashboardProps) {
     ? `${runningTasks} task${runningTasks > 1 ? 's' : ''} running in background.`
     : todayJobs > 0
     ? `${todayJobs} scheduled job${todayJobs > 1 ? 's' : ''} configured. System is active.`
-    : 'No active tasks. Select a mode to begin.';
+    : 'No active tasks.';
 
   return (
     <div style={styles.root}>
       {/* Header */}
       <div style={styles.header}>
         <div style={styles.headerLeft}>
-          <p style={styles.appTitle}>Triforge Agent OS</p>
           <p style={styles.dateText}>{dateStr} — {timeStr}</p>
         </div>
         <div style={styles.healthBadge}>

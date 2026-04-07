@@ -121,7 +121,7 @@ export function AutomationMode({ onNavigate }: Props) {
 
   return (
     <ModeShell
-      title="Automation Mode"
+      title="Automation"
       subtitle="Schedule and execute recurring tasks — autonomous, time-based operations."
       extra={extra}
     >

@@ -154,6 +154,8 @@ import { generateRecommendations, LANE_PLATFORMS } from './incomeDecisionEngine'
 import type { DecisionInput } from './incomeDecisionEngine';
 import { IncomeAutopilot } from './incomeAutopilot';
 import { getMachineContext } from './services/machineContext';
+import { OperatorService } from './services/operatorService';
+import { WorkflowPackService } from './services/workflowPackService';
 import { ok as incomeOk, fail as incomeFail } from './utils/actionResult';
 import { withRetry } from './utils/retry';
 import { setExperimentManager } from './systemPrompt';
@@ -3301,6 +3303,21 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     if (!hasCapability('AGENT_TASKS', await _agentTier())) return { error: lockedError('AGENT_TASKS') };
     try {
       const loop = _getAgentLoop(store);
+
+      // Section 10: Audit trust override before it reaches the agent loop.
+      // Any renderer-supplied trust escalation is logged unconditionally.
+      if (trustOverride) {
+        const overriddenCategories = Object.keys(trustOverride);
+        eventBus.emit({
+          type:       'TRUST_OVERRIDE_APPLIED',
+          taskId,
+          categories: overriddenCategories,
+        });
+        console.warn(
+          `[security] TRUST_OVERRIDE_APPLIED for task ${taskId} — categories: ${overriddenCategories.join(', ')}`,
+        );
+      }
+
       // Fire in background — events delivered by persistent forwarder
       loop.runTask(taskId, trustOverride).catch((err: unknown) => console.error('[taskEngine:runTask]', err));
       return { ok: true, started: true };
@@ -13383,6 +13400,414 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     _runbookScheduler = new RunbookScheduler(store, () => _buildRunbookExecutor());
     _runbookScheduler.start();
   }
+
+  // ── Section 8 — Desktop Operator Engine ──────────────────────────────────────
+
+  /** Return honest capability map for the current platform. */
+  ipcMain.handle('operator:capability', async () => {
+    try {
+      return { ok: true, capability: await OperatorService.getCapabilityMap() };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** List all visible running apps. Read-only, no approval required. */
+  ipcMain.handle('operator:target:list', async () => {
+    try {
+      const apps = await OperatorService.listRunningApps();
+      return { ok: true, apps };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Get the currently focused app and window title. Read-only. */
+  ipcMain.handle('operator:target:frontmost', async () => {
+    try {
+      const target = await OperatorService.getFrontmostApp();
+      return { ok: true, target };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Focus a named app. No approval required (focus-only risk). */
+  ipcMain.handle('operator:target:focus', async (_e, appName: string) => {
+    if (!appName || typeof appName !== 'string') {
+      return { ok: false, error: 'appName is required' };
+    }
+    const session = OperatorService.startSession(appName);
+    const action = OperatorService.buildAction(session.id, 'focus_app', { target: appName });
+    try {
+      const result = await OperatorService.executeAction(action);
+      eventBus.emit({
+        type: result.outcome === 'success' ? 'OPERATOR_TARGET_CONFIRMED' : 'OPERATOR_ACTION_FAILED',
+        sessionId: session.id,
+        ...(result.outcome === 'success'
+          ? { appName }
+          : { actionId: action.id, actionType: 'focus_app', error: result.error ?? 'focus failed' }),
+      });
+      return { ok: result.outcome === 'success', result };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Capture the current screen. Returns path to the saved PNG. */
+  ipcMain.handle('operator:perception:screenshot', async (_e, outputPath?: string) => {
+    try {
+      const res = await OperatorService.captureScreen(outputPath);
+      if (res.ok && res.path) {
+        eventBus.emit({ type: 'OPERATOR_SCREENSHOT_TAKEN', sessionId: 'standalone', path: res.path });
+      }
+      return res;
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Get the current machine perception (frontmost app + optional screenshot). */
+  ipcMain.handle('operator:perception:perceive', async () => {
+    try {
+      const perception = await OperatorService.perceive();
+      return { ok: true, perception };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Start an operator session and return the session ID. */
+  ipcMain.handle('operator:session:start', async (_e, intendedTarget?: string) => {
+    try {
+      const session = OperatorService.startSession(intendedTarget ?? null);
+      eventBus.emit({
+        type: 'OPERATOR_SESSION_STARTED',
+        sessionId: session.id,
+        intendedTarget: session.intendedTarget,
+      });
+      return { ok: true, session };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Stop an operator session. */
+  ipcMain.handle('operator:session:stop', async (_e, sessionId: string, reason?: string) => {
+    try {
+      const stopped = OperatorService.stopSession(sessionId, reason);
+      if (stopped) {
+        const session = OperatorService.getSession(sessionId);
+        eventBus.emit({
+          type: 'OPERATOR_SESSION_ENDED',
+          sessionId,
+          status: 'stopped',
+          actionCount: session?.actions.length ?? 0,
+        });
+      }
+      return { ok: stopped };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** List all operator sessions (active and historical). */
+  ipcMain.handle('operator:session:list', async () => {
+    try {
+      return { ok: true, sessions: OperatorService.listSessions() };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /**
+   * Queue an input action (type_text or send_key) for approval.
+   * Returns { outcome: 'approval_pending', approvalId } immediately.
+   * The action only executes after operator:approval:approve is called.
+   */
+  ipcMain.handle('operator:action:queue', async (
+    _e,
+    sessionId: string,
+    actionType: 'type_text' | 'send_key',
+    opts: { text?: string; key?: string; modifiers?: string[] },
+  ) => {
+    if (!sessionId) return { ok: false, error: 'sessionId required' };
+    const session = OperatorService.getSession(sessionId);
+    if (!session) return { ok: false, error: `Session "${sessionId}" not found` };
+    if (session.status !== 'active') {
+      return { ok: false, error: `Session "${sessionId}" is ${session.status}, not active` };
+    }
+
+    const action = OperatorService.buildAction(sessionId, actionType, {
+      text: opts.text,
+      key:  opts.key,
+      modifiers: (opts.modifiers ?? []) as Array<'cmd' | 'shift' | 'alt' | 'ctrl'>,
+    });
+
+    try {
+      const result = await OperatorService.executeAction(action);
+      if (result.approvalId) {
+        eventBus.emit({
+          type: 'OPERATOR_ACTION_QUEUED',
+          sessionId,
+          actionId: action.id,
+          actionType,
+          approvalId: result.approvalId,
+        });
+      }
+      return { ok: true, result };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** List all pending operator approval requests. */
+  ipcMain.handle('operator:approval:list', async () => {
+    try {
+      return { ok: true, approvals: OperatorService.listPendingApprovals() };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /**
+   * Approve and immediately execute a queued input action.
+   * Performs wrong-target validation before executing.
+   */
+  ipcMain.handle('operator:approval:approve', async (_e, approvalId: string, approvedBy = 'local_ui') => {
+    if (!approvalId) return { ok: false, error: 'approvalId required' };
+    try {
+      const approval = OperatorService.getApproval(approvalId);
+      if (!approval) return { ok: false, error: 'Approval not found' };
+
+      eventBus.emit({
+        type: 'OPERATOR_ACTION_APPROVED',
+        sessionId: approval.sessionId,
+        actionId: approval.action.id,
+        approvalId,
+      });
+
+      const result = await OperatorService.executeApprovedAction(approvalId, approvedBy);
+
+      if (result.outcome === 'success') {
+        eventBus.emit({
+          type: 'OPERATOR_ACTION_EXECUTED',
+          sessionId: approval.sessionId,
+          actionId: approval.action.id,
+          actionType: approval.action.type,
+          outcome: result.outcome,
+          durationMs: result.durationMs,
+        });
+      } else if (result.outcome === 'permission_denied') {
+        eventBus.emit({
+          type: 'OPERATOR_PERMISSION_DENIED',
+          sessionId: approval.sessionId,
+          permission: 'accessibility',
+        });
+      } else if (result.outcome === 'wrong_target') {
+        eventBus.emit({
+          type: 'OPERATOR_TARGET_LOST',
+          sessionId: approval.sessionId,
+          expected: approval.action.target ?? approval.sessionId,
+          actual: result.executedTarget?.appName ?? 'unknown',
+        });
+      } else {
+        eventBus.emit({
+          type: 'OPERATOR_ACTION_FAILED',
+          sessionId: approval.sessionId,
+          actionId: approval.action.id,
+          actionType: approval.action.type,
+          error: result.error ?? result.outcome,
+        });
+      }
+
+      return { ok: result.outcome === 'success', result };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Deny a pending operator approval request. */
+  ipcMain.handle('operator:approval:deny', async (_e, approvalId: string, reason?: string) => {
+    if (!approvalId) return { ok: false, error: 'approvalId required' };
+    try {
+      const approval = OperatorService.getApproval(approvalId);
+      const denied = OperatorService.denyApproval(approvalId, reason);
+      if (denied && approval) {
+        eventBus.emit({
+          type: 'OPERATOR_ACTION_DENIED',
+          sessionId: approval.sessionId,
+          actionId: approval.action.id,
+          approvalId,
+          reason,
+        });
+      }
+      return { ok: denied };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // ── Section 9 — Workflow Packs ────────────────────────────────────────────────
+
+  /** List all available workflow packs. */
+  ipcMain.handle('workflow:list', async () => {
+    try {
+      return { ok: true, packs: WorkflowPackService.listPacks() };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Get a single workflow pack by ID. */
+  ipcMain.handle('workflow:get', async (_e, packId: string) => {
+    try {
+      const pack = WorkflowPackService.getPack(packId);
+      if (!pack) return { ok: false, error: `Pack "${packId}" not found` };
+      return { ok: true, pack };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /**
+   * Evaluate readiness for a workflow pack.
+   * Returns blockers with remediations if the pack cannot run now.
+   */
+  ipcMain.handle('workflow:readiness', async (_e, packId: string, targetApp?: string) => {
+    try {
+      const result = await WorkflowPackService.evaluateReadiness(packId, targetApp);
+      if (!result) return { ok: false, error: `Pack "${packId}" not found` };
+      return { ok: true, readiness: result };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Evaluate readiness for all workflow packs in one call. */
+  ipcMain.handle('workflow:readiness:all', async () => {
+    try {
+      const results = await WorkflowPackService.evaluateAllReadiness();
+      return { ok: true, results };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /**
+   * Start a workflow run.
+   * For pack.readiness-check and pack.app-context: completes synchronously.
+   * For pack.focus-capture: completes if Screen Recording is granted.
+   * For pack.supervised-input: pauses at approval gate — call workflow:run:advance after approving.
+   */
+  ipcMain.handle('workflow:run:start', async (
+    _e,
+    packId: string,
+    opts: {
+      targetApp?: string;
+      inputText?: string;
+      inputKey?: string;
+      inputModifiers?: string[];
+      screenshotOutputPath?: string;
+    } = {},
+  ) => {
+    try {
+      const result = await WorkflowPackService.startRun(packId, {
+        targetApp:             opts.targetApp,
+        inputText:             opts.inputText,
+        inputKey:              opts.inputKey,
+        inputModifiers:        opts.inputModifiers as Array<'cmd'|'shift'|'alt'|'ctrl'> | undefined,
+        screenshotOutputPath:  opts.screenshotOutputPath,
+      });
+      return result;
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /**
+   * Advance a workflow run that is paused at an approval gate.
+   * Call this after the operator approval has been granted via operator:approval:approve.
+   */
+  ipcMain.handle('workflow:run:advance', async (_e, runId: string, opts: Record<string, unknown> = {}) => {
+    try {
+      const result = await WorkflowPackService.advanceRun(runId, opts as import('@triforge/engine').WorkflowRunOptions);
+      return result;
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** List all workflow runs (active and completed). */
+  ipcMain.handle('workflow:run:list', async () => {
+    try {
+      return { ok: true, runs: WorkflowPackService.listRuns() };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Get a specific workflow run. */
+  ipcMain.handle('workflow:run:get', async (_e, runId: string) => {
+    try {
+      const run = WorkflowPackService.getRun(runId);
+      if (!run) return { ok: false, error: `Run "${runId}" not found` };
+      return { ok: true, run };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Stop an active workflow run. */
+  ipcMain.handle('workflow:run:stop', async (_e, runId: string) => {
+    try {
+      const stopped = WorkflowPackService.stopRun(runId);
+      return { ok: stopped };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // ── Section 10 — Operator Safety Kill Switch ──────────────────────────────────
+
+  /**
+   * Disable all operator action execution immediately.
+   * Pending approvals cannot execute while disabled.
+   * Emits OPERATOR_DISABLED to the audit event bus.
+   */
+  ipcMain.handle('operator:safety:disable', async () => {
+    try {
+      OperatorService.setOperatorEnabled(false);
+      eventBus.emit({ type: 'OPERATOR_DISABLED' });
+      console.warn('[security] OPERATOR_DISABLED — operator kill switch activated');
+      return { ok: true, enabled: false };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /**
+   * Re-enable operator action execution.
+   * Emits OPERATOR_ENABLED to the audit event bus.
+   */
+  ipcMain.handle('operator:safety:enable', async () => {
+    try {
+      OperatorService.setOperatorEnabled(true);
+      eventBus.emit({ type: 'OPERATOR_ENABLED' });
+      return { ok: true, enabled: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Get the current operator enabled/disabled state. */
+  ipcMain.handle('operator:safety:status', async () => {
+    try {
+      return { ok: true, enabled: OperatorService.isOperatorEnabled() };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
 }
 
 // ── Prompt injection detection ─────────────────────────────────────────────────

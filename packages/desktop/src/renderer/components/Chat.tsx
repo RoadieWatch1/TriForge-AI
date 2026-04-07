@@ -748,12 +748,15 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           setMessages(m => m.map(msg => msg.id === streamId ? { ...msg, content: msg.content + pending } : msg));
         }, 50);
 
-        const unsub = window.triforge.chat.onChunk((chunk: string) => {
+        // CouncilConversationEngine streams provider tokens via forge:update events
+        const unsub = window.triforge.forge.onUpdate((data) => {
           setSingleModelStreaming(true);
-          streamBuf.current += chunk;
+          if (data.phase === 'provider:token' && data.token) {
+            streamBuf.current += data.token;
+          }
         });
 
-        const result = await window.triforge.chat.send(messageToSend, history);
+        const result = await window.triforge.chat.conversation(messageToSend, history);
         unsub();
         clearInterval(streamTimer.current!);
         streamTimer.current = null;
@@ -766,17 +769,19 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         }
 
         onMessageSent();
-        // Finalise the streaming message with confirmed text + metadata
+        const finalText = result.synthesis ?? result.responses?.[0]?.text;
+        // Finalise the streaming message with confirmed text + metadata + contextual intelligence
         setMessages(m => m.map(msg => msg.id === streamId ? {
           ...msg,
-          content: result.text ?? msg.content, // keep streamed content if result.text is empty
-          provider: result.provider,
+          content: finalText ?? msg.content,
+          provider: result.responses?.[0]?.provider,
           isError: false,
           streaming: false,
+          contextualIntelligence: result.contextualIntelligence ?? null,
         } : msg));
 
-        if (result.text && (voiceMode || handsFreeMode || voiceChatActive)) {
-          speakMessage(streamId, result.text);
+        if (finalText && (voiceMode || handsFreeMode || voiceChatActive)) {
+          speakMessage(streamId, finalText);
         }
       }
     } catch (e) {

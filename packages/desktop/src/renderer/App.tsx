@@ -395,7 +395,7 @@ export function App() {
 
         {/* Main content */}
         <main style={styles.main}>
-          {screen === 'operate'    && <OperateScreen  onNavigate={s => setScreen(s as Screen)} tier={tier} />}
+          {screen === 'operate'    && <OperateScreen  onNavigate={s => setScreen(s as Screen)} onViewSessions={() => navigateToPillar('sessions')} tier={tier} permissions={permissions} keyStatus={keyStatus} />}
           {screen === 'sessions'   && <SessionsScreen />}
           {screen === 'dashboard'  && <Dashboard      onNavigate={s => setScreen(s as Screen)} tier={tier} />}
           {screen === 'operator'   && <OperatorMode   onNavigate={s => setScreen(s as Screen)} />}
@@ -443,7 +443,7 @@ export function App() {
               onDiscussInChat={handleDiscussInChat}
             />
           )}
-          {screen === 'builder' && <AppBuilder onBack={() => setScreen('dashboard')} />}
+          {screen === 'builder' && <AppBuilder onBack={() => setScreen('operate')} />}
           {screen === 'profiles' && (
             <ForgeProfiles
               tier={tier}
@@ -521,6 +521,11 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
     onUpdatePermissions(updated);
   };
 
+  // Operator kill switch state
+  const [operatorEnabled, setOperatorEnabled] = useState<boolean | null>(null);
+  const [operatorToggling, setOperatorToggling] = useState(false);
+  const [operatorError, setOperatorError] = useState<string | null>(null);
+
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
   const [updateReady, setUpdateReady] = useState(false);
   const [appVersion, setAppVersion] = useState<string>('');
@@ -534,7 +539,31 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
       setAppVersion(v as string);
       setAppTier((lic as any)?.tier ?? 'free');
     });
+    // Load operator kill switch state
+    window.triforge.operatorSafety.getStatus().then(res => {
+      if (res.ok) setOperatorEnabled(res.enabled);
+    }).catch(() => { /* kill switch unavailable — leave null */ });
   }, []);
+
+  const handleToggleOperator = async () => {
+    if (operatorToggling || operatorEnabled === null) return;
+    setOperatorToggling(true);
+    setOperatorError(null);
+    try {
+      const res = operatorEnabled
+        ? await window.triforge.operatorSafety.disable()
+        : await window.triforge.operatorSafety.enable();
+      if (res.ok) {
+        setOperatorEnabled(res.enabled);
+      } else {
+        setOperatorError(res.error ?? 'Failed to update operator state.');
+      }
+    } catch (e: any) {
+      setOperatorError(e?.message ?? 'Unexpected error.');
+    } finally {
+      setOperatorToggling(false);
+    }
+  };
 
   const checkForUpdates = async () => {
     setUpdateStatus('Checking for updates…');
@@ -673,6 +702,46 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
           </div>
         </div>
       ))}
+
+      <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>Operator Execution</h2>
+      <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
+        Controls whether the supervised operator can execute desktop actions (typing, key presses) during workflow runs.
+        Disabling this stops all operator and workflow action execution — chat, reasoning, and memory are not affected.
+      </p>
+      <div style={styles.permRow}>
+        <button
+          style={{
+            ...styles.toggle,
+            ...(operatorEnabled ? styles.toggleOn : {}),
+            opacity: (operatorEnabled === null || operatorToggling) ? 0.5 : 1,
+            cursor: (operatorEnabled === null || operatorToggling) ? 'not-allowed' : 'pointer',
+          }}
+          onClick={handleToggleOperator}
+          disabled={operatorEnabled === null || operatorToggling}
+          aria-label={operatorEnabled ? 'Disable operator execution' : 'Enable operator execution'}
+        >
+          <div style={{ ...styles.toggleKnob, ...(operatorEnabled ? styles.toggleKnobOn : {}) }} />
+        </button>
+        <div>
+          <div style={styles.permLabel}>
+            {operatorEnabled === null
+              ? 'Operator Execution'
+              : operatorEnabled
+                ? 'Operator Execution — Enabled'
+                : 'Operator Execution — Disabled'}
+          </div>
+          <div style={styles.permDesc}>
+            {operatorEnabled === null
+              ? 'Loading status…'
+              : operatorEnabled
+                ? 'Operator and workflow actions can execute. Disable to immediately block all supervised desktop actions.'
+                : 'All operator and workflow action execution is blocked. Chat, reasoning, and memory continue to work normally.'}
+          </div>
+          {operatorError && (
+            <div style={{ fontSize: 11, color: '#ef4444', marginTop: 4 }}>{operatorError}</div>
+          )}
+        </div>
+      </div>
 
       <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>Spoken Reply Voice</h2>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>

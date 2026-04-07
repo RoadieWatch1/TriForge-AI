@@ -59,7 +59,14 @@ export type TaskToolName =
   | 'read_file' | 'write_file' | 'append_file' | 'run_command' | 'fetch_url' | 'search_workspace'
   // Income Operator actions (Phase 4B)
   | 'launch_experiment' | 'spend_budget' | 'publish_content' | 'kill_experiment'
-  | 'scale_experiment' | 'connect_platform' | 'install_tool';
+  | 'scale_experiment' | 'connect_platform' | 'install_tool'
+  // Section 8 — Desktop Operator Engine
+  | 'operator_focus_app'    // bring a named app to the foreground
+  | 'operator_screenshot'   // capture the current screen state
+  | 'operator_type_text'    // type text into the focused window (approval required)
+  | 'operator_send_key'     // send a keyboard shortcut (approval required)
+  | 'operator_get_target'   // read current frontmost app (read-only)
+  | 'operator_list_apps';   // list visible running apps (read-only)
 
 export type AuditEventType =
   | 'TASK_CREATED' | 'TASK_STARTED' | 'TASK_COMPLETED' | 'TASK_FAILED'
@@ -228,7 +235,19 @@ export type AuditEventType =
   | 'ORG_POLICY_UPDATED'         | 'ORG_SIGNER_ADDED'
   | 'ORG_SIGNER_REVOKED'         | 'ORG_SIGNER_REMOVED'
   | 'ORG_INTEGRATION_BLOCKED'    | 'ORG_INTEGRATION_ALLOWED'
-  | 'AUDIT_EXPORTED'             | 'POLICY_HISTORY_EXPORTED';
+  | 'AUDIT_EXPORTED'             | 'POLICY_HISTORY_EXPORTED'
+  // Section 8 — Desktop Operator Engine
+  | 'OPERATOR_SESSION_STARTED'   | 'OPERATOR_SESSION_ENDED'
+  | 'OPERATOR_ACTION_QUEUED'     | 'OPERATOR_ACTION_APPROVED'
+  | 'OPERATOR_ACTION_DENIED'     | 'OPERATOR_ACTION_EXECUTED'
+  | 'OPERATOR_ACTION_FAILED'     | 'OPERATOR_PERMISSION_DENIED'
+  | 'OPERATOR_TARGET_CONFIRMED'  | 'OPERATOR_TARGET_LOST'
+  | 'OPERATOR_SCREENSHOT_TAKEN'  | 'OPERATOR_RECOVERY_TRIGGERED'
+  // Section 10 — Trust, Security, Safety Hardening
+  | 'TRUST_OVERRIDE_APPLIED'     // trust escalation applied from renderer — always logged
+  | 'AUTOPASS_EXECUTED'          // SAFE_AUTOPASS_TOOLS bypassed approval gate — always logged
+  | 'OPERATOR_ENABLED'           // operator capability kill switch turned on
+  | 'OPERATOR_DISABLED';         // operator capability kill switch turned off
 
 // ── Execution Result (Phase 4) ─────────────────────────────────────────────────
 
@@ -317,6 +336,8 @@ export interface TrustDecision {
   reason: string;
   reservedCents: number;
   isPaperTrade?: boolean;
+  /** True when SAFE_AUTOPASS_TOOLS bypassed the approval gate — must be audit-logged. */
+  autopassApplied?: boolean;
 }
 
 export interface WalletSnapshot {
@@ -518,4 +539,22 @@ export type EngineEvent =
   | { type: 'GITHUB_ISSUE_TRIAGE_COMPLETED'; owner: string; repo: string; issueNumber: number; reviewId: string }
   | { type: 'GITHUB_WEBHOOK_RECEIVED';       event: string; owner: string; repo: string; number: number }
   | { type: 'GITHUB_REVIEW_APPROVED';        reviewId: string; commentUrl: string }
-  | { type: 'GITHUB_REVIEW_DISMISSED';       reviewId: string };
+  | { type: 'GITHUB_REVIEW_DISMISSED';       reviewId: string }
+  // Section 8 — Desktop Operator Engine
+  | { type: 'OPERATOR_SESSION_STARTED';    sessionId: string; intendedTarget: string | null }
+  | { type: 'OPERATOR_SESSION_ENDED';      sessionId: string; status: string; actionCount: number }
+  | { type: 'OPERATOR_ACTION_QUEUED';      sessionId: string; actionId: string; actionType: string; approvalId: string }
+  | { type: 'OPERATOR_ACTION_APPROVED';    sessionId: string; actionId: string; approvalId: string }
+  | { type: 'OPERATOR_ACTION_DENIED';      sessionId: string; actionId: string; approvalId: string; reason?: string }
+  | { type: 'OPERATOR_ACTION_EXECUTED';    sessionId: string; actionId: string; actionType: string; outcome: string; durationMs: number }
+  | { type: 'OPERATOR_ACTION_FAILED';      sessionId: string; actionId: string; actionType: string; error: string }
+  | { type: 'OPERATOR_PERMISSION_DENIED';  sessionId: string; permission: 'accessibility' | 'screen_recording' }
+  | { type: 'OPERATOR_TARGET_CONFIRMED';   sessionId: string; appName: string }
+  | { type: 'OPERATOR_TARGET_LOST';        sessionId: string; expected: string; actual: string }
+  | { type: 'OPERATOR_SCREENSHOT_TAKEN';   sessionId: string; path: string }
+  | { type: 'OPERATOR_RECOVERY_TRIGGERED'; sessionId: string; reason: string; behavior: string }
+  // Section 10 — Trust, Security, Safety Hardening
+  | { type: 'TRUST_OVERRIDE_APPLIED'; taskId: string; categories: string[] }
+  | { type: 'AUTOPASS_EXECUTED';      taskId: string; tool: string; category: TaskCategory }
+  | { type: 'OPERATOR_ENABLED' }
+  | { type: 'OPERATOR_DISABLED' };

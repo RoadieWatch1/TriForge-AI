@@ -2528,6 +2528,325 @@ const api = {
         error?: string;
       }>,
   },
+
+  // ── Section 8 — Desktop Operator Engine ───────────────────────────────
+  operator: {
+    /** Get honest capability map for the current platform. */
+    getCapability: () =>
+      ipcRenderer.invoke('operator:capability') as Promise<{
+        ok: boolean;
+        capability?: {
+          platform: string;
+          canListRunningApps: boolean;
+          canGetFrontmostApp: boolean;
+          canFocusApp: boolean;
+          canCaptureScreen: boolean;
+          canReadWindowTitle: boolean;
+          canOCRScreen: boolean;
+          canTypeText: boolean;
+          canSendKeystroke: boolean;
+          canClickAtCoords: boolean;
+          accessibilityGranted: boolean;
+          screenRecordingGranted: boolean;
+          notes: string[];
+        };
+        error?: string;
+      }>,
+
+    /** List all visible running app names. */
+    listApps: () =>
+      ipcRenderer.invoke('operator:target:list') as Promise<{
+        ok: boolean; apps?: string[]; error?: string;
+      }>,
+
+    /** Get the currently focused app and window title. */
+    getFrontmost: () =>
+      ipcRenderer.invoke('operator:target:frontmost') as Promise<{
+        ok: boolean;
+        target?: {
+          appName: string;
+          windowTitle?: string;
+          pid?: number;
+          confirmed: boolean;
+          capturedAt: number;
+        } | null;
+        error?: string;
+      }>,
+
+    /** Bring a named app to the foreground. */
+    focusApp: (appName: string) =>
+      ipcRenderer.invoke('operator:target:focus', appName) as Promise<{
+        ok: boolean;
+        result?: { outcome: string; durationMs: number; executedTarget?: { appName: string } };
+        error?: string;
+      }>,
+
+    /** Capture a screenshot of the primary display. */
+    screenshot: (outputPath?: string) =>
+      ipcRenderer.invoke('operator:perception:screenshot', outputPath) as Promise<{
+        ok: boolean; path?: string; error?: string; recoveryHint?: string;
+      }>,
+
+    /** Get a perception snapshot (frontmost app + summary). */
+    perceive: () =>
+      ipcRenderer.invoke('operator:perception:perceive') as Promise<{
+        ok: boolean;
+        perception?: {
+          timestamp: number;
+          target: { appName: string; windowTitle?: string; confirmed: boolean; capturedAt: number } | null;
+          screenshotPath?: string;
+          summary?: string;
+        };
+        error?: string;
+      }>,
+
+    /** Start an operator session targeting a named app. */
+    startSession: (intendedTarget?: string) =>
+      ipcRenderer.invoke('operator:session:start', intendedTarget) as Promise<{
+        ok: boolean;
+        session?: { id: string; startedAt: number; intendedTarget: string | null; status: string };
+        error?: string;
+      }>,
+
+    /** Stop an active operator session. */
+    stopSession: (sessionId: string, reason?: string) =>
+      ipcRenderer.invoke('operator:session:stop', sessionId, reason) as Promise<{
+        ok: boolean; error?: string;
+      }>,
+
+    /** List all operator sessions. */
+    listSessions: () =>
+      ipcRenderer.invoke('operator:session:list') as Promise<{
+        ok: boolean;
+        sessions?: Array<{
+          id: string; startedAt: number; intendedTarget: string | null;
+          status: string; actionCount?: number; endedAt?: number;
+        }>;
+        error?: string;
+      }>,
+
+    /**
+     * Queue a type_text or send_key action for approval.
+     * Returns { outcome: 'approval_pending', approvalId } immediately.
+     * Call approveAction(approvalId) to execute after user confirms.
+     */
+    queueInputAction: (
+      sessionId: string,
+      actionType: 'type_text' | 'send_key',
+      opts: { text?: string; key?: string; modifiers?: string[] },
+    ) =>
+      ipcRenderer.invoke('operator:action:queue', sessionId, actionType, opts) as Promise<{
+        ok: boolean;
+        result?: {
+          actionId: string;
+          actionType: string;
+          outcome: string;
+          approvalId?: string;
+          recoveryHint?: string;
+        };
+        error?: string;
+      }>,
+
+    /** List pending operator approval requests. */
+    listApprovals: () =>
+      ipcRenderer.invoke('operator:approval:list') as Promise<{
+        ok: boolean;
+        approvals?: Array<{
+          id: string;
+          sessionId: string;
+          risk: string;
+          description: string;
+          contextScreenshotPath?: string;
+          createdAt: number;
+          expiresAt: number;
+          status: string;
+        }>;
+        error?: string;
+      }>,
+
+    /** Approve a queued input action and execute it immediately. */
+    approveAction: (approvalId: string) =>
+      ipcRenderer.invoke('operator:approval:approve', approvalId) as Promise<{
+        ok: boolean;
+        result?: {
+          actionId: string;
+          actionType: string;
+          outcome: string;
+          durationMs: number;
+          error?: string;
+          recoveryHint?: string;
+        };
+        error?: string;
+      }>,
+
+    /** Deny a pending operator approval. */
+    denyAction: (approvalId: string, reason?: string) =>
+      ipcRenderer.invoke('operator:approval:deny', approvalId, reason) as Promise<{
+        ok: boolean; error?: string;
+      }>,
+  },
+
+  // ── Section 9 — Workflow Packs ─────────────────────────────────────────────
+  workflows: {
+    /** List all available workflow packs. */
+    list: () =>
+      ipcRenderer.invoke('workflow:list') as Promise<{
+        ok: boolean;
+        packs?: Array<{
+          id: string;
+          name: string;
+          tagline: string;
+          description: string;
+          category: string;
+          version: string;
+          requirements: {
+            platforms: string[];
+            capabilities: string[];
+            permissions: { accessibility?: boolean; screenRecording?: boolean };
+            targetApp: string | null;
+            providerRequired: boolean;
+          };
+          phases: Array<{
+            id: string; name: string; description: string;
+            kind: string; requiresApproval: boolean; optional?: boolean;
+          }>;
+          tags: string[];
+          estimatedDurationSec?: number;
+          successCriteria: string;
+        }>;
+        error?: string;
+      }>,
+
+    /** Get a single workflow pack by ID. */
+    get: (packId: string) =>
+      ipcRenderer.invoke('workflow:get', packId) as Promise<{
+        ok: boolean; pack?: Record<string, unknown>; error?: string;
+      }>,
+
+    /**
+     * Evaluate readiness for a workflow pack.
+     * Returns blockers with remediations if the pack cannot run.
+     */
+    readiness: (packId: string, targetApp?: string) =>
+      ipcRenderer.invoke('workflow:readiness', packId, targetApp) as Promise<{
+        ok: boolean;
+        readiness?: {
+          packId: string;
+          ready: boolean;
+          blockers: Array<{ type: string; message: string; remediation: string }>;
+          warnings: string[];
+          platformSupported: boolean;
+          permissionsOk: boolean;
+          capabilitiesOk: boolean;
+          targetAppAvailable: boolean | null;
+        };
+        error?: string;
+      }>,
+
+    /** Evaluate readiness for all workflow packs at once. */
+    readinessAll: () =>
+      ipcRenderer.invoke('workflow:readiness:all') as Promise<{
+        ok: boolean;
+        results?: Record<string, {
+          packId: string; ready: boolean;
+          blockers: Array<{ type: string; message: string; remediation: string }>;
+          warnings: string[]; platformSupported: boolean;
+        }>;
+        error?: string;
+      }>,
+
+    /**
+     * Start a workflow run.
+     * Runs that require approval pause with status 'awaiting_approval'.
+     * Call advanceRun(runId) after approving to continue.
+     */
+    startRun: (
+      packId: string,
+      opts?: {
+        targetApp?: string;
+        inputText?: string;
+        inputKey?: string;
+        inputModifiers?: string[];
+        screenshotOutputPath?: string;
+      },
+    ) =>
+      ipcRenderer.invoke('workflow:run:start', packId, opts ?? {}) as Promise<{
+        ok: boolean;
+        run?: {
+          id: string; packId: string; packName: string; sessionId: string;
+          targetApp: string | null; startedAt: number; endedAt?: number;
+          status: string; currentPhaseIndex: number;
+          phaseResults: Array<{
+            phaseId: string; phaseName: string; status: string;
+            outputs: Record<string, unknown>; error?: string; warning?: string;
+          }>;
+          pendingApprovalId?: string;
+          artifact?: { type: string; capturedAt: number; data: Record<string, unknown> };
+          error?: string;
+        };
+        readinessBlockers?: Array<{ type: string; message: string; remediation: string }>;
+        error?: string;
+      }>,
+
+    /**
+     * Advance a workflow run paused at an approval gate.
+     * Call after approving the pending operator approval.
+     */
+    advanceRun: (runId: string, opts?: Record<string, unknown>) =>
+      ipcRenderer.invoke('workflow:run:advance', runId, opts ?? {}) as Promise<{
+        ok: boolean;
+        run?: Record<string, unknown>;
+        error?: string;
+      }>,
+
+    /** List all workflow runs. */
+    listRuns: () =>
+      ipcRenderer.invoke('workflow:run:list') as Promise<{
+        ok: boolean;
+        runs?: Array<{
+          id: string; packId: string; packName: string;
+          targetApp: string | null; startedAt: number; endedAt?: number;
+          status: string; currentPhaseIndex: number;
+          pendingApprovalId?: string;
+          artifact?: { type: string; capturedAt: number };
+          error?: string;
+        }>;
+        error?: string;
+      }>,
+
+    /** Get a specific workflow run by ID. */
+    getRun: (runId: string) =>
+      ipcRenderer.invoke('workflow:run:get', runId) as Promise<{
+        ok: boolean; run?: Record<string, unknown>; error?: string;
+      }>,
+
+    /** Stop an active workflow run. */
+    stopRun: (runId: string) =>
+      ipcRenderer.invoke('workflow:run:stop', runId) as Promise<{
+        ok: boolean; error?: string;
+      }>,
+  },
+
+  // ── Section 10 — Operator Safety Controls ─────────────────────────────────
+  operatorSafety: {
+    /** Disable all operator execution immediately (kill switch). */
+    disable: () =>
+      ipcRenderer.invoke('operator:safety:disable') as Promise<{
+        ok: boolean; enabled: boolean; error?: string;
+      }>,
+
+    /** Re-enable operator execution. */
+    enable: () =>
+      ipcRenderer.invoke('operator:safety:enable') as Promise<{
+        ok: boolean; enabled: boolean; error?: string;
+      }>,
+
+    /** Get the current operator enabled/disabled state. */
+    getStatus: () =>
+      ipcRenderer.invoke('operator:safety:status') as Promise<{
+        ok: boolean; enabled: boolean; error?: string;
+      }>,
+  },
 };
 
 contextBridge.exposeInMainWorld('triforge', api);

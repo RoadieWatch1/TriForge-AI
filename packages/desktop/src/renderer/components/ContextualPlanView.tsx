@@ -78,7 +78,7 @@ export function ContextualPlanView({ result }: Props) {
       {/* Header row */}
       <div style={s.cardHeader}>
         <div style={s.headerLeft}>
-          <span style={s.cardLabel}>CONTEXTUAL ANALYSIS</span>
+          <span style={s.cardLabel}>Context</span>
           <span style={{ ...s.taskBadge }}>
             {taskLabel}
           </span>
@@ -117,7 +117,7 @@ export function ContextualPlanView({ result }: Props) {
           {/* Blockers / Still Needed */}
           {(blockingBlockers.length > 0 || explanation.whatIStillNeed.length > 0) && (
             <>
-              <SectionHeader label="Blockers & Needs" />
+              <SectionHeader label="What's Needed" />
               <div style={s.sectionContent}>
                 {blockingBlockers.map(b => (
                   <div key={b.id} style={{ ...s.blockerRow, borderColor: `${SEVERITY_COLORS[b.severity]}44` }}>
@@ -154,7 +154,7 @@ export function ContextualPlanView({ result }: Props) {
           {/* Reasoning Plan */}
           {plan.orderedSteps.length > 0 && (
             <>
-              <SectionHeader label="Reasoning Plan" />
+              <SectionHeader label="Approach" />
               <div style={s.sectionContent}>
                 {plan.orderedSteps.map((step) => (
                   <div key={step.id} style={s.planStep}>

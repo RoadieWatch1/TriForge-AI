@@ -54,6 +54,71 @@ export type {
   InboundTaskSource, InboundRiskClass, InboundTaskDecision,
 } from './core/taskTypes';
 
+// ── Section 8 — Desktop Operator Engine ──────────────────────────────────────
+
+export type {
+  OperatorPlatform,
+  OperatorTarget,
+  OperatorPerception,
+  OperatorActionType,
+  OperatorAction,
+  OperatorActionRisk,
+  OperatorOutcome,
+  OperatorActionResult,
+  OperatorRecoveryBehavior,
+  OperatorCapabilityMap,
+  OperatorSession,
+  OperatorSessionEntry,
+  OperatorApprovalRequest,
+} from './operator/operatorTypes';
+export {
+  OPERATOR_ACTION_RISKS,
+  OPERATOR_REQUIRES_APPROVAL,
+  DEFAULT_RECOVERY,
+} from './operator/operatorTypes';
+
+// ── Section 9 — Workflow Packs ────────────────────────────────────────────────
+
+export type {
+  WorkflowCategory,
+  WorkflowPermissions,
+  WorkflowRequirements,
+  WorkflowPhase,
+  PhaseActionKind,
+  WorkflowPack,
+  WorkflowBlockerType,
+  WorkflowBlocker,
+  WorkflowReadinessResult,
+  WorkflowRunStatus,
+  WorkflowPhaseResult,
+  WorkflowArtifact,
+  WorkflowRun,
+  WorkflowRunOptions,
+} from './operator/workflowPackTypes';
+
+export {
+  WORKFLOW_PACK_REGISTRY,
+  getWorkflowPack,
+  listWorkflowPacks,
+  getPacksByCategory,
+} from './operator/workflowPackRegistry';
+
+export {
+  evaluateWorkflowReadiness,
+  evaluateAllPackReadiness,
+} from './operator/workflowReadiness';
+
+// ── Section 10 — Trust, Security, Safety Hardening ───────────────────────────
+
+export {
+  OPERATOR_ALWAYS_REQUIRES_APPROVAL,
+  OPERATOR_PERMISSION_GATES,
+  OPERATOR_RISK_FLOOR,
+  OPERATOR_APPROVAL_TTL_MS,
+  OPERATOR_ALWAYS_AUDIT,
+  validateTrustOverride,
+} from './operator/operatorSafetyPolicy';
+
 // ── Skill Trust Layer (Phase 2) ────────────────────────────────────────────────
 export type {
   SkillRiskLevel, SkillFrontmatter, DetectedPattern, SkillAnalysisResult, PolicyGateDecision,

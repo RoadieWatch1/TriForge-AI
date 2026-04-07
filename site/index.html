@@ -1367,6 +1367,347 @@
       color: var(--dim);
     }
 
+    /* ── HERO ENTRANCE ANIMATIONS ──────────────────────────────────── */
+    @keyframes fade-up-in {
+      from { opacity: 0; transform: translateY(14px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes council-entrance {
+      from { opacity: 0; transform: translateY(24px) scale(0.968); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    .hero-badge { animation: fade-up-in 0.65s 0.05s ease both; }
+    .hero h1    { animation: fade-up-in 0.65s 0.14s ease both; }
+    .hero-sub   { animation: fade-up-in 0.65s 0.23s ease both; }
+    .hero-ctas  { animation: fade-up-in 0.65s 0.32s ease both; }
+    .hero-os    { animation: fade-up-in 0.65s 0.40s ease both; }
+    .hero-trust { animation: fade-up-in 0.65s 0.46s ease both; }
+    .hero-logo-wrap { animation: council-entrance 0.80s 0.22s ease both; }
+
+    /* ── HERO TRUST ROW ─────────────────────────────────────────── */
+    .hero-trust {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      flex-wrap: wrap;
+      font-size: 12px;
+      color: rgba(166,171,185,0.52);
+      margin-top: 14px;
+      letter-spacing: 0.01em;
+    }
+    .hero-trust span { flex-shrink: 0; }
+
+    /* ── COUNCIL PANEL ──────────────────────────────────────────── */
+    .hero-logo-wrap::before {
+      background:
+        radial-gradient(circle at 50% 50%, rgba(249,115,22,0.22) 0%, rgba(249,115,22,0.07) 36%, transparent 66%) !important;
+      filter: blur(32px) !important;
+    }
+
+    .council-panel {
+      position: relative;
+      z-index: 1;
+      width: min(100%, 434px);
+      background: rgba(9, 11, 19, 0.98);
+      border: 1px solid rgba(255,255,255,0.11);
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow:
+        0 56px 100px rgba(0,0,0,0.55),
+        inset 0 1px 0 rgba(255,255,255,0.065),
+        0 0 0 1px rgba(0,0,0,0.3);
+      transition: opacity 0.48s ease;
+    }
+
+    /* Window chrome */
+    .cp-chrome {
+      height: 42px;
+      background: rgba(16, 19, 28, 1);
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+      display: flex;
+      align-items: center;
+      padding: 0 14px;
+      position: relative;
+    }
+    .cp-dots { display: flex; gap: 6px; }
+    .cp-dot  { width: 10px; height: 10px; border-radius: 50%; }
+    .cp-dot-close { background: #ff5f57; }
+    .cp-dot-min   { background: #febc2e; }
+    .cp-dot-max   { background: #28c840; }
+    .cp-title {
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 12px;
+      font-weight: 600;
+      color: rgba(255,255,255,0.38);
+      white-space: nowrap;
+      pointer-events: none;
+    }
+    .cp-live {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.10em;
+      text-transform: uppercase;
+      color: #4ade80;
+      margin-left: auto;
+    }
+    .cp-live-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: #4ade80;
+      animation: cp-live-pulse 1.9s ease-in-out infinite;
+      box-shadow: 0 0 7px rgba(74,222,128,0.55);
+    }
+    @keyframes cp-live-pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: 0.45; transform: scale(0.78); }
+    }
+
+    /* Prompt bar */
+    .cp-prompt {
+      padding: 8px 16px 7px;
+      background: rgba(249,115,22,0.04);
+      border-bottom: 1px solid rgba(255,255,255,0.055);
+    }
+    .cp-prompt-label {
+      display: block;
+      font-size: 9.5px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.13em;
+      color: rgba(249,115,22,0.58);
+      margin-bottom: 3px;
+    }
+    .cp-prompt-text {
+      font-size: 12.5px;
+      color: rgba(242,242,246,0.88);
+      font-weight: 500;
+      line-height: 1.45;
+      min-height: 18px;
+    }
+
+    /* Agents */
+    .cp-agents { padding: 8px 10px 4px; }
+    .cp-agent {
+      padding: 7px 10px;
+      border-radius: 8px;
+      background: rgba(255,255,255,0.018);
+      margin-bottom: 5px;
+      border: 1px solid rgba(255,255,255,0.04);
+    }
+    .cp-agent:last-child { margin-bottom: 0; }
+    .cp-agent-header {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin-bottom: 4px;
+    }
+    .cp-agent-badge {
+      font-size: 9.5px;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 2px 7px;
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+    .cp-agent[data-model="openai"] .cp-agent-badge {
+      background: rgba(16,163,127,0.13);
+      color: #6ee7b7;
+      border: 1px solid rgba(16,163,127,0.17);
+    }
+    .cp-agent[data-model="claude"] .cp-agent-badge {
+      background: rgba(249,115,22,0.13);
+      color: #fca975;
+      border: 1px solid rgba(249,115,22,0.17);
+    }
+    .cp-agent[data-model="grok"] .cp-agent-badge {
+      background: rgba(168,85,247,0.13);
+      color: #d8b4fe;
+      border: 1px solid rgba(168,85,247,0.17);
+    }
+    .cp-agent-status {
+      font-size: 9.5px;
+      color: rgba(255,255,255,0.25);
+      margin-left: auto;
+      font-style: italic;
+    }
+    .cp-agent-status.cp-thinking { color: rgba(249,115,22,0.52); }
+    .cp-agent-status.cp-done     { color: rgba(74,222,128,0.50); }
+    .cp-agent-text {
+      font-size: 12px;
+      color: rgba(242,242,246,0.68);
+      line-height: 1.65;
+      min-height: 38px;
+    }
+
+    /* Streaming cursor */
+    .cp-cursor {
+      display: inline-block;
+      width: 1.5px;
+      height: 0.88em;
+      background: currentColor;
+      margin-left: 1px;
+      vertical-align: -0.05em;
+      animation: cp-cursor-blink 0.85s ease-in-out infinite;
+    }
+    @keyframes cp-cursor-blink {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0; }
+    }
+
+    /* Signal bar */
+    .cp-signal-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 5px 14px;
+      border-top: 1px solid rgba(255,255,255,0.04);
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      background: rgba(249,115,22,0.025);
+    }
+    .cp-signal-label {
+      font-size: 9.5px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: rgba(249,115,22,0.26);
+      flex-shrink: 0;
+      transition: color 0.5s ease;
+    }
+    .cp-signal-bar.cp-active .cp-signal-label { color: rgba(249,115,22,0.60); }
+    .cp-signal-track {
+      flex: 1;
+      height: 1px;
+      background: rgba(249,115,22,0.10);
+      position: relative;
+      overflow: hidden;
+      border-radius: 1px;
+    }
+    .cp-signal-dot {
+      position: absolute;
+      top: -2px;
+      width: 5px; height: 5px;
+      border-radius: 50%;
+      background: rgba(249,115,22,0.0);
+      transition: background 0.5s ease;
+    }
+    .cp-signal-bar.cp-active .cp-signal-dot {
+      background: rgba(249,115,22,0.72);
+      box-shadow: 0 0 5px rgba(249,115,22,0.35);
+    }
+    .cp-signal-dot:nth-child(1) { animation: signal-flow 1.9s 0.0s  linear infinite; }
+    .cp-signal-dot:nth-child(2) { animation: signal-flow 1.9s 0.63s linear infinite; }
+    .cp-signal-dot:nth-child(3) { animation: signal-flow 1.9s 1.26s linear infinite; }
+    @keyframes signal-flow {
+      0%   { left: -5px; opacity: 0; }
+      8%   { opacity: 1; }
+      92%  { opacity: 1; }
+      100% { left: 100%; opacity: 0; }
+    }
+
+    /* Consensus */
+    .cp-consensus {
+      padding: 8px 14px 12px;
+      background: linear-gradient(180deg, rgba(249,115,22,0.048), rgba(249,115,22,0.024));
+    }
+    .cp-consensus-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 5px;
+    }
+    .cp-consensus-label {
+      font-size: 9.5px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: rgba(249,115,22,0.70);
+    }
+    .cp-consensus-badge {
+      font-size: 9.5px;
+      font-weight: 700;
+      color: rgba(249,115,22,0.40);
+      letter-spacing: 0.04em;
+    }
+    .cp-consensus-text {
+      font-size: 12.5px;
+      color: rgba(242,242,246,0.90);
+      line-height: 1.65;
+      min-height: 54px;
+      font-weight: 500;
+    }
+
+    /* ── CONSENSUS SECTION UPGRADE ──────────────────────────────── */
+    .consensus-flagship {
+      margin-top: 34px;
+      background: linear-gradient(145deg, rgba(22,16,11,0.97), rgba(11,13,19,0.98));
+      border: 1px solid rgba(249,115,22,0.18);
+      border-radius: var(--radius);
+      padding: 40px 36px;
+      text-align: center;
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,0.04),
+        0 20px 42px rgba(0,0,0,0.20);
+      position: relative;
+      overflow: hidden;
+    }
+    .consensus-flagship::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(circle at 50% 0%, rgba(249,115,22,0.13), transparent 40%);
+    }
+    .consensus-flagship-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      background: rgba(249,115,22,0.10);
+      border: 1px solid rgba(249,115,22,0.22);
+      border-radius: 999px;
+      padding: 5px 14px;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      color: #f3c29f;
+      margin-bottom: 14px;
+      position: relative;
+      z-index: 1;
+    }
+    .consensus-flagship-pill-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--orange);
+      animation: cp-live-pulse 2s ease-in-out infinite;
+      box-shadow: 0 0 6px rgba(249,115,22,0.5);
+    }
+    .consensus-flagship h3 {
+      font-size: 22px;
+      font-weight: 800;
+      margin-bottom: 12px;
+      color: #f4f4f6;
+      letter-spacing: -0.4px;
+      position: relative;
+      z-index: 1;
+    }
+    .consensus-flagship p {
+      color: var(--muted);
+      font-size: 15px;
+      max-width: 720px;
+      margin: 0 auto;
+      line-height: 1.82;
+      position: relative;
+      z-index: 1;
+    }
+
     /* ── RESPONSIVE ──────────────────────────────────────────── */
     @media (max-width: 1100px) {
       .hero-inner {
@@ -1559,21 +1900,29 @@
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M13.6 2.6c.4 2.2 1.8 3.7 3 5.1 1.5 1.8 2.7 3.4 2.7 5.9 0 3.9-3 6.8-7.3 6.8-4 0-7-2.6-7-6.4 0-3.2 2-5.4 4-7.5 1.6-1.8 3.1-3.5 3.7-6.1.1-.4.8-.4.9.2Z"/>
             </svg>
-            <span>The Future of Personal AI is Here</span>
+            <span>Three Frontier AIs &nbsp;·&nbsp; Desktop Native &nbsp;·&nbsp; You Control the Data Path</span>
           </div>
 
           <h1>Three AI Minds.<br /><span class="grad">One Think Tank.</span></h1>
 
           <p class="hero-sub">
-            TriForge AI runs OpenAI, Claude, and Grok together on your desktop —
-            consensus intelligence, an approval-first autonomous income operator,
-            and private AI power no single tool can match.
+            Watch OpenAI, Claude, and Grok reason simultaneously on your desktop —
+            each streaming live, then converging into one synthesized answer.
+            Requests go directly from your machine to the providers you choose.
           </p>
 
           <div class="hero-ctas">
             <a href="#download" class="btn-primary">Download Free</a>
-            <a href="#what" class="btn-secondary">Learn More</a>
+            <a href="#what" class="btn-secondary">See How It Works</a>
           </div>
+
+          <p class="hero-trust">
+            <span>No account needed</span>
+            <span>·</span>
+            <span>Your API keys</span>
+            <span>·</span>
+            <span>Your data is routed directly from your machine</span>
+          </p>
 
           <p class="hero-os">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.37 12.59c.02 2.35 2.06 3.13 2.08 3.14-.02.05-.32 1.12-1.04 2.22-.63.95-1.29 1.9-2.32 1.92-1.01.02-1.34-.6-2.5-.6s-1.53.58-2.47.62c-.99.04-1.74-1-2.37-1.95-1.28-1.86-2.26-5.27-.95-7.54.65-1.13 1.82-1.84 3.09-1.86.97-.02 1.88.65 2.5.65.62 0 1.77-.8 2.98-.68.51.02 1.95.2 2.88 1.56-.07.04-1.72 1-1.7 2.52Zm-2.11-8.01c.53-.64.88-1.53.79-2.41-.77.03-1.7.51-2.25 1.15-.49.56-.92 1.46-.8 2.32.86.07 1.73-.43 2.26-1.06Z"/></svg>
@@ -1585,7 +1934,71 @@
         </div>
 
         <div class="hero-logo-wrap">
-          <img src="./logo.png" alt="TriForge AI" class="hero-logo" />
+          <div class="council-panel">
+            <!-- Window chrome -->
+            <div class="cp-chrome">
+              <div class="cp-dots">
+                <span class="cp-dot cp-dot-close"></span>
+                <span class="cp-dot cp-dot-min"></span>
+                <span class="cp-dot cp-dot-max"></span>
+              </div>
+              <span class="cp-title">TriForge Council</span>
+              <span class="cp-live">
+                <span class="cp-live-dot"></span>
+                Live
+              </span>
+            </div>
+
+            <!-- Prompt -->
+            <div class="cp-prompt">
+              <span class="cp-prompt-label">Query</span>
+              <span class="cp-prompt-text" id="cp-prompt"></span>
+            </div>
+
+            <!-- Three agents -->
+            <div class="cp-agents">
+              <div class="cp-agent" data-model="openai">
+                <div class="cp-agent-header">
+                  <span class="cp-agent-badge">GPT-4o</span>
+                  <span class="cp-agent-status" id="cp-status-0">ready</span>
+                </div>
+                <div class="cp-agent-text" id="cp-text-0"></div>
+              </div>
+              <div class="cp-agent" data-model="claude">
+                <div class="cp-agent-header">
+                  <span class="cp-agent-badge">Claude</span>
+                  <span class="cp-agent-status" id="cp-status-1">ready</span>
+                </div>
+                <div class="cp-agent-text" id="cp-text-1"></div>
+              </div>
+              <div class="cp-agent" data-model="grok">
+                <div class="cp-agent-header">
+                  <span class="cp-agent-badge">Grok</span>
+                  <span class="cp-agent-status" id="cp-status-2">ready</span>
+                </div>
+                <div class="cp-agent-text" id="cp-text-2"></div>
+              </div>
+            </div>
+
+            <!-- Signal flow -->
+            <div class="cp-signal-bar" id="cp-signal-bar">
+              <span class="cp-signal-label">Synthesizing</span>
+              <div class="cp-signal-track">
+                <span class="cp-signal-dot"></span>
+                <span class="cp-signal-dot"></span>
+                <span class="cp-signal-dot"></span>
+              </div>
+            </div>
+
+            <!-- Consensus output -->
+            <div class="cp-consensus">
+              <div class="cp-consensus-header">
+                <span class="cp-consensus-label">Consensus</span>
+                <span class="cp-consensus-badge">★ TriForge</span>
+              </div>
+              <div class="cp-consensus-text" id="cp-consensus"></div>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -1624,8 +2037,8 @@
             </svg>
           </div>
           <div class="hero-strip-copy">
-            <strong>INCOME OPERATOR</strong>
-            <span>Approval-first autonomous income.</span>
+            <strong>SUPERVISED OPERATOR</strong>
+            <span>Approval-first — nothing runs without you.</span>
           </div>
         </div>
 
@@ -1637,8 +2050,8 @@
             </svg>
           </div>
           <div class="hero-strip-copy">
-            <strong>SECURE INFRASTRUCTURE</strong>
-            <span>Enterprise-grade security.</span>
+            <strong>TRUST BY DESIGN</strong>
+            <span>Every action audited, every step visible.</span>
           </div>
         </div>
       </div>
@@ -1666,8 +2079,7 @@
               their answers into a smarter, more reliable response.
             </p>
             <p>
-              It lives on your desktop, not in a browser tab. Your data stays local.
-              Your API keys stay private. No middleman. No subscription required to get started.
+              It lives on your desktop, not in a browser tab. Your requests go directly to the model providers you choose, and your API keys stay under your control. No middleman. No subscription required to get started.
             </p>
             <p>
               TriForge is built for people who use AI seriously — entrepreneurs, builders,
@@ -1675,18 +2087,18 @@
               available the moment you open your laptop.
             </p>
             <p>
-              Beyond conversation, TriForge can <strong>plan and execute multi-step tasks autonomously</strong>,
-              switching between three operational AI personas via <strong>Forge Profiles</strong>,
-              accepting voice commands hands-free with offline wake-word detection, and pairing
-              with your phone via QR code — all running locally on your hardware.
+              Beyond conversation, TriForge includes a supervised <strong>Operate</strong> layer —
+              a structured workspace for assigning tasks, running workflow packs, and tracking
+              execution with full visibility. Every action that touches your machine requires
+              your explicit approval before it runs. Nothing executes silently.
             </p>
             <p>
-              Business users unlock the <strong>Income Operator</strong> — an approval-first autonomous
-              agent that identifies income opportunities, proposes time-boxed experiments, and executes
-              approved actions across eight income lanes (digital products, affiliate content, AI music,
-              and more). Every action requires your sign-off. The <strong>ForgeHub Skill Catalog</strong>
-              and curated <strong>Starter Packs</strong> get you live in minutes with pre-built
-              templates, guided installation, and a full audit ledger of every decision made.
+              Business users unlock the <strong>Supervised Operator</strong> — an approval-first
+              execution substrate that can queue, review, and perform targeted desktop actions
+              on your behalf. Actions are proposed, logged, and paused until you approve. A full
+              audit trail records every decision. The <strong>Operate</strong> and <strong>Sessions</strong>
+              pillars give you real-time visibility into what is running, what is waiting, and
+              what has completed.
             </p>
           </div>
 
@@ -1701,7 +2113,7 @@
             </div>
             <div class="stat-card">
               <div class="stat-num">0</div>
-              <div class="stat-label">Data Sent to Our Servers</div>
+              <div class="stat-label">Requests Routed Through TriForge Servers</div>
             </div>
             <div class="stat-card">
               <div class="stat-num">1</div>
@@ -1782,8 +2194,12 @@
           </div>
         </div>
 
-        <div class="consensus-box">
-          <h3>Consensus Mode — The TriForge Difference</h3>
+        <div class="consensus-flagship">
+          <div class="consensus-flagship-pill">
+            <span class="consensus-flagship-pill-dot"></span>
+            Consensus Mode
+          </div>
+          <h3>The TriForge Difference</h3>
           <p>
             When all three models are active, TriForge enters <strong>Consensus Mode</strong>.
             All three AIs respond to your prompt simultaneously — you watch their tokens
@@ -1816,8 +2232,8 @@
                 <path d="m9.5 12 1.8 1.8 3.8-4"></path>
               </svg>
             </div>
-            <h3>Fully Private</h3>
-            <p>Your API keys and conversations never touch our servers. Everything flows directly from your machine to the AI providers. Period.</p>
+            <h3>Direct-to-Provider</h3>
+            <p>Your API keys and conversations never touch our servers. Everything flows directly from your machine to the AI providers you choose. Period.</p>
           </div>
 
           <div class="feature-card">
@@ -1838,8 +2254,8 @@
                 <path d="M9.5 5.5c1.1-1 3-1 4.1 0l1.1 1.1c1.2-.1 2.4.4 3.1 1.4.8 1 .9 2.3.5 3.5.8.9 1.1 2.2.7 3.4-.3 1.2-1.2 2.2-2.4 2.6-.4 1.2-1.3 2.1-2.6 2.4-1.2.3-2.5.1-3.4-.7-1.2.4-2.5.2-3.5-.5-1-.8-1.5-1.9-1.4-3.1L4.7 14.6c-1-1.1-1-3 0-4.1l1.1-1.1c-.1-1.2.4-2.4 1.4-3.1 1-.8 2.3-.9 3.5-.5Z"></path>
               </svg>
             </div>
-            <h3>Long-Term Memory</h3>
-            <p>Tell TriForge facts, goals, and preferences once. It remembers them across every session — no repetition required.</p>
+            <h3>Memory</h3>
+            <p>TriForge can retain important context and preferences so your workspace stays consistent over time.</p>
           </div>
 
           <div class="feature-card">
@@ -1855,13 +2271,12 @@
           <div class="feature-card">
             <div class="feature-icon">
               <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M7 8V4h10v4"></path>
-                <rect x="5" y="8" width="14" height="8" rx="2"></rect>
-                <path d="M7 16h10v4H7z"></path>
+                <path d="M12 3 5 6v5c0 5 3.4 8.4 7 10 3.6-1.6 7-5 7-10V6l-7-3Z"></path>
+                <path d="m9.5 12 1.8 1.8 3.8-4"></path>
               </svg>
             </div>
-            <h3>Print Integration</h3>
-            <p>Pick any document and send it to any connected printer directly from the app. No switching applications.</p>
+            <h3>Approval-First Design</h3>
+            <p>Every action that touches your machine is queued for your review before it executes. No silent background automation. You decide what runs.</p>
           </div>
 
           <div class="feature-card">
@@ -1872,7 +2287,7 @@
               </svg>
             </div>
             <h3>Session Lock</h3>
-            <p>Protect your AI sessions with a username and 7-digit PIN. Auto-locks after inactivity so your data stays yours.</p>
+            <p>Protect your AI workspace with a PIN lock. Auto-locks after inactivity so your conversations and data stay private.</p>
           </div>
 
           <div class="feature-card">
@@ -1914,14 +2329,19 @@
           <div class="feature-card">
             <div class="feature-icon">
               <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 3a4 4 0 0 1 4 4v5a4 4 0 0 1-8 0V7a4 4 0 0 1 4-4Z"></path>
-                <path d="M5 11a7 7 0 0 0 14 0"></path>
+                <circle cx="12" cy="12" r="3"></circle>
+                <path d="M12 3v3"></path>
                 <path d="M12 18v3"></path>
-                <circle cx="18" cy="5" r="3" fill="currentColor" opacity=".35"></circle>
+                <path d="m4.22 4.22 2.12 2.12"></path>
+                <path d="m17.66 17.66 2.12 2.12"></path>
+                <path d="M3 12h3"></path>
+                <path d="M18 12h3"></path>
+                <path d="m4.22 19.78 2.12-2.12"></path>
+                <path d="m17.66 6.34 2.12-2.12"></path>
               </svg>
             </div>
-            <h3>Wake Word Activation</h3>
-            <p>Say "Hey Council" and TriForge activates instantly — no keyboard, no click. Wake detection runs entirely on-device using WASM speech recognition. Zero cloud, zero latency, zero background listening.</p>
+            <h3>Operate &amp; Sessions</h3>
+            <p>Operate is where you assign work and launch supervised workflows. Sessions is where you watch it run — approval requests, step-by-step progress, and full execution history, all in one place.</p>
           </div>
 
           <div class="feature-card">
@@ -1935,21 +2355,20 @@
               </svg>
             </div>
             <h3>Forge Profiles</h3>
-            <p>Switch between three operational AI personas — Research, Engineering, Strategy. One click reshapes the entire council's focus, tone, and behavioral defaults. Each profile builds its own memory blueprint over time.</p>
+            <p>Switch between operational AI personas — Research, Engineering, Strategy. One click reshapes the entire council's focus, tone, and behavioral defaults for the work at hand.</p>
           </div>
 
           <div class="feature-card">
             <div class="feature-icon">
               <svg viewBox="0 0 24 24" aria-hidden="true">
-                <rect x="5" y="2" width="14" height="20" rx="2"></rect>
-                <path d="M9 7h6"></path>
-                <path d="M9 11h6"></path>
-                <path d="M9 15h3"></path>
-                <rect x="2" y="6" width="4" height="4" rx="1" opacity=".5"></rect>
+                <path d="M4 7h9"></path>
+                <path d="M4 12h16"></path>
+                <path d="M4 17h11"></path>
+                <path d="m15 7 2 2 3-3"></path>
               </svg>
             </div>
-            <h3>Phone Link</h3>
-            <p>Scan a QR code to pair your phone with TriForge over your local network. Continue sessions from your mobile browser without installing anything. Your desktop stays in control — your phone becomes a second screen.</p>
+            <h3>Workflow Packs</h3>
+            <p>Structured, multi-phase supervised workflows for common desktop tasks. Each pack defines a clear sequence — perception, action, approval, completion — with you in control at every gate.</p>
           </div>
 
           <div class="feature-card">
@@ -1966,8 +2385,8 @@
                 <path d="m17.66 6.34 2.12-2.12"></path>
               </svg>
             </div>
-            <h3>Autonomous Missions</h3>
-            <p>Give TriForge a goal and it drafts a multi-step plan to achieve it — complete with risk levels and rollback options. You review and approve each step before it acts. The council runs experiments, selects the strongest approach, then executes. Autonomous, but always under your control.</p>
+            <h3>Supervised Desktop Actions</h3>
+            <p>TriForge can queue targeted desktop actions — typing, key sequences, app focus — on your behalf. Each action pauses for your approval before executing. You see what is proposed, decide whether to allow it, and track every outcome in Sessions.</p>
           </div>
 
           <div class="feature-card">
@@ -1994,8 +2413,8 @@
                 <circle cx="12" cy="12" r="3"></circle>
               </svg>
             </div>
-            <h3>Income Operator</h3>
-            <p>An approval-first autonomous income agent that identifies opportunities, proposes time-boxed experiments across eight income lanes, and executes only what you approve. Tracks spend, kill rules, and results in a full audit ledger — you stay in control at every step.</p>
+            <h3>Trust &amp; Audit Layer</h3>
+            <p>Every approval decision, every action outcome, and every trust override is logged to an audit trail you can review at any time. Nothing the operator does is hidden. You can see exactly what ran, when, and what the result was — at any time.</p>
           </div>
 
           <div class="feature-card">
@@ -2007,8 +2426,8 @@
                 <rect x="14" y="14" width="7" height="7" rx="1"></rect>
               </svg>
             </div>
-            <h3>ForgeHub Skill Catalog</h3>
-            <p>A curated library of income-generating skills mapped to eight lanes — digital products, affiliate content, AI music, mini games, and more. Browse, install per-skill or by pack, and see which are already active. Every skill integrates directly into the Income Operator workflow.</p>
+            <h3>Contextual Intelligence</h3>
+            <p>When multiple models deliberate together, TriForge surfaces structured context alongside responses — key assumptions, risk level, what to verify, and areas of disagreement. Intelligence made legible, not just delivered.</p>
           </div>
 
           <div class="feature-card">
@@ -2019,8 +2438,8 @@
                 <path d="M12 22V12"></path>
               </svg>
             </div>
-            <h3>Income Starter Packs</h3>
-            <p>Four guided packs — Digital Product, Affiliate Shorts, AI Music, Mini Game — each bundles the right skills, platform credentials checklist, and a pre-filled experiment template. Go from zero to first live experiment without guessing what to set up or in what order.</p>
+            <h3>Operator Kill Switch</h3>
+            <p>A built-in operator kill switch for operator execution. Disable operator execution instantly from the desktop app. When off, operator and workflow actions cannot execute until you turn it back on.</p>
           </div>
         </div>
       </div>
@@ -2041,7 +2460,7 @@
             <div class="step-num">1</div>
             <div class="step-content">
               <h3>Download & Install</h3>
-              <p>Download the DMG for Mac (Apple Silicon). Drag TriForge AI into your Applications folder. Launch it. The splash screen greets you with a voice introduction while the app initializes.</p>
+              <p>Download the DMG for Mac (Apple Silicon). Drag TriForge AI into your Applications folder. Launch it — no configuration needed to get started.</p>
             </div>
           </div>
 
@@ -2050,7 +2469,7 @@
             <div class="step-num">2</div>
             <div class="step-content">
               <h3>Grant Permissions</h3>
-              <p>A one-time setup wizard walks you through enabling the features you want — file access, printer control, voice input. You're always in control of what TriForge can do.</p>
+              <p>A one-time setup wizard walks you through enabling the features you want — file access, voice input. You're always in control of what TriForge can do.</p>
             </div>
           </div>
 
@@ -2059,7 +2478,7 @@
             <div class="step-num">3</div>
             <div class="step-content">
               <h3>Add Your API Keys</h3>
-              <p>Go to Settings and paste in your API keys from OpenAI, Anthropic, and/or Google. Keys are stored locally on your machine using encrypted storage — they never leave your computer.</p>
+              <p>Go to Settings and paste in your API keys from OpenAI, Anthropic, and/or xAI. Keys are stored locally on your machine using encrypted storage — they never leave your computer.</p>
             </div>
           </div>
 
@@ -2193,12 +2612,11 @@
               <li>All 3 AI models</li>
               <li>Think Tank consensus mode</li>
               <li>Live streaming council responses</li>
-              <li>Voice input &amp; output + wake word</li>
+              <li>Voice input &amp; output</li>
               <li>Long-term memory</li>
               <li>Forge Profiles (3 AI personas)</li>
-              <li>Phone Link (QR mobile pairing)</li>
-              <li>File &amp; printer access</li>
-              <li>Decision Ledger &amp; export</li>
+              <li>File system access</li>
+              <li>Decision Ledger</li>
               <li>Priority support</li>
             </ul>
             <a href="https://triforgeai.lemonsqueezy.com/checkout/buy/1a814c5e-80b4-4fb1-a479-cd3a7e240739" class="btn-price">Get Pro</a>
@@ -2210,15 +2628,12 @@
             <div class="price-desc">$480 / year &nbsp;·&nbsp; For teams &amp; power builders</div>
             <ul class="price-features">
               <li>Everything in Pro</li>
-              <li>Income Operator (approval-first autopilot)</li>
-              <li>ForgeHub Skill Catalog (8 income lanes)</li>
-              <li>Income Starter Packs (guided setup)</li>
-              <li>Experiment templates &amp; kill rules</li>
-              <li>Autonomous Mission Control</li>
-              <li>Multi-generation AI evolution engine</li>
-              <li>Browser automation access</li>
-              <li>Email integration</li>
-              <li>Finance &amp; trading tools</li>
+              <li>Supervised Operator substrate</li>
+              <li>Workflow Packs (guided task automation)</li>
+              <li>Approval-first action execution</li>
+              <li>Approval audit ledger</li>
+              <li>Sessions runtime visibility</li>
+              <li>Operator kill switch</li>
               <li>Advanced file operations</li>
               <li>Priority support</li>
               <li>Early access to new features</li>
@@ -2241,11 +2656,11 @@
           <p>By downloading, installing, or using TriForge AI ("the Software"), you agree to be bound by these Terms and Conditions. If you do not agree to these terms, do not use the Software.</p>
 
           <h3>2. Description of Service</h3>
-          <p>TriForge AI is a desktop application that enables users to interact with third-party AI model providers (OpenAI, Anthropic, Google) using their own API keys. The Software acts as an interface and orchestration layer. TriForge AI LLC does not operate any AI models itself.</p>
+          <p>TriForge AI is a desktop application that enables users to interact with third-party AI model providers (OpenAI, Anthropic, xAI) using their own API keys. The Software acts as an interface and orchestration layer. TriForge AI LLC does not operate any AI models itself.</p>
 
           <h3>3. User Responsibilities</h3>
           <ul>
-            <li>You are responsible for obtaining valid API keys from third-party providers (OpenAI, Anthropic, Google).</li>
+            <li>You are responsible for obtaining valid API keys from third-party providers (OpenAI, Anthropic, xAI).</li>
             <li>You are responsible for all costs incurred through your API usage with third-party providers.</li>
             <li>You agree to use the Software in compliance with all applicable local, state, national, and international laws.</li>
             <li>You agree not to use the Software for any unlawful, harmful, or malicious purpose.</li>
@@ -2310,5 +2725,149 @@
     </footer>
 
   </div>
+
+  <script>
+  (function() {
+    var convs = [
+      {
+        q: "What's the strongest GTM approach for early-stage B2B SaaS?",
+        a: [
+          "Start with direct outbound to 30–50 ideal accounts before any inbound motion. Validate the ICP before you build an audience for the wrong buyer.",
+          "Agree on ICP first. Focus on channels that allow real conversations, not impressions. Early sales is a learning exercise, not a revenue engine.",
+          "Both right, but add: build in public from week one. Thought leadership compounds while outbound decays. Run both from day one."
+        ],
+        c: "Combine targeted outbound to a tight ICP list with early public presence. Outbound validates; building in public compounds. Paid channels after $20K MRR."
+      },
+      {
+        q: "TypeScript or Python for a new backend service?",
+        a: [
+          "TypeScript if your team already writes JS — shared language across front and back reduces context-switching and speeds up code review.",
+          "Python for data-heavy work, ML pipelines, or rapid prototyping. The ecosystem for data tasks is unmatched and the tradeoffs are worth it.",
+          "Neither is inherently superior — team fluency beats language preference. For web APIs: TypeScript. For ML or pipelines: Python. They coexist."
+        ],
+        c: "Match language to domain: TypeScript for web APIs when JS fluency exists, Python for ML and data pipelines. Many strong systems use both side by side."
+      },
+      {
+        q: "How do I negotiate a salary increase effectively?",
+        a: [
+          "Lead with market data, not personal need. Bring 2–3 comp benchmarks and a tight list of your impact over the last 6 months. Numbers beat feelings.",
+          "Timing matters as much as framing — right after a visible win, not mid-quarter. Know your walk-away number before sitting down.",
+          "Most people ask too little and accept too fast. State your number, then stop talking. Silence after your ask is your strongest tool."
+        ],
+        c: "Lead with market data and documented impact. Time it after a visible win. State a number above your target, hold silence, and have your walk-away ready."
+      }
+    ];
+
+    var idx = 0;
+
+    function sleep(ms) {
+      return new Promise(function(r) { setTimeout(r, ms); });
+    }
+
+    function typeInto(el, text, speed, cursor) {
+      return new Promise(function(resolve) {
+        el.textContent = '';
+        if (cursor) el.appendChild(cursor);
+        var i = 0;
+        function next() {
+          if (i >= text.length) { resolve(); return; }
+          var node = document.createTextNode(text[i++]);
+          el.insertBefore(node, cursor || null);
+          setTimeout(next, speed + (Math.random() * 8 - 4));
+        }
+        next();
+      });
+    }
+
+    function runCycle() {
+      var conv = convs[idx];
+      idx = (idx + 1) % convs.length;
+
+      var panel    = document.querySelector('.council-panel');
+      var promptEl = document.getElementById('cp-prompt');
+      var txts     = [0,1,2].map(function(i) { return document.getElementById('cp-text-' + i); });
+      var stats    = [0,1,2].map(function(i) { return document.getElementById('cp-status-' + i); });
+      var conEl    = document.getElementById('cp-consensus');
+      var sigBar   = document.getElementById('cp-signal-bar');
+
+      if (!panel || !promptEl) return Promise.resolve();
+
+      // Reset
+      sigBar.classList.remove('cp-active');
+      promptEl.textContent = '';
+      txts.forEach(function(el, i) {
+        el.textContent = '';
+        stats[i].textContent = 'ready';
+        stats[i].className = 'cp-agent-status';
+      });
+      conEl.textContent = '';
+
+      return sleep(280)
+        .then(function() {
+          // Type prompt
+          var pCur = document.createElement('span');
+          pCur.className = 'cp-cursor';
+          return typeInto(promptEl, conv.q, 17, pCur).then(function() { pCur.remove(); });
+        })
+        .then(function() { return sleep(180); })
+        .then(function() {
+          // All to thinking
+          stats.forEach(function(s) {
+            s.textContent = 'thinking\u2026';
+            s.className = 'cp-agent-status cp-thinking';
+          });
+
+          // Trigger signal bar after delay
+          sleep(950).then(function() { sigBar.classList.add('cp-active'); });
+
+          // Type all three agents in parallel with staggered starts
+          var agentPromises = conv.a.map(function(text, i) {
+            return sleep(i * 165).then(function() {
+              var cur = document.createElement('span');
+              cur.className = 'cp-cursor';
+              return typeInto(txts[i], text, 14, cur).then(function() {
+                cur.remove();
+                stats[i].textContent = 'done';
+                stats[i].className = 'cp-agent-status cp-done';
+              });
+            });
+          });
+
+          return Promise.all(agentPromises);
+        })
+        .then(function() { return sleep(520); })
+        .then(function() {
+          // Type consensus
+          var cCur = document.createElement('span');
+          cCur.className = 'cp-cursor';
+          return typeInto(conEl, conv.c, 19, cCur).then(function() { cCur.remove(); });
+        })
+        .then(function() { return sleep(3900); })
+        .then(function() {
+          // Fade out and reset
+          panel.style.opacity = '0';
+          return sleep(460);
+        })
+        .then(function() {
+          panel.style.opacity = '1';
+          return sleep(120);
+        });
+    }
+
+    function loop() {
+      runCycle().then(loop, function() { sleep(1000).then(loop); });
+    }
+
+    function start() {
+      sleep(1100).then(loop);
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', start);
+    } else {
+      start();
+    }
+  })();
+  </script>
 </body>
 </html>

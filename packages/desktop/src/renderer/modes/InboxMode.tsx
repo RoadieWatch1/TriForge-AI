@@ -42,7 +42,7 @@ export function InboxMode({ onNavigate: _onNavigate }: Props) {
 
   return (
     <ModeShell
-      title="Inbox Mode"
+      title="Work Queue"
       subtitle="Monitor, reply, and follow up on platform messages — automatically."
       extra={extra}
     >

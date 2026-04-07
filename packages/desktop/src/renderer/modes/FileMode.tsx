@@ -133,7 +133,7 @@ export function FileMode({ onNavigate: _onNavigate }: Props) {
 
   return (
     <ModeShell
-      title="Files Mode"
+      title="File Work"
       subtitle="Browse your filesystem, analyze directories, and scan documents for AI processing."
       extra={extra}
     >

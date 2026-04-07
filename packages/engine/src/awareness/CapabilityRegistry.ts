@@ -484,6 +484,81 @@ export const CAPABILITY_REGISTRY: CapabilityDescriptor[] = [
     requiresTier: 'pro',
     examples: ['why was trade blocked', 'explain decision', 'council value added', 'trade explanations'],
   },
+
+  // ── Desktop Operator Engine (Section 8) ─────────────────────────────────────
+
+  {
+    id: 'operator.targeting',
+    name: 'Desktop App Targeting',
+    category: 'operator',
+    description:
+      'Lists visible running apps and identifies the frontmost app and window title. ' +
+      'Used to confirm the correct target before operator actions are executed. ' +
+      'macOS only (via AppleScript). Read-only — no permission required.',
+    tags: ['operator', 'targeting', 'app', 'window', 'focus', 'frontmost', 'running'],
+    riskLevel: 'safe',
+    approvalRequired: false,
+    invocationHint:
+      'Available via the Operate panel. No special permissions required for read-only targeting.',
+    examples: [
+      'what app is focused', 'list running apps', 'which window is active',
+    ],
+  },
+  {
+    id: 'operator.screenshot',
+    name: 'Screen Capture',
+    category: 'operator',
+    description:
+      'Captures the current screen state to a PNG file. ' +
+      'Used for perception — confirming visual state before or after an action. ' +
+      'macOS only. Requires Screen Recording permission in System Settings.',
+    tags: ['operator', 'screenshot', 'screen', 'capture', 'perception', 'vision'],
+    riskLevel: 'safe',
+    approvalRequired: false,
+    invocationHint:
+      'Used automatically by the operator engine for state validation. ' +
+      'Requires Screen Recording permission in System Settings → Privacy & Security.',
+    examples: [
+      'take a screenshot', 'capture the screen', 'what does the screen show',
+    ],
+  },
+  {
+    id: 'operator.focus',
+    name: 'App Focus / Window Switch',
+    category: 'operator',
+    description:
+      'Brings a named application to the foreground. ' +
+      'Non-destructive — does not send input, only changes window focus. ' +
+      'macOS only (via AppleScript activate). No Accessibility permission required.',
+    tags: ['operator', 'focus', 'switch', 'activate', 'foreground', 'window'],
+    riskLevel: 'safe',
+    approvalRequired: false,
+    invocationHint:
+      'Specify the app by its display name (e.g. "Slack", "Google Chrome"). ' +
+      'No special permission is needed to switch focus.',
+    examples: [
+      'focus Slack', 'switch to Chrome', 'bring Xcode to front',
+    ],
+  },
+  {
+    id: 'operator.input',
+    name: 'Keyboard Input (Approval Required)',
+    category: 'operator',
+    description:
+      'Types text or sends keyboard shortcuts into the currently focused window. ' +
+      'Always requires explicit human approval before execution. ' +
+      'macOS only. Requires Accessibility permission in System Settings. ' +
+      'NOT YET IMPLEMENTED: mouse clicks, UI element targeting, app-specific shortcuts.',
+    tags: ['operator', 'type', 'keyboard', 'input', 'keystroke', 'shortcut'],
+    riskLevel: 'high',
+    approvalRequired: true,
+    invocationHint:
+      'All input actions appear in the Operate approval queue before executing. ' +
+      'Requires Accessibility in System Settings → Privacy & Security.',
+    examples: [
+      'type this text', 'press enter', 'send Cmd+S', 'keyboard shortcut',
+    ],
+  },
 ];
 
 // ── Lookup helpers ────────────────────────────────────────────────────────────

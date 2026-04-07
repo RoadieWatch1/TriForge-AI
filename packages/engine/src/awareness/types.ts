@@ -19,7 +19,8 @@ export type CapabilityCategory =
   | 'tasks'
   | 'social'
   | 'insight'
-  | 'trading';
+  | 'trading'
+  | 'operator';  // Section 8 — Desktop Operator Engine
 
 /**
  * Static descriptor for a single Triforge capability.

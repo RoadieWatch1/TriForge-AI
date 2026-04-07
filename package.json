@@ -20,7 +20,7 @@
   "devDependencies": {
     "typescript": "^5.9.3"
   },
-  "version": "1.21.8",
+  "version": "1.22.0",
   "dependencies": {
     "electron": "^41.0.1",
     "vosk-browser": "^0.0.8"
