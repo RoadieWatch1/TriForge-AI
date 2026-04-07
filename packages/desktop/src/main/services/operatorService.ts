@@ -55,6 +55,18 @@ import type {
   OperatorApprovalRequest,
   OperatorOutcome,
 } from '@triforge/engine';
+import {
+  preflightOperatorAction,
+  cleanupStaleSessions as _cleanupStaleSessions,
+  invalidateCapabilityCache,
+  getLastKnownCapabilities,
+  getPermissionDriftState,
+} from './operatorPreflight';
+import {
+  validateFocusResult,
+  validateInputContext,
+  validatePostInputContinuity,
+} from './operatorTargetValidator';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -276,6 +288,7 @@ const _pendingApprovals = new Map<string, OperatorApprovalRequest>();
 function createApprovalRequest(
   action: OperatorAction,
   contextScreenshotPath?: string,
+  contextTarget?: OperatorTarget,
 ): OperatorApprovalRequest {
   const req: OperatorApprovalRequest = {
     id:           makeId(),
@@ -286,6 +299,7 @@ function createApprovalRequest(
                     : 'focus_only',
     description:  describeAction(action),
     contextScreenshotPath,
+    contextTarget,
     createdAt:    nowMs(),
     expiresAt:    nowMs() + APPROVAL_TTL_MS,
     status:       'pending',
@@ -511,16 +525,50 @@ export const OperatorService = {
   async executeAction(action: OperatorAction): Promise<OperatorActionResult> {
     const start = nowMs();
 
-    // Kill switch — check before any execution
+    // Kill switch — checked first (also checked inside preflight, but this path
+    // returns the existing operator-disabled message format for backwards compat)
     if (!_operatorEnabled) {
       return {
-        actionId:    action.id,
-        actionType:  action.type,
-        outcome:     'not_supported',
-        durationMs:  0,
-        error:       'Operator execution is disabled. Enable it in the Operate safety panel.',
-        recoveryHint: 'Go to Operate → Safety and enable the operator to resume.',
-        completedAt: nowMs(),
+        actionId:      action.id,
+        actionType:    action.type,
+        outcome:       'not_supported',
+        failureReason: 'operator_disabled',
+        durationMs:    0,
+        error:         'Operator execution is disabled. Enable it in the Operate safety panel.',
+        recoveryHint:  'Go to Operate → Safety and enable the operator to resume.',
+        completedAt:   nowMs(),
+      };
+    }
+
+    // ── Preflight: session validation + capability check ───────────────────
+    //
+    // Validates that the session is active and that required OS permissions
+    // (Accessibility, Screen Recording) are currently available.
+    // Catches permission drift — permissions may change after app startup.
+    // For input actions (type_text, send_key): blocks at queue time if
+    // Accessibility is missing, preventing a doomed approval from being created.
+
+    const preflight = await preflightOperatorAction(
+      action.type, action.sessionId, _sessions, () => _operatorEnabled,
+    );
+
+    if (preflight.blocked) {
+      const outcome: OperatorOutcome =
+        preflight.reason === 'session_invalid' || preflight.reason === 'session_stopped'
+          ? 'session_invalid'
+          : preflight.reason?.startsWith('permission_')
+          ? (preflight.reason?.includes('revoked') ? 'permission_revoked' : 'permission_denied')
+          : 'preflight_blocked';
+
+      return {
+        actionId:      action.id,
+        actionType:    action.type,
+        outcome,
+        failureReason: preflight.reason,
+        durationMs:    nowMs() - start,
+        error:         preflight.message,
+        recoveryHint:  preflight.recoveryHint,
+        completedAt:   nowMs(),
       };
     }
 
@@ -528,10 +576,12 @@ export const OperatorService = {
       outcome: OperatorOutcome,
       error: string,
       recoveryHint?: string,
+      failureReason?: string,
     ): OperatorActionResult => ({
       actionId:    action.id,
       actionType:  action.type,
       outcome,
+      failureReason,
       durationMs:  nowMs() - start,
       error,
       recoveryHint,
@@ -593,32 +643,72 @@ export const OperatorService = {
                 'target_not_found',
                 res.error ?? 'App not found',
                 `"${action.target}" is not running. List apps first to find available targets.`,
+                'app_not_running',
               )
             : fail('failed', res.error ?? 'Focus failed');
         }
-        // Confirm the target switched
+
+        // ── Post-focus verification ────────────────────────────────────────
+        // Re-read frontmost and verify the intended app is actually there.
+        // The OS activate call may succeed syntactically but focus can land
+        // on a different window if the app name was ambiguous or the app
+        // is in a restricted state (e.g. fullscreen another space).
+
         const confirmed = await getFrontmostTarget();
-        return ok({ executedTarget: confirmed ?? undefined });
+        const focusValidation = validateFocusResult(action.target, confirmed);
+
+        if (!focusValidation.valid) {
+          // Capture an audit screenshot on focus verification failure (best-effort)
+          const auditDest = path.join(os.tmpdir(), `tf-focus-fail-${nowMs()}.png`);
+          await execCaptureScreen(auditDest).catch(() => {/* best-effort */});
+
+          return {
+            actionId:       action.id,
+            actionType:     action.type,
+            outcome:        'wrong_target',
+            failureReason:  focusValidation.failureReason,
+            durationMs:     nowMs() - start,
+            error:          focusValidation.message,
+            executedTarget: confirmed ?? undefined,
+            recoveryHint:   `Verify "${action.target}" is running and not hidden behind a fullscreen app.`,
+            targetVerified: false,
+            completedAt:    nowMs(),
+          };
+        }
+
+        return ok({
+          executedTarget: confirmed ?? undefined,
+          targetVerified: true,
+        });
       }
 
       case 'type_text':
       case 'send_key': {
         // ── Approval gate ──
-        // Take a context screenshot before queuing (best-effort)
-        let contextScreenshotPath: string | undefined;
-        const screenshotDest = path.join(os.tmpdir(), `tf-ctx-${nowMs()}.png`);
-        const ssRes = await execCaptureScreen(screenshotDest);
-        if (ssRes.ok) contextScreenshotPath = screenshotDest;
+        // Capture context (screenshot + frontmost app) before queuing.
+        // Both are best-effort — queuing proceeds even if capture fails.
+        // contextTarget is stored on the approval so the UI can show
+        // "you are about to type into: [app name]" to the reviewer.
 
-        const approval = createApprovalRequest(action, contextScreenshotPath);
+        const ctxDest = path.join(os.tmpdir(), `tf-ctx-${nowMs()}.png`);
+        const [ctxSs, ctxFrontmost] = await Promise.all([
+          execCaptureScreen(ctxDest),
+          getFrontmostTarget(),
+        ]);
+
+        const approval = createApprovalRequest(
+          action,
+          ctxSs.ok ? ctxDest : undefined,
+          ctxFrontmost ?? undefined,
+        );
 
         return {
-          actionId:    action.id,
-          actionType:  action.type,
-          outcome:     'approval_pending',
-          durationMs:  nowMs() - start,
-          approvalId:  approval.id,
-          completedAt: nowMs(),
+          actionId:     action.id,
+          actionType:   action.type,
+          outcome:      'approval_pending',
+          durationMs:   nowMs() - start,
+          approvalId:   approval.id,
+          completedAt:  nowMs(),
           recoveryHint: 'Approve this action in the Operate panel before it will execute.',
         };
       }
@@ -638,13 +728,14 @@ export const OperatorService = {
     // Kill switch — check before executing approved actions too
     if (!_operatorEnabled) {
       return {
-        actionId:    approvalId,
-        actionType:  'type_text',
-        outcome:     'not_supported',
-        durationMs:  0,
-        error:       'Operator execution is disabled. Enable it in the Operate safety panel.',
-        recoveryHint: 'Go to Operate → Safety and enable the operator to resume.',
-        completedAt: nowMs(),
+        actionId:      approvalId,
+        actionType:    'type_text',
+        outcome:       'not_supported',
+        failureReason: 'operator_disabled',
+        durationMs:    0,
+        error:         'Operator execution is disabled. Enable it in the Operate safety panel.',
+        recoveryHint:  'Go to Operate → Safety and enable the operator to resume.',
+        completedAt:   nowMs(),
       };
     }
 
@@ -694,30 +785,65 @@ export const OperatorService = {
     const start = nowMs();
     const action = approval.action;
 
-    // Verify target hasn't changed (wrong-target guard)
-    const current = await getFrontmostTarget();
-    const session = _sessions.get(action.sessionId);
-    const intendedTarget = session?.intendedTarget;
+    // ── Pre-execution preflight: re-validate session + capabilities ────────
+    //
+    // Re-run preflight at execution time (not just at queue time).
+    // Permissions may have changed between when the approval was created
+    // and when the user clicks Approve. This prevents a false "Approved"
+    // action from executing when capabilities are now missing.
 
-    if (
-      intendedTarget &&
-      current?.appName &&
-      current.appName.toLowerCase() !== intendedTarget.toLowerCase()
-    ) {
+    const preflight = await preflightOperatorAction(
+      action.type, action.sessionId, _sessions, () => _operatorEnabled,
+    );
+    if (preflight.blocked) {
+      const outcome: OperatorOutcome =
+        preflight.reason === 'session_invalid' || preflight.reason === 'session_stopped'
+          ? 'session_invalid'
+          : preflight.reason?.startsWith('permission_')
+          ? (preflight.reason?.includes('revoked') ? 'permission_revoked' : 'permission_denied')
+          : 'preflight_blocked';
       return {
-        actionId:   action.id,
-        actionType: action.type,
-        outcome:    'wrong_target',
-        durationMs: nowMs() - start,
-        error:
-          `Target changed: expected "${intendedTarget}", frontmost is now "${current.appName}".`,
-        recoveryHint:
-          'Re-focus the intended app and re-queue the action.',
-        completedAt: nowMs(),
+        actionId:      action.id,
+        actionType:    action.type,
+        outcome,
+        failureReason: preflight.reason,
+        durationMs:    nowMs() - start,
+        error:         preflight.message,
+        recoveryHint:  preflight.recoveryHint,
+        completedAt:   nowMs(),
       };
     }
 
-    // Execute the input action
+    // ── Pre-input target validation (fuzzy) ────────────────────────────────
+    //
+    // Check that the frontmost app matches the session's intended target
+    // before delivering input. Uses fuzzy matching to handle common name
+    // variations (e.g. "Code" → "Visual Studio Code").
+    // If intendedTarget is null, any frontmost is acceptable.
+
+    const session        = _sessions.get(action.sessionId);
+    const intendedTarget = session?.intendedTarget ?? null;
+    const preTarget      = await getFrontmostTarget();
+
+    const inputValidation = validateInputContext(intendedTarget, preTarget);
+
+    if (!inputValidation.valid) {
+      return {
+        actionId:      action.id,
+        actionType:    action.type,
+        outcome:       'wrong_target',
+        failureReason: inputValidation.failureReason,
+        durationMs:    nowMs() - start,
+        error:         inputValidation.message,
+        executedTarget: preTarget ?? undefined,
+        recoveryHint:  'Re-focus the intended app and re-queue the action.',
+        targetVerified: false,
+        completedAt:   nowMs(),
+      };
+    }
+
+    // ── Execute the input action ────────────────────────────────────────────
+
     if (action.type === 'type_text') {
       if (!action.text) {
         return {
@@ -733,11 +859,12 @@ export const OperatorService = {
       if (!res.ok) {
         if (res.error === 'ACCESSIBILITY_DENIED') {
           return {
-            actionId:   action.id,
-            actionType: 'type_text',
-            outcome:    'permission_denied',
-            durationMs: nowMs() - start,
-            error:      'Accessibility permission denied.',
+            actionId:      action.id,
+            actionType:    'type_text',
+            outcome:       'permission_denied',
+            failureReason: 'permission_revoked_accessibility',
+            durationMs:    nowMs() - start,
+            error:         'Accessibility permission denied.',
             recoveryHint:
               'Go to System Settings → Privacy & Security → Accessibility and add TriForge.',
             completedAt: nowMs(),
@@ -752,13 +879,22 @@ export const OperatorService = {
           completedAt: nowMs(),
         };
       }
+
+      // ── Post-input target continuity check ────────────────────────────
+      const postTarget      = await getFrontmostTarget();
+      const continuity      = validatePostInputContinuity(preTarget?.appName ?? null, postTarget);
+
       return {
-        actionId:        action.id,
-        actionType:      'type_text',
-        outcome:         'success',
-        durationMs:      nowMs() - start,
-        executedTarget:  current ?? undefined,
-        completedAt:     nowMs(),
+        actionId:       action.id,
+        actionType:     'type_text',
+        outcome:        'success',
+        failureReason:  continuity.valid ? undefined : 'target_drift_post_input',
+        durationMs:     nowMs() - start,
+        executedTarget: postTarget ?? preTarget ?? undefined,
+        targetVerified: continuity.valid,
+        // Surface a note if drift occurred — action succeeded but continuity uncertain
+        error:          continuity.valid ? undefined : continuity.message,
+        completedAt:    nowMs(),
       };
     }
 
@@ -777,11 +913,12 @@ export const OperatorService = {
       if (!res.ok) {
         if (res.error === 'ACCESSIBILITY_DENIED') {
           return {
-            actionId:   action.id,
-            actionType: 'send_key',
-            outcome:    'permission_denied',
-            durationMs: nowMs() - start,
-            error:      'Accessibility permission denied.',
+            actionId:      action.id,
+            actionType:    'send_key',
+            outcome:       'permission_denied',
+            failureReason: 'permission_revoked_accessibility',
+            durationMs:    nowMs() - start,
+            error:         'Accessibility permission denied.',
             recoveryHint:
               'Go to System Settings → Privacy & Security → Accessibility and add TriForge.',
             completedAt: nowMs(),
@@ -796,13 +933,21 @@ export const OperatorService = {
           completedAt: nowMs(),
         };
       }
+
+      // ── Post-input target continuity check ────────────────────────────
+      const postTarget      = await getFrontmostTarget();
+      const continuity      = validatePostInputContinuity(preTarget?.appName ?? null, postTarget);
+
       return {
-        actionId:        action.id,
-        actionType:      'send_key',
-        outcome:         'success',
-        durationMs:      nowMs() - start,
-        executedTarget:  current ?? undefined,
-        completedAt:     nowMs(),
+        actionId:       action.id,
+        actionType:     'send_key',
+        outcome:        'success',
+        failureReason:  continuity.valid ? undefined : 'target_drift_post_input',
+        durationMs:     nowMs() - start,
+        executedTarget: postTarget ?? preTarget ?? undefined,
+        targetVerified: continuity.valid,
+        error:          continuity.valid ? undefined : continuity.message,
+        completedAt:    nowMs(),
       };
     }
 
@@ -853,5 +998,45 @@ export const OperatorService = {
       requestedAt: nowMs(),
       ...opts,
     };
+  },
+
+  // ── Reliability helpers (Phase 2 Step 1) ─────────────────────────────────────
+
+  /**
+   * Mark operator sessions that have been active past the stale threshold with
+   * no recorded actions as 'stopped'. Returns the count of sessions cleaned.
+   *
+   * Call at app startup and optionally before session creation to
+   * prevent zombie sessions from accumulating across workflow run invocations.
+   */
+  cleanupStaleSessions(): number {
+    return _cleanupStaleSessions(_sessions);
+  },
+
+  /**
+   * Invalidate the preflight capability cache.
+   * Call at app startup to ensure the first action after launch re-probes
+   * OS permissions rather than using state from a previous process.
+   */
+  invalidateCapabilityCache(): void {
+    invalidateCapabilityCache();
+  },
+
+  /**
+   * Return the last probed capability snapshot (if any).
+   * Useful for diagnostics and for mapping failures to WorkerRun blockers.
+   * Returns null if the cache was never populated or was just invalidated.
+   */
+  getLastKnownCapabilities() {
+    return getLastKnownCapabilities();
+  },
+
+  /**
+   * Return permission drift state — whether any permission was revoked
+   * after having been granted in this process run.
+   * Used by the council awareness snapshot to surface honest degraded-mode signals.
+   */
+  getPermissionDriftState() {
+    return getPermissionDriftState();
   },
 };

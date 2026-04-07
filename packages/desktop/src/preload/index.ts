@@ -2847,6 +2847,128 @@ const api = {
         ok: boolean; enabled: boolean; error?: string;
       }>,
   },
+
+  // ── Worker Runtime — durable run persistence (Phase 1) ────────────────────
+  workerRuntime: {
+    /**
+     * List persisted WorkerRuns, most recent first.
+     * Optional filter narrows by run status.
+     */
+    list: (filter?: { status?: string }) =>
+      ipcRenderer.invoke('workerRun:list', filter) as Promise<{
+        ok: boolean;
+        runs?: Array<{
+          id: string;
+          goal: string;
+          packId?: string;
+          workflowId?: string;
+          operatorSessionId?: string;
+          source: 'chat' | 'operate' | 'session_resume' | 'webhook';
+          status: string;
+          machineId: string;
+          createdAt: number;
+          updatedAt: number;
+          currentStepIndex: number;
+          lastHeartbeatAt?: number;
+          blocker?: { kind: string; message: string; recoverable: boolean };
+          artifacts: string[];
+          approvals: string[];
+        }>;
+        error?: string;
+      }>,
+
+    /**
+     * Get a single WorkerRun by ID, including its steps and artifact refs.
+     */
+    get: (runId: string) =>
+      ipcRenderer.invoke('workerRun:get', runId) as Promise<{
+        ok: boolean;
+        run?: {
+          id: string;
+          goal: string;
+          packId?: string;
+          workflowId?: string;
+          source: string;
+          status: string;
+          machineId: string;
+          createdAt: number;
+          updatedAt: number;
+          blocker?: { kind: string; message: string; recoverable: boolean };
+          artifacts: string[];
+        };
+        steps?: Array<{
+          id: string;
+          runId: string;
+          index: number;
+          title: string;
+          type: string;
+          status: string;
+          startedAt?: number;
+          endedAt?: number;
+          error?: string;
+          artifactIds?: string[];
+        }>;
+        artifacts?: Array<{
+          id: string;
+          runId: string;
+          stepId?: string;
+          kind: string;
+          path: string;
+          createdAt: number;
+          meta?: Record<string, unknown>;
+        }>;
+        error?: string;
+      }>,
+
+    /**
+     * Return all runs that were in a non-terminal state at app startup.
+     * Interrupted 'running' runs appear here as 'blocked'.
+     */
+    resumeCandidates: () =>
+      ipcRenderer.invoke('workerRun:resumeCandidates') as Promise<{
+        ok: boolean;
+        runs?: Array<{
+          id: string;
+          goal: string;
+          packId?: string;
+          source: string;
+          status: string;
+          createdAt: number;
+          updatedAt: number;
+          blocker?: { kind: string; message: string; recoverable: boolean };
+          artifacts: string[];
+        }>;
+        error?: string;
+      }>,
+
+    /**
+     * Cancel a WorkerRun if it is in a non-terminal state.
+     */
+    cancel: (runId: string) =>
+      ipcRenderer.invoke('workerRun:cancel', runId) as Promise<{
+        ok: boolean;
+        run?: { id: string; status: string };
+        error?: string;
+      }>,
+
+    /**
+     * Resume or recover a WorkerRun.
+     *
+     * Blocked/interrupted runs are restarted from saved workflow pack metadata.
+     * If the run is waiting_approval and still live, failReason is
+     * 'approval_live_use_panel' — direct the user to the approval panel.
+     *
+     * NOTE: Recovery is a restart from the beginning of the workflow pack,
+     * not a seamless resume from the exact interruption point.
+     */
+    resume: (runId: string) =>
+      ipcRenderer.invoke('workerRun:resume', runId) as Promise<{
+        ok: boolean;
+        kind?: 'restarted_from_metadata';
+        failReason?: string;
+        message: string;
+      }>,
+  },
 };
 
 contextBridge.exposeInMainWorld('triforge', api);

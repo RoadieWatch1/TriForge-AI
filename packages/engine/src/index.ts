@@ -108,6 +108,111 @@ export {
   evaluateAllPackReadiness,
 } from './operator/workflowReadiness';
 
+// ── Unreal Bootstrap Pack ─────────────────────────────────────────────────────
+
+export { UNREAL_BOOTSTRAP, evaluateUnrealBootstrapReadiness } from './operator/unrealBootstrapPack';
+export type {
+  UnrealBootstrapReadiness,
+  UnrealBootstrapIssueCode,
+  UnrealBootstrapIssue,
+  UnrealBootstrapResult,
+} from './operator/unrealBootstrapPack';
+
+// ── Unreal Build & Package Pack ───────────────────────────────────────────────
+
+export { UNREAL_BUILD_PACKAGE } from './operator/unrealBuildPack';
+export type {
+  UnrealBuildOutcome,
+  UnrealBuildIssueCode,
+  UnrealBuildIssue,
+  UnrealBuildResult,
+} from './operator/unrealBuildPack';
+
+// ── Unreal Error Triage Pack ──────────────────────────────────────────────────
+
+export { UNREAL_ERROR_TRIAGE } from './operator/unrealTriagePack';
+export type {
+  UnrealTriageOutcome,
+  UnrealTriageIssueCode,
+  UnrealTriageFinding,
+  UnrealTriageResult,
+} from './operator/unrealTriagePack';
+
+// ── Unreal System Scaffold Pack ───────────────────────────────────────────────
+
+export { UNREAL_SYSTEM_SCAFFOLD, generateUnrealSystemScaffold } from './operator/unrealScaffoldPack';
+export type {
+  UnrealScaffoldOutcome,
+  UnrealScaffoldCategory,
+  UnrealScaffoldPriority,
+  UnrealSystemScaffoldItem,
+  UnrealScaffoldAssumption,
+  UnrealScaffoldResult,
+} from './operator/unrealScaffoldPack';
+
+// ── Unreal Milestone Pack ─────────────────────────────────────────────────────
+
+export { UNREAL_MILESTONE, generateUnrealMilestones } from './operator/unrealMilestonePack';
+export type {
+  UnrealMilestoneOutcome,
+  UnrealMilestoneStep,
+  UnrealMilestone,
+  UnrealMilestoneResult,
+} from './operator/unrealMilestonePack';
+
+// ── Unreal Milestone 1 Execution Pack ─────────────────────────────────────────
+
+export { UNREAL_M1_EXECUTE } from './operator/unrealM1ExecutePack';
+export type {
+  UnrealM1ExecutionOutcome,
+  UnrealM1ExecutionAction,
+  UnrealM1ExecutionResult,
+} from './operator/unrealM1ExecutePack';
+
+// ── Unreal Milestone 2 Execution Pack ─────────────────────────────────────────
+
+export { UNREAL_M2_EXECUTE } from './operator/unrealM2ExecutePack';
+export type {
+  UnrealM2ExecutionOutcome,
+  UnrealM2ExecutionAction,
+  UnrealM2ExecutionResult,
+} from './operator/unrealM2ExecutePack';
+
+// ── Unreal Remote Control Probe Pack ─────────────────────────────────────────
+
+export { UNREAL_RC_PROBE } from './operator/unrealRCProbePack';
+export type {
+  UnrealRCProbeOutcome,
+  UnrealRCProbeResult,
+} from './operator/unrealRCProbePack';
+
+// ── Unreal Milestone 3 Execution Pack ─────────────────────────────────────────
+
+export { UNREAL_M3_EXECUTE } from './operator/unrealM3ExecutePack';
+export type {
+  UnrealM3ExecutionOutcome,
+  UnrealM3ExecutionAction,
+  UnrealM3ExecutionResult,
+} from './operator/unrealM3ExecutePack';
+
+// ── Unreal Milestone 4 Execution Pack ─────────────────────────────────────────
+
+export { UNREAL_M4_EXECUTE } from './operator/unrealM4ExecutePack';
+export type {
+  UnrealM4ExecutionOutcome,
+  UnrealM4ExecutionAction,
+  UnrealM4ExecutionResult,
+} from './operator/unrealM4ExecutePack';
+
+// ── Unreal Milestone 5 Execution Pack ─────────────────────────────────────────
+
+export { UNREAL_M5_EXECUTE } from './operator/unrealM5ExecutePack';
+export type {
+  UnrealM5ExecutionOutcome,
+  UnrealM5ExecutionAction,
+  UnrealM5ExecutionResult,
+} from './operator/unrealM5ExecutePack';
+
 // ── Section 10 — Trust, Security, Safety Hardening ───────────────────────────
 
 export {
@@ -301,9 +406,12 @@ export type { StylePresetKey }     from './image/styles';
 
 // Council Awareness Layer (capability registry + live state + addendum builder)
 export { CAPABILITY_REGISTRY, getCapabilityById, getCapabilitiesByCategory, searchCapabilities } from './awareness/CapabilityRegistry';
-export { systemStateService }        from './awareness/SystemStateService';
+export { systemStateService }            from './awareness/SystemStateService';
 export { buildCouncilAwarenessAddendum } from './awareness/CouncilAwarenessService';
-export type { CapabilityDescriptor, CapabilityCategory, CapabilityRisk, SystemStateSnapshot, CouncilAwarenessPack } from './awareness/types';
+export type { CapabilityDescriptor, CapabilityCategory, CapabilityRisk, SystemStateSnapshot, CouncilAwarenessPack, DesktopOperatorSnapshot, UnrealAwarenessSnapshot } from './awareness/types';
+// Desktop Action Context — actionability classification + council operator section
+export { classifyActionability, buildDesktopContextSection } from './awareness/desktopActionContext';
+export type { ActionabilityClass, ActionabilityResult } from './awareness/desktopActionContext';
 
 // Folder Audit Engine
 export { buildFolderAudit, formatAuditAsText } from './execution/buildFolderAudit';

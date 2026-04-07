@@ -14,7 +14,7 @@
 //   const snapshot = await systemStateService.snapshot();
 //   const addendum = buildCouncilAwarenessAddendum(snapshot);
 
-import type { SystemStateSnapshot } from './types';
+import type { SystemStateSnapshot, DesktopOperatorSnapshot, UnrealAwarenessSnapshot } from './types';
 
 // ── Getter type signatures ────────────────────────────────────────────────────
 
@@ -32,6 +32,8 @@ type TwitterGetter     = () => boolean;
 type PermissionsGetter = () => { files: boolean; browser: boolean; printer: boolean; email: boolean };
 type VoiceAuthGetter   = () => boolean;
 type TradingGetter     = () => { connected: boolean; mode: 'off' | 'shadow' | 'paper' | 'guarded_live_candidate' };
+type OperatorStateGetter = () => Promise<DesktopOperatorSnapshot | null>;
+type UnrealStateGetter   = () => Promise<UnrealAwarenessSnapshot | null>;
 
 // ── Service class ─────────────────────────────────────────────────────────────
 
@@ -49,7 +51,9 @@ class SystemStateServiceClass {
   private _getTwitter:     TwitterGetter     = () => false;
   private _getPermissions: PermissionsGetter = () => ({ files: false, browser: false, printer: false, email: false });
   private _getVoiceAuth:   VoiceAuthGetter   = () => false;
-  private _getTrading:     TradingGetter     = () => ({ connected: false, mode: 'off' });
+  private _getTrading:       TradingGetter       = () => ({ connected: false, mode: 'off' });
+  private _getOperatorState: OperatorStateGetter = async () => null;
+  private _getUnrealState:   UnrealStateGetter   = async () => null;
 
   // ── Registration API (called once at startup from desktop/main/ipc.ts) ──────
 
@@ -66,7 +70,9 @@ class SystemStateServiceClass {
   registerTwitterGetter(fn: TwitterGetter):          void { this._getTwitter     = fn; }
   registerPermissionsGetter(fn: PermissionsGetter):  void { this._getPermissions = fn; }
   registerVoiceAuthGetter(fn: VoiceAuthGetter):      void { this._getVoiceAuth   = fn; }
-  registerTradingGetter(fn: TradingGetter):          void { this._getTrading     = fn; }
+  registerTradingGetter(fn: TradingGetter):            void { this._getTrading       = fn; }
+  registerOperatorStateGetter(fn: OperatorStateGetter): void { this._getOperatorState = fn; }
+  registerUnrealStateGetter(fn: UnrealStateGetter):     void { this._getUnrealState   = fn; }
 
   // ── Snapshot ─────────────────────────────────────────────────────────────────
 
@@ -75,30 +81,34 @@ class SystemStateServiceClass {
    * All getters are designed to be cheap (no heavy I/O).
    */
   async snapshot(): Promise<SystemStateSnapshot> {
-    const [providers, autonomy] = await Promise.all([
+    const [providers, autonomy, desktopOperator, unrealState] = await Promise.all([
       this._getProviders().catch(() => ({ openai: false, claude: false, grok: false, ollama: false })),
       Promise.resolve(this._getAutonomy()),
+      this._getOperatorState().catch(() => null),
+      this._getUnrealState().catch(() => null),
     ]);
     const trading = this._getTrading();
 
     return {
-      timestamp:            Date.now(),
-      tier:                 this._getTier(),
-      activeProfileId:      this._getProfile(),
-      activeMissionId:      this._getMission(),
-      autonomyRunning:      autonomy.running,
+      timestamp:             Date.now(),
+      tier:                  this._getTier(),
+      activeProfileId:       this._getProfile(),
+      activeMissionId:       this._getMission(),
+      autonomyRunning:       autonomy.running,
       autonomyWorkflowCount: autonomy.workflowCount,
       providers,
-      imageReady:           this._getImage(),
-      voiceAuthConfigured:  this._getVoiceAuth(),
-      phonePaired:          this._getPhone(),
-      pendingApprovals:     this._getApprovals(),
-      pendingTasks:         this._getTasks(),
-      mailConfigured:       this._getMail(),
-      twitterConfigured:    this._getTwitter(),
-      permissions:          this._getPermissions(),
-      tradingConnected:     trading.connected,
-      tradingMode:          trading.mode,
+      imageReady:            this._getImage(),
+      voiceAuthConfigured:   this._getVoiceAuth(),
+      phonePaired:           this._getPhone(),
+      pendingApprovals:      this._getApprovals(),
+      pendingTasks:          this._getTasks(),
+      mailConfigured:        this._getMail(),
+      twitterConfigured:     this._getTwitter(),
+      permissions:           this._getPermissions(),
+      tradingConnected:      trading.connected,
+      tradingMode:           trading.mode,
+      ...(desktopOperator ? { desktopOperator } : {}),
+      ...(unrealState     ? { unrealState }     : {}),
     };
   }
 }

@@ -34,6 +34,7 @@ export type IntentType =
   | 'phone_request'         // "pair my phone", "phone link"
   | 'task_request'          // "check my tasks", "pending approvals"
   | 'desktop_control'       // "open desktop", "bring triforge forward"
+  | 'operator_action'       // "type in app", "take a screenshot", "run workflow pack"
   | 'folder_audit'          // "audit this folder", "analyze this codebase"
   | 'vibe_request'          // "make this feel premium", "vibe check"
   | 'default';
@@ -98,6 +99,23 @@ const DESKTOP_CONTROL_KW = [
   'focus triforge', 'open triforge', 'bring window', 'show window',
   'switch to desktop', 'desktop mode', 'open the app', 'bring the app',
   'triforge forward', 'show the app',
+];
+
+// Operator-action intent: supervised desktop actions via the operator substrate
+const OPERATOR_ACTION_KW = [
+  // Input
+  'type into', 'type in the', 'type for me', 'press enter', 'press escape',
+  'send keystroke', 'send key', 'keyboard shortcut',
+  // Perception
+  'take a screenshot', 'capture the screen', 'screenshot my desktop',
+  'what\'s on my screen', 'what is on my screen', 'capture screen',
+  // App control via operator
+  'focus the app', 'focus app', 'switch to the app',
+  'run a workflow', 'run workflow pack', 'start workflow',
+  'supervised input', 'operator action', 'workflow pack',
+  // Desktop automation language
+  'automate on my desktop', 'perform on my desktop',
+  'do it on my computer', 'do it on my mac',
 ];
 
 const FOLDER_AUDIT_KW = [
@@ -181,9 +199,10 @@ export function detectIntentType(message: string): IntentType {
   if (matchesAny(lower, VOICE_REQUEST_KW))         return 'voice_request';
   if (matchesAny(lower, PHONE_REQUEST_KW))         return 'phone_request';
   if (matchesAny(lower, TASK_REQUEST_KW))          return 'task_request';
-  if (matchesAny(lower, DESKTOP_CONTROL_KW))       return 'desktop_control';
-  if (matchesAny(lower, VIBE_REQUEST_KW))            return 'vibe_request';
-  if (matchesAny(lower, FOLDER_AUDIT_KW))          return 'folder_audit';
+  if (matchesAny(lower, DESKTOP_CONTROL_KW))        return 'desktop_control';
+  if (matchesAny(lower, OPERATOR_ACTION_KW))        return 'operator_action';
+  if (matchesAny(lower, VIBE_REQUEST_KW))           return 'vibe_request';
+  if (matchesAny(lower, FOLDER_AUDIT_KW))           return 'folder_audit';
 
   // ── Priority 2: Generic reasoning intents ──────────────────────────────────
   const scores: [IntentType, number][] = [
@@ -222,6 +241,8 @@ export function selectCouncil(intent: IntentType): ProviderName[] {
     case 'voice_request':
     case 'phone_request':
     case 'desktop_control':      return ['claude', 'openai', 'grok'];
+    // Operator actions: Claude leads (best at capability-aware, approval-first reasoning)
+    case 'operator_action':      return ['claude', 'openai', 'grok'];
     // Folder audit: Claude leads (best at structured code analysis and report writing)
     case 'folder_audit':         return ['claude', 'openai', 'grok'];
     // Generic reasoning intents

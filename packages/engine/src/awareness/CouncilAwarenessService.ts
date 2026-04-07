@@ -10,8 +10,9 @@
 //   • Actionable — tells Council how to invoke each capability
 //   • Self-maintaining — adding a new registry entry automatically surfaces here
 
-import { CAPABILITY_REGISTRY }      from './CapabilityRegistry';
+import { CAPABILITY_REGISTRY }       from './CapabilityRegistry';
 import type { CapabilityDescriptor, SystemStateSnapshot } from './types';
+import { buildDesktopContextSection } from './desktopActionContext';
 
 // ── Tier helpers ──────────────────────────────────────────────────────────────
 
@@ -193,6 +194,72 @@ export function buildCouncilAwarenessAddendum(snapshot: SystemStateSnapshot): st
   lines.push(
     'Council rule: answer all capability and status questions from the live state above. ' +
     'Never guess or assume. If something is not available, state the reason shown above.',
+  );
+
+  // Desktop operator section — injected when the operator getter is registered
+  if (snapshot.desktopOperator) {
+    lines.push(buildDesktopContextSection(snapshot.desktopOperator));
+  }
+
+  // Unreal Engine domain awareness — injected when the Unreal getter is registered
+  if (snapshot.unrealState) {
+    lines.push(buildUnrealContextSection(snapshot.unrealState));
+  }
+
+  return lines.join('\n');
+}
+
+// ── Unreal context section ────────────────────────────────────────────────────
+
+/**
+ * Build the compact Unreal Engine state section for the council addendum.
+ * Stays honest — only surfaces what we actually detected.
+ */
+function buildUnrealContextSection(u: NonNullable<SystemStateSnapshot['unrealState']>): string {
+  const lines: string[] = ['', '## Unreal Engine Domain State'];
+
+  if (!u.running) {
+    const installNote = u.installed === true  ? 'Engine appears installed (not running)' :
+                        u.installed === false ? 'Engine not detected on this machine'    :
+                                               'Not running (install status unknown)';
+    lines.push(installNote);
+    lines.push(
+      'Unreal rule: No Unreal actions are possible. Provide plan-only guidance.',
+    );
+    return lines.join('\n');
+  }
+
+  // Running
+  const frontLabel = u.frontmost ? 'FRONTMOST' : 'running in background';
+  lines.push(`Editor: ${frontLabel} | Process: ${u.editorProcessName ?? 'UnrealEditor'}`);
+
+  if (u.projectDetected) {
+    const projectLine = u.projectPath
+      ? `Project: ${u.projectName} [${u.projectPath}] (confidence: ${u.projectConfidence})`
+      : `Project: ${u.projectName} (confidence: ${u.projectConfidence} — path unknown)`;
+    lines.push(projectLine);
+  } else {
+    lines.push('Project: not identified — cannot confirm which project is open');
+  }
+
+  if (u.buildState && u.buildState !== 'unknown') {
+    lines.push(`Build state: ${u.buildState}`);
+  }
+
+  if (u.obviousErrorState) {
+    lines.push(`Recent error: ${u.obviousErrorState.slice(0, 120)}`);
+  }
+
+  if (u.recentLogPath) {
+    lines.push(`Log: ${u.recentLogPath}`);
+  }
+
+  lines.push(
+    'Unreal rule: Base all Unreal reasoning on the state above. ' +
+    'If project is not detected, do not assume one is open. ' +
+    'If editor is in background, focus_app is required before any input action. ' +
+    'Build/package operations require explicit user approval through Operate. ' +
+    'State confidence level honestly when referencing the project.',
   );
 
   return lines.join('\n');

@@ -121,12 +121,15 @@ export type OperatorOutcome =
   | 'success'             // Action completed as intended
   | 'failed'              // Action attempted but produced an error
   | 'permission_denied'   // macOS Accessibility or Screen Recording not granted
+  | 'permission_revoked'  // Permission was available but has since been revoked
   | 'target_not_found'    // Named app is not running or not focusable
   | 'wrong_target'        // Frontmost app changed between request and execution
   | 'timeout'             // Action did not complete within allowed time
   | 'approval_pending'    // Queued — waiting for human approval
   | 'approval_denied'     // Human denied the approval request
-  | 'not_supported';      // This action is not supported on the current platform
+  | 'not_supported'       // This action is not supported on the current platform
+  | 'session_invalid'     // The operator session is missing or no longer active
+  | 'preflight_blocked';  // Pre-execution validation blocked the action (capability/permission check)
 
 export interface OperatorActionResult {
   actionId: string;
@@ -147,6 +150,26 @@ export interface OperatorActionResult {
   completedAt: number;
   /** Approval ID if approval was required and is pending/resolved */
   approvalId?: string;
+  /**
+   * Machine-readable reason code for non-success outcomes.
+   * More specific than outcome — suitable for WorkerRun blocker mapping.
+   * Examples: 'session_stopped', 'permission_revoked_accessibility',
+   * 'permission_missing_screen_recording', 'stale_session', 'platform_unsupported',
+   * 'target_drift_post_input', 'focus_verification_failed'
+   */
+  failureReason?: string;
+  /**
+   * Whether the target app was confirmed frontmost after this action completed.
+   *
+   *   true  — target was verified frontmost post-action (high confidence)
+   *   false — target was not frontmost post-action (drift detected)
+   *   undefined — verification not performed for this action type
+   *
+   * A false value does NOT mean input failed — the content may have been
+   * delivered correctly if focus was valid when the action executed.
+   * It means target continuity is uncertain after execution.
+   */
+  targetVerified?: boolean;
 }
 
 // ── Recovery contract ─────────────────────────────────────────────────────────
@@ -260,6 +283,12 @@ export interface OperatorApprovalRequest {
   description: string;
   /** Screenshot path captured immediately before this action was queued */
   contextScreenshotPath?: string;
+  /**
+   * The frontmost app at the time this approval was created.
+   * Provides the UI with honest context about what was in focus when the
+   * user triggered the action, so they can confirm it is the right target.
+   */
+  contextTarget?: OperatorTarget;
   createdAt: number;
   /** 10-minute TTL — operator approvals are time-sensitive */
   expiresAt: number;

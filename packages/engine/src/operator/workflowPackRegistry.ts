@@ -17,6 +17,17 @@
 //   4. app-context        — Multi-step app context capture
 
 import type { WorkflowPack } from './workflowPackTypes';
+import { UNREAL_BOOTSTRAP }        from './unrealBootstrapPack';
+import { UNREAL_BUILD_PACKAGE }    from './unrealBuildPack';
+import { UNREAL_ERROR_TRIAGE }     from './unrealTriagePack';
+import { UNREAL_SYSTEM_SCAFFOLD }  from './unrealScaffoldPack';
+import { UNREAL_MILESTONE }         from './unrealMilestonePack';
+import { UNREAL_M1_EXECUTE }        from './unrealM1ExecutePack';
+import { UNREAL_M2_EXECUTE }        from './unrealM2ExecutePack';
+import { UNREAL_RC_PROBE }          from './unrealRCProbePack';
+import { UNREAL_M3_EXECUTE }        from './unrealM3ExecutePack';
+import { UNREAL_M4_EXECUTE }        from './unrealM4ExecutePack';
+import { UNREAL_M5_EXECUTE }        from './unrealM5ExecutePack';
 
 // ── Pack 1: Focus & Capture ───────────────────────────────────────────────────
 
@@ -316,6 +327,17 @@ export const WORKFLOW_PACK_REGISTRY: WorkflowPack[] = [
   APP_CONTEXT,
   FOCUS_CAPTURE,
   SUPERVISED_INPUT,
+  UNREAL_BOOTSTRAP,
+  UNREAL_BUILD_PACKAGE,
+  UNREAL_ERROR_TRIAGE,
+  UNREAL_SYSTEM_SCAFFOLD,
+  UNREAL_MILESTONE,
+  UNREAL_M1_EXECUTE,
+  UNREAL_M2_EXECUTE,
+  UNREAL_RC_PROBE,
+  UNREAL_M3_EXECUTE,
+  UNREAL_M4_EXECUTE,
+  UNREAL_M5_EXECUTE,
 ];
 
 export function getWorkflowPack(id: string): WorkflowPack | undefined {

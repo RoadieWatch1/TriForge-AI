@@ -4,6 +4,56 @@ import { AgentHQ } from '../components/AgentHQ';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+// ── Worker Runtime types (mirrors workerRuntime/types.ts — kept local to avoid
+//    renderer importing from main process directly) ─────────────────────────
+
+interface WorkerRunRecord {
+  id: string;
+  goal: string;
+  packId?: string;
+  workflowId?: string;
+  operatorSessionId?: string;
+  source: 'chat' | 'operate' | 'session_resume' | 'webhook';
+  status: string;
+  machineId: string;
+  createdAt: number;
+  updatedAt: number;
+  currentStepIndex: number;
+  lastHeartbeatAt?: number;
+  blocker?: { kind: string; message: string; recoverable: boolean };
+  artifacts: string[];
+  approvals: string[];
+}
+
+interface WorkerStepRecord {
+  id: string;
+  runId: string;
+  index: number;
+  title: string;
+  type: string;
+  status: string;
+  startedAt?: number;
+  endedAt?: number;
+  error?: string;
+  artifactIds?: string[];
+}
+
+interface WorkerArtifactRecord {
+  id: string;
+  runId: string;
+  stepId?: string;
+  kind: string;
+  path: string;
+  createdAt: number;
+  meta?: Record<string, unknown>;
+}
+
+interface WorkerRunDetail {
+  run: WorkerRunRecord;
+  steps: WorkerStepRecord[];
+  artifacts: WorkerArtifactRecord[];
+}
+
 interface StepSummary {
   id: string;
   title: string;
@@ -116,6 +166,93 @@ function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+// ── Worker Run helpers ────────────────────────────────────────────────────────
+
+const WORKER_RUN_STATUS_COLOR: Record<string, string> = {
+  queued:           '#f59e0b',
+  planning:         '#6366f1',
+  ready:            '#6366f1',
+  running:          '#10a37f',
+  waiting_approval: '#ef4444',
+  blocked:          '#f59e0b',
+  completed:        'var(--text-muted)',
+  failed:           '#ef4444',
+  cancelled:        'var(--text-muted)',
+};
+
+const WORKER_RUN_STATUS_LABEL: Record<string, string> = {
+  queued:           'Queued',
+  planning:         'Planning',
+  ready:            'Ready',
+  running:          'Running',
+  waiting_approval: 'Needs Approval',
+  blocked:          'Interrupted',
+  completed:        'Done',
+  failed:           'Failed',
+  cancelled:        'Cancelled',
+};
+
+/** Human-readable label for a workflow pack ID. */
+function packLabel(packId?: string): string {
+  if (!packId) return 'Workflow';
+  const PACK_LABELS: Record<string, string> = {
+    'pack.readiness-check':  'Readiness Check',
+    'pack.app-context':      'App Context',
+    'pack.focus-capture':    'Focus & Capture',
+    'pack.supervised-input': 'Supervised Input',
+  };
+  return PACK_LABELS[packId]
+    ?? packId.replace(/^pack\./, '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+/** Describe a blocker in plain language. */
+function blockerLabel(blocker?: WorkerRunRecord['blocker']): string | null {
+  if (!blocker) return null;
+  const msg = blocker.message ?? '';
+  if (blocker.kind === 'tool_failed' && msg.toLowerCase().includes('restart')) {
+    return 'Interrupted after restart — review to continue';
+  }
+  const KIND_LABELS: Record<string, string> = {
+    approval_required:   'Waiting for approval',
+    permission_missing:  'Missing OS permission',
+    capability_missing:  'Capability not available',
+    target_not_found:    'Target app not found',
+    user_input_required: 'User input needed',
+    tool_failed:         'Step failed',
+  };
+  return KIND_LABELS[blocker.kind] ?? blocker.message.slice(0, 80);
+}
+
+/** Source label shown as a secondary badge. */
+function sourceLabel(source: string): string {
+  const LABELS: Record<string, string> = {
+    operate:         'Operate',
+    chat:            'Chat',
+    session_resume:  'Resumed',
+    webhook:         'Webhook',
+  };
+  return LABELS[source] ?? source;
+}
+
+/** Artifact kind label. */
+function artifactKindLabel(kind: string): string {
+  const LABELS: Record<string, string> = {
+    screenshot:    'Screenshot',
+    log:           'Log',
+    plan:          'Plan',
+    file:          'File',
+    diff:          'Diff',
+    'build-output': 'Build Output',
+  };
+  return LABELS[kind] ?? kind;
+}
+
+// ── Shared window.triforge accessor ──────────────────────────────────────────
+
+function getTf(): Record<string, unknown> | undefined {
+  return (window as unknown as { triforge?: Record<string, unknown> }).triforge;
+}
+
 function relativeTime(ts: number): string {
   const diff = Date.now() - ts;
   const s = Math.floor(diff / 1000);
@@ -199,32 +336,48 @@ export function SessionsScreen() {
 // ── Overview ──────────────────────────────────────────────────────────────────
 
 function SessionsOverview() {
-  const [tasks, setTasks]         = useState<Task[]>([]);
-  const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
-  const [loading, setLoading]     = useState(true);
-  const [actionBusy, setActionBusy] = useState<string | null>(null);
+  const [tasks, setTasks]                   = useState<Task[]>([]);
+  const [approvals, setApprovals]           = useState<ApprovalRequest[]>([]);
+  const [workerRuns, setWorkerRuns]         = useState<WorkerRunRecord[]>([]);
+  const [resumeCandidates, setResumeCandidates] = useState<WorkerRunRecord[]>([]);
+  const [loading, setLoading]               = useState(true);
+  const [actionBusy, setActionBusy]         = useState<string | null>(null);
+  const [expandedRunId, setExpandedRunId]   = useState<string | null>(null);
+  const [runDetails, setRunDetails]         = useState<Record<string, WorkerRunDetail>>({});
+  const [resumeMessages, setResumeMessages] = useState<Record<string, { ok: boolean; msg: string }>>({});
+  const [resumeBusy, setResumeBusy]         = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
-      const tf = (window as unknown as { triforge?: Record<string, unknown> }).triforge;
+      const tf = getTf();
       if (!tf) { setLoading(false); return; }
 
-      const [taskRes, approvalRes] = await Promise.allSettled([
+      const [taskRes, approvalRes, workerRunsRes, resumeRes] = await Promise.allSettled([
         (tf['taskEngine'] as Record<string, () => Promise<unknown>>)?.listTasks?.(),
         (tf['approvals']  as Record<string, () => Promise<unknown>>)?.list?.(),
+        (tf['workerRuntime'] as Record<string, () => Promise<unknown>>)?.list?.(),
+        (tf['workerRuntime'] as Record<string, () => Promise<unknown>>)?.resumeCandidates?.(),
       ]);
 
-      // listTasks returns { tasks?: Task[] } — not a bare array
       if (taskRes.status === 'fulfilled' && taskRes.value) {
         const val = taskRes.value as { tasks?: Task[] };
         setTasks(Array.isArray(val.tasks) ? val.tasks : []);
       }
 
-      // approvals.list returns { requests?: ApprovalRequest[] } — not a bare array
       if (approvalRes.status === 'fulfilled' && approvalRes.value) {
         const val = approvalRes.value as { requests?: ApprovalRequest[] };
         const raw = Array.isArray(val.requests) ? val.requests : [];
         setApprovals(raw.filter(a => a.status === 'pending'));
+      }
+
+      if (workerRunsRes.status === 'fulfilled' && workerRunsRes.value) {
+        const val = workerRunsRes.value as { ok?: boolean; runs?: WorkerRunRecord[] };
+        setWorkerRuns(Array.isArray(val.runs) ? val.runs.slice(0, 20) : []);
+      }
+
+      if (resumeRes.status === 'fulfilled' && resumeRes.value) {
+        const val = resumeRes.value as { ok?: boolean; runs?: WorkerRunRecord[] };
+        setResumeCandidates(Array.isArray(val.runs) ? val.runs : []);
       }
     } catch { /* ignore */ }
     setLoading(false);
@@ -240,7 +393,7 @@ function SessionsOverview() {
     setActionBusy(id);
     setApprovals(prev => prev.filter(a => a.id !== id)); // optimistic
     try {
-      const tf = (window as unknown as { triforge?: Record<string, unknown> }).triforge;
+      const tf = getTf();
       await (tf?.['approvals'] as Record<string, (id: string) => Promise<unknown>>)?.approve?.(id);
     } catch {
       fetchData(); // restore on failure
@@ -253,7 +406,7 @@ function SessionsOverview() {
     setActionBusy(id);
     setApprovals(prev => prev.filter(a => a.id !== id)); // optimistic
     try {
-      const tf = (window as unknown as { triforge?: Record<string, unknown> }).triforge;
+      const tf = getTf();
       await (tf?.['approvals'] as Record<string, (id: string, r: string) => Promise<unknown>>)?.deny?.(id, 'Denied from Sessions');
     } catch {
       fetchData();
@@ -261,6 +414,59 @@ function SessionsOverview() {
       setActionBusy(null);
     }
   };
+
+  const handleExpandRun = useCallback(async (runId: string) => {
+    if (expandedRunId === runId) {
+      setExpandedRunId(null);
+      return;
+    }
+    setExpandedRunId(runId);
+    // Fetch detail if not cached
+    if (!runDetails[runId]) {
+      try {
+        const tf = getTf();
+        const res = await (tf?.['workerRuntime'] as Record<string, (id: string) => Promise<unknown>>)
+          ?.get?.(runId) as { ok?: boolean; run?: WorkerRunRecord; steps?: WorkerStepRecord[]; artifacts?: WorkerArtifactRecord[] } | undefined;
+        if (res?.ok && res.run) {
+          setRunDetails(prev => ({
+            ...prev,
+            [runId]: { run: res.run!, steps: res.steps ?? [], artifacts: res.artifacts ?? [] },
+          }));
+        }
+      } catch { /* ignore */ }
+    }
+  }, [expandedRunId, runDetails]);
+
+  const handleCancelRun = useCallback(async (runId: string) => {
+    try {
+      const tf = getTf();
+      await (tf?.['workerRuntime'] as Record<string, (id: string) => Promise<unknown>>)?.cancel?.(runId);
+      fetchData();
+    } catch { /* ignore */ }
+  }, [fetchData]);
+
+  const handleResumeRun = useCallback(async (runId: string) => {
+    setResumeBusy(runId);
+    try {
+      const tf = getTf();
+      const res = await (tf?.['workerRuntime'] as Record<string, (id: string) => Promise<unknown>>)
+        ?.resume?.(runId) as { ok: boolean; kind?: string; failReason?: string; message: string } | undefined;
+      if (res) {
+        setResumeMessages(prev => ({ ...prev, [runId]: { ok: res.ok, msg: res.message } }));
+        if (res.ok) {
+          // Refresh data after a short delay to allow bridge to finalize new run
+          setTimeout(() => fetchData(), 500);
+        }
+      }
+    } catch (e) {
+      setResumeMessages(prev => ({
+        ...prev,
+        [runId]: { ok: false, msg: 'Recovery request failed. Please try again.' },
+      }));
+    } finally {
+      setResumeBusy(null);
+    }
+  }, [fetchData]);
 
   // Task buckets — each status is covered exactly once
   const activeTasks  = tasks.filter(t => t.status === 'running' || t.status === 'planning');
@@ -271,6 +477,14 @@ function SessionsOverview() {
     .filter(t => t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled')
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, 10);
+
+  // Worker run buckets
+  const activeWorkerRuns = workerRuns.filter(r =>
+    r.status === 'running' || r.status === 'planning' || r.status === 'ready',
+  );
+  const recentWorkerRuns = workerRuns
+    .filter(r => r.status === 'completed' || r.status === 'failed' || r.status === 'cancelled')
+    .slice(0, 8);
 
   return (
     <div style={styles.overview}>
@@ -306,6 +520,33 @@ function SessionsOverview() {
           sub={completedCount > 0 ? `${completedCount} task${completedCount > 1 ? 's' : ''} done` : 'None yet'}
         />
       </div>
+
+      {/* ── Needs Attention — interrupted / blocked WorkerRuns ─────────────── */}
+      {resumeCandidates.length > 0 && (
+        <div style={styles.panel}>
+          <div style={{ ...styles.panelHeader, borderLeft: '3px solid #f59e0b' }}>
+            <span style={{ ...styles.panelLabel, color: '#f59e0b' }}>Needs Attention</span>
+            <span style={{ ...styles.panelBadge, background: '#f59e0b20', color: '#f59e0b' }}>
+              {resumeCandidates.length} interrupted
+            </span>
+          </div>
+          <div style={styles.panelBody}>
+            {resumeCandidates.map(r => (
+              <WorkerRunRow
+                key={r.id}
+                run={r}
+                expanded={expandedRunId === r.id}
+                detail={runDetails[r.id]}
+                onExpand={() => handleExpandRun(r.id)}
+                onCancel={() => handleCancelRun(r.id)}
+                onResume={() => handleResumeRun(r.id)}
+                resumeBusy={resumeBusy === r.id}
+                resumeMessage={resumeMessages[r.id]}
+              />
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ── Pending Approvals — highest priority ────────────────────────────── */}
       {approvals.length > 0 && (
@@ -343,6 +584,28 @@ function SessionsOverview() {
           </div>
           <div style={styles.panelBody}>
             {activeTasks.map(t => <TaskRow key={t.id} task={t} />)}
+          </div>
+        </div>
+      )}
+
+      {/* ── Active WorkerRuns — workflow packs currently executing ──────────── */}
+      {activeWorkerRuns.length > 0 && (
+        <div style={styles.panel}>
+          <div style={styles.panelHeader}>
+            <span style={styles.panelLabel}>Running Workflows</span>
+            <span style={styles.panelBadge}>{activeWorkerRuns.length} active</span>
+          </div>
+          <div style={styles.panelBody}>
+            {activeWorkerRuns.map(r => (
+              <WorkerRunRow
+                key={r.id}
+                run={r}
+                expanded={expandedRunId === r.id}
+                detail={runDetails[r.id]}
+                onExpand={() => handleExpandRun(r.id)}
+                onCancel={() => handleCancelRun(r.id)}
+              />
+            ))}
           </div>
         </div>
       )}
@@ -391,6 +654,28 @@ function SessionsOverview() {
           )}
         </div>
       </div>
+
+      {/* ── Workflow Run History — completed/failed/cancelled WorkerRuns ────── */}
+      {recentWorkerRuns.length > 0 && (
+        <div style={styles.panel}>
+          <div style={styles.panelHeader}>
+            <span style={styles.panelLabel}>Workflow Runs</span>
+            <span style={styles.panelBadge}>{recentWorkerRuns.length} recent</span>
+          </div>
+          <div style={styles.panelBody}>
+            {recentWorkerRuns.map(r => (
+              <WorkerRunRow
+                key={r.id}
+                run={r}
+                expanded={expandedRunId === r.id}
+                detail={runDetails[r.id]}
+                onExpand={() => handleExpandRun(r.id)}
+                onCancel={() => handleCancelRun(r.id)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
 
     </div>
   );
@@ -494,6 +779,285 @@ function TaskRow({ task }: { task: Task }) {
         <span style={{ ...styles.taskStatus, color: statusColor }}>{statusLabel}</span>
         <span style={styles.taskAge}>{relativeTime(task.updatedAt)}</span>
       </div>
+    </div>
+  );
+}
+
+// ── Worker Run Row ────────────────────────────────────────────────────────────
+
+function WorkerRunRow({
+  run,
+  expanded,
+  detail,
+  onExpand,
+  onCancel,
+  onResume,
+  resumeBusy,
+  resumeMessage,
+}: {
+  run: WorkerRunRecord;
+  expanded: boolean;
+  detail?: WorkerRunDetail;
+  onExpand: () => void;
+  onCancel: () => void;
+  onResume?: () => void;
+  resumeBusy?: boolean;
+  resumeMessage?: { ok: boolean; msg: string };
+}) {
+  const statusColor = WORKER_RUN_STATUS_COLOR[run.status] ?? 'var(--text-muted)';
+  const statusText  = WORKER_RUN_STATUS_LABEL[run.status]  ?? capitalize(run.status);
+  const blocker     = blockerLabel(run.blocker);
+  const isActive    = run.status === 'running' || run.status === 'planning' || run.status === 'ready';
+  const isTerminal  = run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled';
+
+  // Show Recover button for blocked/failed runs that have pack metadata
+  const canRecover  = !isTerminal && !!run.packId
+    && (run.status === 'blocked' || run.status === 'failed');
+
+  return (
+    <>
+      <div
+        style={{
+          ...styles.taskRow,
+          cursor: 'pointer',
+          background: expanded ? 'var(--bg-elevated)' : undefined,
+        }}
+        onClick={onExpand}
+        role="button"
+        tabIndex={0}
+        onKeyDown={e => e.key === 'Enter' && onExpand()}
+      >
+        <span style={{ ...styles.statusDotSmall, background: statusColor }} />
+        <div style={styles.taskBody}>
+          <div style={styles.taskGoalRow}>
+            <span style={styles.taskGoal}>{run.goal}</span>
+            {run.packId && (
+              <span style={{ ...styles.taskCategory, background: 'var(--bg-elevated)' }}>
+                {packLabel(run.packId)}
+              </span>
+            )}
+            <span style={{ ...styles.taskCategory, opacity: 0.7 }}>
+              {sourceLabel(run.source)}
+            </span>
+          </div>
+          {blocker && (
+            <span style={{ ...styles.taskDetail, color: statusColor }}>
+              {blocker}
+            </span>
+          )}
+        </div>
+        <div style={styles.taskMeta}>
+          {run.artifacts.length > 0 && (
+            <span style={styles.taskProgress}>{run.artifacts.length} artifact{run.artifacts.length !== 1 ? 's' : ''}</span>
+          )}
+          <span style={{ ...styles.taskStatus, color: statusColor }}>{statusText}</span>
+          <span style={styles.taskAge}>{relativeTime(run.updatedAt)}</span>
+          {canRecover && onResume && (
+            <button
+              style={{
+                ...styles.recoverRunBtn,
+                opacity: resumeBusy ? 0.6 : 1,
+              }}
+              onClick={e => { e.stopPropagation(); onResume(); }}
+              disabled={resumeBusy}
+              title="Restart this workflow from saved context"
+            >
+              {resumeBusy ? '…' : 'Recover'}
+            </button>
+          )}
+          {!isTerminal && (
+            <button
+              style={styles.cancelRunBtn}
+              onClick={e => { e.stopPropagation(); onCancel(); }}
+              title="Cancel this run"
+            >
+              ✕
+            </button>
+          )}
+          <span style={{ ...styles.taskAge, color: expanded ? 'var(--accent)' : 'var(--text-muted)' }}>
+            {expanded ? '▲' : '▼'}
+          </span>
+        </div>
+      </div>
+
+      {/* Inline resume feedback message */}
+      {resumeMessage && (
+        <div style={{
+          ...styles.resumeMessage,
+          borderColor: resumeMessage.ok ? '#10a37f44' : '#f59e0b44',
+          background:  resumeMessage.ok ? '#10a37f0a' : '#f59e0b0a',
+          color:       resumeMessage.ok ? '#10a37f'   : '#f59e0b',
+        }}>
+          <span style={styles.resumeMessageIcon}>{resumeMessage.ok ? '✓' : '⚠'}</span>
+          <span>{resumeMessage.msg}</span>
+        </div>
+      )}
+
+      {expanded && (
+        <WorkerRunDetail
+          run={run}
+          detail={detail}
+          isActive={isActive}
+          onResume={canRecover && onResume ? onResume : undefined}
+          resumeBusy={resumeBusy}
+        />
+      )}
+    </>
+  );
+}
+
+// ── Worker Run Detail ─────────────────────────────────────────────────────────
+
+function WorkerRunDetail({
+  run,
+  detail,
+  isActive,
+  onResume,
+  resumeBusy,
+}: {
+  run: WorkerRunRecord;
+  detail?: WorkerRunDetail;
+  isActive: boolean;
+  onResume?: () => void;
+  resumeBusy?: boolean;
+}) {
+  const isRestartInterrupted = run.status === 'blocked'
+    && run.blocker?.kind === 'tool_failed'
+    && run.blocker.message?.toLowerCase().includes('restart');
+
+  return (
+    <div style={styles.runDetail}>
+      {/* Summary row */}
+      <div style={styles.runDetailSummary}>
+        <div style={styles.runDetailField}>
+          <span style={styles.runDetailLabel}>Status</span>
+          <span style={{
+            ...styles.runDetailValue,
+            color: WORKER_RUN_STATUS_COLOR[run.status] ?? 'var(--text-secondary)',
+            fontWeight: 600,
+          }}>
+            {WORKER_RUN_STATUS_LABEL[run.status] ?? capitalize(run.status)}
+          </span>
+        </div>
+        {run.packId && (
+          <div style={styles.runDetailField}>
+            <span style={styles.runDetailLabel}>Pack</span>
+            <span style={styles.runDetailValue}>{packLabel(run.packId)}</span>
+          </div>
+        )}
+        <div style={styles.runDetailField}>
+          <span style={styles.runDetailLabel}>Started</span>
+          <span style={styles.runDetailValue}>{relativeTime(run.createdAt)}</span>
+        </div>
+        <div style={styles.runDetailField}>
+          <span style={styles.runDetailLabel}>Source</span>
+          <span style={styles.runDetailValue}>{sourceLabel(run.source)}</span>
+        </div>
+        {isActive && (
+          <div style={styles.runDetailField}>
+            <span style={styles.runDetailLabel}>Note</span>
+            <span style={{ ...styles.runDetailValue, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+              Execution does not auto-resume after restart. Use Recover to restart.
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Blocker */}
+      {run.blocker && (
+        <div style={styles.runBlocker}>
+          <span style={styles.runBlockerIcon}>⚠</span>
+          <div style={styles.runBlockerBody}>
+            <span style={styles.runBlockerTitle}>{blockerLabel(run.blocker)}</span>
+            {run.blocker.message && run.blocker.message !== blockerLabel(run.blocker) && (
+              <span style={styles.runBlockerMsg}>{run.blocker.message}</span>
+            )}
+            {run.blocker.recoverable && (
+              <span style={styles.runBlockerRecoverable}>
+                {isRestartInterrupted
+                  ? 'Interrupted by app restart — click Recover to restart this workflow from the beginning.'
+                  : 'Recoverable — review and restart if needed.'}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Recovery action panel — only for blocked/failed runs with pack context */}
+      {onResume && run.packId && (
+        <div style={styles.runRecoveryPanel}>
+          <div style={styles.runRecoveryBody}>
+            <span style={styles.runRecoveryTitle}>
+              {isRestartInterrupted ? 'Recovery available' : 'Restart available'}
+            </span>
+            <span style={styles.runRecoveryDesc}>
+              {isRestartInterrupted
+                ? `Recover will restart "${packLabel(run.packId)}" from the beginning using the original workflow context. This is a fresh run, not a continuation from the interruption point.`
+                : `Recover will restart "${packLabel(run.packId)}" from the beginning. The same failure may recur if the underlying issue is not resolved.`}
+            </span>
+          </div>
+          <button
+            style={{ ...styles.recoverRunBtn, ...styles.recoverRunBtnLarge, opacity: resumeBusy ? 0.6 : 1 }}
+            onClick={onResume}
+            disabled={resumeBusy}
+          >
+            {resumeBusy ? 'Recovering…' : 'Recover run'}
+          </button>
+        </div>
+      )}
+
+      {/* Loading state */}
+      {!detail && (
+        <div style={styles.runDetailLoading}>Loading details…</div>
+      )}
+
+      {/* Steps */}
+      {detail && detail.steps.length > 0 && (
+        <div style={styles.runSection}>
+          <div style={styles.runSectionHeader}>Steps</div>
+          {detail.steps.map(step => (
+            <div key={step.id} style={styles.runStep}>
+              <span style={{
+                ...styles.runStepDot,
+                background: step.status === 'completed' ? '#10a37f'
+                  : step.status === 'failed' ? '#ef4444'
+                  : step.status === 'running' ? '#6366f1'
+                  : 'var(--text-muted)',
+              }} />
+              <span style={styles.runStepTitle}>{step.title}</span>
+              <span style={styles.runStepType}>{step.type}</span>
+              <span style={{
+                ...styles.runStepStatus,
+                color: step.status === 'completed' ? '#10a37f'
+                  : step.status === 'failed' ? '#ef4444'
+                  : step.status === 'running' ? '#6366f1'
+                  : 'var(--text-muted)',
+              }}>
+                {capitalize(step.status)}
+              </span>
+              {step.error && (
+                <span style={styles.runStepError}>{step.error.slice(0, 80)}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Artifacts */}
+      {detail && detail.artifacts.length > 0 && (
+        <div style={styles.runSection}>
+          <div style={styles.runSectionHeader}>Artifacts</div>
+          {detail.artifacts.map(art => (
+            <div key={art.id} style={styles.runArtifact}>
+              <span style={styles.runArtifactKind}>{artifactKindLabel(art.kind)}</span>
+              <span style={styles.runArtifactPath} title={art.path}>
+                {art.path.split('/').pop() ?? art.path}
+              </span>
+              <span style={styles.runArtifactAge}>{relativeTime(art.createdAt)}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -931,5 +1495,226 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     color: 'var(--text-muted)',
     textAlign: 'center',
+  },
+
+  // ── Worker Run components ──────────────────────────────────────────────────
+  recoverRunBtn: {
+    background: '#10a37f18',
+    border: '1px solid #10a37f44',
+    borderRadius: 4,
+    color: '#10a37f',
+    fontSize: 10,
+    fontWeight: 700,
+    padding: '2px 10px',
+    cursor: 'pointer',
+    flexShrink: 0,
+    letterSpacing: '0.02em',
+  },
+  recoverRunBtnLarge: {
+    fontSize: 12,
+    padding: '5px 16px',
+    borderRadius: 5,
+    flexShrink: 0,
+  },
+  resumeMessage: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: 6,
+    padding: '6px 14px',
+    borderTop: '1px solid',
+    fontSize: 11,
+  },
+  resumeMessageIcon: {
+    flexShrink: 0,
+    fontWeight: 700,
+    marginTop: 1,
+  },
+  runRecoveryPanel: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12,
+    background: '#10a37f08',
+    border: '1px solid #10a37f28',
+    borderRadius: 6,
+    padding: '8px 12px',
+    marginBottom: 10,
+  },
+  runRecoveryBody: {
+    flex: 1,
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 3,
+  },
+  runRecoveryTitle: {
+    fontSize: 11,
+    fontWeight: 700,
+    color: '#10a37f',
+  },
+  runRecoveryDesc: {
+    fontSize: 11,
+    color: 'var(--text-secondary)',
+    lineHeight: 1.4,
+  },
+  cancelRunBtn: {
+    background: 'none',
+    border: '1px solid var(--border)',
+    borderRadius: 4,
+    color: 'var(--text-secondary)',
+    fontSize: 10,
+    fontWeight: 600,
+    padding: '2px 8px',
+    cursor: 'pointer',
+    flexShrink: 0,
+  },
+  runDetail: {
+    borderTop: '1px solid var(--border)',
+    background: 'var(--bg-secondary)',
+    padding: '12px 14px 14px 14px',
+  },
+  runDetailSummary: {
+    display: 'flex',
+    gap: 20,
+    flexWrap: 'wrap' as const,
+    marginBottom: 10,
+  },
+  runDetailField: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 2,
+  },
+  runDetailLabel: {
+    fontSize: 10,
+    fontWeight: 700,
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.06em',
+    color: 'var(--text-muted)',
+  },
+  runDetailValue: {
+    fontSize: 12,
+    color: 'var(--text-primary)',
+  },
+  runBlocker: {
+    display: 'flex',
+    gap: 8,
+    alignItems: 'flex-start',
+    background: '#f5a62310',
+    border: '1px solid #f5a62330',
+    borderRadius: 6,
+    padding: '8px 10px',
+    marginBottom: 10,
+  },
+  runBlockerIcon: {
+    fontSize: 14,
+    flexShrink: 0,
+    marginTop: 1,
+  },
+  runBlockerBody: {
+    flex: 1,
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 2,
+  },
+  runBlockerTitle: {
+    fontSize: 11,
+    fontWeight: 700,
+    color: '#f5a623',
+  },
+  runBlockerMsg: {
+    fontSize: 11,
+    color: 'var(--text-secondary)',
+  },
+  runBlockerRecoverable: {
+    fontSize: 10,
+    color: 'var(--text-muted)',
+    fontStyle: 'italic' as const,
+  },
+  runDetailLoading: {
+    padding: '10px 0',
+    fontSize: 11,
+    color: 'var(--text-muted)',
+  },
+  runSection: {
+    marginBottom: 8,
+  },
+  runSectionHeader: {
+    fontSize: 10,
+    fontWeight: 700,
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.06em',
+    color: 'var(--text-muted)',
+    marginBottom: 4,
+  },
+  runStep: {
+    display: 'flex',
+    alignItems: 'baseline',
+    gap: 6,
+    padding: '3px 0',
+    borderBottom: '1px solid var(--border)',
+  },
+  runStepDot: {
+    width: 6,
+    height: 6,
+    borderRadius: '50%',
+    flexShrink: 0,
+    marginTop: 4,
+  },
+  runStepTitle: {
+    fontSize: 12,
+    color: 'var(--text-primary)',
+    flex: 1,
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
+  },
+  runStepType: {
+    fontSize: 10,
+    color: 'var(--text-muted)',
+    flexShrink: 0,
+  },
+  runStepStatus: {
+    fontSize: 10,
+    fontWeight: 600,
+    flexShrink: 0,
+  },
+  runStepError: {
+    fontSize: 10,
+    color: '#ff6b6b',
+    marginLeft: 12,
+    marginTop: 1,
+    fontFamily: 'monospace',
+  },
+  runArtifact: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '3px 0',
+    borderBottom: '1px solid var(--border)',
+  },
+  runArtifactKind: {
+    fontSize: 10,
+    fontWeight: 600,
+    color: 'var(--text-muted)',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.05em',
+    flexShrink: 0,
+    width: 60,
+  },
+  runArtifactPath: {
+    fontSize: 11,
+    color: 'var(--text-secondary)',
+    flex: 1,
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
+    fontFamily: 'monospace',
+  },
+  runArtifactAge: {
+    fontSize: 10,
+    color: 'var(--text-muted)',
+    flexShrink: 0,
   },
 };

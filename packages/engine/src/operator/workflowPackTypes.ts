@@ -54,14 +54,26 @@ export interface WorkflowRequirements {
 // ── Phases ────────────────────────────────────────────────────────────────────
 
 export type PhaseActionKind =
-  | 'list_apps'         // get running app list
-  | 'get_frontmost'     // read current active app
-  | 'focus_app'         // bring target to foreground
-  | 'screenshot'        // capture screen to file
-  | 'queue_input'       // queue type_text or send_key (triggers approval gate)
-  | 'execute_approved'  // execute a previously approved input action
-  | 'readiness_check'   // evaluate capability/permission/platform readiness
-  | 'report';           // assemble and return the workflow artifact
+  | 'list_apps'              // get running app list
+  | 'get_frontmost'          // read current active app
+  | 'focus_app'              // bring target to foreground
+  | 'screenshot'             // capture screen to file
+  | 'queue_input'            // queue type_text or send_key (triggers approval gate)
+  | 'execute_approved'       // execute a previously approved input action
+  | 'readiness_check'        // evaluate capability/permission/platform readiness
+  | 'unreal_bootstrap_check' // evaluate Unreal Engine state using the awareness snapshot
+  | 'unreal_build_check'     // validate engine tools + project path before build execution
+  | 'unreal_build_execute'   // launch a real Unreal build/package subprocess
+  | 'unreal_triage_analyze'   // analyze Unreal log output for failure classification
+  | 'unreal_scaffold_generate'// generate a structured prototype system scaffold plan
+  | 'unreal_milestone_plan'   // group scaffold items into ordered execution milestones
+  | 'unreal_m1_execute'       // write M1 implementation artifacts to the project directory
+  | 'unreal_m2_execute'       // write M2 primary-loop / health / HUD artifacts to the project
+  | 'unreal_rc_probe'         // probe the Unreal Remote Control HTTP endpoint for availability
+  | 'unreal_m3_execute'       // write M3 supporting-systems artifacts to the project directory
+  | 'unreal_m4_execute'       // write M4 enemy/combat milestone artifacts to the project directory
+  | 'unreal_m5_execute'       // write M5 progression/save-system artifacts to the project directory
+  | 'report';                 // assemble and return the workflow artifact
 
 export interface WorkflowPhase {
   id: string;
@@ -168,7 +180,7 @@ export interface WorkflowPhaseResult {
  * It is stored on the run record and available for review in Sessions.
  */
 export interface WorkflowArtifact {
-  type: 'perception_snapshot' | 'context_report' | 'input_delivery' | 'readiness_report';
+  type: 'perception_snapshot' | 'context_report' | 'input_delivery' | 'readiness_report' | 'unreal_readiness_report' | 'unreal_build_report' | 'unreal_triage_report' | 'unreal_scaffold_report' | 'unreal_milestone_report' | 'unreal_m1_execution_report' | 'unreal_m2_execution_report' | 'unreal_rc_probe_report' | 'unreal_m3_execution_report' | 'unreal_m4_execution_report' | 'unreal_m5_execution_report';
   capturedAt: number;
   data: Record<string, unknown>;
 }
@@ -211,4 +223,22 @@ export interface WorkflowRunOptions {
   inputModifiers?: Array<'cmd' | 'shift' | 'alt' | 'ctrl'>;
   /** Custom output path for screenshots */
   screenshotOutputPath?: string;
+  /**
+   * For unreal-build: whether to run a C++ compilation (build) or a full
+   * cook+build+stage+package operation (package).
+   * Defaults to 'build' if not specified.
+   */
+  buildMode?: 'build' | 'package';
+  /**
+   * For unreal-triage: explicit path to the log file to analyze.
+   * If not provided, the pack discovers the best available log source
+   * from the build artifact, awareness snapshot, or project Saved/Logs/.
+   */
+  triageLogPath?: string;
+  /**
+   * For unreal-scaffold: plain-language description of the prototype to build.
+   * Examples: "third-person sci-fi survival", "top-down roguelite dungeon crawler".
+   * Required for the Unreal System Scaffold pack to produce a grounded plan.
+   */
+  prototypeGoal?: string;
 }

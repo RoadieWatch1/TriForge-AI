@@ -155,7 +155,12 @@ import type { DecisionInput } from './incomeDecisionEngine';
 import { IncomeAutopilot } from './incomeAutopilot';
 import { getMachineContext } from './services/machineContext';
 import { OperatorService } from './services/operatorService';
+import { buildUnrealAwarenessSnapshot } from './services/unrealAwareness';
 import { WorkflowPackService } from './services/workflowPackService';
+import { WorkerRunQueue } from './workerRuntime/workerRunQueue';
+import type { CreateRunOptions } from './workerRuntime/workerRunQueue';
+import { initWorkflowBridge } from './workerRuntime/workflowWorkerRunBridge';
+import { resumeRun as _resumeWorkerRun } from './workerRuntime/workerRunRecoveryService';
 import { ok as incomeOk, fail as incomeFail } from './utils/actionResult';
 import { withRetry } from './utils/retry';
 import { setExperimentManager } from './systemPrompt';
@@ -239,6 +244,9 @@ let _memGraph: CouncilMemoryGraph | null = null;
 let _councilRuntime: CouncilRuntime | null = null;
 let _insightEngine: InsightEngine | null = null;
 let _insightRouter: InsightRouter | null = null;
+
+// ── Worker Runtime singleton (Phase 1 — durable run foundation) ──────────────
+let _workerRunQueue: WorkerRunQueue | null = null;
 
 // ── Phase 2: Control Plane singleton ────────────────────────────────────────
 let _controlPlane: ControlPlaneServer | null = null;
@@ -748,6 +756,14 @@ function _getMissionStore(): MissionStore {
   return _missionStore;
 }
 
+function _getWorkerRunQueue(): WorkerRunQueue {
+  if (!_workerRunQueue) {
+    _workerRunQueue = new WorkerRunQueue(_getDataDir());
+    _workerRunQueue.init(); // load from disk + hydrate unfinished runs
+  }
+  return _workerRunQueue;
+}
+
 function _getMissionManager(store: Store): MissionManager {
   if (!_missionManager) {
     _missionManager = new MissionManager(_getMissionStore(), _getAgentLoop(store));
@@ -1011,6 +1027,134 @@ export function setupIpc(store: Store): void {
     const mode = state.enabled ? shadowTradingController.getOperationMode() : 'off';
     return { connected, mode: mode as 'off' | 'shadow' | 'paper' | 'guarded_live_candidate' };
   });
+
+  // Desktop operator state — injected into every Council awareness pack
+  systemStateService.registerOperatorStateGetter(async () => {
+    try {
+      const capMap  = await OperatorService.getCapabilityMap();
+      const enabled = OperatorService.isOperatorEnabled();
+
+      const available:    string[] = [];
+      const missing:      string[] = [];
+      const permGranted:  string[] = [];
+      const permMissing:  string[] = [];
+
+      if (capMap.platform === 'macOS') {
+        // Read-only — always available on macOS
+        if (capMap.canListRunningApps) available.push('list_apps');
+        if (capMap.canGetFrontmostApp) available.push('get_frontmost');
+        if (capMap.canFocusApp)        available.push('focus_app');
+
+        // Perception — requires Screen Recording
+        if (capMap.canCaptureScreen)   available.push('screenshot');
+        else                           missing.push('screenshot');
+
+        // Input — requires Accessibility
+        if (capMap.canTypeText)        available.push('type_text');
+        else                           missing.push('type_text');
+        if (capMap.canSendKeystroke)   available.push('send_key');
+        else                           missing.push('send_key');
+
+        if (capMap.accessibilityGranted)    permGranted.push('accessibility');
+        else                                permMissing.push('accessibility');
+        if (capMap.screenRecordingGranted)  permGranted.push('screen_recording');
+        else                                permMissing.push('screen_recording');
+      }
+
+      // ── Phase 2 Step 3: richer runtime signals ───────────────────────────
+      // Derive preflight readiness from the last known capability snapshot.
+      // getLastKnownCapabilities() returns null until the first action probe.
+      const lastCap   = OperatorService.getLastKnownCapabilities();
+      const drift     = OperatorService.getPermissionDriftState();
+      const hasDrift  = drift.accessibilityRevoked || drift.screenRecordingRevoked;
+
+      // Preflight readiness:
+      //   blocked  — any permission drift detected (was granted, now revoked)
+      //   blocked  — input actions required but accessibility is missing
+      //   degraded — some non-input capability missing (screen recording only)
+      //   ready    — all needed permissions satisfied
+      //   undefined — never probed yet (lastCap is null)
+      let preflightReadiness: 'ready' | 'degraded' | 'blocked' | undefined;
+      if (lastCap !== null) {
+        if (hasDrift) {
+          preflightReadiness = 'blocked';
+        } else if (!lastCap.accessibilityGranted) {
+          // Input actions (type_text, send_key) are blocked — this is a hard block
+          preflightReadiness = 'blocked';
+        } else if (!lastCap.screenRecordingGranted) {
+          // Screenshots blocked, but input still works — degraded
+          preflightReadiness = 'degraded';
+        } else {
+          preflightReadiness = 'ready';
+        }
+      }
+
+      return {
+        operatorEnabled:    enabled,
+        platformSupported:  capMap.platform === 'macOS',
+        availableCapabilities: available,
+        missingCapabilities:   missing,
+        permissionsGranted:    permGranted,
+        permissionsMissing:    permMissing,
+        workflowsAvailable: [
+          'pack.readiness-check',
+          'pack.app-context',
+          'pack.focus-capture',
+          'pack.supervised-input',
+          'pack.unreal-bootstrap',
+          'pack.unreal-build',
+          'pack.unreal-triage',
+        ],
+        approvalRequiredFor: ['type_text', 'send_key'],
+        // Phase 2 Step 3 additions
+        preflightReadiness,
+        permissionDrift: lastCap !== null ? {
+          accessibilityRevoked:   drift.accessibilityRevoked,
+          screenRecordingRevoked: drift.screenRecordingRevoked,
+        } : undefined,
+        // sessionValid is not assessed at snapshot time — set only when a
+        // specific session ID is being evaluated, not globally
+        sessionValid: undefined,
+      };
+    } catch {
+      return null;
+    }
+  });
+
+  // Unreal Engine domain awareness — injected alongside desktop operator state
+  systemStateService.registerUnrealStateGetter(async () => {
+    try {
+      // Use the operator service's app-listing and frontmost-app helpers.
+      // Both are read-only osascript calls that don't require Accessibility.
+      const [runningApps, frontmostTarget] = await Promise.all([
+        OperatorService.listRunningApps(),
+        OperatorService.getFrontmostApp(),
+      ]);
+
+      return buildUnrealAwarenessSnapshot(
+        runningApps,
+        frontmostTarget?.appName ?? null,
+        frontmostTarget?.windowTitle,
+      );
+    } catch {
+      return null;
+    }
+  });
+
+  // ── Operator substrate v2 startup hardening (Phase 2 Step 1) ────────────
+  // Invalidate any capability cache from a previous process run so the first
+  // operator action re-probes OS permissions from scratch.
+  // Clean up any sessions that survived from a previous context (defensive —
+  // sessions are in-memory only so this is always a no-op on first launch,
+  // but guards against any future in-process recycling scenarios).
+  OperatorService.invalidateCapabilityCache();
+  OperatorService.cleanupStaleSessions();
+
+  // ── Worker Runtime: wire WorkflowPackService → durable WorkerRun records ───
+  // Must run after IPC handlers are registered but before any workflow packs
+  // can be started (i.e. before user interaction). The bridge is a no-op until
+  // a workflow pack run actually starts, so early registration is safe.
+  initWorkflowBridge(_getWorkerRunQueue());
 
   // ── Native Intent Router — shared across all three chat handlers ──────────
   const nativeRouter = new NativeIntentRouter({
@@ -13804,6 +13948,109 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   ipcMain.handle('operator:safety:status', async () => {
     try {
       return { ok: true, enabled: OperatorService.isOperatorEnabled() };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // ── Worker Runtime — durable run persistence (Phase 1) ───────────────────
+
+  /**
+   * Create a new WorkerRun and persist it to disk.
+   * The run starts in 'queued' status.
+   */
+  ipcMain.handle('workerRun:create', (_e, opts: CreateRunOptions) => {
+    try {
+      if (!opts?.goal || typeof opts.goal !== 'string' || opts.goal.trim().length === 0) {
+        return { ok: false, error: 'goal is required' };
+      }
+      const run = _getWorkerRunQueue().createRun({ ...opts, goal: opts.goal.trim() });
+      return { ok: true, run };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /**
+   * List persisted WorkerRuns, most recent first.
+   * Optional filter: { status } narrows by run status.
+   */
+  ipcMain.handle('workerRun:list', (_e, filter?: { status?: string }) => {
+    try {
+      const runs = _getWorkerRunQueue().listRuns(filter as Parameters<WorkerRunQueue['listRuns']>[0]);
+      return { ok: true, runs };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /**
+   * Get a single WorkerRun by ID, including its steps and artifact refs.
+   */
+  ipcMain.handle('workerRun:get', (_e, runId: string) => {
+    try {
+      const q    = _getWorkerRunQueue();
+      const run  = q.getRun(runId);
+      if (!run) return { ok: false, error: `WorkerRun "${runId}" not found` };
+      const steps     = q.getSteps(runId);
+      const artifacts = q.getArtifacts(runId);
+      return { ok: true, run, steps, artifacts };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /**
+   * Return all runs that were in a non-terminal state when the app started.
+   * These were hydrated by workerRunHydrator on init() and may need user attention.
+   * Any run that was 'running' at shutdown will appear here as 'blocked'.
+   */
+  ipcMain.handle('workerRun:resumeCandidates', () => {
+    try {
+      const candidates = _getWorkerRunQueue().getResumeCandidates();
+      return { ok: true, runs: candidates };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /**
+   * Cancel a WorkerRun. Only allowed if the run is in a non-terminal state.
+   * Returns the updated run, or an error if already terminal.
+   */
+  ipcMain.handle('workerRun:cancel', (_e, runId: string) => {
+    try {
+      const run = _getWorkerRunQueue().cancel(runId);
+      if (!run) return { ok: false, error: `Cannot cancel run "${runId}" — not found or already terminal` };
+      return { ok: true, run };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /**
+   * Resume or recover a WorkerRun.
+   *
+   * Recovery semantics depend on run status:
+   *   blocked / failed + saved pack metadata  → restart workflow from saved packId + targetApp
+   *   waiting_approval + live WorkflowRun     → returns failReason: 'approval_live_use_panel'
+   *   waiting_approval + dead WorkflowRun     → restart from saved metadata
+   *   terminal / no metadata                  → structured failure
+   *
+   * On successful restart:
+   *   • A new WorkerRun is created by the bridge when startRun() executes.
+   *   • The old interrupted run is marked cancelled.
+   *   • The new run will appear in the Sessions UI after the next refresh.
+   *
+   * NOTE: This is a restart, not a seamless resume. Execution begins from
+   * phase 0 of the workflow pack — not from the exact point of interruption.
+   */
+  ipcMain.handle('workerRun:resume', async (_e, runId: string) => {
+    try {
+      if (!runId || typeof runId !== 'string') {
+        return { ok: false, error: 'runId is required' };
+      }
+      return await _resumeWorkerRun(runId, _getWorkerRunQueue());
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
