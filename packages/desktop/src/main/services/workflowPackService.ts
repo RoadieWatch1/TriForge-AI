@@ -51,6 +51,7 @@ import type {
   UnrealBootstrapResult,
 } from '@triforge/engine';
 import { buildUnrealAwarenessSnapshot }                                 from './unrealAwareness';
+import { saveProjectProgress }                                          from './projectMemory';
 import {
   buildIOSAwarenessSnapshot,
   bootSimulator,
@@ -415,6 +416,12 @@ function makePhaseResult(
     error,
     warning,
   };
+}
+
+function saveMilestoneIfSuccess(outcome: string, projectPath: string, projectName: string, milestone: string, packId: string, goal?: string): void {
+  if (outcome !== 'failed') {
+    saveProjectProgress({ projectPath, projectName, lastMilestone: milestone, lastPackId: packId, prototypeGoal: goal });
+  }
 }
 
 // ── Phase executors ───────────────────────────────────────────────────────────
@@ -1076,6 +1083,8 @@ async function executePhase(
         blockers:       applicationResult.errors,
       };
 
+      saveMilestoneIfSuccess(outcome, projectPath, projectName, 'M1', run.packId, opts?.goal ?? (scaffoldResult as { prototypeGoal?: string } | undefined)?.prototypeGoal);
+
       return {
         phaseResult: makePhaseResult(phase, 'completed', {
           m1ExecutionResult,
@@ -1209,6 +1218,8 @@ async function executePhase(
         warnings:            applicationResult.warnings,
         blockers:            applicationResult.errors,
       };
+
+      saveMilestoneIfSuccess(outcome, projectPath, projectName, 'M2', run.packId, opts?.goal);
 
       return {
         phaseResult: makePhaseResult(phase, 'completed', {
@@ -1351,6 +1362,8 @@ async function executePhase(
         warnings:            applicationResult.warnings,
         blockers:            applicationResult.errors,
       };
+
+      saveMilestoneIfSuccess(outcome, projectPath, projectName, 'M3', run.packId, opts?.goal);
 
       return {
         phaseResult: makePhaseResult(phase, 'completed', {
@@ -1497,6 +1510,8 @@ async function executePhase(
         warnings:            applicationResult.warnings,
         blockers:            applicationResult.errors,
       };
+
+      saveMilestoneIfSuccess(outcome, projectPath, projectName, 'M4', run.packId, opts?.goal);
 
       return {
         phaseResult: makePhaseResult(phase, 'completed', {
@@ -1649,6 +1664,8 @@ async function executePhase(
         warnings:            applicationResult.warnings,
         blockers:            applicationResult.errors,
       };
+
+      saveMilestoneIfSuccess(outcome, projectPath, projectName, 'M5', run.packId, opts?.goal);
 
       return {
         phaseResult: makePhaseResult(phase, 'completed', {

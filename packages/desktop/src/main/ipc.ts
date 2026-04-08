@@ -72,6 +72,7 @@ import type { LinearIssue, LinearTeam, LinearWorkflowState, LinearComment } from
 import { PushNotifier, DEFAULT_EVENT_SETTINGS, ALL_NOTIFY_EVENTS, EVENT_LABELS } from './pushNotifier';
 import type { NotifyEvent, NotifyPriority, NotifyProvider } from './pushNotifier';
 import { BUILTIN_RECIPES } from './automationRecipes';
+import { getLastProject, getContinuationSuggestion, getAllProjects, forgetProject } from './services/projectMemory';
 import type { RecipeDef, RecipeState, RecipeView } from './automationRecipes';
 import { WorkspaceCredentialResolver } from './workspaceCredentialResolver';
 import type { IntegrationName } from './workspaceCredentialResolver';
@@ -14820,6 +14821,22 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
+  });
+
+  // ── Project memory ─────────────────────────────────────────────────────────
+  ipcMain.handle('project-memory:last', () => {
+    try { return { project: getLastProject(), suggestion: getContinuationSuggestion() }; }
+    catch { return { project: null, suggestion: null }; }
+  });
+
+  ipcMain.handle('project-memory:all', () => {
+    try { return getAllProjects(); }
+    catch { return []; }
+  });
+
+  ipcMain.handle('project-memory:forget', (_e, projectPath: string) => {
+    try { forgetProject(projectPath); return { ok: true }; }
+    catch (e) { return { ok: false, error: String(e) }; }
   });
 }
 

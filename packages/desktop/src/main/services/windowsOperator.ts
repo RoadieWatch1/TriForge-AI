@@ -22,33 +22,111 @@
 //   - UAC elevation detection
 //   - Windows Hello / Credential Guard integration
 
-import { exec }    from 'child_process';
-import path        from 'path';
-import os          from 'os';
+import { exec, spawn }  from 'child_process';
+import type { ChildProcessWithoutNullStreams } from 'child_process';
+import path              from 'path';
+import os                from 'os';
+
+// ── Persistent PowerShell Host ────────────────────────────────────────────────
+//
+// Spawns a single PowerShell process that stays alive for the duration of the
+// app session. Commands are sent via stdin; responses are delimited by a unique
+// sentinel written to stdout. This eliminates the 1-3 second startup cost that
+// made every operator action feel broken on Windows.
+
+const PS_SENTINEL = '__TF_PS_DONE__';
+
+class PersistentPSHost {
+  private proc: ChildProcessWithoutNullStreams | null = null;
+  private buf  = '';
+  private queue: Array<{ resolve: (v: string) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }> = [];
+  private ready = false;
+  private typesLoaded = new Set<string>();
+  private static readonly MAX_BUF = 4 * 1024 * 1024; // 4 MB safety cap
+
+  private start(): void {
+    if (this.proc) return;
+    this.proc = spawn('powershell.exe', ['-NonInteractive', '-NoProfile', '-NoLogo', '-Command', '-'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    this.proc.stdout.setEncoding('utf8');
+    this.proc.stdout.on('data', (chunk: string) => {
+      this.buf += chunk;
+      if (this.buf.length > PersistentPSHost.MAX_BUF) {
+        // Buffer runaway — reject pending and reset
+        const pending = this.queue.shift();
+        if (pending) { clearTimeout(pending.timer); pending.reject(new Error('PowerShell output exceeded buffer limit')); }
+        this.buf = '';
+        return;
+      }
+      const idx = this.buf.indexOf(PS_SENTINEL);
+      if (idx !== -1) {
+        const output = this.buf.slice(0, idx).replace(/\r?\n$/, '');
+        this.buf = this.buf.slice(idx + PS_SENTINEL.length).replace(/^\r?\n/, '');
+        const pending = this.queue.shift();
+        if (pending) {
+          clearTimeout(pending.timer);
+          pending.resolve(output.trim());
+        }
+      }
+    });
+    this.proc.on('exit', () => {
+      this.proc = null;
+      this.ready = false;
+      this.typesLoaded.clear();
+      // Drain any pending with an error
+      const err = new Error('PowerShell host exited unexpectedly');
+      for (const p of this.queue) { clearTimeout(p.timer); p.reject(err); }
+      this.queue = [];
+    });
+    this.proc.stderr?.setEncoding('utf8');
+    this.ready = true;
+  }
+
+  /** Run a PowerShell script and return its stdout output. */
+  run(script: string, timeoutMs = 8_000): Promise<string> {
+    if (!this.ready || !this.proc) this.start();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const idx = this.queue.findIndex(q => q.resolve === resolve);
+        if (idx !== -1) this.queue.splice(idx, 1);
+        this.buf = ''; // discard stale output from timed-out command
+        reject(new Error(`PowerShell host timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.queue.push({ resolve, reject, timer });
+      // Write script + sentinel so we know when output is complete
+      this.proc!.stdin.write(script + `\nWrite-Output '${PS_SENTINEL}'\n`);
+    });
+  }
+
+  /** Load Win32 type definitions once per session per type block (Add-Type is cached by PS). */
+  async ensureTypesLoaded(typeDef: string): Promise<void> {
+    const key = typeDef.slice(0, 64); // stable identity from first 64 chars
+    if (this.typesLoaded.has(key)) return;
+    await this.run(`Add-Type -TypeDefinition @'\n${typeDef}\n'@`);
+    this.typesLoaded.add(key);
+  }
+
+  dispose(): void {
+    try { this.proc?.stdin.end(); } catch { /**/ }
+    this.proc = null;
+    this.ready = false;
+  }
+}
+
+// Module-level singleton — one host per app lifetime
+const _psHost = new PersistentPSHost();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function shellExecPs(script: string, timeoutMs = 10_000): Promise<string> {
-  return new Promise((resolve, reject) => {
-    // -NonInteractive: no prompts; -NoProfile: faster startup; -Command: inline script
-    const child = exec(
-      `powershell.exe -NonInteractive -NoProfile -Command "${script.replace(/"/g, '\\"')}"`,
-      { timeout: timeoutMs },
-      (err, stdout, stderr) => {
-        if (err) {
-          reject(new Error(stderr?.trim() || err.message));
-        } else {
-          resolve((stdout ?? '').trim());
-        }
-      },
-    );
-    child.on('error', reject);
-  });
+/** Fast path: run script in the persistent host. */
+function shellExecPs(script: string, timeoutMs = 8_000): Promise<string> {
+  return _psHost.run(script, timeoutMs);
 }
 
 /**
- * Execute a multi-line PowerShell script passed via -EncodedCommand
- * (avoids quoting hell for complex scripts).
+ * Fallback: spawn a fresh PowerShell process via -EncodedCommand.
+ * Used only for rare one-shot operations (e.g. permission checks on first run).
  */
 function shellExecPsEncoded(script: string, timeoutMs = 10_000): Promise<string> {
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
@@ -123,11 +201,9 @@ Write-Output ok
  * Filters to processes that own a visible window (MainWindowTitle != '').
  */
 export async function windowsListRunningApps(): Promise<string[]> {
-  const script = `
-Get-Process | Where-Object { $_.MainWindowTitle -ne '' } | ForEach-Object { $_.ProcessName } | Sort-Object -Unique
-  `.trim();
+  const script = `Get-Process | Where-Object { $_.MainWindowTitle -ne '' } | ForEach-Object { $_.ProcessName } | Sort-Object -Unique`;
   try {
-    const raw = await shellExecPsEncoded(script, 8000);
+    const raw = await shellExecPs(script, 8000);
     return raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
   } catch {
     return [];
@@ -146,27 +222,20 @@ export interface WindowsTarget {
  * Uses GetForegroundWindow → GetWindowThreadProcessId → Get-Process.
  */
 export async function windowsGetFrontmostTarget(): Promise<WindowsTarget | null> {
-  const script = `
-Add-Type -TypeDefinition @'
-${WIN32_USER32_TYPE_DEF}
-'@
+  try {
+    await _psHost.ensureTypesLoaded(WIN32_USER32_TYPE_DEF);
+    const script = `
 $hwnd = [Win32User32]::GetForegroundWindow()
 $pid = 0
 [Win32User32]::GetWindowThreadProcessId($hwnd, [ref]$pid) | Out-Null
 $proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
-if ($proc) {
-  Write-Output ($proc.ProcessName + '|' + $proc.MainWindowTitle)
-}
-  `.trim();
-  try {
-    const raw = await shellExecPsEncoded(script, 5000);
+if ($proc) { Write-Output ($proc.ProcessName + '|' + $proc.MainWindowTitle) }
+    `.trim();
+    const raw = await shellExecPs(script, 5000);
     if (!raw) return null;
     const idx = raw.indexOf('|');
     if (idx === -1) return { appName: raw, windowTitle: '' };
-    return {
-      appName:     raw.slice(0, idx).trim(),
-      windowTitle: raw.slice(idx + 1).trim(),
-    };
+    return { appName: raw.slice(0, idx).trim(), windowTitle: raw.slice(idx + 1).trim() };
   } catch {
     return null;
   }
@@ -180,10 +249,9 @@ if ($proc) {
  */
 export async function windowsFocusApp(appName: string): Promise<{ ok: boolean; error?: string }> {
   const safeName = appName.replace(/'/g, "''");
-  const script = `
-Add-Type -TypeDefinition @'
-${WIN32_USER32_TYPE_DEF}
-'@
+  try {
+    await _psHost.ensureTypesLoaded(WIN32_USER32_TYPE_DEF);
+    const script = `
 $target = Get-Process | Where-Object {
   ($_.ProcessName -like '*${safeName}*' -or $_.MainWindowTitle -like '*${safeName}*') -and $_.MainWindowHandle -ne 0
 } | Sort-Object { $_.MainWindowTitle.Length } -Descending | Select-Object -First 1
@@ -191,12 +259,9 @@ if ($target) {
   [Win32User32]::ShowWindow($target.MainWindowHandle, 9) | Out-Null
   [Win32User32]::SetForegroundWindow($target.MainWindowHandle) | Out-Null
   Write-Output ok
-} else {
-  Write-Error "Process not found: ${safeName}"
-}
-  `.trim();
-  try {
-    const out = await shellExecPsEncoded(script, 8000);
+} else { Write-Output notfound }
+    `.trim();
+    const out = await shellExecPs(script, 8000);
     if (out.includes('ok')) return { ok: true };
     return { ok: false, error: `Could not focus: ${appName}` };
   } catch (err) {
@@ -211,29 +276,24 @@ if ($target) {
  * Works on all Windows versions with .NET Framework 4.x+ (always present).
  */
 export async function windowsCaptureScreen(outputPath: string): Promise<{ ok: boolean; error?: string }> {
-  // Escape backslashes for PowerShell string
   const dest = outputPath.replace(/\\/g, '\\\\');
-  // Use GetSystemMetrics(SM_CXSCREEN=0 / SM_CYSCREEN=1) which returns PHYSICAL pixels —
-  // the same coordinate space that SetCursorPos / mouse_event use.
-  // This ensures screenshot pixel coordinates exactly match click coordinates on any DPI.
   const script = `
 Add-Type -AssemblyName System.Drawing
-Add-Type @'
+Add-Type -TypeDefinition @'
 using System.Runtime.InteropServices;
 public class TfSM { [DllImport("user32.dll")] public static extern int GetSystemMetrics(int n); }
 '@
 $w = [TfSM]::GetSystemMetrics(0)
 $h = [TfSM]::GetSystemMetrics(1)
-$bitmap = New-Object System.Drawing.Bitmap($w, $h)
-$g = [System.Drawing.Graphics]::FromImage($bitmap)
+$bmp = New-Object System.Drawing.Bitmap($w, $h)
+$g = [System.Drawing.Graphics]::FromImage($bmp)
 $g.CopyFromScreen(0, 0, 0, 0, [System.Drawing.Size]::new($w, $h))
-$bitmap.Save('${dest}', [System.Drawing.Imaging.ImageFormat]::Png)
-$g.Dispose()
-$bitmap.Dispose()
+$bmp.Save('${dest}', [System.Drawing.Imaging.ImageFormat]::Png)
+$g.Dispose(); $bmp.Dispose()
 Write-Output ok
   `.trim();
   try {
-    const out = await shellExecPsEncoded(script, 15_000);
+    const out = await shellExecPs(script, 12_000);
     if (out.includes('ok')) return { ok: true };
     return { ok: false, error: 'Screenshot script did not confirm success.' };
   } catch (err) {
@@ -249,15 +309,10 @@ Write-Output ok
  * Special SendKeys characters ({ } + ^ % ~) are escaped automatically.
  */
 export async function windowsTypeText(text: string): Promise<{ ok: boolean; error?: string }> {
-  // Escape SendKeys special characters
   const escaped = text.replace(/[+^%~(){}[\]]/g, c => `{${c}}`);
-  const script = `
-Add-Type -AssemblyName System.Windows.Forms
-[System.Windows.Forms.SendKeys]::SendWait('${escaped.replace(/'/g, "''")}')
-Write-Output ok
-  `.trim();
+  const script = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${escaped.replace(/'/g, "''")}'); Write-Output ok`;
   try {
-    const out = await shellExecPsEncoded(script, 10_000);
+    const out = await shellExecPs(script, 10_000);
     if (out.includes('ok')) return { ok: true };
     return { ok: false, error: 'SendKeys did not complete.' };
   } catch (err) {
@@ -312,13 +367,9 @@ export async function windowsSendKey(
   const modPrefix = modifiers.map(m => WIN_MOD_MAP[m] ?? '').join('');
   const sendStr   = `${modPrefix}${keyStr}`;
 
-  const script = `
-Add-Type -AssemblyName System.Windows.Forms
-[System.Windows.Forms.SendKeys]::SendWait('${sendStr.replace(/'/g, "''")}')
-Write-Output ok
-  `.trim();
+  const script = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${sendStr.replace(/'/g, "''")}'); Write-Output ok`;
   try {
-    const out = await shellExecPsEncoded(script, 8000);
+    const out = await shellExecPs(script, 8000);
     if (out.includes('ok')) return { ok: true };
     return { ok: false, error: 'SendKeys did not complete.' };
   } catch (err) {
@@ -357,18 +408,15 @@ Start-Sleep -Milliseconds 30
 [Win32User32]::mouse_event(${MOUSEEVENTF_RIGHTUP}, 0, 0, 0, [UIntPtr]::Zero) | Out-Null
   `.trim() : '';
 
-  const script = `
-Add-Type -TypeDefinition @'
-${WIN32_USER32_TYPE_DEF}
-'@
+  try {
+    await _psHost.ensureTypesLoaded(WIN32_USER32_TYPE_DEF);
+    const script = `
 [Win32User32]::SetCursorPos(${x}, ${y}) | Out-Null
-Start-Sleep -Milliseconds 50
+Start-Sleep -Milliseconds 40
 ${button === 'right' ? rightBlock : clickBlock}
 Write-Output ok
-  `.trim();
-
-  try {
-    const out = await shellExecPsEncoded(script, 8000);
+    `.trim();
+    const out = await shellExecPs(script, 8000);
     if (out.includes('ok')) return { ok: true };
     return { ok: false, error: 'Click script did not confirm success.' };
   } catch (err) {

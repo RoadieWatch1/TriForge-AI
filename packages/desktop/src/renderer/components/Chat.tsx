@@ -64,7 +64,7 @@ interface Message {
   // Section 5 contextual intelligence (set after council conversation)
   contextualIntelligence?: ContextualIntelligenceResult | null;
   // Operator suggestion — set when council detects operator_action intent
-  operatorSuggestion?: { goal: string; appName?: string };
+  operatorSuggestion?: { goal: string; appName?: string; suggestedPackId?: string | null };
   // Live operator narration — injected from the operator task loop
   isOperatorNarration?: boolean;
   narrationStep?: number;
@@ -328,9 +328,20 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   const [missionBannerDismissed, setMissionBannerDismissed] = useState(false);
   const [escalationSuggested, setEscalationSuggested] = useState(false);
 
+  // Project memory — "continue where you left off" suggestion; set to null to dismiss
+  const [projectSuggestion, setProjectSuggestion] = useState<string | null>(null);
+
   useEffect(() => {
     window.triforge.license.checkoutUrls().then(setCheckoutUrls).catch(() => {});
   }, []);
+
+  // Load project memory continuation suggestion on first render
+  useEffect(() => {
+    if (!window.triforge.projectMemory) return;
+    window.triforge.projectMemory.last()
+      .then(({ suggestion }) => { if (suggestion) setProjectSuggestion(suggestion); })
+      .catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load mission context from ForgeCommand (within 24h window) + inject awareness message
   useEffect(() => {
@@ -378,7 +389,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
         const updated = [...prev];
         updated[realIdx] = {
           ...updated[realIdx],
-          operatorSuggestion: { goal: data.goal, appName: data.targetApp ?? undefined },
+          operatorSuggestion: { goal: data.goal, appName: data.targetApp ?? undefined, suggestedPackId: data.suggestedPackId ?? null },
         };
         return updated;
       });
@@ -1655,6 +1666,34 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
                   onAssistantTranscript={(text) => appendMsg({ id: crypto.randomUUID(), role: 'assistant', content: text, timestamp: new Date() })}
                 />
               )}
+              {/* Project memory — continue where you left off */}
+              {projectSuggestion && messages.length === 1 && messages[0].id === 'welcome' && (
+                <div style={{ margin: '10px 16px 0', padding: '10px 14px', background: 'rgba(99,102,241,0.07)', border: '1px solid rgba(99,102,241,0.22)', borderRadius: 8, display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                  <span style={{ fontSize: 14, marginTop: 1 }}>⬡</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: 6 }}>{projectSuggestion}</div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button
+                        style={{ fontSize: 11, fontWeight: 700, color: '#6366f1', background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.3)', borderRadius: 5, padding: '3px 10px', cursor: 'pointer' }}
+                        onClick={() => { setInput('Continue where we left off on my Unreal project'); setProjectSuggestion(null); setTimeout(() => inputRef.current?.focus(), 50); }}
+                      >
+                        Continue
+                      </button>
+                      <button
+                        style={{ fontSize: 11, color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer' }}
+                        onClick={() => setProjectSuggestion(null)}
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* First-run prompt cards — only when only the welcome message exists */}
+              {messages.length === 1 && messages[0].id === 'welcome' && (
+                <FirstRunPrompts onSelect={(p) => { setInput(p); setTimeout(() => inputRef.current?.focus(), 50); }} />
+              )}
               <div style={cs.messages}>
                 {messages.map(msg => (
                   msg.consensusResponses
@@ -1680,6 +1719,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
                           else if (action === 'find_similar')                   runFindSimilar();
                           else if (action === 'print')                          runPickAndPrint();
                           else if (action?.startsWith('generate_image:'))       runGenerateImage(action.slice('generate_image:'.length));
+                          else if (action === 'open_operate')                   onNavigate?.('operate');
                           else if (action === 'open_chat')                      onNavigate?.('chat');
                           else if (action === 'open_forge')                     onNavigate?.('forge');
                           else if (action === 'open_builder')                   onBuildApp();
@@ -1691,6 +1731,17 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
                           else if (action === 'open_ledger')                    onNavigate?.('ledger');
                           else if (action === 'open_settings')                  onNavigate?.('settings');
                           else if (action === 'open_profiles')                  onNavigate?.('profiles');
+                          else if (action?.startsWith('run_pack:')) {
+                            // Format: run_pack:<packId>:<goal>
+                            const rest   = action.slice('run_pack:'.length);
+                            const sepIdx = rest.indexOf(':');
+                            const packId = sepIdx !== -1 ? rest.slice(0, sepIdx) : rest;
+                            const goal   = sepIdx !== -1 ? rest.slice(sepIdx + 1) : '';
+                            onNavigate?.('operate');
+                            setTimeout(() => {
+                              window.dispatchEvent(new CustomEvent('triforge:start-pack', { detail: { packId, goal } }));
+                            }, 300);
+                          }
                           else if (action?.startsWith('run_operator:')) {
                             const goal = action.slice('run_operator:'.length);
                             onNavigate?.('operate');
@@ -2051,7 +2102,7 @@ function ForgeRow({ icon, label, text }: { icon: string; label: string; text: st
 
 // ── RUN tag parser ────────────────────────────────────────────────────────────
 
-const RUN_TAG_RE = /\[RUN:((?:search_docs:[^\]]+)|(?:generate_image:[^\]]+)|index_docs|find_photos|organize|organize_deep|organize_desktop|organize_downloads|organize_documents|search_photos|find_similar|print|open_chat|open_forge|open_builder|open_vibe|open_ventures|open_hustle|open_imageGenerator|open_memory|open_ledger|open_settings|open_profiles)\]/i;
+const RUN_TAG_RE = /\[RUN:((?:search_docs:[^\]]+)|(?:generate_image:[^\]]+)|index_docs|find_photos|organize|organize_deep|organize_desktop|organize_downloads|organize_documents|search_photos|find_similar|print|open_chat|open_forge|open_builder|open_vibe|open_ventures|open_hustle|open_imageGenerator|open_memory|open_ledger|open_settings|open_profiles|open_operate)\]/i;
 
 const RUN_LABELS: Record<string, string> = {
   index_docs:              'Index Documents',
@@ -2287,10 +2338,20 @@ function MessageBubble({ msg, isSpeaking, canSpeak, onSpeak, onRetry, onRunActio
               color: '#6366f1',
               marginTop: runAction ? 4 : 0,
             }}
-            onClick={() => onRunAction(`run_operator:${msg.operatorSuggestion!.goal}`)}
+            onClick={() => {
+              const s = msg.operatorSuggestion!;
+              // If a specific workflow pack was identified, launch it directly
+              if (s.suggestedPackId) {
+                onRunAction(`run_pack:${s.suggestedPackId}:${s.goal}`);
+              } else {
+                onRunAction(`run_operator:${s.goal}`);
+              }
+            }}
             title={msg.operatorSuggestion.appName ? `Run in ${msg.operatorSuggestion.appName} via Operator` : 'Run in Operator'}
           >
-            ⚡ {msg.operatorSuggestion.appName ? `Run in ${msg.operatorSuggestion.appName}` : 'Run in Operator'}
+            ⚡ {msg.operatorSuggestion.suggestedPackId
+              ? `Build in ${msg.operatorSuggestion.appName ?? 'Operator'}`
+              : msg.operatorSuggestion.appName ? `Run in ${msg.operatorSuggestion.appName}` : 'Run in Operator'}
           </button>
         )}
         {msg.isAppDetectionPrompt && msg.appDetectionData && onRunAction && (
@@ -2364,16 +2425,52 @@ function TypingIndicator() {
 function getWelcomeMessage(mode: string, keys: Record<string, boolean>): string {
   const active = Object.entries(keys).filter(([, v]) => v).map(([k]) => PROVIDER_LABELS[k] ?? k);
   if (active.length === 0) {
-    return 'TriForge requires at least one AI provider key to operate. Configure API keys in Settings → API Keys to activate the council.';
+    return 'TriForge needs at least one AI provider key to start. Go to **Settings → API Keys** and add your OpenAI, Claude, or Grok key. Then come back here and ask me anything.';
   }
   if (mode === 'consensus') {
-    return `Council active. ${active.join(', ')} are all online. Every query is processed by all ${active.length} models independently — then synthesized into a single verified answer with a Forge Score.`;
+    return `Council is live — ${active.join(', ')} are all online. Ask me anything, describe a task you want done in an app, or type a one-sentence game idea and I\'ll build it in Unreal.`;
   }
   if (active.length > 1) {
-    return `${active.join(' and ')} are active. Add the remaining provider key to enable full three-model consensus mode.`;
+    return `${active.join(' and ')} are online. Ask a question, describe a task, or say what you want to build — I\'ll get to work.`;
   }
-  return `Running on ${active[0]}. Add additional provider keys in Settings to enable Think Tank consensus mode.`;
+  return `${active[0]} is online. Ask a question, describe a task, or say what you want to build.`;
 }
+
+// ── First-Run Prompt Cards ────────────────────────────────────────────────────
+
+const FIRST_RUN_PROMPTS = [
+  { label: 'Build a game in Unreal',    icon: '⬡', prompt: 'Build me a survival game in Unreal Engine with health, inventory, and enemy AI' },
+  { label: 'Automate an app task',      icon: '◈', prompt: 'Open Blender and render my current scene as a 1080p PNG' },
+  { label: 'Research + plan something', icon: '◎', prompt: 'Research the best free-to-play monetisation models for mobile games and give me a ranked comparison' },
+  { label: 'Write production code',     icon: '⬡', prompt: 'Write a TypeScript function that validates a JSON Web Token and returns the decoded payload or throws a typed error' },
+  { label: 'Explain my codebase',       icon: '◈', prompt: 'I have an Electron app with a renderer and main process. Explain how IPC works and show me how to add a new handler safely' },
+  { label: 'What can TriForge do?',     icon: '◎', prompt: 'What can you actually do? Give me the most impressive things you\'re capable of, not just a feature list' },
+];
+
+function FirstRunPrompts({ onSelect }: { onSelect: (prompt: string) => void }) {
+  return (
+    <div style={frp.wrap}>
+      <div style={frp.label}>Try one of these to get started</div>
+      <div style={frp.grid}>
+        {FIRST_RUN_PROMPTS.map(p => (
+          <button key={p.label} style={frp.card} onClick={() => onSelect(p.prompt)}>
+            <span style={frp.cardIcon}>{p.icon}</span>
+            <span style={frp.cardLabel}>{p.label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const frp: Record<string, React.CSSProperties> = {
+  wrap:      { padding: '12px 16px 0', display: 'flex', flexDirection: 'column', gap: 8 },
+  label:     { fontSize: 11, color: 'var(--text-muted)', letterSpacing: '0.05em', textTransform: 'uppercase', fontWeight: 600 },
+  grid:      { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 },
+  card:      { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8, cursor: 'pointer', textAlign: 'left', transition: 'border-color 0.15s' },
+  cardIcon:  { fontSize: 14, flexShrink: 0, opacity: 0.6 },
+  cardLabel: { fontSize: 12, color: 'var(--text-secondary)', fontWeight: 500 },
+};
 
 // ── Profile Status Strip ──────────────────────────────────────────────────────
 

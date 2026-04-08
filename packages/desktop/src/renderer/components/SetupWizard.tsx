@@ -272,15 +272,20 @@ export function SetupWizard({ permissions: initialPermissions, onComplete }: Set
                 </div>
                 <p style={s.accessDesc}>
                   {IS_MAC
-                    ? 'macOS requires explicit permission to capture screenshots and control apps via Accessibility. Open System Preferences to grant these to TriForge AI.'
+                    ? 'macOS requires explicit permission to capture screenshots and control apps. Open Privacy & Security → grant Screen Recording and Accessibility to TriForge AI.'
                     : IS_WINDOWS
-                    ? 'Windows will prompt for permission when TriForge first takes a screenshot. No action needed now.'
+                    ? 'Windows requires TriForge to run as Administrator the first time so it can control other apps. Right-click the TriForge app → "Run as administrator" once, then normal launches will work.'
                     : 'Your platform manages permissions automatically.'}
                 </p>
                 {IS_MAC && (
                   <button style={s.primaryBtn} onClick={openSystemPrefs}>
                     Open Privacy &amp; Security
                   </button>
+                )}
+                {IS_WINDOWS && (
+                  <div style={{ ...s.accessNote, color: '#f59e0b', marginTop: 8 }}>
+                    Windows users: if TriForge cannot click or type in your app, close TriForge and relaunch it with "Run as administrator". This is a one-time step — the app will remember the permission.
+                  </div>
                 )}
                 {sysPermNote && (
                   <div style={s.accessNote}>{sysPermNote}</div>
@@ -323,33 +328,47 @@ export function SetupWizard({ permissions: initialPermissions, onComplete }: Set
           {/* ── Step 2: Relay Setup ────────────────────────────────────────────── */}
           {step === 2 && (
             <div>
-              <h2 style={s.stepTitle}>Remote Access (Optional)</h2>
+              <h2 style={s.stepTitle}>Remote Access <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-muted)' }}>(Optional)</span></h2>
               <p style={s.stepSubtitle}>
-                Connect to a TriForge Relay Server to trigger automations from your phone, browser, or any device — even when you are away from your desktop. You can skip this and set it up later in Settings → Relay.
+                Remote Access lets you send tasks to TriForge from your phone or any browser — even when you are away from your desk. You need a relay server for this to work. Skip for now if you are just getting started.
               </p>
+
+              {/* What is a relay — plain language */}
+              <div style={{ ...s.accessBlock, background: 'rgba(99,102,241,0.05)', borderColor: 'rgba(99,102,241,0.18)' }}>
+                <div style={s.accessHeader}>
+                  <span style={s.accessIcon}>◎</span>
+                  <span style={s.accessName}>What is a relay?</span>
+                </div>
+                <p style={s.accessDesc}>
+                  A relay server is a small cloud service that receives tasks from your phone and forwards them to this desktop. It never stores your data — it just passes messages through.
+                </p>
+                <p style={{ ...s.accessDesc, marginTop: 6 }}>
+                  <strong>Setup takes ~5 minutes:</strong> Deploy the free TriForge Relay to{' '}
+                  <strong>Railway.app</strong> or <strong>Render.com</strong> (both have free tiers), then paste the URL below.
+                  <br />
+                  <span style={{ color: 'var(--text-muted)' }}>Or skip this step — everything else works without it.</span>
+                </p>
+              </div>
 
               <div style={s.accessBlock}>
                 <div style={s.accessHeader}>
                   <span style={s.accessIcon}>⊕</span>
-                  <span style={s.accessName}>Relay Server</span>
+                  <span style={s.accessName}>Connect Your Relay</span>
                 </div>
-                <p style={s.accessDesc}>
-                  Enter the URL of your relay server (self-hosted or provided). TriForge will register this device and poll for jobs automatically.
-                </p>
 
                 <div style={{ marginBottom: 10 }}>
                   <div style={s.relayFieldLabel}>Relay Server URL</div>
                   <input
                     type="text"
                     style={s.keyField}
-                    placeholder="https://my-relay.example.com"
+                    placeholder="https://my-triforge-relay.railway.app"
                     value={relayUrl}
                     onChange={e => setRelayUrl(e.target.value)}
                     onKeyDown={e => e.key === 'Enter' && registerRelay()}
                   />
                 </div>
                 <div style={{ marginBottom: 10 }}>
-                  <div style={s.relayFieldLabel}>Device Label</div>
+                  <div style={s.relayFieldLabel}>Device Label <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(what your phone will see)</span></div>
                   <input
                     type="text"
                     style={s.keyField}
@@ -364,21 +383,17 @@ export function SetupWizard({ permissions: initialPermissions, onComplete }: Set
                   onClick={registerRelay}
                   disabled={!relayUrl.trim() || relayRegistering}
                 >
-                  {relayRegistering ? 'Connecting…' : 'Register Device'}
+                  {relayRegistering ? 'Connecting…' : 'Register This Device'}
                 </button>
 
                 {relayResult && (
                   <div style={{ ...s.accessNote, color: relayResult.ok ? '#10a37f' : '#ef4444', marginTop: 8 }}>
                     {relayResult.ok
-                      ? `✓ Registered — Device ID: ${relayResult.deviceId}`
-                      : `✗ ${relayResult.error}`}
+                      ? `✓ Connected — your phone can now trigger tasks on this device (Device ID: ${relayResult.deviceId})`
+                      : `✗ Could not connect: ${relayResult.error}. Check the URL and try again.`}
                   </div>
                 )}
               </div>
-
-              <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 16 }}>
-                Don't have a relay server? Deploy the open-source <strong>TriForge Relay</strong> package to Railway, Render, or Fly.io in minutes — or self-host on any Node.js machine.
-              </p>
             </div>
           )}
 
@@ -588,26 +603,26 @@ export function SetupWizard({ permissions: initialPermissions, onComplete }: Set
 
               {/* Next steps by role */}
               <div style={s.nextSteps}>
-                <div style={s.nextStepsTitle}>Recommended next steps</div>
+                <div style={s.nextStepsTitle}>Your first 3 minutes with TriForge</div>
                 {role === 'solo' && (
                   <ul style={s.nextList}>
-                    <li>Open <strong>TriForge</strong> and ask the Council your first question</li>
-                    <li>Visit <strong>Automate</strong> to create your first runbook</li>
-                    <li>Try <strong>Hustle</strong> for venture discovery and growth tools</li>
+                    <li><strong>Chat tab:</strong> Type any question or task — the Council answers with all 3 models</li>
+                    <li><strong>Operate tab:</strong> Open Unreal Engine, then type "build me a survival game" — watch TriForge write the Blueprint files and compile</li>
+                    <li><strong>Operate → AI Task Runner:</strong> Describe any task in plain English (e.g. "Export current Blender scene as PNG") — TriForge sees your screen and does it</li>
                   </ul>
                 )}
                 {role === 'team' && (
                   <ul style={s.nextList}>
-                    <li>Open <strong>Operate</strong> and connect your GitHub repo for PR review</li>
-                    <li>Visit <strong>Automate</strong> and import the GitHub + Slack review pack</li>
-                    <li>Set up <strong>Dispatch</strong> so teammates can trigger runbooks remotely</li>
+                    <li><strong>Chat tab:</strong> Paste a block of code and ask "what's wrong with this?" — all 3 models review it independently</li>
+                    <li><strong>Operate tab:</strong> Describe a task in any open app and TriForge will execute it step-by-step, pausing for approval before sensitive actions</li>
+                    <li><strong>Settings → Relay:</strong> Set up remote access so your team can trigger tasks from their phones</li>
                   </ul>
                 )}
                 {role === 'enterprise' && (
                   <ul style={s.nextList}>
-                    <li>Open <strong>Control</strong> to create your first workspace and invite members</li>
-                    <li>Visit <strong>Automate</strong> and configure trust policies for runbook packs</li>
-                    <li>Enable <strong>Push Notifications</strong> and review policy inheritance in Settings</li>
+                    <li><strong>Chat tab:</strong> Ask the Council any question — consensus mode gives you a multi-model verified answer with a confidence score</li>
+                    <li><strong>Operate tab:</strong> Try a Workflow Pack to see how TriForge executes structured, approval-gated automation</li>
+                    <li><strong>Settings → Relay:</strong> Connect a relay server so operators can trigger tasks remotely across your org</li>
                   </ul>
                 )}
               </div>

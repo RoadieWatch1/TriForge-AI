@@ -3178,6 +3178,21 @@ const api = {
     delete: (id: string) =>
       ipcRenderer.invoke('pack-builder:delete', id) as Promise<{ ok: boolean; error?: string }>,
   },
+
+  // ── Project Memory ─────────────────────────────────────────────────────────
+  projectMemory: {
+    last: () =>
+      ipcRenderer.invoke('project-memory:last') as Promise<{
+        project: { projectPath: string; projectName: string; lastMilestone?: string; lastPackId?: string; prototypeGoal?: string; lastRunAt: string } | null;
+        suggestion: string | null;
+      }>,
+    all: () =>
+      ipcRenderer.invoke('project-memory:all') as Promise<Array<{
+        projectPath: string; projectName: string; lastMilestone?: string; lastPackId?: string; prototypeGoal?: string; lastRunAt: string;
+      }>>,
+    forget: (projectPath: string) =>
+      ipcRenderer.invoke('project-memory:forget', projectPath) as Promise<{ ok: boolean; error?: string }>,
+  },
 };
 
 contextBridge.exposeInMainWorld('triforge', api);

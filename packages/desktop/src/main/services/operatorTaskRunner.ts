@@ -55,6 +55,9 @@ export interface TaskRunResult {
     completedSteps:     number;
     historySnapshot:    string[];
   };
+  /** Before/after visual proof — paths to screenshots captured before and after the run */
+  beforeScreenshotPath?: string;
+  afterScreenshotPath?:  string;
 }
 
 export interface StepResult {
@@ -163,7 +166,19 @@ export async function runOperatorTask(opts: TaskRunnerOptions): Promise<TaskRunR
 
   const emit = (ev: TaskProgressEvent) => { try { onProgress?.(ev); } catch { /**/ } };
 
-  // Fix 4: track last screenshot across loop iterations for resumeState
+  let beforeScreenshotPath: string | undefined;
+  try {
+    const preSS = await OperatorService.captureScreen();
+    if (preSS.ok && preSS.path) beforeScreenshotPath = preSS.path;
+  } catch { /* non-fatal */ }
+
+  const captureAfter = async (): Promise<string | undefined> => {
+    try {
+      const ss = await OperatorService.captureScreen();
+      return ss.ok && ss.path ? ss.path : undefined;
+    } catch { return undefined; }
+  };
+
   let lastScreenshotPath: string | undefined;
 
   for (let step = 1; step <= maxSteps; step++) {
@@ -176,7 +191,6 @@ export async function runOperatorTask(opts: TaskRunnerOptions): Promise<TaskRunR
       emit({ step, phase: 'error', description: err });
       return { ok: false, stepsExecuted: step - 1, outcome: 'error', summary: err, error: err, steps };
     }
-    // Fix 2: use 'let' so the wait branch can update screenshotPath
     let screenshotPath = ss.path;
     lastScreenshotPath = screenshotPath;
 
@@ -211,20 +225,21 @@ export async function runOperatorTask(opts: TaskRunnerOptions): Promise<TaskRunR
       const summary = planned.reason ?? planned.description;
       steps.push({ step, action: planned, executed: true, outcome: 'done' });
       emit({ step, phase: 'done', description: summary, screenshotPath });
-      return { ok: true, stepsExecuted: step, outcome: 'completed', summary, steps };
+      const afterScreenshotPath = await captureAfter();
+      return { ok: true, stepsExecuted: step, outcome: 'completed', summary, steps, beforeScreenshotPath, afterScreenshotPath };
     }
     if (planned.type === 'blocked') {
       const summary = planned.reason ?? planned.description;
       steps.push({ step, action: planned, executed: false, outcome: 'blocked' });
       emit({ step, phase: 'blocked', description: summary, screenshotPath });
-      return { ok: false, stepsExecuted: step - 1, outcome: 'blocked', summary, error: summary, steps };
+      const afterScreenshotPath = await captureAfter();
+      return { ok: false, stepsExecuted: step - 1, outcome: 'blocked', summary, error: summary, steps, beforeScreenshotPath, afterScreenshotPath };
     }
 
     // ── 3. Act ────────────────────────────────────────────────────────────────
     let stepResult: StepResult = { step, action: planned, executed: false };
 
     if (planned.type === 'wait') {
-      // Fix 2: poll until stable instead of fixed 800ms
       const stablePath = await waitUntilScreenStable(5000);
       if (stablePath) screenshotPath = stablePath;
       stepResult = { step, action: planned, executed: true, outcome: 'success' };
@@ -238,7 +253,6 @@ export async function runOperatorTask(opts: TaskRunnerOptions): Promise<TaskRunR
       history.push(`${step}: focus "${appTarget}" → ${r.outcome}`);
 
     } else if (planned.type === 'click') {
-      // Fix 1 + Fix 5: cache check → 3-attempt retry with scroll
       let x = planned.x;
       let y = planned.y;
 
@@ -338,8 +352,6 @@ export async function runOperatorTask(opts: TaskRunnerOptions): Promise<TaskRunR
     steps.push(stepResult);
 
     // ── 4. Verify ─────────────────────────────────────────────────────────────
-    // Fix 2: poll-until-stable instead of fixed 400ms wait
-    // Fix 3: intent-aware verification instead of prefix-match
     if (stepResult.executed) {
       const stablePath = await waitUntilScreenStable(5000);
       if (stablePath) {
@@ -358,7 +370,6 @@ export async function runOperatorTask(opts: TaskRunnerOptions): Promise<TaskRunR
     }
   }
 
-  // Fix 4: Summarize progress and emit continuation_prompt instead of silent max_steps return
   const doneCount   = steps.filter(s => s.outcome === 'success' || s.verifyPassed).length;
   const lastAction  = steps.at(-1)?.action.description ?? 'none';
   const contSummary = `Completed ${doneCount} of ${steps.length} actions. Last: "${lastAction}". Goal not yet finished.`;
@@ -368,5 +379,6 @@ export async function runOperatorTask(opts: TaskRunnerOptions): Promise<TaskRunR
     historySnapshot:  history.slice(-10),
   };
   emit({ step: maxSteps, phase: 'continuation_prompt', description: contSummary, continuationSummary: contSummary });
-  return { ok: false, stepsExecuted: maxSteps, outcome: 'max_steps_reached', summary: contSummary, steps, resumeState };
+  const afterScreenshotPath = await captureAfter();
+  return { ok: false, stepsExecuted: maxSteps, outcome: 'max_steps_reached', summary: contSummary, steps, resumeState, beforeScreenshotPath, afterScreenshotPath };
 }

@@ -222,7 +222,7 @@ export function OperateScreen({
   const [taskGoal, setTaskGoal]                       = useState('');
   const [taskRunning, setTaskRunning]                 = useState(false);
   const [taskSteps, setTaskSteps]                     = useState<TaskStep[]>([]);
-  const [taskOutcome, setTaskOutcome]                 = useState<{ ok: boolean; summary: string; outcome: string } | null>(null);
+  const [taskOutcome, setTaskOutcome]                 = useState<{ ok: boolean; summary: string; outcome: string; beforeScreenshotPath?: string; afterScreenshotPath?: string } | null>(null);
   const [taskPendingApprovalId, setTaskPendingApprovalId] = useState<string | null>(null);
   const [taskSessionId, setTaskSessionId]             = useState<string | null>(null);
   const unsubTaskRef                                  = useRef<(() => void) | null>(null);
@@ -381,7 +381,7 @@ export function OperateScreen({
     } catch { /* best effort */ }
   }, [tf]);
 
-  const startWorkflow = async (packId: string, targetApp?: string, goal?: string) => {
+  const startWorkflow = useCallback(async (packId: string, targetApp?: string, goal?: string) => {
     if (!tf || startingPackId) return;
     setStartingPackId(packId);
     setWorkflowResult(prev => ({ ...prev, [packId]: { ok: false } }));
@@ -405,7 +405,6 @@ export function OperateScreen({
             ...prev,
             [packId]: { runId: res.run!.id, packId, status: res.run!.status, pendingApprovalId: res.run!.pendingApprovalId },
           }));
-          // Eagerly fetch approval details so the panel renders immediately
           await fetchOperatorApproval(res.run.pendingApprovalId);
         }
         fetchData();
@@ -419,7 +418,7 @@ export function OperateScreen({
     } finally {
       setStartingPackId(null);
     }
-  };
+  }, [tf, startingPackId, fetchData, fetchOperatorApproval]);
 
   /** Approve the operator action and advance the workflow run. */
   const handleWorkflowApprove = async (packId: string, runId: string, approvalId: string) => {
@@ -484,7 +483,7 @@ export function OperateScreen({
     }
   };
 
-  // Listen for prefill event from council→operator bridge
+  // Listen for prefill event from council→operator bridge (generic AI Task Runner)
   useEffect(() => {
     const handler = (e: Event) => {
       const goal = (e as CustomEvent<string>).detail;
@@ -496,6 +495,21 @@ export function OperateScreen({
     window.addEventListener('triforge:operator-prefill', handler);
     return () => window.removeEventListener('triforge:operator-prefill', handler);
   }, []);
+
+  // Listen for pack-launch event from council→operator bridge (specific workflow pack)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { packId, goal } = (e as CustomEvent<{ packId: string; goal: string }>).detail;
+      if (packId) {
+        // Scroll to workflow packs section and auto-start the pack
+        document.getElementById('workflow-packs-section')?.scrollIntoView({ behavior: 'smooth' });
+        // Small delay so packs have loaded
+        setTimeout(() => startWorkflow(packId, undefined, goal || undefined), 400);
+      }
+    };
+    window.addEventListener('triforge:start-pack', handler);
+    return () => window.removeEventListener('triforge:start-pack', handler);
+  }, [startWorkflow]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Run an AI-driven Sense→Plan→Act→Verify task loop. */
   const runAiTask = async () => {
@@ -527,6 +541,8 @@ export function OperateScreen({
       const result = await op?.runTask?.(sid, taskGoal.trim()) as {
         ok: boolean; outcome: string; summary: string; stepsExecuted: number;
         pendingApprovalId?: string;
+        beforeScreenshotPath?: string;
+        afterScreenshotPath?:  string;
       } | null;
 
       if (result?.outcome === 'approval_pending' && result?.pendingApprovalId) {
@@ -534,9 +550,11 @@ export function OperateScreen({
       }
 
       setTaskOutcome({
-        ok:      result?.ok ?? false,
-        summary: result?.summary ?? 'Task finished.',
-        outcome: result?.outcome ?? 'unknown',
+        ok:                   result?.ok ?? false,
+        summary:              result?.summary ?? 'Task finished.',
+        outcome:              result?.outcome ?? 'unknown',
+        beforeScreenshotPath: result?.beforeScreenshotPath,
+        afterScreenshotPath:  result?.afterScreenshotPath,
       });
     } catch (e) {
       setTaskOutcome({ ok: false, summary: e instanceof Error ? e.message : 'Task failed.', outcome: 'error' });
@@ -1002,6 +1020,33 @@ export function OperateScreen({
             <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
               {taskOutcome.summary}
             </div>
+
+            {/* Before / After visual proof */}
+            {taskOutcome.ok && taskOutcome.beforeScreenshotPath && taskOutcome.afterScreenshotPath && (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 6 }}>
+                  Before → After
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                  {[
+                    { label: 'Before', path: taskOutcome.beforeScreenshotPath },
+                    { label: 'After',  path: taskOutcome.afterScreenshotPath  },
+                  ].map(({ label, path }) => (
+                    <div key={label} style={{ position: 'relative' }}>
+                      <div style={{ fontSize: 9, fontWeight: 700, color: label === 'After' ? '#10a37f' : 'var(--text-muted)', marginBottom: 3, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                        {label}
+                      </div>
+                      <img
+                        src={`file://${path}`}
+                        alt={label}
+                        style={{ width: '100%', borderRadius: 5, border: `1px solid ${label === 'After' ? 'rgba(16,163,127,0.35)' : 'var(--border)'}`, display: 'block', objectFit: 'cover', maxHeight: 120 }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {taskOutcome.outcome === 'approval_pending' && taskPendingApprovalId && (
               <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                 <button
@@ -1044,6 +1089,60 @@ export function OperateScreen({
           </div>
         )}
       </div>
+
+      {/* ── Empty-state start guide ───────────────────────────────────────── */}
+      {workflowPacks.length === 0 && activeTasks.length === 0 && !loading && (
+        <div style={{
+          margin: '8px 16px 0',
+          padding: '16px 18px',
+          background: 'var(--bg-elevated)',
+          border: '1px solid var(--border)',
+          borderRadius: 10,
+        }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>
+            How to start a task
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 12 }}>
+            TriForge works inside your apps — just describe what you want done.
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
+            {[
+              { icon: '⬡', title: 'Unreal Engine', desc: 'Type a game idea — TriForge builds Blueprint files, compiles, and runs it', action: 'Build a survival game with health, inventory, and enemy AI in Unreal' },
+              { icon: '◈', title: 'Any App', desc: 'Describe a task in plain English — TriForge sees your screen and clicks for you', action: 'Export the current Blender scene as a 1080p PNG render' },
+            ].map(item => (
+              <button
+                key={item.title}
+                style={{
+                  background: 'var(--bg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 8,
+                  padding: '10px 12px',
+                  textAlign: 'left',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 4,
+                }}
+                onClick={() => {
+                  const el = document.getElementById('ai-task-runner-section');
+                  if (el) el.scrollIntoView({ behavior: 'smooth' });
+                  // Pre-fill the task runner textarea via custom event
+                  window.dispatchEvent(new CustomEvent('triforge:operator-prefill', { detail: item.action }));
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 14, opacity: 0.6 }}>{item.icon}</span>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' }}>{item.title}</span>
+                </div>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>{item.desc}</span>
+              </button>
+            ))}
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            Or scroll down to <strong style={{ color: 'var(--text-secondary)' }}>AI Task Runner</strong> and describe your task directly.
+          </div>
+        </div>
+      )}
 
       {/* ── Workflow Packs ─────────────────────────────────────────────────── */}
       {workflowPacks.length > 0 && (
