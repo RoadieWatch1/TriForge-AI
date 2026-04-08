@@ -9,6 +9,7 @@ import { execSync } from 'child_process';
 import { Store, LedgerEntry, ForgeScore } from './store';
 import { transcribeAudio, textToSpeechStream } from './voice';
 import { validateLicense, loadLicense, deactivateLicense, LEMONSQUEEZY } from './license';
+import type { Tier } from './license';
 import { isAtMessageLimit, hasCapability, lockedError, getMemoryLimit, TIERS, tradingTrialStatus } from './subscription';
 import { hashPin, verifyPin, isValidPin } from './auth';
 import { buildSystemPrompt } from './systemPrompt';
@@ -19,6 +20,7 @@ import { scanForDocuments, ocrFile, detectDocTypes, searchIndex, type DocEntry }
 import { GrokVoiceAgent } from './grokVoice';
 import { listPrinters, printFile, printText } from './printer';
 import { CredentialManager } from './credentials';
+import type { CredentialKey } from './credentials';
 import { createNotifyAdapter } from './notifications';
 import { createMailAdapter } from './mailService';
 import { NativeIntentRouter } from './nativeIntentRouter';
@@ -107,7 +109,6 @@ import {
 } from './backupEngine';
 import { validateStore, validateAndRepairStore } from './storeValidator';
 import { runMigrations, getMigrationHistory, getCurrentSchemaVersion } from './migrationEngine';
-import { computeKeyId } from './packSigner';
 import {
   resolveRepo, resolveChannel, resolveProject,
   upsertRepo, deleteRepo, upsertChannel, deleteChannel, upsertProject, deleteProject,
@@ -116,7 +117,7 @@ import type { RepoMapping, ChannelMapping, ProjectNote, ContextCategory } from '
 import { MessageLog } from './messaging/messageLog';
 import { autonomyController } from '../core/autonomy/AutonomyController';
 import { DispatchServer, generateDispatchToken, generateQrDataUrl } from './dispatchServer';
-import type { DispatchHandlers, DispatchActionItem, DispatchHistoryEntry, DispatchRecipeItem, DispatchMissionItem, DispatchOpsOverview, RemoteActionContext, ActionResult, DispatchTask, DispatchTaskParams, DispatchTaskStep, DispatchTaskEvent, DispatchArtifact, ArtifactType, DispatchArtifactBundle, BundleDestination, BundleStatus, DispatchThread, DispatchMessage, ThreadStatus, MessageRole, TaskCategory, CollaboratorRole, ThreadVisibility, ThreadCollaborator, ThreadInvite, ThreadComment, ApprovalAttribution, WorkspaceRole, WorkspaceMember, WorkspaceInvite, WorkspacePolicy, Workspace } from './dispatchServer';
+import type { DispatchHandlers, DispatchActionItem, DispatchHistoryEntry, DispatchRecipeItem, DispatchMissionItem, DispatchOpsOverview, RemoteActionContext, ActionResult, DispatchTask, DispatchTaskParams, DispatchTaskStep, DispatchTaskEvent, DispatchArtifact, ArtifactType, DispatchArtifactBundle, BundleDestination, BundleStatus, DispatchThread, DispatchMessage, ThreadStatus, MessageRole, CollaboratorRole, ThreadVisibility, ThreadCollaborator, ThreadInvite, ThreadComment, ApprovalAttribution, WorkspaceRole, WorkspaceMember, WorkspaceInvite, WorkspacePolicy, Workspace } from './dispatchServer';
 import { DEFAULT_WORKSPACE_POLICY, WORKSPACE_ROLE_RANK } from './dispatchServer';
 import {
   generatePairingCode,
@@ -137,7 +138,7 @@ import { getToolExecutor, newRequestId } from '../core/tools/toolExecutor';
 import { healthMonitor } from '../core/health/healthMonitor';
 import { MemoryStore } from '../core/memory/memoryStore';
 import { getMemoryManager } from '../core/memory/memoryManager';
-import { ImageService, getImageHistoryStore, systemStateService, buildCouncilAwarenessAddendum, buildLiveTradeAdvice, buildTradeLevels, searchWeb, needsWebSearch, buildContextualIntelligence, buildContextualReasoningAddendum } from '@triforge/engine';
+import { ImageService, getImageHistoryStore, systemStateService, buildCouncilAwarenessAddendum, buildLiveTradeAdvice, buildTradeLevels, searchWeb, needsWebSearch, buildContextualIntelligence, buildContextualReasoningAddendum, detectOperatorIntent } from '@triforge/engine';
 import type { CouncilVote } from '@triforge/engine';
 
 import { ResultStore } from './resultStore';
@@ -155,7 +156,11 @@ import type { DecisionInput } from './incomeDecisionEngine';
 import { IncomeAutopilot } from './incomeAutopilot';
 import { getMachineContext } from './services/machineContext';
 import { OperatorService } from './services/operatorService';
+import { setVisionApiKey } from './services/visionAnalyzer';
+import { setScriptGenKey } from './services/workflowPackService';
 import { buildUnrealAwarenessSnapshot } from './services/unrealAwareness';
+import { buildAppAwarenessSnapshot, formatAppAwarenessSummary } from './services/appAwareness';
+import { buildIOSAwarenessSnapshot, bootSimulator, captureSimulatorScreen, formatIOSSummary } from './services/iosAwareness';
 import { WorkflowPackService } from './services/workflowPackService';
 import { WorkerRunQueue } from './workerRuntime/workerRunQueue';
 import type { CreateRunOptions } from './workerRuntime/workerRunQueue';
@@ -197,6 +202,7 @@ import {
   OllamaProvider,
   startCouncilDemo,
   InsightEngine,
+  detectIntentType,
   type CouncilMemoryNode,
   type MissionContext,
   type InsightSignal,
@@ -280,7 +286,7 @@ function _getAutopilot(store: Store): IncomeAutopilot {
     // Uses sync store.get() so the autopilot loop never needs to await tier resolution.
     const canCreateApproval = () => {
       const license = store.get<{ tier?: string }>('license', {});
-      const t = (license?.tier ?? 'free') as 'free' | 'pro' | 'business';
+      const t = (license?.tier ?? 'free') as 'free' | 'pro';
       return hasCapability('INCOME_OPERATOR', t) || hasCapability('INCOME_LANES', t);
     };
     _incomeAutopilot = new IncomeAutopilot(
@@ -519,7 +525,7 @@ let _vibeOutcomeScorer: InstanceType<typeof import('@triforge/engine').VibeOutco
 let _vibePatchPlanner: InstanceType<typeof import('@triforge/engine').VibePatchPlanner> | null = null;
 
 // ── Council Awareness — module-level state for registered getters ─────────────
-let _cachedTier: 'free' | 'pro' | 'business' = 'free';
+let _cachedTier: Tier = 'free';
 let _phoneLinkRef: PhoneLinkServer | null = null;
 let _cachedMailConfigured = false;
 let _cachedTwitterConfigured = false;
@@ -603,67 +609,6 @@ function _getAutomationGate(): WorkspaceAutomationGate {
   return _wsAutomationGate;
 }
 
-function _buildRunbookExecutor(): RunbookExecutor {
-  return new RunbookExecutor(_ipcStore!, {
-    async runRecipe(id, via) {
-      return _executeRecipe(id, { source: via }, { isAdmin: true });
-    },
-    async runMission(id) {
-      try {
-        await _getMissionManager(_ipcStore!).runMission(id);
-        return { ok: true };
-      } catch (e: unknown) {
-        return { ok: false, error: e instanceof Error ? e.message : String(e) };
-      }
-    },
-    async sendSlack(channel, text) {
-      try {
-        if (!_slackAdapter) return { ok: false, error: 'Slack not configured' };
-        const ok = await _slackAdapter.postMessage(channel, text);
-        return { ok };
-      } catch (e: unknown) {
-        return { ok: false, error: e instanceof Error ? e.message : String(e) };
-      }
-    },
-    async createJira(projectKey, issueType, summary, body) {
-      try {
-        const adapter = await _buildJiraAdapter();
-        if (!adapter) return { ok: false, error: 'Jira not configured' };
-        await adapter.createIssue(projectKey, issueType, summary, body);
-        return { ok: true };
-      } catch (e: unknown) {
-        return { ok: false, error: e instanceof Error ? e.message : String(e) };
-      }
-    },
-    async createLinear(teamId, title, description) {
-      try {
-        const adapter = await _buildLinearAdapter();
-        if (!adapter) return { ok: false, error: 'Linear not configured' };
-        await adapter.createIssue({ teamId, title, description });
-        return { ok: true };
-      } catch (e: unknown) {
-        return { ok: false, error: e instanceof Error ? e.message : String(e) };
-      }
-    },
-    async notifyPush(title, body) {
-      try {
-        const ok = await _pushNotifier.fire('runbook', title, body);
-        return { ok };
-      } catch (e: unknown) {
-        return { ok: false, error: e instanceof Error ? e.message : String(e) };
-      }
-    },
-    addHandoffItem(item: HandoffQueueItem) {
-      _ipcStore!.addHandoffItem(item);
-    },
-    resolveHandoffItem(id: string, resolution: string, resolvedBy?: string) {
-      return _ipcStore!.resolveHandoffItem(id, resolution, resolvedBy);
-    },
-    auditLog(type, meta) {
-      _getAuditLedger().log(type as any, { metadata: meta });
-    },
-  });
-}
 
 function _getResultStore(): ResultStore {
   if (!_resultStore) _resultStore = new ResultStore();
@@ -948,8 +893,71 @@ function ledgerMarkdownToHtml(md: string): string {
 export function setupIpc(store: Store): void {
   _ipcStore = store;
 
+  // ── Runbook executor factory (needs inner-scope helpers _executeRecipe etc.) ─
+  function _buildRunbookExecutor(): RunbookExecutor {
+    return new RunbookExecutor(_ipcStore!, {
+      async runRecipe(id, via) {
+        return _executeRecipe(id, { source: via }, { isAdmin: true });
+      },
+      async runMission(id) {
+        try {
+          await _getMissionManager(_ipcStore!).runMission(id);
+          return { ok: true };
+        } catch (e: unknown) {
+          return { ok: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+      async sendSlack(channel, text) {
+        try {
+          if (!_slackAdapter) return { ok: false, error: 'Slack not configured' };
+          const ok = await _slackAdapter.postMessage(channel, text);
+          return { ok };
+        } catch (e: unknown) {
+          return { ok: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+      async createJira(projectKey, issueType, summary, body) {
+        try {
+          const adapter = await _buildJiraAdapter();
+          if (!adapter) return { ok: false, error: 'Jira not configured' };
+          await adapter.createIssue(projectKey, issueType, summary, body);
+          return { ok: true };
+        } catch (e: unknown) {
+          return { ok: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+      async createLinear(teamId, title, description) {
+        try {
+          const adapter = await _buildLinearAdapter();
+          if (!adapter) return { ok: false, error: 'Linear not configured' };
+          await adapter.createIssue({ teamId, title, description });
+          return { ok: true };
+        } catch (e: unknown) {
+          return { ok: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+      async notifyPush(title, body) {
+        try {
+          const ok = await _pushNotifier.fire('runbook', title, body);
+          return { ok };
+        } catch (e: unknown) {
+          return { ok: false, error: e instanceof Error ? e.message : String(e) };
+        }
+      },
+      addHandoffItem(item: HandoffQueueItem) {
+        _ipcStore!.addHandoffItem(item);
+      },
+      resolveHandoffItem(id: string, resolution: string, resolvedBy?: string) {
+        return _ipcStore!.resolveHandoffItem(id, resolution, resolvedBy);
+      },
+      auditLog(type, meta) {
+        _getAuditLedger().log(type as any, { metadata: meta });
+      },
+    });
+  }
+
   // ── Skill registry: sync ForgeHub built-ins on startup ─────────────────────
-  try { syncBuiltinSkills(_getSkillStore()); } catch { /* non-fatal */ }
+  try { syncBuiltinSkills(_getSkillStore() as never); } catch { /* non-fatal */ }
 
   // ── Phase 10: init push notifier from persisted config ─────────────────────
   void _refreshPushConfig();
@@ -996,15 +1004,18 @@ export function setupIpc(store: Store): void {
   });
   systemStateService.registerProvidersGetter(async () => {
     const openai = !!(await store.getSecret('triforge.openai.apiKey'));
-    const claude = !!(await store.getSecret('triforge.claude.apiKey'));
+    const claude = await store.getSecret('triforge.claude.apiKey');
     const grok   = !!(await store.getSecret('triforge.grok.apiKey'));
     const ollama = !!(await store.getSecret('triforge.ollama.url'));
+    // Eagerly wire Claude key into vision analyzer and script generator so they
+    // work whenever a key is present, not just when task:run is called.
+    if (claude) { setVisionApiKey(claude); setScriptGenKey(claude); }
     // Refresh mail/twitter as side-effect — this getter is already async per turn
     const cm = _getCredentialManager(store);
     const [smtp, twit] = await Promise.all([cm.getSmtp(), cm.getTwitter()]);
     _cachedMailConfigured    = smtp !== null;
     _cachedTwitterConfigured = twit !== null;
-    return { openai, claude, grok, ollama };
+    return { openai, claude: !!claude, grok, ollama };
   });
   systemStateService.registerImageGetter(() => {
     // imageReady: at least one image-capable key present (check via cached image service or providers)
@@ -1149,6 +1160,7 @@ export function setupIpc(store: Store): void {
   // but guards against any future in-process recycling scenarios).
   OperatorService.invalidateCapabilityCache();
   OperatorService.cleanupStaleSessions();
+  OperatorService.prewarmClickHelper(); // compile Swift click helper in background
 
   // ── Worker Runtime: wire WorkflowPackService → durable WorkerRun records ───
   // Must run after IPC handlers are registered but before any workflow packs
@@ -1364,9 +1376,9 @@ export function setupIpc(store: Store): void {
 
   ipcMain.handle('license:tiers', () => TIERS);
   ipcMain.handle('license:checkoutUrls', () => ({
-    pro: LEMONSQUEEZY.PRO_CHECKOUT,
-    business: LEMONSQUEEZY.BIZ_CHECKOUT,
-    portal: LEMONSQUEEZY.CUSTOMER_PORTAL,
+    pro:      LEMONSQUEEZY.PRO_CHECKOUT,
+    annual:   LEMONSQUEEZY.PRO_ANNUAL_CHECKOUT,
+    portal:   LEMONSQUEEZY.CUSTOMER_PORTAL,
   }));
 
   // ── Usage ─────────────────────────────────────────────────────────────────────
@@ -1387,7 +1399,7 @@ export function setupIpc(store: Store): void {
 
     // Enforce message limit
     const license = await store.getLicense();
-    const tier = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tier = (license.tier ?? 'free') as 'free' | 'pro';
     _cachedTier = tier; // keep awareness service in sync
     const used = store.getMonthlyMessageCount();
     if (isAtMessageLimit(used, tier)) {
@@ -1434,6 +1446,24 @@ export function setupIpc(store: Store): void {
   let activeTaskContext: string | null = null;
   const TASK_KEYWORDS = ['build', 'design', 'create', 'develop', 'plan', 'write', 'research', 'make', 'launch', 'improve', 'fix', 'implement', 'generate', 'help me'];
   const TASK_RESET_COMMANDS = ['new task', 'clear task', 'start over', 'reset task'];
+
+  // ── Expert task-type inference from natural language message ─────────────
+  function _detectCouncilTaskType(message: string): string {
+    const m = message.toLowerCase();
+    if (/brand|logo|identity|name.*company|company.*name/.test(m))  return 'brand_creation';
+    if (/website|landing page|homepage|seo|conversion/.test(m))     return 'website_building';
+    if (/traffic|ads|paid|social.*grow|newsletter/.test(m))         return 'traffic_planning';
+    if (/audience|lead|subscriber|capture/.test(m))                 return 'audience_capture';
+    if (/niche|market|idea|opportunit|validate/.test(m))            return 'venture_discovery';
+    if (/revenue|monetiz|income|earn|pricing/.test(m))              return 'income_lane_scoring';
+    if (/content|post|video|script|copy/.test(m))                   return 'content_production';
+    if (/experiment|ab test|result|metric|kpi/.test(m))             return 'experiment_review';
+    if (/grow|scale|expand|traction/.test(m))                       return 'income_growth';
+    if (/legal|compliance|filing|tax|llc/.test(m))                  return 'filing_prep';
+    if (/risk|safe|danger|concern/.test(m))                         return 'scoring';
+    if (/vibe|aesthetic|design|feel|look/.test(m))                  return 'vibe_analysis';
+    return 'council_debate'; // default: general council discussion
+  }
 
   function updateTaskContext(message: string): void {
     const lower = message.toLowerCase();
@@ -1508,7 +1538,7 @@ export function setupIpc(store: Store): void {
     }
 
     const license = await store.getLicense();
-    const tierVal = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tierVal = (license.tier ?? 'free') as 'free' | 'pro';
     _cachedTier = tierVal; // keep awareness service in sync
     if (!hasCapability('THINK_TANK', tierVal)) {
       return { error: lockedError('THINK_TANK') };
@@ -1521,6 +1551,18 @@ export function setupIpc(store: Store): void {
     // Skip native intent routing in consensus path — Think Tank should always
     // deliberate across all providers. Native routing stays in chat:conversation.
     const snapshotC = await systemStateService.snapshot();
+
+    // ── Operator intent detection (Think Tank path) ───────────────────────────
+    const _thinktankOriginalMessage = message;
+    const _thinktankOperatorIntent = detectOperatorIntent(_thinktankOriginalMessage);
+    if (_thinktankOperatorIntent.isOperatorTask && !event.sender.isDestroyed()) {
+      event.sender.send('forge:operator-suggestion', {
+        goal:            _thinktankOperatorIntent.goal,
+        targetApp:       _thinktankOperatorIntent.targetApp,
+        suggestedPackId: _thinktankOperatorIntent.suggestedPackId,
+        confidence:      _thinktankOperatorIntent.confidence,
+      });
+    }
 
     // ── Pre-flight web search ─────────────────────────────────────────────────
     let webSearchPerformed = false;
@@ -1915,10 +1957,15 @@ VERIFY: [1-3 specific things the user should double-check]
     if (providers.length === 0) return { error: 'No API keys configured.' };
 
     const license = await store.getLicense();
-    const tier = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tier = (license.tier ?? 'free') as 'free' | 'pro';
     _cachedTier = tier; // keep awareness service in sync
     const used = store.getMonthlyMessageCount();
     if (isAtMessageLimit(used, tier)) return { error: 'MESSAGE_LIMIT_REACHED', tier };
+
+    // Capture the original user message before any web-search mutation.
+    // Used by the operator suggestion detector below (must reflect what the
+    // user actually typed, not the blob of web results we inject).
+    const originalMessage = message;
 
     // Native intent routing — image, mission, task, phone, desktop before LLM
     const snapshotV = await systemStateService.snapshot();
@@ -1928,6 +1975,21 @@ VERIFY: [1-3 specific things the user should double-check]
         store.incrementMessageCount();
       }
       return { synthesis: nativeResultV.message, responses: [], nativeResult: nativeResultV };
+    }
+
+    // ── Operator intent detection ─────────────────────────────────────────────
+    // Detect if user is asking TriForge to DO something in an app.
+    // If yes, emit forge:operator-suggestion alongside the Council response
+    // so Chat.tsx can show an "Execute" action card.
+    const _originalMessage = message; // capture before web-context mutation
+    const operatorIntent = detectOperatorIntent(_originalMessage);
+    if (operatorIntent.isOperatorTask && !event.sender.isDestroyed()) {
+      event.sender.send('forge:operator-suggestion', {
+        goal:            operatorIntent.goal,
+        targetApp:       operatorIntent.targetApp,
+        suggestedPackId: operatorIntent.suggestedPackId,
+        confidence:      operatorIntent.confidence,
+      });
     }
 
     // ── Pre-flight web search ─────────────────────────────────────────────────
@@ -1969,15 +2031,34 @@ VERIFY: [1-3 specific things the user should double-check]
 
     const basePrompt = await buildSystemPrompt(store, _professionEngine?.getSystemPromptAdditions());
     const awarenessAddendum = buildCouncilAwarenessAddendum(snapshotV);
+
+    // ── Expert Routing (MoE) — select relevant specialists for this message ───
+    let expertContextAddendum = '';
+    let _councilSelectedExpertIds: string[] = [];
+    try {
+      _getExpertWorkforceEngine(store); // ensure _expertRouter is initialized
+      if (_expertRouter) {
+        const taskType = _detectCouncilTaskType(message);
+        const decision = _expertRouter.selectExperts(taskType);
+        _councilSelectedExpertIds = decision.selectedExperts ?? [];
+        if (_councilSelectedExpertIds.length > 0) {
+          expertContextAddendum = '\n\n' + _expertRouter.buildExpertContext(_councilSelectedExpertIds);
+        }
+      }
+    } catch { /* expert routing is optional */ }
+    // ─────────────────────────────────────────────────────────────────────────
+
     const systemPrompt = basePrompt
       + '\n\n' + awarenessAddendum
       + buildTaskContextAddendum()
       + _getMissionCtxMgr(store).buildAddendum()
       + _getMemGraph(store).buildContextAddendum(message)
-      + contextualAddendum;
+      + contextualAddendum
+      + expertContextAddendum;
 
     const planner = new ThinkTankPlanner(pm);
-    const engine = new CouncilConversationEngine(pm, planner);
+    const _councilClaudeKey = (await store.getSecret('triforge.claude.apiKey')) ?? undefined;
+    const engine = new CouncilConversationEngine(pm, planner, _councilClaudeKey);
 
     // Progressive debate coordinator — broadcasts partial reasoning every 200 tokens
     const coordinator = new DebateStreamCoordinator((provider, reasoning) => {
@@ -2028,11 +2109,31 @@ VERIFY: [1-3 specific things the user should double-check]
             `council:${r.provider}`,
             'council_debate',
             'council_debate',
-            r.confidence ?? 50,
+            (r as { provider: string; text: string; confidence?: number }).confidence ?? 50,
             true,
           );
         }
       } catch { /* learning integration optional */ }
+
+      // Record expert performance for the routed specialists
+      try {
+        if (_expertPerformanceTracker && _councilSelectedExpertIds.length > 0) {
+          const survived = !!(result.synthesis && result.synthesis.length > 20);
+          const now = Date.now();
+          for (const expertId of _councilSelectedExpertIds) {
+            _expertPerformanceTracker.recordTaskResult({
+              expertId,
+              taskType: 'council_debate',
+              output: result.synthesis?.slice(0, 100) ?? '',
+              outputSurvivedToFinal: survived,
+              latencyMs: result.durationMs ?? 0,
+              tokenCount: 0,
+              errorOccurred: false,
+              timestamp: now,
+            });
+          }
+        }
+      } catch { /* performance tracking optional */ }
 
       // Auto-save synthesis as a knowledge graph insight for future context injection
       if (result.synthesis && result.synthesis.length > 80) {
@@ -2045,7 +2146,24 @@ VERIFY: [1-3 specific things the user should double-check]
         });
       }
 
-      return { responses: result.responses, synthesis: result.synthesis, durationMs: result.durationMs, contextualIntelligence };
+      // ── Operator Suggestion — attach if message is an operator-action intent ──
+      // The council answered as normal, but we surface a "Run in Operator" CTA
+      // so the user can execute the described action right from the chat bubble.
+      let operatorSuggestion: { goal: string; appName?: string } | undefined;
+      try {
+        const intent = detectIntentType(originalMessage);
+        if (intent === 'operator_action') {
+          // Try to attach the frontmost app name for context
+          let appName: string | undefined;
+          try {
+            const target = await OperatorService.getFrontmostApp();
+            if (target?.appName) appName = target.appName;
+          } catch { /* best effort */ }
+          operatorSuggestion = { goal: originalMessage.slice(0, 200), appName };
+        }
+      } catch { /* operator suggestion is advisory only */ }
+
+      return { responses: result.responses, synthesis: result.synthesis, durationMs: result.durationMs, contextualIntelligence, operatorSuggestion };
     } catch (err: unknown) {
       return { error: err instanceof Error ? err.message : String(err) };
     }
@@ -2211,7 +2329,7 @@ VERIFY: [1-3 specific things the user should double-check]
   // ── Voice: Speech-to-Text ─────────────────────────────────────────────────────
   ipcMain.handle('voice:transcribe', async (_e, audioBuffer: Buffer) => {
     const license = await store.getLicense();
-    const tier = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tier = (license.tier ?? 'free') as 'free' | 'pro';
     if (!hasCapability('VOICE', tier)) {
       return { error: lockedError('VOICE') };
     }
@@ -2226,7 +2344,7 @@ VERIFY: [1-3 specific things the user should double-check]
   // ── Voice: Text-to-Speech (streaming — first audio chunk ~300ms) ──────────────
   ipcMain.handle('voice:speak', async (event, text: string) => {
     const licSpeak = await store.getLicense();
-    const tierSpeak = (licSpeak.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tierSpeak = (licSpeak.tier ?? 'free') as 'free' | 'pro';
     if (!hasCapability('VOICE', tierSpeak)) {
       return { error: lockedError('VOICE') };
     }
@@ -2257,7 +2375,7 @@ VERIFY: [1-3 specific things the user should double-check]
   // ── Memory ───────────────────────────────────────────────────────────────────
   ipcMain.handle('memory:get', async () => {
     const licMem = await store.getLicense();
-    const tierMem = (licMem.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tierMem = (licMem.tier ?? 'free') as 'free' | 'pro';
     return store.getMemory(getMemoryLimit(tierMem));
   });
   ipcMain.handle('memory:add', (_e, type: string, content: string) => {
@@ -2275,7 +2393,7 @@ VERIFY: [1-3 specific things the user should double-check]
   /** List all profiles. Requires FORGE_PROFILES capability (Pro+). */
   ipcMain.handle('forgeProfiles:list', async () => {
     const lic = await store.getLicense();
-    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro';
     if (!hasCapability('FORGE_PROFILES', tier)) {
       return { error: lockedError('FORGE_PROFILES') };
     }
@@ -2295,7 +2413,7 @@ VERIFY: [1-3 specific things the user should double-check]
    */
   ipcMain.handle('forgeProfiles:activate', async (_e, id: string) => {
     const lic = await store.getLicense();
-    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro';
     if (!hasCapability('FORGE_PROFILES', tier)) {
       return { error: lockedError('FORGE_PROFILES') };
     }
@@ -2360,7 +2478,7 @@ VERIFY: [1-3 specific things the user should double-check]
    */
   ipcMain.handle('forgeProfiles:generateBlueprint', async (event, id: string) => {
     const lic = await store.getLicense();
-    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro';
     if (!hasCapability('FORGE_PROFILES', tier)) {
       return { error: lockedError('FORGE_PROFILES') };
     }
@@ -2463,7 +2581,7 @@ VERIFY: [1-3 specific things the user should double-check]
   // ── Forge Engine (Engine Mode — Phase 1) ─────────────────────────────────────
   ipcMain.handle('forgeEngine:run', async (event, { engineId, answers }: { engineId: string; answers: Record<string, string> }) => {
     const lic = await store.getLicense();
-    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro';
     if (!hasCapability('FORGE_PROFILES', tier)) {
       return { error: lockedError('FORGE_PROFILES') };
     }
@@ -2574,7 +2692,7 @@ VERIFY: [1-3 specific things the user should double-check]
     buildOutput: Record<string, string[]>;
   }) => {
     const lic = await store.getLicense();
-    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro';
     if (!hasCapability('FORGE_PROFILES', tier)) {
       return { error: lockedError('FORGE_PROFILES') };
     }
@@ -2703,7 +2821,7 @@ VERIFY: [1-3 specific things the user should double-check]
 
   ipcMain.handle('image:history', async (_event, n?: number) => {
     const lic  = await store.getLicense();
-    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro';
     if (!hasCapability('FORGE_PROFILES', tier)) return { error: lockedError('FORGE_PROFILES') };
     const histStore = getImageHistoryStore(_getDataDir());
     return histStore.getRecent(n ?? 50);
@@ -2711,7 +2829,7 @@ VERIFY: [1-3 specific things the user should double-check]
 
   ipcMain.handle('image:delete', async (_event, id: string) => {
     const lic  = await store.getLicense();
-    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro';
     if (!hasCapability('FORGE_PROFILES', tier)) return { error: lockedError('FORGE_PROFILES') };
     const histStore = getImageHistoryStore(_getDataDir());
     histStore.delete(id);
@@ -2720,7 +2838,7 @@ VERIFY: [1-3 specific things the user should double-check]
 
   ipcMain.handle('image:styles', async () => {
     const lic  = await store.getLicense();
-    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro';
     if (!hasCapability('FORGE_PROFILES', tier)) return { error: lockedError('FORGE_PROFILES') };
     const { STYLE_PRESETS } = require('@triforge/engine');
     return Object.keys(STYLE_PRESETS as Record<string, string>);
@@ -2729,7 +2847,7 @@ VERIFY: [1-3 specific things the user should double-check]
   // ── Council Executor ─────────────────────────────────────────────────────────
   ipcMain.handle('council:execute', async (_event, request: string, category?: string) => {
     const lic  = await store.getLicense();
-    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro';
     if (!hasCapability('THINK_TANK', tier)) {
       return { error: lockedError('THINK_TANK') };
     }
@@ -2760,9 +2878,9 @@ VERIFY: [1-3 specific things the user should double-check]
   });
 
   // ── Decision Ledger ─────────────────────────────────────────────────────────
-  async function getLedgerTier(): Promise<'free' | 'pro' | 'business'> {
+  async function getLedgerTier(): Promise<'free' | 'pro'> {
     const lic = await store.getLicense();
-    return (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    return (lic.tier ?? 'free') as 'free' | 'pro';
   }
 
   ipcMain.handle('ledger:get', async (_e, search?: string, limit?: number) => {
@@ -3120,7 +3238,7 @@ ${synthesis.slice(0, 3000)}`;
     const providers = await pm.getActiveProviders();
     if (providers.length === 0) return { error: 'No API keys configured.' };
     const licPlan = await store.getLicense();
-    const tierPlan = (licPlan.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tierPlan = (licPlan.tier ?? 'free') as 'free' | 'pro';
     if (!hasCapability('EXECUTION_PLANS', tierPlan)) return { error: lockedError('EXECUTION_PLANS') };
     try {
       const plan = await generateExecutionPlan(synthesis, providers[0]);
@@ -3137,7 +3255,7 @@ ${synthesis.slice(0, 3000)}`;
     if (goal.length > MAX_MESSAGE_CHARS) return { error: `Goal too long (max ${MAX_MESSAGE_CHARS} chars).` };
 
     const licTask = await store.getLicense();
-    const tierTask = (licTask.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tierTask = (licTask.tier ?? 'free') as 'free' | 'pro';
     if (!hasCapability('EXECUTION_PLANS', tierTask)) return { error: lockedError('EXECUTION_PLANS') };
 
     const { providerManager: pm, intentEngine: ie } = await getEngine();
@@ -3294,7 +3412,7 @@ Reply with ONLY the complete HTML. Start immediately with <!DOCTYPE html> and en
     html: string,
   ) => {
     const licAb = await store.getLicense();
-    const tierAb = (licAb.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tierAb = (licAb.tier ?? 'free') as 'free' | 'pro';
     if (!hasCapability('APP_ANALYSIS', tierAb)) return { services: [], error: lockedError('APP_ANALYSIS') };
     const { providerManager: pm } = await getEngine();
     const providers = await pm.getActiveProviders();
@@ -3428,8 +3546,9 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   // ── Task Engine ───────────────────────────────────────────────────────────────
 
-  async function _agentTier(): Promise<'free' | 'pro' | 'business'> {
-    return ((await store.getLicense()).tier ?? 'free') as 'free' | 'pro' | 'business';
+  async function _agentTier(): Promise<'free' | 'pro'> {
+    const tier = (await store.getLicense()).tier ?? 'free';
+    return (tier === 'business' ? 'pro' : tier) as 'free' | 'pro';
   }
 
   ipcMain.handle('taskEngine:createTask', async (_event, goal: string, category: TaskCategory) => {
@@ -3542,7 +3661,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   paperEngine.init();
 
   async function _tradeTier(): Promise<'free' | 'pro' | 'business'> {
-    return ((await store.getLicense()).tier ?? 'free') as 'free' | 'pro' | 'business';
+    return ((await store.getLicense()).tier ?? 'free') as 'free' | 'pro';
   }
 
   ipcMain.handle('wallet:paperBalance:get', async () => {
@@ -4926,8 +5045,8 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
             contentId: draft.id,
           },
         },
-        'campaign-ad-generation',
-        `Ad Campaign: ${goal.slice(0, 60)}`,
+        'campaign-ad-generation' as unknown as import('@triforge/engine').EngineEvent,
+        `Ad Campaign: ${goal.slice(0, 60)}` as unknown as import('@triforge/engine').WorkflowDefinition,
       );
 
       variantResults.push({
@@ -5930,7 +6049,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   ipcMain.handle('venture:discover', async (event, budget: number) => {
     try {
       const license = await store.getLicense();
-      const tierVal = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+      const tierVal = (license.tier ?? 'free') as 'free' | 'pro';
       if (!hasCapability('VENTURE_DISCOVERY', tierVal)) {
         return { error: lockedError('VENTURE_DISCOVERY'), tier: tierVal };
       }
@@ -6092,7 +6211,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
       // Push to phone
       try {
-        const { sendVentureProposal } = await import('./councilNotify');
+        const { sendVentureProposal } = await import('./councilNotify.js');
         sendVentureProposal(formatForPhone(proposal));
       } catch { /* phone not paired — non-fatal */ }
 
@@ -6199,14 +6318,14 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       // Build lead capture — persist result (Fix 5)
       emit('lead_capture', 'Building lead capture...');
       const captureType = String((launchPack?.leadCapturePlan && (launchPack.leadCapturePlan as Record<string,unknown>).captureType) ?? 'email_signup');
-      const captureComponent = buildCaptureComponent(captureType, brand.brandName);
+      const captureComponent = buildCaptureComponent(captureType as import('@triforge/engine').CaptureType, brand.brandName);
 
       // Lead magnet — persist result (Fix 5)
       emit('lead_magnet', 'Creating lead magnet...');
       const leadMagnet = await buildLeadMagnet(winner as never, brand as never, provider);
 
       // Signup flow — persist result (Fix 5)
-      const signupFlow = buildSignupFlow(captureType, brand as never);
+      const signupFlow = buildSignupFlow(captureType as import('@triforge/engine').CaptureType, brand as never);
 
       // First 30 days
       emit('planning_30days', 'Generating 30-day plan...');
@@ -6230,7 +6349,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
       // Notify with state-accurate messaging
       try {
-        const { sendVentureBuildUpdate } = await import('./councilNotify');
+        const { sendVentureBuildUpdate } = await import('./councilNotify.js');
         if (canOperateBefore) {
           sendVentureBuildUpdate(id, 'Site built — venture is operating (unfiled). Filing can be done later.');
         } else {
@@ -6314,7 +6433,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
           });
 
           try {
-            const { sendVentureFilingPrompt } = await import('./councilNotify');
+            const { sendVentureFilingPrompt } = await import('./councilNotify.js');
             sendVentureFilingPrompt(id, `Entity: ${filingPacket.entityType}, EIN Ready: ${filingPacket.einReady}`);
           } catch { /* non-fatal */ }
 
@@ -6371,7 +6490,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('scanner:run', async () => {
     try {
-      if (!hasCapability('INCOME_SCANNER', tier)) return { error: lockedError('INCOME_SCANNER') };
+      if (!hasCapability('INCOME_SCANNER', _cachedTier)) return { error: lockedError('INCOME_SCANNER') };
 
       // Infer connected platforms from saved credential keys
       const credMgr = _credentialManager ?? new CredentialManager(store);
@@ -6431,7 +6550,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('toolGap:analyze', (_event, laneId: IncomeLaneId) => {
     try {
-      if (!hasCapability('INCOME_SCANNER', tier)) return { error: lockedError('INCOME_SCANNER') };
+      if (!hasCapability('INCOME_SCANNER', _cachedTier)) return { error: lockedError('INCOME_SCANNER') };
       const raw = store.getKv('lastCapabilityScan');
       if (!raw) return { error: 'Run scanner:run first to detect installed tools.' };
       const scan = JSON.parse(raw);
@@ -6444,7 +6563,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('toolGap:install', async (_event, gap: ToolGap) => {
     try {
-      if (!hasCapability('INCOME_SCANNER', tier)) return { error: lockedError('INCOME_SCANNER') };
+      if (!hasCapability('INCOME_SCANNER', _cachedTier)) return { error: lockedError('INCOME_SCANNER') };
 
       // Safety: only 'full' mode (winget) runs a command — guided opens URL
       if (gap.installMode === 'guided') {
@@ -6464,7 +6583,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
             timeout: 120_000,
             windowsHide: false, // UAC prompt must be visible
             shell: true,
-          });
+          } as unknown as import('child_process').ExecSyncOptions);
           return { ok: true, mode: 'full', message: `${gap.toolName} installed successfully.` };
         } catch (installErr) {
           return { ok: false, error: `Install failed: ${installErr instanceof Error ? installErr.message : String(installErr)}` };
@@ -6499,7 +6618,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('income:lanes:rank', () => {
     try {
-      if (!hasCapability('INCOME_LANES', tier)) return { error: lockedError('INCOME_LANES') };
+      if (!hasCapability('INCOME_LANES', _cachedTier)) return { error: lockedError('INCOME_LANES') };
       const raw = store.getKv('lastCapabilityScan');
       if (!raw) return { error: 'Run scanner:run first.' };
       const scan = JSON.parse(raw);
@@ -6516,7 +6635,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     totalBudget: number; maxPerExperiment: number; dailyLimit: number; reservePct?: number;
   }) => {
     try {
-      if (!hasCapability('INCOME_OPERATOR', tier)) return incomeFail(lockedError('INCOME_OPERATOR'));
+      if (!hasCapability('INCOME_OPERATOR', _cachedTier)) return incomeFail(lockedError('INCOME_OPERATOR'));
       const budget = _getExperimentManager(store).setBudget(params);
       return incomeOk({ budget });
     } catch (err) {
@@ -6537,7 +6656,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     autoKillRule?: { budgetPctSpent: number; afterDays: number };
   }) => {
     try {
-      if (!hasCapability('INCOME_OPERATOR', tier)) return incomeFail(lockedError('INCOME_OPERATOR'));
+      if (!hasCapability('INCOME_OPERATOR', _cachedTier)) return incomeFail(lockedError('INCOME_OPERATOR'));
       const result = _getExperimentManager(store).createExperiment(params as never) as Record<string, unknown>;
       if (result.error) return incomeFail(result.error as string);
       return incomeOk(result);
@@ -6548,7 +6667,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('experiment:transition', (_event, id: string, to: string, reason?: string) => {
     try {
-      if (!hasCapability('INCOME_OPERATOR', tier)) return incomeFail(lockedError('INCOME_OPERATOR'));
+      if (!hasCapability('INCOME_OPERATOR', _cachedTier)) return incomeFail(lockedError('INCOME_OPERATOR'));
       const result = _getExperimentManager(store).transition(id, to as never, reason) as Record<string, unknown>;
       if (result.error) return incomeFail(result.error as string);
       return incomeOk(result);
@@ -6559,7 +6678,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('experiment:recordSpend', (_event, id: string, amount: number, reason: string) => {
     try {
-      if (!hasCapability('INCOME_OPERATOR', tier)) return incomeFail(lockedError('INCOME_OPERATOR'));
+      if (!hasCapability('INCOME_OPERATOR', _cachedTier)) return incomeFail(lockedError('INCOME_OPERATOR'));
       const result = _getExperimentManager(store).recordSpend(id, amount, reason) as Record<string, unknown>;
       if (result.error) return incomeFail(result.error as string);
       return incomeOk(result);
@@ -6570,7 +6689,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('experiment:recordRevenue', (_event, id: string, amount: number, source: string) => {
     try {
-      if (!hasCapability('REVENUE_TRACKER', tier)) return incomeFail(lockedError('REVENUE_TRACKER'));
+      if (!hasCapability('REVENUE_TRACKER', _cachedTier)) return incomeFail(lockedError('REVENUE_TRACKER'));
       const result = _getExperimentManager(store).recordRevenue(id, amount, source) as Record<string, unknown>;
       if (result.error) return incomeFail(result.error as string);
       return incomeOk(result);
@@ -6597,7 +6716,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('experiment:recordDecision', (_event, id: string, decision: string, reason: string) => {
     try {
-      if (!hasCapability('INCOME_OPERATOR', tier)) return { error: lockedError('INCOME_OPERATOR') };
+      if (!hasCapability('INCOME_OPERATOR', _cachedTier)) return { error: lockedError('INCOME_OPERATOR') };
       return _getExperimentManager(store).recordDecision(id, decision as never, reason);
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
@@ -6634,7 +6753,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('experiment:kill', (_event, id: string, reason: string) => {
     try {
-      if (!hasCapability('INCOME_OPERATOR', tier)) return incomeFail(lockedError('INCOME_OPERATOR'));
+      if (!hasCapability('INCOME_OPERATOR', _cachedTier)) return incomeFail(lockedError('INCOME_OPERATOR'));
       const mgr = _getExperimentManager(store);
       const exp = mgr.getExperiment(id);
       if (!exp) return incomeFail(`Experiment "${id}" not found.`);
@@ -6660,7 +6779,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('experiment:scale', (_event, id: string, reason: string) => {
     try {
-      if (!hasCapability('INCOME_OPERATOR', tier)) return incomeFail(lockedError('INCOME_OPERATOR'));
+      if (!hasCapability('INCOME_OPERATOR', _cachedTier)) return incomeFail(lockedError('INCOME_OPERATOR'));
       const mgr = _getExperimentManager(store);
       const exp = mgr.getExperiment(id);
       if (!exp) return incomeFail(`Experiment "${id}" not found.`);
@@ -6689,7 +6808,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('experiment:launch', (_event, id: string, reason: string) => {
     try {
-      if (!hasCapability('INCOME_OPERATOR', tier)) return incomeFail(lockedError('INCOME_OPERATOR'));
+      if (!hasCapability('INCOME_OPERATOR', _cachedTier)) return incomeFail(lockedError('INCOME_OPERATOR'));
       const mgr = _getExperimentManager(store);
       const exp = mgr.getExperiment(id);
       if (!exp) return incomeFail(`Experiment "${id}" not found.`);
@@ -6723,7 +6842,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('content:publish', (_event, id: string, platform: string, contentNote: string) => {
     try {
-      if (!hasCapability('INCOME_OPERATOR', tier)) return incomeFail(lockedError('INCOME_OPERATOR'));
+      if (!hasCapability('INCOME_OPERATOR', _cachedTier)) return incomeFail(lockedError('INCOME_OPERATOR'));
       const mgr = _getExperimentManager(store);
       const exp = mgr.getExperiment(id);
       if (!exp) return incomeFail(`Experiment "${id}" not found.`);
@@ -6748,7 +6867,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('platform:connect', (_event, id: string, platform: string, url: string) => {
     try {
-      if (!hasCapability('INCOME_OPERATOR', tier)) return incomeFail(lockedError('INCOME_OPERATOR'));
+      if (!hasCapability('INCOME_OPERATOR', _cachedTier)) return incomeFail(lockedError('INCOME_OPERATOR'));
       if (!platform) return incomeFail('Platform name is required.');
       const mgr = _getExperimentManager(store);
       // platform:connect accepts laneId OR experimentId as first param
@@ -6772,7 +6891,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   // ── Income: Decision engine — returns sorted recommendations ─────────────
   ipcMain.handle('income:getRecommendations', (_event, pendingApprovalKeyList: string[]) => {
     try {
-      if (!hasCapability('INCOME_OPERATOR', tier) && !hasCapability('INCOME_LANES', tier)) {
+      if (!hasCapability('INCOME_OPERATOR', _cachedTier) && !hasCapability('INCOME_LANES', _cachedTier)) {
         return { recommendations: [] };
       }
       const mgr         = _getExperimentManager(store);
@@ -7011,7 +7130,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     args?: string[]; cwd?: string; env?: Record<string, string>;
   }) => {
     try {
-      if (!hasCapability('AGENT_TASKS', tier)) return { error: lockedError('AGENT_TASKS') };
+      if (!hasCapability('AGENT_TASKS', _cachedTier)) return { error: lockedError('AGENT_TASKS') };
       const info = await mcpRegistry.connect(config);
       return { ok: true, serverInfo: info };
     } catch (err) {
@@ -7050,7 +7169,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('mcp:callTool', async (_event, serverId: string, toolName: string, args: Record<string, unknown>, approved: boolean) => {
     try {
-      if (!hasCapability('AGENT_TASKS', tier)) return { error: lockedError('AGENT_TASKS') };
+      if (!hasCapability('AGENT_TASKS', _cachedTier)) return { error: lockedError('AGENT_TASKS') };
       const result = await mcpRegistry.callTool(serverId, toolName, args, approved);
       return { ok: true, result };
     } catch (err) {
@@ -7076,7 +7195,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       );
 
       try {
-        const { sendVentureDailyPulse } = await import('./councilNotify');
+        const { sendVentureDailyPulse } = await import('./councilNotify.js');
         sendVentureDailyPulse(formatPulseForPhone(pulse, concept));
       } catch { /* non-fatal */ }
 
@@ -7173,6 +7292,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
           source: r.url,
           title: r.title,
           snippet: r.snippet,
+          url: r.url,
           publishedAt: Date.now(),
           relevanceScore: 70,
           trendVelocity: 'stable' as const,
@@ -7293,12 +7413,75 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     }
   });
 
+  // ── Council Agent IPC (15 agents, fire/hire, performance) ────────────────────
+
+  ipcMain.handle('council-agents:roster', async () => {
+    try {
+      const { getCouncilAgentOrchestrator } = await import('@triforge/engine');
+      const orch = getCouncilAgentOrchestrator();
+      return { roster: orch.getRoster() };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('council-agents:performance', async () => {
+    try {
+      const { getCouncilAgentOrchestrator } = await import('@triforge/engine');
+      const orch = getCouncilAgentOrchestrator();
+      return { performance: orch.getPerformanceSummaries() };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('council-agents:fire', async (_event, agentId: string, reason: string) => {
+    try {
+      const { getCouncilAgentOrchestrator } = await import('@triforge/engine');
+      const orch = getCouncilAgentOrchestrator();
+      return orch.fireAgent(agentId, reason ?? 'User fired');
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('council-agents:restore', async (_event, agentId: string) => {
+    try {
+      const { getCouncilAgentOrchestrator } = await import('@triforge/engine');
+      const orch = getCouncilAgentOrchestrator();
+      return orch.restoreAgent(agentId);
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('council-agents:retire', async (_event, agentId: string, reason: string) => {
+    try {
+      const { getCouncilAgentOrchestrator } = await import('@triforge/engine');
+      const orch = getCouncilAgentOrchestrator();
+      return orch.retireAgent(agentId, reason ?? 'User retired');
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('council-agents:evaluate', async () => {
+    try {
+      const { getCouncilAgentOrchestrator } = await import('@triforge/engine');
+      const orch = getCouncilAgentOrchestrator();
+      const actions = orch.evaluateAndAct();
+      return { ok: true, actions };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
   // ── Evolution / Performance Hunter IPC ────────────────────────────────────
 
   ipcMain.handle('evolution:scan', async () => {
     try {
       const license = await store.getLicense();
-      const tierVal = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+      const tierVal = (license.tier ?? 'free') as Tier;
       if (tierVal !== 'business') {
         return { error: 'Performance Hunter requires Business tier.' };
       }
@@ -7356,7 +7539,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   ipcMain.handle('placement:status', async () => {
     try {
       const license = await store.getLicense();
-      const tierVal = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+      const tierVal = (license.tier ?? 'free') as Tier;
       if (tierVal !== 'business') {
         return { error: 'Adaptive Placement requires Business tier.' };
       }
@@ -7371,7 +7554,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   ipcMain.handle('placement:rebalance', async () => {
     try {
       const license = await store.getLicense();
-      const tierVal = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+      const tierVal = (license.tier ?? 'free') as Tier;
       if (tierVal !== 'business') {
         return { error: 'Adaptive Placement requires Business tier.' };
       }
@@ -7387,7 +7570,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   ipcMain.handle('placement:report', async () => {
     try {
       const license = await store.getLicense();
-      const tierVal = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+      const tierVal = (license.tier ?? 'free') as Tier;
       if (tierVal !== 'business') {
         return { error: 'Adaptive Placement requires Business tier.' };
       }
@@ -7509,11 +7692,11 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('vibe:createProfile', async (_event, name: string, ventureId?: string) => {
     const lic = await store.getLicense();
-    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro';
     if (!hasCapability('VIBE_CODING', tier)) return { error: lockedError('VIBE_CODING') };
     try {
       const ps = _getVibeProfileStore(store);
-      const profile = ps.createProfile(name, ventureId);
+      const profile = ps.createProfile(name, ventureId as import('@triforge/engine').VibeMode);
       return { ok: true, profile };
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
@@ -7522,7 +7705,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('vibe:getProfile', async (_event, id: string) => {
     const lic = await store.getLicense();
-    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro';
     if (!hasCapability('VIBE_CODING', tier)) return { error: lockedError('VIBE_CODING') };
     try {
       const ps = _getVibeProfileStore(store);
@@ -7535,7 +7718,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('vibe:listProfiles', async () => {
     const lic = await store.getLicense();
-    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro';
     if (!hasCapability('VIBE_CODING', tier)) return { error: lockedError('VIBE_CODING') };
     try {
       const ps = _getVibeProfileStore(store);
@@ -7547,7 +7730,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('vibe:deleteProfile', async (_event, id: string) => {
     const lic = await store.getLicense();
-    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro';
     if (!hasCapability('VIBE_CODING', tier)) return { error: lockedError('VIBE_CODING') };
     try {
       const ps = _getVibeProfileStore(store);
@@ -7560,7 +7743,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('vibe:updateProfile', async (_event, id: string, updates: Record<string, unknown>) => {
     const lic = await store.getLicense();
-    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro';
     if (!hasCapability('VIBE_CODING', tier)) return { error: lockedError('VIBE_CODING') };
     try {
       const ps = _getVibeProfileStore(store);
@@ -7574,7 +7757,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('vibe:parse', async (_event, input: string) => {
     const lic = await store.getLicense();
-    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro';
     if (!hasCapability('VIBE_CODING', tier)) return { error: lockedError('VIBE_CODING') };
     try {
       const { parseVibeIntent, detectVibeMode } = require('@triforge/engine');
@@ -7588,7 +7771,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('vibe:runCouncil', async (event, profileId: string, input: string, mode?: string) => {
     const lic = await store.getLicense();
-    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro';
     if (!hasCapability('VIBE_CODING', tier)) return { error: lockedError('VIBE_CODING') };
     try {
       const { providerManager: pm } = await getEngine();
@@ -7710,7 +7893,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('vibe:audit', async (_event, profileId: string, currentState?: string) => {
     const lic = await store.getLicense();
-    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro';
     if (!hasCapability('VIBE_CODING', tier)) return { error: lockedError('VIBE_CODING') };
     try {
       const ps = _getVibeProfileStore(store);
@@ -7718,7 +7901,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       if (!profile) return { error: 'Vibe profile not found.' };
 
       const patchPlanner = _getVibePatchPlanner(store);
-      const plan = patchPlanner.audit(profile, currentState);
+      const plan = patchPlanner.audit(profile, currentState ?? '');
       return { ok: true, plan };
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
@@ -7727,7 +7910,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   ipcMain.handle('vibe:rescue', async (_event, profileId: string, currentState?: string) => {
     const lic = await store.getLicense();
-    const tier = (lic.tier ?? 'free') as 'free' | 'pro' | 'business';
+    const tier = (lic.tier ?? 'free') as 'free' | 'pro';
     if (!hasCapability('VIBE_CODING', tier)) return { error: lockedError('VIBE_CODING') };
     try {
       const ps = _getVibeProfileStore(store);
@@ -7735,7 +7918,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       if (!profile) return { error: 'Vibe profile not found.' };
 
       const patchPlanner = _getVibePatchPlanner(store);
-      const plan = patchPlanner.rescue(profile, currentState);
+      const plan = patchPlanner.rescue(profile, currentState ?? '');
       return { ok: true, plan };
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
@@ -7782,10 +7965,8 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
           // Audit log evidence
           const ledger = _getAuditLedger();
-          ledger.log('HEARTBEAT', {
-            missionId: HEARTBEAT_ID,
-            firedAt,
-            source:    'background_scheduler',
+          ledger.log('HEARTBEAT' as never, {
+            metadata: { missionId: HEARTBEAT_ID, firedAt, source: 'background_scheduler' },
           });
 
           // Persist last fired mission
@@ -8045,7 +8226,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         runMission: (missionId) => mgr.runMission(missionId),
         getRecentEvents: () => {
           // Return last 50 events from the eventBus ring buffer
-          return eventBus.since(0).slice(-50) as Array<Record<string, unknown>>;
+          return eventBus.since().slice(-50) as unknown as Array<Record<string, unknown>>;
         },
       });
     }
@@ -8529,7 +8710,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       : `Run skill: ${skill.name} — ${skill.description ?? ''}`.trim();
 
     try {
-      const { taskEngine } = await getEngine();
+      const { taskEngine } = await getEngine() as unknown as { taskEngine: { createTask: (opts: { goal: string; category: string; metadata?: Record<string, unknown> }) => Promise<{ id: string }> } };
       const task = await taskEngine.createTask({
         goal:     taskGoal,
         category: 'ops',
@@ -8620,7 +8801,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
     // ── 3. Risk classification ────────────────────────────────────────────────
     const riskClass = _classifyInboundRisk(text);
-    _messageLog.update(logEntry.id, { status: 'classified', riskClass });
+    _messageLog.update(logEntry.id, { status: 'classified', riskClass } as never);
 
     ledger.log('TELEGRAM_MESSAGE_RECEIVED', {
       metadata: { chatId, riskClass },
@@ -8907,8 +9088,8 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     }
 
     // ── 3. Risk classification via governance ─────────────────────────────────
-    const { blocked, requiresApproval, riskClass } = _classifyInboundTask(text, 'slack');
-    _messageLog.update(logEntry.id, { status: 'classified', riskClass });
+    const { blocked, requiresApproval, riskClass } = _classifyInboundTask(text, 'slack' as InboundTaskSource);
+    _messageLog.update(logEntry.id, { status: 'classified', riskClass } as never);
 
     if (blocked) {
       _messageLog.update(logEntry.id, { status: 'blocked', blockedReason: 'Blocked by policy' });
@@ -8970,7 +9151,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     if (!channelId) return;
     const ledger = _getAuditLedger();
     try {
-      const missions = missionController.list ? missionController.list() : [];
+      const missions = (missionController as unknown as { list?: () => unknown[] }).list ? (missionController as unknown as { list: () => unknown[] }).list() : [];
       const active   = (missions as Array<{ status?: string }>).filter(m => m.status === 'active').length;
       const pending  = (missions as Array<{ status?: string }>).filter(m => m.status === 'pending').length;
       const summary  = [
@@ -9263,7 +9444,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   ipcMain.handle('jira:queueComment', (_e, issueKey: string, body: string) => {
     const { blocked, requiresApproval } = _classifyInboundTask(
       `Comment on ${issueKey}: ${body.slice(0, 100)}`,
-      'jira',
+      'jira' as InboundTaskSource,
     );
     if (blocked) return { ok: false, error: 'Blocked by policy' };
     const action = _getJiraQueue().enqueue({
@@ -9278,7 +9459,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   // jira:queueCreate — enqueue issue creation for approval
   ipcMain.handle('jira:queueCreate', (_e, projectKey: string, issueTypeId: string, summary: string, description?: string) => {
-    const { blocked } = _classifyInboundTask(`Create issue in ${projectKey}: ${summary}`, 'jira');
+    const { blocked } = _classifyInboundTask(`Create issue in ${projectKey}: ${summary}`, 'jira' as InboundTaskSource);
     if (blocked) return { ok: false, error: 'Blocked by policy' };
     const action = _getJiraQueue().enqueue({
       type: 'create', projectKey, issueTypeId,
@@ -9292,7 +9473,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   // jira:queueTransition — enqueue a status transition for approval
   ipcMain.handle('jira:queueTransition', (_e, issueKey: string, transitionId: string, toStatus: string) => {
-    const { blocked } = _classifyInboundTask(`Transition ${issueKey} → ${toStatus}`, 'jira');
+    const { blocked } = _classifyInboundTask(`Transition ${issueKey} → ${toStatus}`, 'jira' as InboundTaskSource);
     if (blocked) return { ok: false, error: 'Blocked by policy' };
     const action = _getJiraQueue().enqueue({
       type: 'transition', issueKey, transitionId, toStatus,
@@ -9578,7 +9759,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   ipcMain.handle('linear:queueComment', (_e, issueId: string, identifier: string, body: string) => {
     const { blocked, requiresApproval } = _classifyInboundTask(
       `Comment on ${identifier}: ${body.slice(0, 100)}`,
-      'linear',
+      'linear' as InboundTaskSource,
     );
     if (blocked) return { ok: false, error: 'Blocked by policy' };
     const action = _getLinearQueue().enqueue({
@@ -9593,7 +9774,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   // linear:queueCreate — enqueue issue creation for approval
   ipcMain.handle('linear:queueCreate', (_e, teamId: string, teamKey: string, title: string, description?: string, stateId?: string, assigneeId?: string, priority?: number) => {
-    const { blocked } = _classifyInboundTask(`Create issue in [${teamKey}]: ${title}`, 'linear');
+    const { blocked } = _classifyInboundTask(`Create issue in [${teamKey}]: ${title}`, 'linear' as InboundTaskSource);
     if (blocked) return { ok: false, error: 'Blocked by policy' };
     const action = _getLinearQueue().enqueue({
       type: 'create', teamId,
@@ -9609,7 +9790,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   // linear:queueUpdate — enqueue a status/assignee/priority update for approval
   ipcMain.handle('linear:queueUpdate', (_e, issueId: string, identifier: string, patch: { stateId?: string; stateName?: string; assigneeId?: string; priority?: number; title?: string }) => {
     const desc = patch.stateName ? `→ ${patch.stateName}` : patch.title ? `rename: ${patch.title.slice(0, 40)}` : 'update fields';
-    const { blocked } = _classifyInboundTask(`Update ${identifier}: ${desc}`, 'linear');
+    const { blocked } = _classifyInboundTask(`Update ${identifier}: ${desc}`, 'linear' as InboundTaskSource);
     if (blocked) return { ok: false, error: 'Blocked by policy' };
     const action = _getLinearQueue().enqueue({
       type: 'update', issueId,
@@ -9776,8 +9957,8 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     }
 
     // ── 3. Risk classification via governance ─────────────────────────────────
-    const { blocked, requiresApproval, riskClass } = _classifyInboundTask(text, 'discord');
-    _messageLog.update(logEntry.id, { status: 'classified', riskClass });
+    const { blocked, requiresApproval, riskClass } = _classifyInboundTask(text, 'discord' as InboundTaskSource);
+    _messageLog.update(logEntry.id, { status: 'classified', riskClass } as never);
 
     if (blocked) {
       _messageLog.update(logEntry.id, { status: 'blocked', blockedReason: 'Blocked by policy' });
@@ -9975,7 +10156,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
   function _getRecipeState(id: string): RecipeState {
     const all = store.getRecipeStates();
-    return all[id] ?? { id, enabled: false, params: {} };
+    return (all[id] ? { id, ...all[id] } : { id, enabled: false, params: {} as Record<string, string> }) as RecipeState;
   }
 
   function _saveRecipeState(state: RecipeState): void {
@@ -10019,7 +10200,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     if (recipeScope === 'workspace') {
       ledger.log('WS_RECIPE_RUN', { metadata: { recipeId: id, trigger: def.trigger, workspaceId, action: 'run' } });
     }
-    eventBus.emit({ type: 'RECIPE_STARTED', recipeId: id });
+    eventBus.emit({ type: 'RECIPE_STARTED' as never, recipeId: id } as never);
 
     try {
       let result = '';
@@ -10045,7 +10226,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         if (issues.length === 0) {
           await _slackAdapter.postMessage(channel, '*Jira Daily Digest* — no open issues found.');
         } else {
-          const lines = issues.map(i => `• <${i.url}|${i.key}> ${i.summary} [${i.status?.name ?? 'unknown'}]`);
+          const lines = issues.map(i => `• <${(i as unknown as { url?: string }).url ?? ''}|${i.key}> ${i.summary} [${i.status ?? 'unknown'}]`);
           await _slackAdapter.postMessage(channel, `*Jira Daily Digest* (${issues.length} issues)\n${lines.join('\n')}`);
         }
         result = `Posted Jira digest (${issues.length} issues) to ${channel}`;
@@ -10061,7 +10242,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         if (issues.length === 0) {
           await _slackAdapter.postMessage(channel, '*Linear Daily Digest* — no issues found.');
         } else {
-          const lines = issues.map(i => `• <${i.url}|${i.identifier}> ${i.title} [${i.state.name}]`);
+          const lines = issues.map(i => `• <${i.url}|${i.identifier}> ${i.title} [${i.stateId ?? 'unknown'}]`);
           await _slackAdapter.postMessage(channel, `*Linear Daily Digest* (${issues.length} issues)\n${lines.join('\n')}`);
         }
         result = `Posted Linear digest (${issues.length} issues) to ${channel}`;
@@ -10075,7 +10256,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         try {
           const pending = _getGitHubReviewStore().listPending();
           if (pending.length > 0) {
-            parts.push(`*GitHub Reviews* (${pending.length} pending):\n` + pending.slice(0, 5).map(r => `• ${r.owner}/${r.repo} #${r.prNumber}`).join('\n'));
+            parts.push(`*GitHub Reviews* (${pending.length} pending):\n` + pending.slice(0, 5).map(r => `• ${r.owner}/${r.repo} #${r.number}`).join('\n'));
           }
         } catch { /* skip if not configured */ }
 
@@ -10114,7 +10295,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       const updated: RecipeState = { ...state, lastRunAt: Date.now(), lastRunStatus: 'success', lastRunResult: result };
       _saveRecipeState(updated);
       ledger.log('RECIPE_COMPLETED', { metadata: { id, result: result.slice(0, 200) } });
-      eventBus.emit({ type: 'RECIPE_COMPLETED', recipeId: id, result });
+      eventBus.emit({ type: 'RECIPE_COMPLETED' as never, recipeId: id, result } as never);
       return { ok: true, result };
 
     } catch (err) {
@@ -10122,7 +10303,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       const updated: RecipeState = { ...state, lastRunAt: Date.now(), lastRunStatus: 'failed', lastRunResult: error };
       _saveRecipeState(updated);
       ledger.log('RECIPE_FAILED', { metadata: { id, error } });
-      eventBus.emit({ type: 'RECIPE_FAILED', recipeId: id, error });
+      eventBus.emit({ type: 'RECIPE_FAILED' as never, recipeId: id, error } as never);
       return { ok: false, error };
     }
   }
@@ -11221,9 +11402,9 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         const ledger  = _getAuditLedger();
         const since24 = Date.now() - 24 * 60 * 60 * 1000;
         const entries = await ledger.tailSince(since24);
-        const approvedToday  = entries.filter(e => e.type === 'TASK_APPROVED').length;
-        const blockedToday   = entries.filter(e => e.type === 'TASK_BLOCKED').length;
-        const failedRecipes  = entries.filter(e => e.type === 'RECIPE_FAILED').length;
+        const approvedToday  = entries.filter(e => (e.eventType as string) === 'TASK_APPROVED').length;
+        const blockedToday   = entries.filter(e => (e.eventType as string) === 'TASK_BLOCKED').length;
+        const failedRecipes  = entries.filter(e => (e.eventType as string) === 'RECIPE_FAILED').length;
         const unhealthyCount = actions.filter(a => a.id.startsWith('health:')).length;
         return {
           actionsTotal:      actions.length,
@@ -11421,7 +11602,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
       async postThreadMessage(
         threadId: string,
         text: string,
-        category: TaskCategory,
+        category: import('./dispatchServer').TaskCategory,
         ctx: RemoteActionContext,
       ): Promise<{ message: DispatchMessage; task: DispatchTask }> {
         const threads = store.getDispatchThreads();
@@ -11439,7 +11620,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
           createdAt:   now,
           updatedAt:   now,
           goal:        text,
-          category,
+          category: category as import('./dispatchServer').TaskCategory,
           status:      'queued',
           ctx:         { ...thread.ctx },   // carry-forward context
           deviceLabel: ctx.deviceLabel,
@@ -11457,7 +11638,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         _updateThread(thread);
 
         // Execute asynchronously
-        _executeDispatchTask(followUpTask, { goal: text, category, ctx: thread.ctx }).catch(() => {});
+        _executeDispatchTask(followUpTask, { goal: text, category: category as import('./dispatchServer').TaskCategory, ctx: thread.ctx }).catch(() => {});
         return { message: userMsg, task: followUpTask };
       },
 
@@ -12073,7 +12254,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     if (thread.attributions.length > 100) thread.attributions = thread.attributions.slice(-100);
     _updateThread(thread);
     _getAuditLedger().log('THREAD_ATTRIBUTION_RECORDED', {
-      metadata: { threadId: thread.id, attributionId: attr.id, action: partial.action, actor: partial.actorId, actorRole: partial.actorRole, workspaceId: store.getWorkspace()?.id },
+      metadata: { threadId: thread.id, attributionId: attr.id, action: partial.action, actor: partial.actorId, actorRole: (partial as unknown as { actorRole?: string }).actorRole, workspaceId: store.getWorkspace()?.id },
     });
     _dispatchServer?.broadcastTaskEvent({
       type:         'thread:update',
@@ -12134,7 +12315,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
           update({ status: 'error', error: 'No AI provider configured' });
           return;
         }
-        const sysPrompt = buildSystemPrompt(store);
+        const sysPrompt = await buildSystemPrompt(store);
         const contextParts: string[] = [];
         if (task.ctx.repo)    contextParts.push(`Repo: ${task.ctx.repo}`);
         if (task.ctx.project) contextParts.push(`Project: ${task.ctx.project}`);
@@ -12208,15 +12389,18 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         const policy = store.getRemoteApprovePolicy();
         if (policy.requireDesktopConfirm) {
           step('Awaiting desktop approval');
-          const { generateConfirmationId } = await import('./dispatchSession');
+          const { generateConfirmationId } = await import('./dispatchSession.js');
           const confId = generateConfirmationId();
           _pendingConfirmations.set(confId, {
-            id:        confId,
-            itemId:    task.id,
-            riskLevel: 'high',
-            label:     task.goal,
-            createdAt: Date.now(),
-            status:    'pending',
+            id:          confId,
+            itemId:      task.id,
+            action:      task.goal,
+            verb:        'approve',
+            deviceId:    'remote',
+            deviceLabel: 'Remote Task',
+            clientIp:    '',
+            createdAt:   Date.now(),
+            status:      'pending',
           });
           for (const win of BrowserWindow.getAllWindows()) {
             if (!win.isDestroyed()) win.webContents.send('dispatch:confirm-request', {
@@ -12314,7 +12498,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     _updateDispatchTask(task);
 
     // Broadcast artifact-available step
-    _emitTaskStep(task, `${arts.length} artifact${arts.length > 1 ? 's' : ''} created`, true);
+    _emitTaskStep(task, `${arts.length} artifact${arts.length > 1 ? 's' : ''} created`, { done: true });
 
     // Phase 25 — add artifacts to thread
     if (task.threadId) {
@@ -13187,6 +13371,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   ipcMain.handle('pack:previewImport', (_e, json: string) => {
     const result = deserializePack(json);
     if (result.error) return { ok: false, error: result.error };
+    if (!result.pack) return { ok: false, error: 'Invalid pack data' };
     const preview = previewPack(result.pack, store);
     // Phase 36 audit: log trust result on preview
     if (preview.trust.status === 'trusted') {
@@ -13215,6 +13400,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     if (!ws) return { ok: false, error: 'No workspace configured' };
     const result = deserializePack(json);
     if (result.error) return { ok: false, error: result.error };
+    if (!result.pack) return { ok: false, error: 'Invalid pack data' };
     const isUpdate = !!store.getPack(result.pack.id);
     const { installedIds, updatedIds } = installPack(result.pack, store);
     const auditType = isUpdate ? 'PACK_UPDATED' : 'PACK_INSTALLED';
@@ -13282,6 +13468,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     try {
       const result = deserializePack(json);
       if (result.error) return { ok: false, error: result.error };
+      if (!result.pack) return { ok: false, error: 'Invalid pack data' };
       const key    = getOrCreateLocalKey(_getDataDir());
       const signed = signPack(result.pack, key.privateKeyPem, key.publicKeyPem, signerName, signerEmail);
       _getAuditLedger().log('PACK_SIGNED', {
@@ -13591,7 +13778,7 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         ...(result.outcome === 'success'
           ? { appName }
           : { actionId: action.id, actionType: 'focus_app', error: result.error ?? 'focus failed' }),
-      });
+      } as never);
       return { ok: result.outcome === 'success', result };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -13611,11 +13798,539 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     }
   });
 
+  /** Capture the current screen and return it as a base64 data URL for live view rendering. */
+  ipcMain.handle('operator:screenshot:base64', async () => {
+    try {
+      const res = await OperatorService.captureScreen();
+      if (!res.ok || !res.path) return { ok: false, error: res.error ?? 'Screenshot failed.' };
+      const buf = fs.readFileSync(res.path);
+      return { ok: true, dataUrl: 'data:image/png;base64,' + buf.toString('base64') };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // ── Operator Task Runner — autonomous sense-plan-act loop ────────────────────
+  //
+  // ── Operator narration helper ─────────────────────────────────────────────
+  // Converts a raw TaskProgressEvent into a human-readable sentence for Chat.
+
+  function buildNarrationMessage(ev: {
+    step:                number;
+    phase:               string;
+    description:         string;
+    action?:             { type?: string; target?: string; text?: string; keyCombo?: string; appName?: string };
+    continuationSummary?: string;
+  }): string {
+    const a = ev.action;
+    switch (ev.phase) {
+      case 'observe': return `Step ${ev.step}: Taking screenshot and reading the screen.`;
+      case 'plan':    return `Step ${ev.step}: Deciding what to do next.`;
+      case 'act':
+        if (!a) return `Step ${ev.step}: ${ev.description}`;
+        if (a.type === 'click')  return `Step ${ev.step}: Clicking "${a.target ?? 'element'}"`;
+        if (a.type === 'type')   return `Step ${ev.step}: Typing "${(a.text ?? '').slice(0, 40)}"`;
+        if (a.type === 'key')    return `Step ${ev.step}: Pressing ${a.keyCombo}`;
+        if (a.type === 'focus')  return `Step ${ev.step}: Switching to ${a.appName ?? a.target}`;
+        if (a.type === 'wait')   return `Step ${ev.step}: Waiting for screen to settle.`;
+        return `Step ${ev.step}: ${ev.description}`;
+      case 'verify':  return `Step ${ev.step}: Verifying the action worked.`;
+      case 'done':    return `Done. ${ev.description}`;
+      case 'blocked': return `Blocked at step ${ev.step}: ${ev.description}`;
+      case 'error':   return `Error at step ${ev.step}: ${ev.description}`;
+      case 'continuation_prompt':
+        return `${ev.continuationSummary ?? ev.description} Want me to continue?`;
+      default:        return `Step ${ev.step}: ${ev.description}`;
+    }
+  }
+
+  // Runs a natural-language goal against the user's live desktop via a
+  // repeating observe→plan→act→verify loop. This is the core "remote access
+  // person" capability: it sees the screen, decides what to do, executes it,
+  // and reports back — one step at a time, with approval gates for input actions.
+
+  ipcMain.handle('operator:task:run', async (event, payload: {
+    sessionId: string;
+    goal:      string;
+    maxSteps?: number;
+  }) => {
+    if (!payload?.goal || !payload?.sessionId) {
+      return { ok: false, error: 'goal and sessionId are required' };
+    }
+    try {
+      // Wire API key from store before every task run so visionAnalyzer + script generation
+      // always have the latest key even if the user added it after app startup.
+      const claudeKeyForTask = await store.getSecret('triforge.claude.apiKey');
+      if (claudeKeyForTask) {
+        setVisionApiKey(claudeKeyForTask);
+        setScriptGenKey(claudeKeyForTask);
+      }
+      const { runOperatorTask } = await import('./services/operatorTaskRunner.js');
+      const result = await runOperatorTask({
+        sessionId:  payload.sessionId,
+        goal:       payload.goal,
+        maxSteps:   payload.maxSteps ?? 15,
+        onProgress: (ev) => {
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('operator:task:progress', ev);
+            // Step 6: Narration channel — live operator commentary in Chat
+            event.sender.send('chat:operator-narration', {
+              step:      ev.step,
+              phase:     ev.phase,
+              message:   buildNarrationMessage(ev as Parameters<typeof buildNarrationMessage>[0]),
+              timestamp: Date.now(),
+            });
+          }
+        },
+      });
+      return result;
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e), stepsExecuted: 0, outcome: 'error', summary: String(e), steps: [] };
+    }
+  });
+
   /** Get the current machine perception (frontmost app + optional screenshot). */
   ipcMain.handle('operator:perception:perceive', async () => {
     try {
       const perception = await OperatorService.perceive();
       return { ok: true, perception };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /**
+   * Full visual perception: screenshot + OCR + frontmost app.
+   * Use this as the "observe" step in the autonomous agent loop.
+   * Returns ocrText alongside the screenshot path.
+   */
+  ipcMain.handle('operator:perception:perceive-with-ocr', async (_e, outputPath?: string) => {
+    try {
+      const perception = await OperatorService.perceiveWithOCR(outputPath);
+      return { ok: true, perception };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /**
+   * Scan for all known apps (Adobe, Blender, DAWs, mobile dev, etc.)
+   * and return which are running, installed, and frontmost.
+   * Used by the Operate UI and council awareness snapshot.
+   */
+  ipcMain.handle('operator:apps:scan', async () => {
+    try {
+      const [runningApps, frontmost] = await Promise.all([
+        OperatorService.listRunningApps(),
+        OperatorService.getFrontmostApp(),
+      ]);
+      const detected = buildAppAwarenessSnapshot(
+        runningApps,
+        frontmost?.appName,
+        frontmost?.windowTitle,
+      );
+      const summary  = formatAppAwarenessSummary(detected);
+      return { ok: true, detected, summary };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // ── iOS ──────────────────────────────────────────────────────────────────────
+
+  /**
+   * Scan all iOS simulators + connected real devices.
+   * Returns the full iOSAwarenessSnapshot with booted/available simulators
+   * and any physically connected devices.
+   */
+  ipcMain.handle('ios:scan', async () => {
+    try {
+      const runningApps = await OperatorService.listRunningApps();
+      const frontmost   = await OperatorService.getFrontmostApp();
+      const snapshot    = await buildIOSAwarenessSnapshot(runningApps, frontmost?.windowTitle);
+      const summary     = formatIOSSummary(snapshot);
+      return { ok: true, snapshot, summary };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Boot a simulator by UDID. */
+  ipcMain.handle('ios:simulator:boot', async (_e, udid: string) => {
+    if (!udid) return { ok: false, error: 'udid required' };
+    try {
+      const result = await bootSimulator(udid);
+      return result;
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Capture a screenshot from a booted simulator. */
+  ipcMain.handle('ios:simulator:screenshot', async (_e, udid: string, outputPath?: string) => {
+    if (!udid) return { ok: false, error: 'udid required' };
+    try {
+      const result = await captureSimulatorScreen(udid, outputPath);
+      return result;
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // ── Android ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Scan all connected Android devices, running emulators, available AVDs,
+   * and detect a Gradle project in the current working directory.
+   */
+  ipcMain.handle('android:scan', async (_e, projectPath?: string) => {
+    try {
+      const { buildAndroidAwarenessSnapshot, formatAndroidSummary } =
+        await import('./services/androidAwareness.js');
+      const runningApps = await OperatorService.listRunningApps();
+      const snapshot    = await buildAndroidAwarenessSnapshot(runningApps, projectPath);
+      const summary     = formatAndroidSummary(snapshot);
+      return { ok: true, snapshot, summary };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Capture a screenshot from a connected device or emulator via ADB. */
+  ipcMain.handle('android:screenshot', async (_e, serial: string, outputPath?: string) => {
+    if (!serial) return { ok: false, error: 'serial required' };
+    try {
+      const { buildAndroidAwarenessSnapshot, captureAndroidScreen } =
+        await import('./services/androidAwareness.js');
+      const runningApps = await OperatorService.listRunningApps();
+      const snapshot    = await buildAndroidAwarenessSnapshot(runningApps);
+      if (!snapshot.adbPath) return { ok: false, error: 'ADB not found.' };
+      const result = await captureAndroidScreen(snapshot.adbPath, serial, outputPath);
+      return result;
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Send a tap at (x, y) to a connected Android device or emulator. */
+  ipcMain.handle('android:tap', async (_e, serial: string, x: number, y: number) => {
+    if (!serial) return { ok: false, error: 'serial required' };
+    try {
+      const { buildAndroidAwarenessSnapshot, androidTap } =
+        await import('./services/androidAwareness.js');
+      const runningApps = await OperatorService.listRunningApps();
+      const snapshot    = await buildAndroidAwarenessSnapshot(runningApps);
+      if (!snapshot.adbPath) return { ok: false, error: 'ADB not found.' };
+      return await androidTap(snapshot.adbPath, serial, x, y);
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // ── Cloud Relay ───────────────────────────────────────────────────────────────
+
+  /** Register this device with a relay server (first-time setup). */
+  ipcMain.handle('relay:register', async (_e, relayUrl: string, label?: string) => {
+    const { registerDevice } = await import('./services/relayClient.js');
+    return registerDevice(relayUrl, label);
+  });
+
+  /** Configure relay with existing credentials and start polling. */
+  ipcMain.handle('relay:connect', async (_e, creds?: {
+    deviceId: string; deviceSecret: string; relayUrl: string;
+  }) => {
+    try {
+      const rc = await import('./services/relayClient.js');
+      if (creds) {
+        rc.configureRelay(creds);
+      } else {
+        const loaded = rc.loadSavedCredentials();
+        if (!loaded) return { ok: false, error: 'No saved credentials. Call relay:register first.' };
+      }
+      const state = rc.startRelayClient();
+      return { ok: true, state };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Disconnect from the relay. */
+  ipcMain.handle('relay:disconnect', async () => {
+    const { stopRelayClient, getRelayState } = await import('./services/relayClient.js');
+    stopRelayClient();
+    return { ok: true, state: getRelayState() };
+  });
+
+  /** Get current relay connection state. */
+  ipcMain.handle('relay:status', async () => {
+    const { getRelayState } = await import('./services/relayClient.js');
+    return { ok: true, state: getRelayState() };
+  });
+
+  /** Submit a test job from the desktop (verifies relay end-to-end). */
+  ipcMain.handle('relay:submit-job', async (_e, packId: string, opts?: Record<string, unknown>, label?: string) => {
+    const { submitLocalJob } = await import('./services/relayClient.js');
+    return submitLocalJob(packId, opts ?? {}, label);
+  });
+
+  /** Check status of a specific relay job. */
+  ipcMain.handle('relay:job-status', async (_e, jobId: string) => {
+    const { getJobStatus } = await import('./services/relayClient.js');
+    return getJobStatus(jobId);
+  });
+
+  /** Clear relay credentials and disconnect. */
+  ipcMain.handle('relay:clear', async () => {
+    const { clearRelayCredentials } = await import('./services/relayClient.js');
+    clearRelayCredentials();
+    return { ok: true };
+  });
+
+  // ── Vision / OSK / Screen Watch ──────────────────────────────────────────────
+
+  /** Describe what is currently on screen using Claude vision. */
+  ipcMain.handle('vision:describe', async (_e, screenshotPath?: string) => {
+    try {
+      const { describeScreen } = await import('./services/visionAnalyzer.js');
+      const { OperatorService } = await import('./services/operatorService.js');
+      let imgPath = screenshotPath;
+      if (!imgPath) {
+        const result = await OperatorService.captureScreen();
+        if (!result.ok) return { ok: false, error: result.error };
+        imgPath = result.path!;
+      }
+      const desc = await describeScreen(imgPath);
+      return { ok: true, description: desc, screenshotPath: imgPath };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Find a UI element's coordinates using Claude vision. */
+  ipcMain.handle('vision:locate', async (_e, elementDescription: string, screenshotPath?: string) => {
+    try {
+      const { locateElement } = await import('./services/visionAnalyzer.js');
+      const { OperatorService } = await import('./services/operatorService.js');
+      let imgPath = screenshotPath;
+      if (!imgPath) {
+        const result = await OperatorService.captureScreen();
+        if (!result.ok) return { ok: false, error: result.error };
+        imgPath = result.path!;
+      }
+      const loc = await locateElement(imgPath, elementDescription);
+      return { ok: true, location: loc, screenshotPath: imgPath };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Ask a freeform question about what's on screen. */
+  ipcMain.handle('vision:ask', async (_e, question: string, screenshotPath?: string) => {
+    try {
+      const { askAboutScreen } = await import('./services/visionAnalyzer.js');
+      const { OperatorService } = await import('./services/operatorService.js');
+      let imgPath = screenshotPath;
+      if (!imgPath) {
+        const result = await OperatorService.captureScreen();
+        if (!result.ok) return { ok: false, error: result.error };
+        imgPath = result.path!;
+      }
+      const answer = await askAboutScreen(imgPath, question);
+      return { ok: true, answer, screenshotPath: imgPath };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Get on-screen keyboard status. */
+  ipcMain.handle('osk:status', async () => {
+    try {
+      const { getOSKStatus, getOSKRecommendationMessage } = await import('./services/oskManager.js');
+      const status = await getOSKStatus();
+      return { ok: true, ...status, recommendation: getOSKRecommendationMessage() };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Open the on-screen keyboard. */
+  ipcMain.handle('osk:open', async () => {
+    try {
+      const { ensureOSKOpen, getOSKBounds } = await import('./services/oskManager.js');
+      const result = await ensureOSKOpen();
+      const bounds = await getOSKBounds();
+      return { ...result, bounds };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Close the on-screen keyboard. */
+  ipcMain.handle('osk:close', async () => {
+    try {
+      const { closeOSK } = await import('./services/oskManager.js');
+      await closeOSK();
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Start the background screen change monitor. */
+  ipcMain.handle('screen-watch:start', async (_e, config?: {
+    intervalMs?: number;
+    changeThreshold?: number;
+    visionOnChange?: boolean;
+  }) => {
+    try {
+      const { startScreenWatcher } = await import('./services/screenWatcher.js');
+      const state = startScreenWatcher(config ?? {});
+      return { ok: true, state };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Stop the screen change monitor. */
+  ipcMain.handle('screen-watch:stop', async () => {
+    try {
+      const { stopScreenWatcher, getScreenWatcherState } = await import('./services/screenWatcher.js');
+      const state = getScreenWatcherState();
+      stopScreenWatcher();
+      return { ok: true, finalState: state };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** One-shot: did the screen change since the last check? */
+  ipcMain.handle('screen-watch:check', async () => {
+    try {
+      const { checkScreenChanged } = await import('./services/screenWatcher.js');
+      return await checkScreenChanged();
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Get connected keyboard/mouse devices. */
+  ipcMain.handle('devices:list', async () => {
+    try {
+      const { getConnectedDevices } = await import('./services/deviceEventWatcher.js');
+      const devices = await getConnectedDevices();
+      return { ok: true, devices };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Check if a physical keyboard is connected. */
+  ipcMain.handle('devices:has-keyboard', async () => {
+    try {
+      const { hasPhysicalKeyboard } = await import('./services/deviceEventWatcher.js');
+      const has = await hasPhysicalKeyboard();
+      return { ok: true, hasPhysicalKeyboard: has };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // ── Social Media Publishing ───────────────────────────────────────────────────
+
+  /** Check which social platforms are currently authenticated. */
+  ipcMain.handle('social:auth:status', async () => {
+    try {
+      const { getAuthStatus } = await import('./services/credentialStore.js');
+      return { ok: true, status: getAuthStatus() };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Disconnect a social platform (clears stored OAuth tokens). */
+  ipcMain.handle('social:auth:disconnect', async (_e, platform: string) => {
+    try {
+      const { disconnectPlatform } = await import('./services/socialPublisher.js');
+      disconnectPlatform(platform as import('./services/credentialStore').SocialPlatform);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /**
+   * Start an OAuth flow for a social platform.
+   * Opens the browser; waits up to 5 minutes for the user to authorize.
+   */
+  ipcMain.handle('social:auth:connect', async (
+    _e,
+    platform: string,
+    credentials: Record<string, string>,
+  ) => {
+    try {
+      const sp = await import('./services/socialPublisher.js');
+      let result: { ok: boolean; error?: string };
+
+      if (platform === 'youtube') {
+        result = await sp.connectYouTube({ clientId: credentials.clientId, clientSecret: credentials.clientSecret });
+      } else if (platform === 'facebook') {
+        result = await sp.connectFacebook({ appId: credentials.appId, appSecret: credentials.appSecret });
+      } else if (platform === 'instagram') {
+        result = await sp.connectInstagram({ appId: credentials.appId, appSecret: credentials.appSecret });
+      } else if (platform === 'tiktok') {
+        result = await sp.connectTikTok({ clientKey: credentials.clientKey, clientSecret: credentials.clientSecret });
+      } else {
+        result = { ok: false, error: `Unknown platform: ${platform}` };
+      }
+
+      return result;
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /**
+   * Publish a local file to a social platform.
+   * opts: { filePath, caption?, videoTitle?, isVideo?, youtubePrivacy?, tiktokPrivacy? }
+   */
+  ipcMain.handle('social:publish', async (
+    _e,
+    platform: string,
+    credentials: Record<string, string>,
+    publishOpts: {
+      filePath:      string;
+      caption?:      string;
+      videoTitle?:   string;
+      isVideo?:      boolean;
+      youtubePrivacy?: 'public' | 'unlisted' | 'private';
+      tiktokPrivacy?: string;
+    },
+  ) => {
+    try {
+      const sp = await import('./services/socialPublisher.js');
+      const { filePath, caption = '', videoTitle, isVideo = false } = publishOpts;
+
+      if (platform === 'youtube') {
+        return await sp.publishToYouTube(
+          { clientId: credentials.clientId, clientSecret: credentials.clientSecret },
+          filePath,
+          { title: videoTitle ?? caption, description: caption, privacy: publishOpts.youtubePrivacy ?? 'private' },
+        );
+      }
+      if (platform === 'facebook') {
+        return await sp.publishToFacebook(filePath, caption, isVideo, videoTitle);
+      }
+      if (platform === 'instagram') {
+        return await sp.publishToInstagram(filePath, caption, isVideo);
+      }
+      if (platform === 'tiktok') {
+        return await sp.publishToTikTok(
+          { clientKey: credentials.clientKey, clientSecret: credentials.clientSecret },
+          filePath,
+          { title: videoTitle ?? caption, privacyLevel: publishOpts.tiktokPrivacy as import('./services/platforms/tiktokClient').TikTokVideoMeta['privacyLevel'] },
+        );
+      }
+      return { ok: false, error: `Unknown platform: ${platform}` };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
@@ -13655,6 +14370,22 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     }
   });
 
+  /**
+   * Set the trust level for an active operator session.
+   * 'supervised' — every input action requires human approval (default).
+   * 'trusted'    — input actions execute immediately; all logged to audit trail.
+   */
+  ipcMain.handle('operator:session:trust', async (_e, sessionId: string, level: 'supervised' | 'trusted') => {
+    if (!sessionId) return { ok: false, error: 'sessionId required' };
+    if (level !== 'supervised' && level !== 'trusted') return { ok: false, error: 'level must be supervised or trusted' };
+    try {
+      const ok = OperatorService.setSessionTrust(sessionId, level);
+      return { ok };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
   /** List all operator sessions (active and historical). */
   ipcMain.handle('operator:session:list', async () => {
     try {
@@ -13672,8 +14403,8 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   ipcMain.handle('operator:action:queue', async (
     _e,
     sessionId: string,
-    actionType: 'type_text' | 'send_key',
-    opts: { text?: string; key?: string; modifiers?: string[] },
+    actionType: 'type_text' | 'send_key' | 'click_at',
+    opts: { text?: string; key?: string; modifiers?: string[]; x?: number; y?: number; button?: 'left' | 'right' | 'double' },
   ) => {
     if (!sessionId) return { ok: false, error: 'sessionId required' };
     const session = OperatorService.getSession(sessionId);
@@ -13683,9 +14414,12 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     }
 
     const action = OperatorService.buildAction(sessionId, actionType, {
-      text: opts.text,
-      key:  opts.key,
+      text:      opts.text,
+      key:       opts.key,
       modifiers: (opts.modifiers ?? []) as Array<'cmd' | 'shift' | 'alt' | 'ctrl'>,
+      x:         opts.x,
+      y:         opts.y,
+      button:    opts.button,
     });
 
     try {
@@ -13907,6 +14641,38 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     try {
       const stopped = WorkflowPackService.stopRun(runId);
       return { ok: stopped };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // ── Pack Builder — custom pack CRUD ──────────────────────────────────────────
+
+  /** List all user-built custom packs. */
+  ipcMain.handle('pack-builder:list', () => {
+    try {
+      return { ok: true, packs: WorkflowPackService.listCustomPacks() };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Save (create or update) a custom pack. */
+  ipcMain.handle('pack-builder:save', (_e, pack: import('@triforge/engine').WorkflowPack) => {
+    try {
+      if (!pack?.id) return { ok: false, error: 'Pack must have an id.' };
+      WorkflowPackService.saveCustomPack(pack);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Delete a custom pack by ID. */
+  ipcMain.handle('pack-builder:delete', (_e, id: string) => {
+    try {
+      const deleted = WorkflowPackService.deleteCustomPack(id);
+      return { ok: deleted, error: deleted ? undefined : 'Pack not found.' };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
@@ -14165,7 +14931,7 @@ export async function restoreBackgroundServices(store: Store): Promise<void> {
     const token = store.getControlPlaneToken();
     const port  = store.getControlPlanePort();
     if (token) {
-      const cp = _getControlPlane();
+      const cp = _controlPlane!;
       const result = await cp.start(port, token);
       if (result.ok) {
         store.setControlPlaneLastStartedAt(Date.now());
@@ -14204,7 +14970,7 @@ export async function supervisorHealthTick(store: Store): Promise<void> {
     const port  = store.getControlPlanePort();
     if (token) {
       console.error('[Phase2] Control plane stopped — supervisor restarting');
-      await _getControlPlane().start(port, token).catch(console.error);
+      await _controlPlane!.start(port, token).catch(console.error);
     }
   }
 }

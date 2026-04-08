@@ -54,6 +54,73 @@ export type {
   InboundTaskSource, InboundRiskClass, InboundTaskDecision,
 } from './core/taskTypes';
 
+// ── Phase 3 — iOS Packs ───────────────────────────────────────────────────────
+
+export {
+  IOS_SCAN,
+  IOS_BUILD_SIMULATOR,
+  IOS_SIMULATOR_SCREENSHOT,
+  IOS_BUILD_DEVICE,
+} from './operator/iosPacks';
+
+// ── Phase 3 — Android Packs ───────────────────────────────────────────────────
+
+export {
+  ANDROID_SCAN,
+  ANDROID_BUILD,
+  ANDROID_SCREENSHOT,
+  ANDROID_INPUT,
+  ANDROID_LAUNCH_AVD,
+} from './operator/androidPacks';
+
+// ── Phase 6 — Vision + OSK + Screen Watch Packs ──────────────────────────────
+
+export {
+  VISION_DESCRIBE,
+  VISION_LOCATE,
+  VISION_CLICK,
+  OSK_OPEN,
+  OSK_TYPE,
+  SCREEN_WATCH,
+} from './operator/visionPacks';
+
+// ── Phase 5 — Social Media Publishing Packs ───────────────────────────────────
+
+export {
+  PUBLISH_YOUTUBE,
+  PUBLISH_FACEBOOK,
+  PUBLISH_INSTAGRAM,
+  PUBLISH_TIKTOK,
+} from './operator/socialPacks';
+
+// ── Phase 2 — App Registry ────────────────────────────────────────────────────
+
+export type {
+  AppCategory,
+  ScriptingInterface,
+  AppInstallPaths,
+  AppDefinition,
+  DetectedApp,
+} from './operator/appRegistry';
+
+export {
+  APP_REGISTRY,
+  APP_UNREAL_ENGINE,
+  APP_ADOBE_PHOTOSHOP,
+  APP_ADOBE_PREMIERE,
+  APP_ADOBE_AFTER_EFFECTS,
+  APP_ADOBE_ILLUSTRATOR,
+  APP_BLENDER,
+  APP_LOGIC_PRO,
+  APP_ABLETON_LIVE,
+  APP_PRO_TOOLS,
+  APP_XCODE,
+  APP_ANDROID_STUDIO,
+  getAppDefinition,
+  getAppsByCategory,
+  getAppByProcessName,
+} from './operator/appRegistry';
+
 // ── Section 8 — Desktop Operator Engine ──────────────────────────────────────
 
 export type {
@@ -140,7 +207,7 @@ export type {
 
 // ── Unreal System Scaffold Pack ───────────────────────────────────────────────
 
-export { UNREAL_SYSTEM_SCAFFOLD, generateUnrealSystemScaffold } from './operator/unrealScaffoldPack';
+export { UNREAL_SYSTEM_SCAFFOLD, generateUnrealSystemScaffold, generateUnrealSystemScaffoldWithAI } from './operator/unrealScaffoldPack';
 export type {
   UnrealScaffoldOutcome,
   UnrealScaffoldCategory,
@@ -212,6 +279,11 @@ export type {
   UnrealM5ExecutionAction,
   UnrealM5ExecutionResult,
 } from './operator/unrealM5ExecutePack';
+
+// ── Unreal Editor Operate Pack ────────────────────────────────────────────────
+
+export { UNREAL_EDITOR_OPERATE, UNREAL_EDITOR_COMPILE_ONLY } from './operator/unrealEditorOperatePack';
+export { UNREAL_FULL_BUILD } from './operator/unrealFullBuildPack';
 
 // ── Section 10 — Trust, Security, Safety Hardening ───────────────────────────
 
@@ -345,6 +417,23 @@ export { CouncilConversationEngine, isPlanningTask } from './council/CouncilConv
 export type { CouncilConversationCallbacks, CouncilConversationResult } from './council/CouncilConversationEngine';
 export { synthesizeCouncil, synthesizeCouncilStream } from './council/synthesizeCouncil';
 export { registerAbortController, interrupt, clearAbortControllers } from './council/interruptController';
+
+// ── Council Agents — 15 specialized agents (5 per AI pool) ───────────────────
+export {
+  COUNCIL_AGENT_ROSTER,
+  selectAgentsForMessage,
+  buildAgentSystemAddendum,
+  getCouncilAgent,
+  isProtectedAgent,
+} from './council/councilAgents';
+export type { CouncilAgent, AgentPool, AgentStatus } from './council/councilAgents';
+
+export {
+  CouncilAgentOrchestrator,
+  getCouncilAgentOrchestrator,
+  checkAgentSurvival,
+} from './council/councilAgentOrchestrator';
+export type { AgentContributionRecord, AgentPerformanceSummary } from './council/councilAgentOrchestrator';
 
 // Task Context (session-scoped active task tracking)
 export {
@@ -534,6 +623,8 @@ export type {
 
 // ── Web Search ──────────────────────────────────────────────────────────────
 export { searchWeb }       from './tools/webSearch';
+export { detectOperatorIntent } from './tools/operatorIntentDetector';
+export type { OperatorIntentResult } from './tools/operatorIntentDetector';
 export type { WebSearchResult } from './tools/webSearch';
 export { needsWebSearch }  from './tools/webSearchDetector';
 

@@ -54,6 +54,8 @@ const api = {
         error?: string;
         tier?: string;
         contextualIntelligence?: ContextualIntelligenceResult | null;
+        /** Populated when the user's message is an operator-action intent */
+        operatorSuggestion?: { goal: string; appName?: string };
       }>,
   },
 
@@ -730,7 +732,7 @@ const api = {
     activate:    (key: string) => ipcRenderer.invoke('license:activate', key) as Promise<{ tier: string; valid: boolean; key: string | null; email: string | null; error: string | null }>,
     deactivate:  () => ipcRenderer.invoke('license:deactivate') as Promise<void>,
     tiers:       () => ipcRenderer.invoke('license:tiers') as Promise<unknown>,
-    checkoutUrls:() => ipcRenderer.invoke('license:checkoutUrls') as Promise<{ pro: string; business: string; portal: string }>,
+    checkoutUrls:() => ipcRenderer.invoke('license:checkoutUrls') as Promise<{ pro: string; annual: string; portal: string }>,
   },
 
   // Usage stats
@@ -820,6 +822,12 @@ const api = {
       const handler = (_: Electron.IpcRendererEvent, data: { plan: unknown }) => cb(data);
       ipcRenderer.on('council:plan', handler);
       return () => ipcRenderer.removeListener('council:plan', handler);
+    },
+    /** Operator task suggestion — emitted when the user's message is a task to execute in an app */
+    onOperatorSuggestion: (cb: (data: { goal: string; targetApp: string | null; suggestedPackId: string | null; confidence: string }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, data: { goal: string; targetApp: string | null; suggestedPackId: string | null; confidence: string }) => cb(data);
+      ipcRenderer.on('forge:operator-suggestion', handler);
+      return () => ipcRenderer.removeListener('forge:operator-suggestion', handler);
     },
     /** Ambient insight from InsightEngine (type, message, confidence). */
     onInsight: (cb: (data: { type: string; message: string; confidence: number }) => void): (() => void) => {
@@ -1352,6 +1360,22 @@ const api = {
       ipcRenderer.invoke('experts:restore', expertId) as Promise<{ ok?: boolean; error?: string }>,
     maintenance: () =>
       ipcRenderer.invoke('experts:maintenance') as Promise<{ ok?: boolean; report?: unknown; promoted?: string[]; replaced?: string[]; hiringNeeds?: unknown[]; error?: string }>,
+  },
+
+  // Council Agents — 15 specialized agents (5 per AI pool), fire/hire, performance
+  councilAgents: {
+    roster: () =>
+      ipcRenderer.invoke('council-agents:roster') as Promise<{ roster?: unknown[]; error?: string }>,
+    performance: () =>
+      ipcRenderer.invoke('council-agents:performance') as Promise<{ performance?: unknown[]; error?: string }>,
+    fire: (agentId: string, reason: string) =>
+      ipcRenderer.invoke('council-agents:fire', agentId, reason) as Promise<{ ok?: boolean; error?: string }>,
+    restore: (agentId: string) =>
+      ipcRenderer.invoke('council-agents:restore', agentId) as Promise<{ ok?: boolean; error?: string }>,
+    retire: (agentId: string, reason: string) =>
+      ipcRenderer.invoke('council-agents:retire', agentId, reason) as Promise<{ ok?: boolean; error?: string }>,
+    evaluate: () =>
+      ipcRenderer.invoke('council-agents:evaluate') as Promise<{ ok?: boolean; actions?: unknown[]; error?: string }>,
   },
 
   // Adaptive Expert Placement — lane utilization, hot experts, rebalance
@@ -2587,6 +2611,12 @@ const api = {
         ok: boolean; path?: string; error?: string; recoveryHint?: string;
       }>,
 
+    /** Capture and return a screenshot as a base64 data URL (for live view rendering). */
+    screenshotBase64: () =>
+      ipcRenderer.invoke('operator:screenshot:base64') as Promise<{
+        ok: boolean; dataUrl?: string; error?: string;
+      }>,
+
     /** Get a perception snapshot (frontmost app + summary). */
     perceive: () =>
       ipcRenderer.invoke('operator:perception:perceive') as Promise<{
@@ -2621,8 +2651,19 @@ const api = {
         sessions?: Array<{
           id: string; startedAt: number; intendedTarget: string | null;
           status: string; actionCount?: number; endedAt?: number;
+          trustLevel?: 'supervised' | 'trusted';
         }>;
         error?: string;
+      }>,
+
+    /**
+     * Set the trust level for an active session.
+     * 'supervised' — every input action requires approval (default).
+     * 'trusted'    — input actions auto-execute; all logged to audit trail.
+     */
+    setTrust: (sessionId: string, level: 'supervised' | 'trusted') =>
+      ipcRenderer.invoke('operator:session:trust', sessionId, level) as Promise<{
+        ok: boolean; error?: string;
       }>,
 
     /**
@@ -2684,6 +2725,78 @@ const api = {
       ipcRenderer.invoke('operator:approval:deny', approvalId, reason) as Promise<{
         ok: boolean; error?: string;
       }>,
+
+    /**
+     * Run a natural-language goal against the live desktop.
+     * The task runner takes a screenshot, asks Claude what to do next, executes
+     * it, verifies, and repeats — just like a remote-access human operator.
+     * Progress events are emitted on 'operator:task:progress'.
+     */
+    runTask: (sessionId: string, goal: string, maxSteps?: number) =>
+      ipcRenderer.invoke('operator:task:run', { sessionId, goal, maxSteps }) as Promise<{
+        ok:                 boolean;
+        stepsExecuted:      number;
+        outcome:            'completed' | 'max_steps_reached' | 'blocked' | 'error' | 'approval_pending';
+        summary:            string;
+        error?:             string;
+        pendingApprovalId?: string;
+        steps:              Array<{
+          step:          number;
+          executed:      boolean;
+          outcome?:      string;
+          verifyPassed?: boolean;
+          approvalId?:   string;
+          error?:        string;
+        }>;
+      }>,
+
+    /** Listen for step-by-step progress events emitted during a task run. */
+    onTaskProgress: (cb: (ev: {
+      step:            number;
+      phase:           string;
+      description:     string;
+      screenshotPath?: string;
+    }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, ev: unknown) => cb(ev as any);
+      ipcRenderer.on('operator:task:progress', handler);
+      return () => ipcRenderer.removeListener('operator:task:progress', handler);
+    },
+
+    /**
+     * Subscribe to live operator narration messages for display in Chat.
+     * Each event is a human-readable sentence describing the current step.
+     * Returns an unsubscribe function.
+     */
+    onNarration: (cb: (msg: {
+      step:      number;
+      phase:     string;
+      message:   string;
+      timestamp: number;
+    }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, data: unknown) => cb(data as any);
+      ipcRenderer.on('chat:operator-narration', handler);
+      return () => ipcRenderer.removeListener('chat:operator-narration', handler);
+    },
+
+    /**
+     * Listen for known apps coming to the foreground.
+     * Fired by appForegroundWatcher when a registered app (e.g. Unreal Engine,
+     * Photoshop, Blender) is detected as the frontmost window.
+     * Returns an unsubscribe function.
+     */
+    onAppDetected: (cb: (ev: {
+      appId:       string;
+      appName:     string;
+      category:    string;
+      icon?:       string;
+      packIds:     string[];
+      suggestions: string[];
+      detectedAt:  number;
+    }) => void): (() => void) => {
+      const handler = (_: Electron.IpcRendererEvent, ev: unknown) => cb(ev as any);
+      ipcRenderer.on('operator:app:detected', handler);
+      return () => ipcRenderer.removeListener('operator:app:detected', handler);
+    },
   },
 
   // ── Section 9 — Workflow Packs ─────────────────────────────────────────────
@@ -2968,6 +3081,102 @@ const api = {
         failReason?: string;
         message: string;
       }>,
+  },
+  // ── Relay Client (Phase 7) ─────────────────────────────────────────────────
+  relay: {
+    register: (relayUrl: string, label?: string) =>
+      ipcRenderer.invoke('relay:register', relayUrl, label) as Promise<{
+        ok: boolean; deviceId?: string; deviceSecret?: string; error?: string;
+      }>,
+    connect: (creds: { deviceId: string; deviceSecret: string; relayUrl: string }) =>
+      ipcRenderer.invoke('relay:connect', creds) as Promise<{ ok: boolean; error?: string }>,
+    disconnect: () => ipcRenderer.invoke('relay:disconnect') as Promise<{ ok: boolean }>,
+    status: () =>
+      ipcRenderer.invoke('relay:status') as Promise<{
+        connected: boolean; relayUrl: string | null; deviceId: string | null;
+        lastPollAt?: number; lastJobAt?: number;
+        jobsExecuted: number; jobsFailed: number; error?: string;
+      }>,
+    submitJob: (packId: string, opts?: Record<string, unknown>, label?: string) =>
+      ipcRenderer.invoke('relay:submit-job', packId, opts, label) as Promise<{
+        ok: boolean; jobId?: string; error?: string;
+      }>,
+    jobStatus: (jobId: string) =>
+      ipcRenderer.invoke('relay:job-status', jobId) as Promise<{
+        ok: boolean; job?: unknown; error?: string;
+      }>,
+    clear: () => ipcRenderer.invoke('relay:clear') as Promise<{ ok: boolean }>,
+  },
+
+  // ── On-Screen Keyboard (Phase 6) ──────────────────────────────────────────
+  osk: {
+    status: () =>
+      ipcRenderer.invoke('osk:status') as Promise<{
+        visible: boolean; type?: string; platform: string;
+        recommendation: string;
+      }>,
+    open: () =>
+      ipcRenderer.invoke('osk:open') as Promise<{ ok: boolean; method?: string; error?: string }>,
+    close: () =>
+      ipcRenderer.invoke('osk:close') as Promise<{ ok: boolean; error?: string }>,
+  },
+
+  // ── Vision Analyzer (Phase 6) ─────────────────────────────────────────────
+  vision: {
+    describe: (imagePath?: string) =>
+      ipcRenderer.invoke('vision:describe', imagePath) as Promise<{
+        ok: boolean; result?: unknown; error?: string;
+      }>,
+    locate: (elementDescription: string, imagePath?: string) =>
+      ipcRenderer.invoke('vision:locate', elementDescription, imagePath) as Promise<{
+        ok: boolean; found?: boolean; x?: number; y?: number;
+        width?: number; height?: number; confidence?: number; error?: string;
+      }>,
+    ask: (question: string, imagePath?: string) =>
+      ipcRenderer.invoke('vision:ask', question, imagePath) as Promise<{
+        ok: boolean; answer?: string; error?: string;
+      }>,
+  },
+
+  // ── Device Watcher (Phase 6) ──────────────────────────────────────────────
+  devices: {
+    list: () =>
+      ipcRenderer.invoke('devices:list') as Promise<{
+        ok: boolean;
+        devices?: Array<{ id: string; name: string; type: string; connected: boolean }>;
+        error?: string;
+      }>,
+    hasKeyboard: () =>
+      ipcRenderer.invoke('devices:has-keyboard') as Promise<{ ok: boolean; has: boolean }>,
+  },
+
+  // ── Screen Watcher (Phase 6) ──────────────────────────────────────────────
+  screenWatch: {
+    start: (intervalMs?: number, threshold?: number) =>
+      ipcRenderer.invoke('screen-watch:start', intervalMs, threshold) as Promise<{
+        ok: boolean; error?: string;
+      }>,
+    stop: () =>
+      ipcRenderer.invoke('screen-watch:stop') as Promise<{ ok: boolean }>,
+    check: () =>
+      ipcRenderer.invoke('screen-watch:check') as Promise<{
+        ok: boolean; changed?: boolean; score?: number; description?: unknown; error?: string;
+      }>,
+    onChanged: (cb: (data: { score: number; imagePath?: string }) => void): (() => void) => {
+      const h = (_: Electron.IpcRendererEvent, d: { score: number; imagePath?: string }) => cb(d);
+      ipcRenderer.on('screen-watch:changed', h);
+      return () => ipcRenderer.removeListener('screen-watch:changed', h);
+    },
+  },
+
+  // ── Pack Builder (Phase 13) ────────────────────────────────────────────────
+  packBuilder: {
+    list: () =>
+      ipcRenderer.invoke('pack-builder:list') as Promise<{ ok: boolean; packs?: unknown[]; error?: string }>,
+    save: (pack: unknown) =>
+      ipcRenderer.invoke('pack-builder:save', pack) as Promise<{ ok: boolean; error?: string }>,
+    delete: (id: string) =>
+      ipcRenderer.invoke('pack-builder:delete', id) as Promise<{ ok: boolean; error?: string }>,
   },
 };
 

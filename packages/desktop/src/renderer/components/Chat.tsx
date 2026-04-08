@@ -63,6 +63,14 @@ interface Message {
   docQuery?: string;
   // Section 5 contextual intelligence (set after council conversation)
   contextualIntelligence?: ContextualIntelligenceResult | null;
+  // Operator suggestion — set when council detects operator_action intent
+  operatorSuggestion?: { goal: string; appName?: string };
+  // Live operator narration — injected from the operator task loop
+  isOperatorNarration?: boolean;
+  narrationStep?: number;
+  // App detection prompt — injected when a known app comes to the foreground
+  isAppDetectionPrompt?: boolean;
+  appDetectionData?: { appId: string; appName: string; suggestions: string[] };
 }
 
 interface DocEntry {
@@ -294,8 +302,8 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   const [providerThinkingMessages, setProviderThinkingMessages] = useState<Record<string, string>>({});
   const [webSearching, setWebSearching] = useState(false);
   const [providerErrors, setProviderErrors] = useState<Record<string, string>>({});
-  const [gate, setGate] = useState<{ feature: string; neededTier: 'pro' | 'business' } | null>(null);
-  const [checkoutUrls, setCheckoutUrls] = useState<{ pro: string; business: string; portal: string }>({ pro: '', business: '', portal: '' });
+  const [gate, setGate] = useState<{ feature: string; neededTier: 'pro' } | null>(null);
+  const [checkoutUrls, setCheckoutUrls] = useState<{ pro: string; annual: string; portal: string }>({ pro: '', annual: '', portal: '' });
   const [showQuickActions, setShowQuickActions] = useState(false);
   const [showWorkflows, setShowWorkflows] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<{ name: string; path: string; content: string }[]>([]);
@@ -356,6 +364,82 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       appendMsg({ id: crypto.randomUUID(), role: 'system', content: `Council: ${data.text}`, timestamp: new Date() });
     });
     return unsub;
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Operator task suggestion — attach Execute card to the last assistant message
+  useEffect(() => {
+    if (!window.triforge.forge.onOperatorSuggestion) return;
+    const unsub = window.triforge.forge.onOperatorSuggestion((data) => {
+      // Attach the suggestion to the most recent assistant message so the Execute card appears inline
+      setMessages(prev => {
+        const lastAssistantIdx = [...prev].reverse().findIndex(m => m.role === 'assistant');
+        if (lastAssistantIdx === -1) return prev;
+        const realIdx = prev.length - 1 - lastAssistantIdx;
+        const updated = [...prev];
+        updated[realIdx] = {
+          ...updated[realIdx],
+          operatorSuggestion: { goal: data.goal, appName: data.targetApp ?? undefined },
+        };
+        return updated;
+      });
+    });
+    return unsub;
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Step 8: Live operator narration — streams task step commentary into Chat
+  useEffect(() => {
+    if (!window.triforge.operator?.onNarration) return;
+    const unsubscribe = window.triforge.operator.onNarration((msg) => {
+      const now = Date.now();
+      setMessages(prev => {
+        const last = prev[prev.length - 1];
+        // Group rapid narration bursts (within 2s) into a single updating message
+        if (last?.isOperatorNarration && (now - last.timestamp.getTime()) < 2000) {
+          return [...prev.slice(0, -1), {
+            ...last,
+            content:       `🤖 **TriForge Operator** · Step ${msg.step} · ${msg.phase}\n\n${msg.message}`,
+            timestamp:     new Date(msg.timestamp),
+            narrationStep: msg.step,
+          }];
+        }
+        return [...prev, {
+          id:                  `narration-${msg.timestamp}-${msg.step}`,
+          role:                'assistant' as const,
+          content:             `🤖 **TriForge Operator** · Step ${msg.step} · ${msg.phase}\n\n${msg.message}`,
+          timestamp:           new Date(msg.timestamp),
+          isOperatorNarration: true,
+          narrationStep:       msg.step,
+        }];
+      });
+    });
+    return unsubscribe;
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Step 9: App foreground detection — surface context card when a known app opens
+  useEffect(() => {
+    if (!window.triforge.operator?.onAppDetected) return;
+    const unsubscribe = window.triforge.operator.onAppDetected((ev) => {
+      if (!ev.packIds?.length) return;
+      const suggestion = ev.suggestions?.[0] ?? `automate tasks in ${ev.appName}`;
+      setMessages(prev => {
+        // De-dupe: don't show the same app card twice within 60 seconds
+        const alreadyShown = prev.find(
+          m => m.isAppDetectionPrompt &&
+               m.appDetectionData?.appId === ev.appId &&
+               Date.now() - m.timestamp.getTime() < 60_000
+        );
+        if (alreadyShown) return prev;
+        return [...prev, {
+          id:                   `app-detected-${ev.detectedAt}`,
+          role:                 'assistant' as const,
+          content:              `I see **${ev.appName}** is open. Want me to ${suggestion}?`,
+          timestamp:            new Date(ev.detectedAt),
+          isAppDetectionPrompt: true,
+          appDetectionData:     { appId: ev.appId, appName: ev.appName, suggestions: ev.suggestions ?? [] },
+        }];
+      });
+    });
+    return unsubscribe;
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Persist chat history (debounced)
@@ -457,7 +541,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       },
       onEnd: () => setHandsFreeMode(false),
     });
-    councilSpeech.speak('session-welcome', `Welcome back, ${name}. How can I help?`, keyStatusRef.current, tierRef.current);
+    councilSpeech.speak('session-welcome', `Welcome back, ${name}. How can I help?`, keyStatusRef.current as { openai: boolean }, tierRef.current);
   }, [pendingVoiceSession]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Voice-triggered mission commands ─────────────────────────────────────────
@@ -491,7 +575,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   // ── TTS ───────────────────────────────────────────────────────────────────────
 
   const speakMessage = useCallback((msgId: string, text: string) => {
-    councilSpeech.speak(msgId, text, keyStatus, tier);
+    councilSpeech.speak(msgId, text, keyStatus as { openai: boolean }, tier);
   }, [keyStatus, tier]);
 
   // ── Interrupt current TTS speech immediately ───────────────────────────────────
@@ -508,8 +592,9 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
       interruptRecRef.current = null;
       return;
     }
-    const SR = (window as Window & typeof globalThis).SpeechRecognition
-            ?? (window as Window & typeof globalThis).webkitSpeechRecognition;
+    type SRCtor = new() => any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    const w  = window as Window & { SpeechRecognition?: SRCtor; webkitSpeechRecognition?: SRCtor };
+    const SR = w.SpeechRecognition ?? w.webkitSpeechRecognition;
     if (!SR) return;
     const rec = new SR();
     rec.continuous = true;
@@ -570,8 +655,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     if (error.startsWith('FEATURE_LOCKED:')) {
       const parts = error.split(':');
       const feat = parts[1] ?? 'unknown';
-      const neededTier = (parts[2] === 'business' ? 'business' : 'pro') as 'pro' | 'business';
-      setGate({ feature: feat, neededTier });
+      setGate({ feature: feat, neededTier: 'pro' });
       return true;
     }
     return false;
@@ -778,6 +862,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           isError: false,
           streaming: false,
           contextualIntelligence: result.contextualIntelligence ?? null,
+          operatorSuggestion: result.operatorSuggestion,
         } : msg));
 
         if (finalText && (voiceMode || handsFreeMode || voiceChatActive)) {
@@ -1144,7 +1229,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
           feature={gate.feature} neededTier={gate.neededTier}
           onClose={() => setGate(null)}
           onUpgrade={(url) => { window.triforge.system.openExternal(url); setGate(null); }}
-          proCheckout={checkoutUrls.pro} bizCheckout={checkoutUrls.business}
+          proCheckout={checkoutUrls.pro} annualCheckout={checkoutUrls.annual}
         />
       )}
 
@@ -1606,6 +1691,27 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
                           else if (action === 'open_ledger')                    onNavigate?.('ledger');
                           else if (action === 'open_settings')                  onNavigate?.('settings');
                           else if (action === 'open_profiles')                  onNavigate?.('profiles');
+                          else if (action?.startsWith('run_operator:')) {
+                            const goal = action.slice('run_operator:'.length);
+                            onNavigate?.('operate');
+                            // Brief delay so the operate screen mounts before we dispatch
+                            setTimeout(() => {
+                              window.dispatchEvent(new CustomEvent('triforge:operator-prefill', { detail: goal }));
+                            }, 300);
+                          }
+                          else if (action?.startsWith('app_detect_accept:')) {
+                            // Format: app_detect_accept:<msgId>:<appName>:<goal>
+                            const parts  = action.slice('app_detect_accept:'.length).split(':');
+                            const msgId  = parts[0];
+                            const appName = parts[1] ?? '';
+                            const goal   = parts.slice(2).join(':');
+                            setInput(`Operator: ${goal} in ${appName}`);
+                            setMessages(prev => prev.filter(m => m.id !== msgId));
+                          }
+                          else if (action?.startsWith('app_detect_dismiss:')) {
+                            const msgId = action.slice('app_detect_dismiss:'.length);
+                            setMessages(prev => prev.filter(m => m.id !== msgId));
+                          }
                         }} />
                 ))}
                 {sending && !consensusThinking && !singleModelStreaming && !taskRunning && <TypingIndicator />}
@@ -1789,7 +1895,7 @@ function ConsensusMessage({ msg, isSpeaking, canSpeak, onSpeak, tier, onUpgradeC
   const [planLoading, setPlanLoading] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
   const responses = msg.consensusResponses ?? [];
-  const canUsePlans = tier === 'pro' || tier === 'business';
+  const canUsePlans = tier === 'pro';
 
   const generatePlan = async () => {
     if (!canUsePlans) { onUpgradeClick(); return; }
@@ -2171,6 +2277,51 @@ function MessageBubble({ msg, isSpeaking, canSpeak, onSpeak, onRetry, onRunActio
           >
             ▶ {runAction.startsWith('search_docs:') ? `Search: "${runAction.slice('search_docs:'.length)}"` : runAction.startsWith('generate_image:') ? `Generate: "${runAction.slice('generate_image:'.length).slice(0, 40)}${runAction.length > 'generate_image:'.length + 40 ? '…' : ''}"` : (RUN_LABELS[runAction] ?? 'Run')}
           </button>
+        )}
+        {!isUser && msg.operatorSuggestion && onRunAction && (
+          <button
+            style={{
+              ...cs.runActionBtn,
+              background: 'rgba(99,102,241,0.12)',
+              border: '1px solid rgba(99,102,241,0.3)',
+              color: '#6366f1',
+              marginTop: runAction ? 4 : 0,
+            }}
+            onClick={() => onRunAction(`run_operator:${msg.operatorSuggestion!.goal}`)}
+            title={msg.operatorSuggestion.appName ? `Run in ${msg.operatorSuggestion.appName} via Operator` : 'Run in Operator'}
+          >
+            ⚡ {msg.operatorSuggestion.appName ? `Run in ${msg.operatorSuggestion.appName}` : 'Run in Operator'}
+          </button>
+        )}
+        {msg.isAppDetectionPrompt && msg.appDetectionData && onRunAction && (
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button
+              style={{
+                ...cs.runActionBtn,
+                background: 'rgba(99,102,241,0.12)',
+                border: '1px solid rgba(99,102,241,0.3)',
+                color: '#6366f1',
+              }}
+              onClick={() => {
+                const d = msg.appDetectionData!;
+                const goal = d.suggestions[0] ?? '';
+                onRunAction(`app_detect_accept:${msg.id}:${d.appName}:${goal}`);
+              }}
+            >
+              ⚡ Let's do it
+            </button>
+            <button
+              style={{
+                ...cs.runActionBtn,
+                background: 'transparent',
+                border: '1px solid rgba(255,255,255,0.1)',
+                color: 'var(--text-muted)',
+              }}
+              onClick={() => onRunAction(`app_detect_dismiss:${msg.id}`)}
+            >
+              Dismiss
+            </button>
+          </div>
         )}
         <div style={cs.bubbleMeta}>
           {msg.provider && (
