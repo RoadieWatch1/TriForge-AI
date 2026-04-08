@@ -5,7 +5,7 @@
  * are not supported (e.g. Linux without libnotify).
  */
 
-import { Notification, app } from 'electron';
+import { Notification } from 'electron';
 
 export interface NotifyOptions {
   title: string;
@@ -20,7 +20,6 @@ export function sendDesktopNotification(opts: NotifyOptions): void {
       title: opts.title,
       body: opts.body,
       silent: opts.silent ?? false,
-      appName: app.getName(),
     });
     n.show();
   } catch (e) {

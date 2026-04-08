@@ -186,7 +186,7 @@ export function ReadinessScreen({ onNavigate }: Props) {
 
     // ── 7. Workspace ─────────────────────────────────────────────────────────
     try {
-      const ws = await window.triforge.workspace?.getConfig?.();
+      const ws = await window.triforge.workspace?.get?.() as { name?: string } | null | undefined;
       const hasWs = ws && ws.name && ws.name.length > 0;
       results.push({
         id: 'workspace',
@@ -222,7 +222,8 @@ export function ReadinessScreen({ onNavigate }: Props) {
 
     // ── 9. Trusted Signers ───────────────────────────────────────────────────
     try {
-      const signers = await window.triforge.packs?.listTrustedSigners?.() ?? [];
+      const signerRes = await window.triforge.pack?.trust?.listSigners?.();
+      const signers: unknown[] = signerRes?.signers ?? [];
       results.push({
         id: 'signers',
         label: 'Trusted Signers',
@@ -238,7 +239,8 @@ export function ReadinessScreen({ onNavigate }: Props) {
 
     // ── 10. Runbook Packs ────────────────────────────────────────────────────
     try {
-      const packs = await window.triforge.packs?.list?.() ?? [];
+      const packRes = await window.triforge.pack?.list?.();
+      const packs: unknown[] = packRes?.packs ?? [];
       results.push({
         id: 'packs',
         label: 'Runbook Packs',

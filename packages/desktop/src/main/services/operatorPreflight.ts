@@ -198,7 +198,7 @@ export interface PreflightResult {
 
 /** True if the action requires macOS Accessibility permission. */
 function requiresAccessibility(type: OperatorActionType): boolean {
-  return type === 'type_text' || type === 'send_key';
+  return type === 'type_text' || type === 'send_key' || type === 'click_at';
 }
 
 /** True if the action requires macOS Screen Recording permission. */

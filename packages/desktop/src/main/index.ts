@@ -3,6 +3,8 @@ import path from 'path';
 import fs from 'fs';
 import { Store } from './store';
 import { setupIpc, disposeIpcSingletons, restoreBackgroundServices, supervisorHealthTick } from './ipc';
+import { OperatorService } from './services/operatorService';
+import { loadCustomPacks, loadRunHistory } from './services/workflowPackService';
 import { runMigrations } from './migrationEngine';
 import { setupTray } from './tray';
 import { setupAutoUpdater } from './updater';
@@ -321,6 +323,11 @@ app.whenReady().then(async () => {
     setupIpc(store);
     bootLog('IPC initialized');
 
+    // Load user-built custom workflow packs from disk
+    try { loadCustomPacks(app.getPath('userData')); } catch { /* non-fatal */ }
+    // Restore workflow run history from previous sessions
+    try { loadRunHistory(app.getPath('userData')); } catch { /* non-fatal */ }
+
     // ── Phase 1.5: Auto-restore background agent + webhook on launch ──────────
     restoreBackgroundServices(store).catch((e) =>
       bootError('Background services restore failed', e),
@@ -399,6 +406,25 @@ app.whenReady().then(async () => {
   healthMonitor.start(15_000); // check every 15 seconds
   bootLog('Health monitor started');
 
+  // Auto-start relay client if credentials are saved from a previous session
+  import('./services/relayClient.js').then(({ loadSavedCredentials, startRelayClient }) => {
+    if (loadSavedCredentials()) {
+      startRelayClient();
+      bootLog('Relay client started (saved credentials found)');
+    }
+  }).catch(() => {});
+
+  // Start device event watcher (detects keyboard/mouse connect/disconnect)
+  import('./services/deviceEventWatcher.js').then(({ startDeviceWatcher }) => {
+    startDeviceWatcher();
+  }).catch(() => {});
+
+  // Start app foreground watcher (detects known apps coming into focus)
+  import('./services/appForegroundWatcher.js').then(({ startAppForegroundWatcher }) => {
+    startAppForegroundWatcher();
+    bootLog('App foreground watcher started');
+  }).catch(() => {});
+
   setupTray(
     () => { mainWindow?.show(); mainWindow?.focus(); },
     () => { store?.close(); }
@@ -423,6 +449,14 @@ app.on('activate', () => {
 app.on('before-quit', () => {
   disposeIpcSingletons();
   store?.close();
+  OperatorService.terminateTesseract().catch(() => {});
+
+  // Stop relay client, screen watcher, device watcher, and app foreground watcher on quit
+  import('./services/relayClient.js').then(({ stopRelayClient }) => stopRelayClient()).catch(() => {});
+  import('./services/screenWatcher.js').then(({ stopScreenWatcher }) => stopScreenWatcher()).catch(() => {});
+  import('./services/deviceEventWatcher.js').then(({ stopDeviceWatcher }) => stopDeviceWatcher()).catch(() => {});
+  import('./services/appForegroundWatcher.js').then(({ stopAppForegroundWatcher }) => stopAppForegroundWatcher()).catch(() => {});
+
   // Remove 'close' intercept so app actually quits
   mainWindow?.removeAllListeners('close');
 });

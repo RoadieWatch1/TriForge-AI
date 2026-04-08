@@ -8,7 +8,19 @@ interface SetupWizardProps {
   onComplete: (permissions: Permission[], role: UserRole) => void;
 }
 
-const TOTAL_STEPS = 5;
+// Step layout:
+//  0 — Welcome + Role
+//  1 — System Access (OS permissions + OSK)
+//  2 — Relay Setup (optional)
+//  3 — API Keys
+//  4 — Integrations
+//  5 — App Permissions
+//  6 — Ready
+const TOTAL_STEPS = 7;
+
+// ── Platform detection (renderer-safe) ────────────────────────────────────────
+const IS_MAC     = navigator.userAgent.includes('Macintosh');
+const IS_WINDOWS = navigator.userAgent.includes('Windows');
 
 const ROLE_OPTIONS: { id: UserRole; label: string; desc: string; icon: string }[] = [
   { id: 'solo',       label: 'Solo Operator',     icon: '◎', desc: 'Individual — research, automation, trading, and personal productivity' },
@@ -54,19 +66,31 @@ export function SetupWizard({ permissions: initialPermissions, onComplete }: Set
   const [step, setStep] = useState(0);
   const [role, setRole] = useState<UserRole>('solo');
 
-  // Step 1: API Keys
+  // Step 1: System Access
+  const [oskStatus,        setOskStatus]        = useState<{ visible: boolean; recommendation: string } | null>(null);
+  const [oskOpening,       setOskOpening]        = useState(false);
+  const [oskOpened,        setOskOpened]         = useState(false);
+  const [sysPermNote,      setSysPermNote]       = useState<string>('');
+
+  // Step 2: Relay Setup
+  const [relayUrl,         setRelayUrl]          = useState('');
+  const [relayLabel,       setRelayLabel]        = useState('My Desktop');
+  const [relayRegistering, setRelayRegistering]  = useState(false);
+  const [relayResult,      setRelayResult]       = useState<{ ok: boolean; deviceId?: string; error?: string } | null>(null);
+
+  // Step 3: API Keys
   const [keyStatus, setKeyStatus] = useState<Record<string, boolean>>({ openai: false, claude: false, grok: false });
   const [apiKeys,   setApiKeys]   = useState<Record<string, string>>({ openai: '', claude: '', grok: '' });
   const [saving,    setSaving]    = useState<string | null>(null);
 
-  // Step 2: Integrations
+  // Step 4: Integrations
   const [githubToken, setGithubToken] = useState('');
   const [slackToken,  setSlackToken]  = useState('');
   const [githubSaved, setGithubSaved] = useState(false);
   const [slackSaved,  setSlackSaved]  = useState(false);
   const [integWorking, setIntegWorking] = useState<Record<string, boolean>>({});
 
-  // Step 3: Permissions
+  // Step 5: Permissions
   const [permissions, setPermissions] = useState<Permission[]>(initialPermissions);
 
   useEffect(() => {
@@ -74,6 +98,12 @@ export function SetupWizard({ permissions: initialPermissions, onComplete }: Set
     window.triforge.keys.status()
       .then(s => { if (mounted) setKeyStatus(s); })
       .catch(() => {});
+    // Load OSK status
+    if (window.triforge.osk) {
+      window.triforge.osk.status()
+        .then(s => { if (mounted) setOskStatus(s); })
+        .catch(() => {});
+    }
     return () => { mounted = false; };
   }, []);
 
@@ -129,6 +159,44 @@ export function SetupWizard({ permissions: initialPermissions, onComplete }: Set
     await window.triforge.permissions.set(key, !perm.granted);
     const updated = await window.triforge.permissions.get();
     setPermissions(updated);
+  };
+
+  const openOSK = async () => {
+    if (!window.triforge.osk) return;
+    setOskOpening(true);
+    try {
+      await window.triforge.osk.open();
+      setOskOpened(true);
+      const s = await window.triforge.osk.status();
+      setOskStatus(s);
+    } catch { /* ok */ } finally {
+      setOskOpening(false);
+    }
+  };
+
+  const openSystemPrefs = () => {
+    if (IS_MAC) {
+      // Open Privacy & Security → Screen Recording on macOS
+      window.triforge.system.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+      setSysPermNote('System Preferences opened — enable Screen Recording and Accessibility for TriForge, then return here.');
+    } else if (IS_WINDOWS) {
+      // Windows manages permissions automatically via UAC
+      setSysPermNote('Windows manages permissions automatically. TriForge will request access when needed.');
+    }
+  };
+
+  const registerRelay = async () => {
+    if (!relayUrl.trim() || !window.triforge.relay) return;
+    setRelayRegistering(true);
+    setRelayResult(null);
+    try {
+      const result = await window.triforge.relay.register(relayUrl.trim(), relayLabel.trim() || 'My Desktop');
+      setRelayResult(result);
+    } catch (e) {
+      setRelayResult({ ok: false, error: String(e) });
+    } finally {
+      setRelayRegistering(false);
+    }
   };
 
   const finish = async () => {
@@ -188,8 +256,134 @@ export function SetupWizard({ permissions: initialPermissions, onComplete }: Set
             </div>
           )}
 
-          {/* ── Step 1: API Keys ───────────────────────────────────────────────── */}
+          {/* ── Step 1: System Access ─────────────────────────────────────────── */}
           {step === 1 && (
+            <div>
+              <h2 style={s.stepTitle}>System Access</h2>
+              <p style={s.stepSubtitle}>
+                TriForge AI works as your personal remote worker — it can see your screen, control apps, and type for you. Grant OS-level permissions to unlock the full operator experience.
+              </p>
+
+              {/* Screen Recording + Accessibility */}
+              <div style={s.accessBlock}>
+                <div style={s.accessHeader}>
+                  <span style={s.accessIcon}>◈</span>
+                  <span style={s.accessName}>Screen Recording &amp; Accessibility</span>
+                </div>
+                <p style={s.accessDesc}>
+                  {IS_MAC
+                    ? 'macOS requires explicit permission to capture screenshots and control apps via Accessibility. Open System Preferences to grant these to TriForge AI.'
+                    : IS_WINDOWS
+                    ? 'Windows will prompt for permission when TriForge first takes a screenshot. No action needed now.'
+                    : 'Your platform manages permissions automatically.'}
+                </p>
+                {IS_MAC && (
+                  <button style={s.primaryBtn} onClick={openSystemPrefs}>
+                    Open Privacy &amp; Security
+                  </button>
+                )}
+                {sysPermNote && (
+                  <div style={s.accessNote}>{sysPermNote}</div>
+                )}
+              </div>
+
+              {/* On-Screen Keyboard — primary input method */}
+              <div style={s.accessBlock}>
+                <div style={s.accessHeader}>
+                  <span style={s.accessIcon}>⌨</span>
+                  <span style={s.accessName}>On-Screen Keyboard (Recommended)</span>
+                </div>
+                <p style={s.accessDesc}>
+                  TriForge uses your screen as the input surface. The on-screen keyboard lets the AI type visibly and precisely — no background key injection, fully transparent. This is the recommended input method.
+                </p>
+                {oskStatus && (
+                  <div style={{ fontSize: 12, color: oskStatus.visible ? '#10a37f' : 'var(--text-muted)', marginBottom: 8 }}>
+                    {oskStatus.visible ? '● On-screen keyboard is active' : '○ On-screen keyboard is not open'}
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <button
+                    style={{ ...s.primaryBtn, ...(oskOpening ? s.btnDisabled : {}) }}
+                    onClick={openOSK}
+                    disabled={oskOpening}
+                  >
+                    {oskOpening ? 'Opening…' : oskOpened ? 'Reopen Keyboard' : 'Open On-Screen Keyboard'}
+                  </button>
+                  {oskOpened && (
+                    <span style={{ fontSize: 12, color: '#10a37f' }}>✓ Keyboard opened</span>
+                  )}
+                </div>
+                <p style={{ ...s.accessDesc, marginTop: 8, color: 'var(--text-muted)', fontSize: 11 }}>
+                  You can always open or close the keyboard from Settings → Operator.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* ── Step 2: Relay Setup ────────────────────────────────────────────── */}
+          {step === 2 && (
+            <div>
+              <h2 style={s.stepTitle}>Remote Access (Optional)</h2>
+              <p style={s.stepSubtitle}>
+                Connect to a TriForge Relay Server to trigger automations from your phone, browser, or any device — even when you are away from your desktop. You can skip this and set it up later in Settings → Relay.
+              </p>
+
+              <div style={s.accessBlock}>
+                <div style={s.accessHeader}>
+                  <span style={s.accessIcon}>⊕</span>
+                  <span style={s.accessName}>Relay Server</span>
+                </div>
+                <p style={s.accessDesc}>
+                  Enter the URL of your relay server (self-hosted or provided). TriForge will register this device and poll for jobs automatically.
+                </p>
+
+                <div style={{ marginBottom: 10 }}>
+                  <div style={s.relayFieldLabel}>Relay Server URL</div>
+                  <input
+                    type="text"
+                    style={s.keyField}
+                    placeholder="https://my-relay.example.com"
+                    value={relayUrl}
+                    onChange={e => setRelayUrl(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && registerRelay()}
+                  />
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <div style={s.relayFieldLabel}>Device Label</div>
+                  <input
+                    type="text"
+                    style={s.keyField}
+                    placeholder="My Desktop"
+                    value={relayLabel}
+                    onChange={e => setRelayLabel(e.target.value)}
+                  />
+                </div>
+
+                <button
+                  style={{ ...s.primaryBtn, ...(!relayUrl.trim() || relayRegistering ? s.btnDisabled : {}) }}
+                  onClick={registerRelay}
+                  disabled={!relayUrl.trim() || relayRegistering}
+                >
+                  {relayRegistering ? 'Connecting…' : 'Register Device'}
+                </button>
+
+                {relayResult && (
+                  <div style={{ ...s.accessNote, color: relayResult.ok ? '#10a37f' : '#ef4444', marginTop: 8 }}>
+                    {relayResult.ok
+                      ? `✓ Registered — Device ID: ${relayResult.deviceId}`
+                      : `✗ ${relayResult.error}`}
+                  </div>
+                )}
+              </div>
+
+              <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 16 }}>
+                Don't have a relay server? Deploy the open-source <strong>TriForge Relay</strong> package to Railway, Render, or Fly.io in minutes — or self-host on any Node.js machine.
+              </p>
+            </div>
+          )}
+
+          {/* ── Step 3: API Keys ───────────────────────────────────────────────── */}
+          {step === 3 && (
             <div>
               <h2 style={s.stepTitle}>Connect AI Providers</h2>
               <p style={s.stepSubtitle}>
@@ -245,8 +439,8 @@ export function SetupWizard({ permissions: initialPermissions, onComplete }: Set
             </div>
           )}
 
-          {/* ── Step 2: Integrations ───────────────────────────────────────────── */}
-          {step === 2 && (
+          {/* ── Step 4: Integrations ───────────────────────────────────────────── */}
+          {step === 4 && (
             <div>
               <h2 style={s.stepTitle}>Connect Integrations</h2>
               <p style={s.stepSubtitle}>
@@ -333,8 +527,8 @@ export function SetupWizard({ permissions: initialPermissions, onComplete }: Set
             </div>
           )}
 
-          {/* ── Step 3: Permissions ────────────────────────────────────────────── */}
-          {step === 3 && (
+          {/* ── Step 5: Permissions ────────────────────────────────────────────── */}
+          {step === 5 && (
             <div>
               <h2 style={s.stepTitle}>Grant Permissions</h2>
               <p style={s.stepSubtitle}>
@@ -347,8 +541,8 @@ export function SetupWizard({ permissions: initialPermissions, onComplete }: Set
             </div>
           )}
 
-          {/* ── Step 4: Ready ─────────────────────────────────────────────────── */}
-          {step === 4 && (
+          {/* ── Step 6: Ready ─────────────────────────────────────────────────── */}
+          {step === 6 && (
             <div>
               <h2 style={s.stepTitle}>TriForge is Ready</h2>
               <p style={s.stepSubtitle}>
@@ -362,6 +556,18 @@ export function SetupWizard({ permissions: initialPermissions, onComplete }: Set
                   value={`${connectedCount} / 3 connected`}
                   status={connectedCount === 3 ? 'good' : connectedCount > 0 ? 'warn' : 'bad'}
                   hint={connectedCount < 3 ? 'Add remaining keys in Settings' : undefined}
+                />
+                <SummaryItem
+                  label="On-Screen Keyboard"
+                  value={oskOpened ? 'Opened' : oskStatus?.visible ? 'Active' : 'Not opened'}
+                  status={oskOpened || oskStatus?.visible ? 'good' : 'warn'}
+                  hint={!oskOpened && !oskStatus?.visible ? 'Open in Settings → Operator' : undefined}
+                />
+                <SummaryItem
+                  label="Remote Relay"
+                  value={relayResult?.ok ? 'Registered' : 'Not configured'}
+                  status={relayResult?.ok ? 'good' : 'neutral'}
+                  hint={!relayResult?.ok ? 'Configure in Settings → Relay' : undefined}
                 />
                 <SummaryItem
                   label="GitHub"
@@ -417,7 +623,7 @@ export function SetupWizard({ permissions: initialPermissions, onComplete }: Set
           <div style={{ flex: 1 }} />
           {step < TOTAL_STEPS - 1 ? (
             <button style={s.nextBtn} onClick={() => setStep(s => s + 1)}>
-              {step === 2 ? 'Skip / Next' : 'Next'}
+              {step === 2 || step === 4 ? 'Skip / Next' : 'Next'}
             </button>
           ) : (
             <button style={{ ...s.nextBtn, background: '#10a37f' }} onClick={finish}>
@@ -641,5 +847,19 @@ const s: Record<string, React.CSSProperties> = {
     background: 'var(--accent)', border: 'none',
     borderRadius: 6, color: '#fff', fontSize: 13,
     fontWeight: 600, cursor: 'pointer',
+  },
+
+  // System Access + Relay steps
+  accessBlock: {
+    padding: '14px 0', borderBottom: '1px solid var(--border)',
+  },
+  accessHeader: { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 },
+  accessIcon:   { fontSize: 14, color: 'var(--accent)' },
+  accessName:   { fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' },
+  accessDesc:   { fontSize: 12, color: 'var(--text-secondary)', margin: '4px 0 10px', lineHeight: 1.6 },
+  accessNote:   { fontSize: 12, color: 'var(--text-muted)', marginTop: 8, lineHeight: 1.5 },
+  relayFieldLabel: {
+    fontSize: 11, fontWeight: 600, color: 'var(--text-muted)',
+    textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4,
   },
 };

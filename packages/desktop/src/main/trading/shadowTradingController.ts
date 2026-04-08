@@ -1177,7 +1177,7 @@ class ShadowTradingControllerClass {
 
     const symbol = snap.symbol?.toUpperCase();
     if (cfg.preferredSymbols && cfg.preferredSymbols.length > 0 && symbol) {
-      if (!cfg.preferredSymbols.includes(symbol)) {
+      if (!cfg.preferredSymbols.includes(symbol as never)) {
         return `Config: symbol ${symbol} not in preferredSymbols [${cfg.preferredSymbols.join(', ')}]`;
       }
     }

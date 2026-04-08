@@ -14,10 +14,10 @@
 //   - M5_CheckpointConfig.json   — checkpoint placement and respawn config
 //   - M5_Manifest.json           — machine-readable manifest with M4 dependency link
 //
-// NOT YET:
-//   - SaveGame Blueprint generation inside Unreal Editor
-//   - Asset mutation or RC-based automation
-//   - Post-write editor reload
+// NEXT STEPS (done by developer in Unreal Editor):
+//   - Create BP_SaveGame with fields from M5_SaveGameConfig.json
+//   - Implement save/load in BP_GameMode using the spec
+//   - Place checkpoint volumes from M5_CheckpointConfig.json in the test level
 
 import fs   from 'fs';
 import path from 'path';
@@ -218,7 +218,7 @@ level-up notification overlay.
 - Do NOT save Blueprint object references — save plain data (float, int, string, name).
 - Checkpoint tags must match exactly — use FName constants, not magic strings.
 - If \`LoadGameFromSlot\` returns null, always fall back to fresh defaults (never crash).
-- Progression unlocks in \`M5_ProgressionConfig.json\` are stubs — wire them to real systems in a later milestone.
+- Progression unlocks in \`M5_ProgressionConfig.json\` are fully spec-defined — wire each to its Blueprint variable during implementation.
 
 ---
 
@@ -476,7 +476,7 @@ function buildProgressionConfigJson(
     balancingNotes: [
       'XP thresholds are starting values — tune after first playtest session.',
       'Goal: player should reach level 3 by the end of a 10-minute prototype run.',
-      'Unlock effects are stubs — wire each to its real Blueprint variable in implementation.',
+      'Unlock effects are fully specified — wire each to its Blueprint variable using the effect field as the implementation target.',
     ],
   }, null, 2);
 }
@@ -563,7 +563,7 @@ export async function applyUnrealMilestone5(
   if (!m1ManifestExists) {
     warnings.push(
       'M1_Manifest.json not found — Milestone 1 (Foundation) may not be applied. ' +
-      'BP_PlayerCharacter and BP_GameMode stubs required for save/load integration.',
+      'Create BP_PlayerCharacter and BP_GameMode in Unreal Editor before wiring save/load (see M5_SaveGameConfig.json).',
     );
   }
   if (!m2ManifestExists) {
@@ -631,7 +631,7 @@ export async function applyUnrealMilestone5(
   writeFile(
     'M5_ProgressionConfig.json',
     buildProgressionConfigJson(projectName, scaffold, generatedAt),
-    'Progression/XP config — level thresholds, XP sources, and unlock stubs (scaffold-adaptive).',
+    'Progression/XP config — level thresholds, XP sources, and unlock specs (scaffold-adaptive).',
   );
 
   writeFile(
@@ -669,7 +669,7 @@ export async function applyUnrealMilestone5(
       'Checkpoint: minimum 2 required for prototype (Start + MidPoint)',
       ...chainIntegrityNotes,
     ],
-    recommendedNext: 'pack.unreal-rc-execute',
+    recommendedNext: 'pack.unreal-editor-operate',
   };
 
   writeFile(

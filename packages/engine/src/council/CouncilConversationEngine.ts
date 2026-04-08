@@ -29,6 +29,63 @@ import type { AIProvider }       from '../core/providers/provider';
 import { eventBus }              from '../core/eventBus';
 import { registerAbortController, clearAbortControllers } from './interruptController';
 import { synthesizeCouncilStream }                        from './synthesizeCouncil';
+import { getCouncilAgentOrchestrator, checkAgentSurvival } from './councilAgentOrchestrator';
+import https from 'https';
+
+// ── Agent pre-query helpers ───────────────────────────────────────────────────
+
+const AGENT_PREQUERY_TIMEOUT_MS = 3000;
+
+/**
+ * Run a short focused pre-query against the Claude Haiku API.
+ * Returns the text response or null on any failure / timeout.
+ */
+async function runClaudePreQuery(
+  systemFragment: string,
+  userMessage:    string,
+  apiKey:         string,
+): Promise<string | null> {
+  const body = JSON.stringify({
+    model:      'claude-haiku-4-5-20251001',
+    max_tokens: 200,
+    system:     systemFragment,
+    messages:   [{ role: 'user', content: userMessage }],
+  });
+
+  const fetchPromise = new Promise<string>((resolve, reject) => {
+    const req = https.request({
+      hostname: 'api.anthropic.com',
+      path:     '/v1/messages',
+      method:   'POST',
+      headers: {
+        'Content-Type':      'application/json',
+        'Content-Length':    Buffer.byteLength(body),
+        'x-api-key':         apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+    }, res => {
+      let data = '';
+      res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+      res.on('end', () => resolve(data));
+    });
+    req.on('error', reject);
+    req.setTimeout(AGENT_PREQUERY_TIMEOUT_MS, () => { req.destroy(); reject(new Error('timeout')); });
+    req.write(body);
+    req.end();
+  });
+
+  const timeoutPromise = new Promise<null>(resolve =>
+    setTimeout(() => resolve(null), AGENT_PREQUERY_TIMEOUT_MS + 200));
+
+  try {
+    const result = await Promise.race([fetchPromise, timeoutPromise]);
+    if (!result) return null;
+    const parsed = JSON.parse(result) as { content?: Array<{ type: string; text?: string }> };
+    return parsed.content?.find(c => c.type === 'text')?.text?.trim() ?? null;
+  } catch {
+    return null;
+  }
+}
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -88,6 +145,8 @@ export class CouncilConversationEngine {
   constructor(
     private _pm: ProviderManager,
     private _planner?: ThinkTankPlanner,
+    /** Optional Claude API key — enables active agent pre-queries before deliberation */
+    private _claudeApiKey?: string,
   ) {}
 
   // ── Public API ──────────────────────────────────────────────────────────────
@@ -111,9 +170,50 @@ export class CouncilConversationEngine {
       return { responses: [], synthesis: '', durationMs: 0 };
     }
 
+    // ── Agent Council: select active agents and inject their lenses ──────────
+    const orchestrator = getCouncilAgentOrchestrator();
+    const { addendum: agentAddendum, activeAgentIds } =
+      orchestrator.buildAddendumForMessage(message);
+
+    // ── Active agent pre-queries (Research + Creative Director) ─────────────
+    // For complex or planning-type messages, run 2 agents as real API calls
+    // in parallel before the main deliberation so they contribute actual insight,
+    // not just static prompt fragments. Hard 3s timeout — skip if slow.
+    let activeAgentInsights = '';
+    const apiKey = this._claudeApiKey ?? (typeof process !== 'undefined' ? process.env.ANTHROPIC_API_KEY : undefined);
+    if (apiKey && isPlanningTask(message)) {
+      const [researchResult, creativeResult] = await Promise.all([
+        runClaudePreQuery(
+          'You are a Research Agent. In 2-3 sentences, summarize the most relevant background knowledge, established patterns, or best practices the Council needs to know before answering this request. Be specific and actionable.',
+          message,
+          apiKey,
+        ).catch(() => null),
+        runClaudePreQuery(
+          'You are a Creative Director. In 2-3 sentences, suggest the most creative or non-obvious approach to this request. Think laterally — what would make the solution significantly better or more interesting than the obvious answer?',
+          message,
+          apiKey,
+        ).catch(() => null),
+      ]);
+
+      if (researchResult || creativeResult) {
+        const parts: string[] = [];
+        if (researchResult) parts.push(`RESEARCH AGENT INSIGHT: ${researchResult}`);
+        if (creativeResult) parts.push(`CREATIVE DIRECTOR INSIGHT: ${creativeResult}`);
+        activeAgentInsights = '\n\n─── LIVE AGENT PRE-ANALYSIS ─────────────────────────────────────────\n' +
+          parts.join('\n\n') +
+          '\n─────────────────────────────────────────────────────────────────────';
+      }
+    }
+
+    const enrichedSystemPrompt = [
+      systemPrompt,
+      agentAddendum || '',
+      activeAgentInsights,
+    ].filter(Boolean).join('\n\n');
+
     // Build the messages array (system + history + current message)
     const messages: Array<{ role: string; content: string }> = [
-      { role: 'system', content: systemPrompt },
+      { role: 'system', content: enrichedSystemPrompt },
       ...history,
       { role: 'user',   content: message },
     ];
@@ -187,6 +287,32 @@ export class CouncilConversationEngine {
 
       callbacks?.onUpdate?.(synthesis);
       eventBus.emit({ type: 'COUNCIL_CONV_UPDATE', text: synthesis });
+
+      // ── Agent survival tracking ─────────────────────────────────────────
+      // Record whether each active agent's contribution area appeared in the
+      // synthesis. Done async, non-blocking, fail-silently.
+      if (activeAgentIds.length > 0) {
+        const taskId    = `council-${startMs}`;
+        const msgSnip   = message.slice(0, 80);
+        const agentStart = startMs;
+        for (const agentId of activeAgentIds) {
+          const survived = checkAgentSurvival(agentId, synthesis);
+          orchestrator.recordContribution({
+            agentId,
+            taskId,
+            messageSnippet: msgSnip,
+            activatedAt:    agentStart,
+            survived,
+            errorOccurred:  false,
+            latencyMs:      Date.now() - agentStart,
+          });
+        }
+        // Evaluate and act every 10 interactions (non-blocking)
+        const totalRecords = activeAgentIds.length;
+        if (totalRecords % 10 === 0) {
+          try { orchestrator.evaluateAndAct(); } catch { /* non-fatal */ }
+        }
+      }
     }
 
     // ── Phase 3: ThinkTankPlanner (async, non-blocking) ──────────────────────

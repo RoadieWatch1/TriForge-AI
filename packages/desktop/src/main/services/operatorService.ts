@@ -13,6 +13,9 @@
 //   - Capture screen to a PNG file (via macOS screencapture CLI)
 //   - Type text into the focused window (via osascript System Events)
 //   - Send keyboard shortcuts (via osascript System Events key code)
+//   - Mouse click at pixel coordinates (via Swift+CoreGraphics CGEvent helper)
+//   - OCR on screenshots (via tesseract.js)
+//   - perceiveWithOCR(): screenshot + OCR + frontmost in one call (visual feedback loop)
 //   - Check Accessibility permission status (via osascript probe)
 //   - Approval gating for input actions (in-memory queue, 10-min TTL)
 //   - Session tracking with action log
@@ -23,8 +26,6 @@
 //   - Target confirmation (compares expected vs actual frontmost app)
 //
 // NOT YET BUILT:
-//   - Mouse click at pixel coordinates
-//   - OCR on screenshots
 //   - Windows / Linux support
 //   - App-specific UI parsing
 //   - Watching for screen state changes
@@ -43,6 +44,18 @@ import { exec } from 'child_process';
 import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
+import Tesseract from 'tesseract.js';
+import { clickAtCoords, isSwiftAvailable, prewarmClickHelper } from './clickHelper';
+import {
+  buildWindowsCapabilityMap,
+  windowsListRunningApps,
+  windowsGetFrontmostTarget,
+  windowsFocusApp,
+  windowsCaptureScreen,
+  windowsTypeText,
+  windowsSendKey,
+  windowsClickAt,
+} from './windowsOperator';
 import type {
   OperatorTarget,
   OperatorPerception,
@@ -96,8 +109,9 @@ function escapeAppleScriptString(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
-const PLATFORM = process.platform;
-const IS_MACOS = PLATFORM === 'darwin';
+const PLATFORM   = process.platform;
+const IS_MACOS   = PLATFORM === 'darwin';
+const IS_WINDOWS = PLATFORM === 'win32';
 
 // ── Capability detection ──────────────────────────────────────────────────────
 
@@ -130,8 +144,9 @@ async function checkScreenRecordingPermission(): Promise<boolean> {
 
 // ── Target detection ──────────────────────────────────────────────────────────
 
-/** List all visible (non-background) running apps on macOS. */
+/** List all visible (non-background) running apps. */
 async function listRunningApps(): Promise<string[]> {
+  if (IS_WINDOWS) return windowsListRunningApps();
   if (!IS_MACOS) return [];
   const raw = await shellExec(
     `osascript -e 'tell application "System Events" to get name of every process where background only is false'`,
@@ -142,6 +157,11 @@ async function listRunningApps(): Promise<string[]> {
 
 /** Get the frontmost app and its window title. */
 async function getFrontmostTarget(): Promise<OperatorTarget | null> {
+  if (IS_WINDOWS) {
+    const t = await windowsGetFrontmostTarget();
+    if (!t) return null;
+    return { appName: t.appName, windowTitle: t.windowTitle, confirmed: true, capturedAt: nowMs() };
+  }
   if (!IS_MACOS) return null;
   try {
     const appName = await shellExec(
@@ -173,6 +193,7 @@ async function getFrontmostTarget(): Promise<OperatorTarget | null> {
 // ── Core action implementations ───────────────────────────────────────────────
 
 async function execFocusApp(appName: string): Promise<{ ok: boolean; error?: string }> {
+  if (IS_WINDOWS) return windowsFocusApp(appName);
   if (!IS_MACOS) return { ok: false, error: 'Platform not supported' };
   try {
     await shellExec(
@@ -186,6 +207,7 @@ async function execFocusApp(appName: string): Promise<{ ok: boolean; error?: str
 }
 
 async function execCaptureScreen(outputPath: string): Promise<{ ok: boolean; error?: string }> {
+  if (IS_WINDOWS) return windowsCaptureScreen(outputPath);
   if (!IS_MACOS) return { ok: false, error: 'Platform not supported' };
   try {
     // -x: no sound, no cursor; outputs to specified path
@@ -197,6 +219,7 @@ async function execCaptureScreen(outputPath: string): Promise<{ ok: boolean; err
 }
 
 async function execTypeText(text: string): Promise<{ ok: boolean; error?: string }> {
+  if (IS_WINDOWS) return windowsTypeText(text);
   if (!IS_MACOS) return { ok: false, error: 'Platform not supported' };
   try {
     const escaped = escapeAppleScriptString(text);
@@ -243,6 +266,7 @@ async function execSendKey(
   key: string,
   modifiers: Array<'cmd' | 'shift' | 'alt' | 'ctrl'>,
 ): Promise<{ ok: boolean; error?: string }> {
+  if (IS_WINDOWS) return windowsSendKey(key, modifiers);
   if (!IS_MACOS) return { ok: false, error: 'Platform not supported' };
   try {
     const modMap: Record<string, string> = {
@@ -279,6 +303,31 @@ async function execSendKey(
   }
 }
 
+// ── OCR ───────────────────────────────────────────────────────────────────────
+
+let _tesseractWorker: Tesseract.Worker | null = null;
+
+async function getTesseractWorker(): Promise<Tesseract.Worker> {
+  if (_tesseractWorker) return _tesseractWorker;
+  _tesseractWorker = await Tesseract.createWorker('eng', 1, { logger: () => {} });
+  return _tesseractWorker;
+}
+
+/**
+ * Extract text from a screenshot PNG via tesseract.js.
+ * Returns the recognised text, or empty string on failure.
+ * Worker is kept alive between calls to avoid re-init cost.
+ */
+async function execOCR(imagePath: string): Promise<{ text: string; error?: string }> {
+  try {
+    const worker = await getTesseractWorker();
+    const result = await worker.recognize(imagePath);
+    return { text: result.data.text };
+  } catch (err) {
+    return { text: '', error: String(err) };
+  }
+}
+
 // ── Approval queue ────────────────────────────────────────────────────────────
 
 const APPROVAL_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -294,7 +343,7 @@ function createApprovalRequest(
     id:           makeId(),
     sessionId:    action.sessionId,
     action,
-    risk:         action.type === 'type_text' || action.type === 'send_key'
+    risk:         (action.type === 'type_text' || action.type === 'send_key' || action.type === 'click_at')
                     ? 'input_action'
                     : 'focus_only',
     description:  describeAction(action),
@@ -320,6 +369,8 @@ function describeAction(action: OperatorAction): string {
       const mods = (action.modifiers ?? []).join('+');
       return `Send key: ${mods ? mods + '+' : ''}${action.key ?? '?'}`;
     }
+    case 'click_at':
+      return `Click ${action.button ?? 'left'} mouse button at screen coordinates (${action.x ?? '?'}, ${action.y ?? '?'})`;
     default:
       return `Operator action: ${action.type}`;
   }
@@ -350,6 +401,106 @@ const _sessions = new Map<string, OperatorSession>();
 
 let _operatorEnabled = true;
 
+// ── Shared input executor ─────────────────────────────────────────────────────
+//
+// Runs the actual OS-level input for type_text / send_key / click_at.
+// Called both from executeApprovedAction (after human approval) and from
+// executeAction's trusted-session fast path (no approval gate).
+// Caller must have already validated context (preflight + target check).
+
+async function executeApprovedInputAction(
+  action: OperatorAction,
+  start: number,
+  preTarget?: OperatorTarget | null,
+): Promise<OperatorActionResult> {
+  if (action.type === 'type_text') {
+    if (!action.text) {
+      return { actionId: action.id, actionType: 'type_text', outcome: 'failed',
+               durationMs: nowMs() - start, error: 'type_text action has no text.', completedAt: nowMs() };
+    }
+    const res = await execTypeText(action.text);
+    if (!res.ok) {
+      if (res.error === 'ACCESSIBILITY_DENIED') {
+        return { actionId: action.id, actionType: 'type_text', outcome: 'permission_denied',
+                 failureReason: 'permission_revoked_accessibility', durationMs: nowMs() - start,
+                 error: 'Accessibility permission denied.',
+                 recoveryHint: 'Go to System Settings → Privacy & Security → Accessibility and add TriForge.',
+                 completedAt: nowMs() };
+      }
+      return { actionId: action.id, actionType: 'type_text', outcome: 'failed',
+               durationMs: nowMs() - start, error: res.error, completedAt: nowMs() };
+    }
+    const postTarget = await getFrontmostTarget();
+    const continuity = validatePostInputContinuity(preTarget?.appName ?? null, postTarget);
+    return { actionId: action.id, actionType: 'type_text', outcome: 'success',
+             failureReason: continuity.valid ? undefined : 'target_drift_post_input',
+             durationMs: nowMs() - start, executedTarget: postTarget ?? preTarget ?? undefined,
+             targetVerified: continuity.valid, error: continuity.valid ? undefined : continuity.message,
+             completedAt: nowMs() };
+  }
+
+  if (action.type === 'send_key') {
+    if (!action.key) {
+      return { actionId: action.id, actionType: 'send_key', outcome: 'failed',
+               durationMs: nowMs() - start, error: 'send_key action has no key.', completedAt: nowMs() };
+    }
+    const res = await execSendKey(action.key, action.modifiers ?? []);
+    if (!res.ok) {
+      if (res.error === 'ACCESSIBILITY_DENIED') {
+        return { actionId: action.id, actionType: 'send_key', outcome: 'permission_denied',
+                 failureReason: 'permission_revoked_accessibility', durationMs: nowMs() - start,
+                 error: 'Accessibility permission denied.',
+                 recoveryHint: 'Go to System Settings → Privacy & Security → Accessibility and add TriForge.',
+                 completedAt: nowMs() };
+      }
+      return { actionId: action.id, actionType: 'send_key', outcome: 'failed',
+               durationMs: nowMs() - start, error: res.error, completedAt: nowMs() };
+    }
+    const postTarget = await getFrontmostTarget();
+    const continuity = validatePostInputContinuity(preTarget?.appName ?? null, postTarget);
+    return { actionId: action.id, actionType: 'send_key', outcome: 'success',
+             failureReason: continuity.valid ? undefined : 'target_drift_post_input',
+             durationMs: nowMs() - start, executedTarget: postTarget ?? preTarget ?? undefined,
+             targetVerified: continuity.valid, error: continuity.valid ? undefined : continuity.message,
+             completedAt: nowMs() };
+  }
+
+  if (action.type === 'click_at') {
+    if (action.x === undefined || action.y === undefined) {
+      return { actionId: action.id, actionType: 'click_at', outcome: 'failed',
+               durationMs: nowMs() - start, error: 'click_at action requires x and y coordinates.',
+               completedAt: nowMs() };
+    }
+    const res = IS_WINDOWS
+      ? await windowsClickAt(action.x, action.y, action.button ?? 'left')
+      : await clickAtCoords(action.x, action.y, action.button ?? 'left');
+    if (!res.ok) {
+      const isPermDenied = res.error?.includes('not authorized') || res.error?.includes('1002');
+      return { actionId: action.id, actionType: 'click_at',
+               outcome: isPermDenied ? 'permission_denied' : 'failed',
+               failureReason: isPermDenied ? 'permission_revoked_accessibility' : undefined,
+               durationMs: nowMs() - start, error: res.error,
+               recoveryHint: IS_WINDOWS
+                 ? 'Click failed. Verify PowerShell can access user32.dll.'
+                 : isPermDenied
+                   ? 'Go to System Settings → Privacy & Security → Accessibility and add TriForge.'
+                   : 'Click failed. Verify swiftc is installed (xcode-select --install).',
+               completedAt: nowMs() };
+    }
+    const postTarget = await getFrontmostTarget();
+    const continuity = validatePostInputContinuity(preTarget?.appName ?? null, postTarget);
+    return { actionId: action.id, actionType: 'click_at', outcome: 'success',
+             failureReason: continuity.valid ? undefined : 'target_drift_post_input',
+             durationMs: nowMs() - start, executedTarget: postTarget ?? preTarget ?? undefined,
+             targetVerified: continuity.valid, error: continuity.valid ? undefined : continuity.message,
+             completedAt: nowMs() };
+  }
+
+  return { actionId: action.id, actionType: action.type, outcome: 'not_supported',
+           durationMs: nowMs() - start, error: 'executeApprovedInputAction called on non-input action.',
+           completedAt: nowMs() };
+}
+
 // ── OperatorService ───────────────────────────────────────────────────────────
 
 export const OperatorService = {
@@ -371,6 +522,32 @@ export const OperatorService = {
   async getCapabilityMap(): Promise<OperatorCapabilityMap> {
     const platform = IS_MACOS ? 'macOS' : (PLATFORM as 'Windows' | 'Linux' | 'unknown');
 
+    if (IS_WINDOWS) {
+      const win = await buildWindowsCapabilityMap();
+      return {
+        platform:              'Windows',
+        canListRunningApps:    win.canListApps,
+        canGetFrontmostApp:    win.canGetFrontmost,
+        canFocusApp:           win.canFocusApp,
+        canCaptureScreen:      win.canScreenshot,
+        canReadWindowTitle:    win.canGetFrontmost,
+        canOCRScreen:          win.canOCRScreen,
+        canTypeText:           win.canTypeText,
+        canSendKeystroke:      win.canSendKey,
+        canClickAtCoords:      win.canClickAtCoords,
+        accessibilityGranted:  win.accessibilityGranted,
+        screenRecordingGranted: win.screenRecordingGranted,
+        notes: [
+          'Running on Windows — PowerShell operator backend active.',
+          'Input (type/key/click) does not require separate Accessibility permission on Windows.',
+          'Screenshots use .NET System.Drawing.Graphics.CopyFromScreen.',
+          'Mouse clicks use user32.dll SetCursorPos + mouse_event via PowerShell P/Invoke.',
+          'OCR runs via tesseract.js — available whenever screenshots succeed.',
+          'macOS-specific features (AppleScript, osascript, Swift helper) are not available.',
+        ],
+      };
+    }
+
     if (!IS_MACOS) {
       return {
         platform,
@@ -386,8 +563,8 @@ export const OperatorService = {
         accessibilityGranted:  false,
         screenRecordingGranted: false,
         notes: [
-          'Operator substrate is macOS-only in this release.',
-          'Windows and Linux support is not yet implemented.',
+          'Linux operator substrate is not yet implemented.',
+          'macOS and Windows are supported.',
         ],
       };
     }
@@ -397,6 +574,8 @@ export const OperatorService = {
       checkScreenRecordingPermission(),
     ]);
 
+    const swiftAvailable = await isSwiftAvailable();
+
     return {
       platform: 'macOS',
       canListRunningApps:    true,
@@ -404,18 +583,19 @@ export const OperatorService = {
       canFocusApp:           true,
       canCaptureScreen:      screenRecordingGranted,
       canReadWindowTitle:    accessibilityGranted,
-      canOCRScreen:          false,   // Not yet implemented
+      canOCRScreen:          screenRecordingGranted,   // tesseract.js — needs screenshot permission
       canTypeText:           accessibilityGranted,
       canSendKeystroke:      accessibilityGranted,
-      canClickAtCoords:      false,   // Not yet implemented
+      canClickAtCoords:      accessibilityGranted && swiftAvailable,
       accessibilityGranted,
       screenRecordingGranted,
       notes: [
         'App/window targeting and focus are available via macOS AppleScript.',
-        'Input (type/key) requires Accessibility permission in System Settings → Privacy & Security.',
-        'Screenshots require Screen Recording permission in System Settings → Privacy & Security.',
-        'Mouse click at coordinates is scaffolded but not yet wired — needs pixel-level coordinate resolution.',
-        'OCR on screenshots is not yet implemented.',
+        'Input (type/key/click) requires Accessibility permission in System Settings → Privacy & Security.',
+        'Screenshots and OCR require Screen Recording permission in System Settings → Privacy & Security.',
+        'Mouse click uses a CoreGraphics Swift helper compiled via swiftc (Xcode Command Line Tools required).',
+        swiftAvailable ? 'swiftc detected — click_at is available.' : 'swiftc not found — install Xcode Command Line Tools to enable click_at.',
+        'OCR runs via tesseract.js — available whenever screen capture is permitted.',
         'Windows and Linux are not yet supported.',
       ],
     };
@@ -424,6 +604,9 @@ export const OperatorService = {
   // ── Targeting ───────────────────────────────────────────────────────────────
 
   async listRunningApps(): Promise<string[]> {
+    if (IS_WINDOWS) {
+      try { return await windowsListRunningApps(); } catch { return []; }
+    }
     if (!IS_MACOS) return [];
     try {
       return await listRunningApps();
@@ -433,6 +616,11 @@ export const OperatorService = {
   },
 
   async getFrontmostApp(): Promise<OperatorTarget | null> {
+    if (IS_WINDOWS) {
+      const t = await windowsGetFrontmostTarget();
+      if (!t) return null;
+      return { appName: t.appName, windowTitle: t.windowTitle, confirmed: true, capturedAt: nowMs() };
+    }
     return getFrontmostTarget();
   },
 
@@ -449,21 +637,107 @@ export const OperatorService = {
     };
   },
 
+  /**
+   * Full visual perception: screenshot + OCR + frontmost app in one call.
+   *
+   * This is the core of the autonomous agent loop:
+   *   perceiveWithOCR() → AI reads ocrText → decides next action → executes → repeat
+   *
+   * Returns ocrText in the perception if screen capture is permitted.
+   * Falls back gracefully if OCR fails — still returns screenshot path.
+   */
+  async perceiveWithOCR(outputPath?: string): Promise<OperatorPerception> {
+    const dest   = outputPath ?? path.join(os.tmpdir(), `tf-screen-${nowMs()}.png`);
+    const target = await getFrontmostTarget();
+
+    // Screenshot (best-effort)
+    const ssResult = await execCaptureScreen(dest);
+    if (!ssResult.ok) {
+      return {
+        timestamp:      nowMs(),
+        target,
+        summary:        `Could not capture screen: ${ssResult.error}. Check Screen Recording permission.`,
+      };
+    }
+
+    // OCR the screenshot (best-effort — never blocks the loop)
+    const ocrResult = await execOCR(dest);
+
+    const summary = [
+      target
+        ? `Frontmost app: ${target.appName}${target.windowTitle ? ` — "${target.windowTitle}"` : ''}`
+        : 'Could not determine frontmost application.',
+      ocrResult.text.trim()
+        ? `Screen text (first 200 chars): ${ocrResult.text.trim().slice(0, 200)}`
+        : 'No text detected on screen.',
+    ].join(' | ');
+
+    return {
+      timestamp:       nowMs(),
+      target,
+      screenshotPath:  dest,
+      screenshotScope: 'primary_display',
+      ocrText:         ocrResult.text,
+      summary,
+    };
+  },
+
+  /**
+   * Execute a click directly (bypasses approval queue).
+   * Use only when the calling workflow phase is already approval-gated at a
+   * higher level — e.g. OSK typing where the whole typing sequence is approved.
+   */
+  async directClick(
+    x:      number,
+    y:      number,
+    button: 'left' | 'right' | 'double' = 'left',
+  ): Promise<{ ok: boolean; error?: string }> {
+    return IS_WINDOWS
+      ? windowsClickAt(x, y, button)
+      : clickAtCoords(x, y, button);
+  },
+
+  /** Pre-warm the Swift click helper (compile in background at startup). */
+  prewarmClickHelper(): void {
+    prewarmClickHelper();
+  },
+
+  /** Shut down the Tesseract worker — call on app quit to avoid orphaned processes. */
+  async terminateTesseract(): Promise<void> {
+    if (_tesseractWorker) {
+      await _tesseractWorker.terminate();
+      _tesseractWorker = null;
+    }
+  },
+
   async captureScreen(outputPath?: string): Promise<{
     ok: boolean;
     path?: string;
     error?: string;
     recoveryHint?: string;
   }> {
+    const dest = outputPath ?? path.join(os.tmpdir(), `tf-screen-${Date.now()}.png`);
+
+    if (IS_WINDOWS) {
+      const result = await windowsCaptureScreen(dest);
+      if (!result.ok) {
+        return {
+          ok: false,
+          error: result.error,
+          recoveryHint: 'Windows screenshot failed. Ensure .NET Framework is available and PowerShell can run.',
+        };
+      }
+      return { ok: true, path: dest };
+    }
+
     if (!IS_MACOS) {
       return {
         ok: false,
-        error: 'Screenshot capture is macOS-only.',
-        recoveryHint: 'Operator screenshot capability is not available on this platform.',
+        error: 'Screenshot capture is not yet supported on this platform.',
+        recoveryHint: 'macOS and Windows are the supported platforms.',
       };
     }
 
-    const dest = outputPath ?? path.join(os.tmpdir(), `tf-screen-${Date.now()}.png`);
     const result = await execCaptureScreen(dest);
 
     if (!result.ok) {
@@ -510,6 +784,21 @@ export const OperatorService = {
       stopReason: reason,
       endedAt:   nowMs(),
     });
+    return true;
+  },
+
+  /**
+   * Set the trust level for an active session.
+   *
+   * 'supervised' — input actions require human approval (default, safest).
+   * 'trusted'    — input actions execute immediately, audit-logged only.
+   *
+   * Returns false if session not found.
+   */
+  setSessionTrust(id: string, level: 'supervised' | 'trusted'): boolean {
+    const session = _sessions.get(id);
+    if (!session) return false;
+    _sessions.set(id, { ...session, trustLevel: level });
     return true;
   },
 
@@ -682,9 +971,28 @@ export const OperatorService = {
         });
       }
 
+      case 'click_at':
       case 'type_text':
       case 'send_key': {
-        // ── Approval gate ──
+        // ── Trust check ──
+        // When the session is 'trusted', skip the approval gate and execute
+        // the input action immediately. All executions are still audit-logged.
+        const session = _sessions.get(action.sessionId);
+        if (session?.trustLevel === 'trusted') {
+          const preTarget = await getFrontmostTarget();
+          const execResult = await executeApprovedInputAction(action, start, preTarget);
+          // Audit-log the auto-executed action to the session
+          const currentSession = _sessions.get(action.sessionId);
+          if (currentSession) {
+            _sessions.set(action.sessionId, {
+              ...currentSession,
+              actions: [...currentSession.actions, { action, result: execResult }],
+            });
+          }
+          return execResult;
+        }
+
+        // ── Approval gate (supervised mode — default) ──
         // Capture context (screenshot + frontmost app) before queuing.
         // Both are best-effort — queuing proceeds even if capture fails.
         // contextTarget is stored on the approval so the UI can show
@@ -842,123 +1150,8 @@ export const OperatorService = {
       };
     }
 
-    // ── Execute the input action ────────────────────────────────────────────
-
-    if (action.type === 'type_text') {
-      if (!action.text) {
-        return {
-          actionId:   action.id,
-          actionType: 'type_text',
-          outcome:    'failed',
-          durationMs: nowMs() - start,
-          error:      'type_text action has no text.',
-          completedAt: nowMs(),
-        };
-      }
-      const res = await execTypeText(action.text);
-      if (!res.ok) {
-        if (res.error === 'ACCESSIBILITY_DENIED') {
-          return {
-            actionId:      action.id,
-            actionType:    'type_text',
-            outcome:       'permission_denied',
-            failureReason: 'permission_revoked_accessibility',
-            durationMs:    nowMs() - start,
-            error:         'Accessibility permission denied.',
-            recoveryHint:
-              'Go to System Settings → Privacy & Security → Accessibility and add TriForge.',
-            completedAt: nowMs(),
-          };
-        }
-        return {
-          actionId:   action.id,
-          actionType: 'type_text',
-          outcome:    'failed',
-          durationMs: nowMs() - start,
-          error:      res.error,
-          completedAt: nowMs(),
-        };
-      }
-
-      // ── Post-input target continuity check ────────────────────────────
-      const postTarget      = await getFrontmostTarget();
-      const continuity      = validatePostInputContinuity(preTarget?.appName ?? null, postTarget);
-
-      return {
-        actionId:       action.id,
-        actionType:     'type_text',
-        outcome:        'success',
-        failureReason:  continuity.valid ? undefined : 'target_drift_post_input',
-        durationMs:     nowMs() - start,
-        executedTarget: postTarget ?? preTarget ?? undefined,
-        targetVerified: continuity.valid,
-        // Surface a note if drift occurred — action succeeded but continuity uncertain
-        error:          continuity.valid ? undefined : continuity.message,
-        completedAt:    nowMs(),
-      };
-    }
-
-    if (action.type === 'send_key') {
-      if (!action.key) {
-        return {
-          actionId:   action.id,
-          actionType: 'send_key',
-          outcome:    'failed',
-          durationMs: nowMs() - start,
-          error:      'send_key action has no key.',
-          completedAt: nowMs(),
-        };
-      }
-      const res = await execSendKey(action.key, action.modifiers ?? []);
-      if (!res.ok) {
-        if (res.error === 'ACCESSIBILITY_DENIED') {
-          return {
-            actionId:      action.id,
-            actionType:    'send_key',
-            outcome:       'permission_denied',
-            failureReason: 'permission_revoked_accessibility',
-            durationMs:    nowMs() - start,
-            error:         'Accessibility permission denied.',
-            recoveryHint:
-              'Go to System Settings → Privacy & Security → Accessibility and add TriForge.',
-            completedAt: nowMs(),
-          };
-        }
-        return {
-          actionId:   action.id,
-          actionType: 'send_key',
-          outcome:    'failed',
-          durationMs: nowMs() - start,
-          error:      res.error,
-          completedAt: nowMs(),
-        };
-      }
-
-      // ── Post-input target continuity check ────────────────────────────
-      const postTarget      = await getFrontmostTarget();
-      const continuity      = validatePostInputContinuity(preTarget?.appName ?? null, postTarget);
-
-      return {
-        actionId:       action.id,
-        actionType:     'send_key',
-        outcome:        'success',
-        failureReason:  continuity.valid ? undefined : 'target_drift_post_input',
-        durationMs:     nowMs() - start,
-        executedTarget: postTarget ?? preTarget ?? undefined,
-        targetVerified: continuity.valid,
-        error:          continuity.valid ? undefined : continuity.message,
-        completedAt:    nowMs(),
-      };
-    }
-
-    return {
-      actionId:   action.id,
-      actionType: action.type,
-      outcome:    'not_supported',
-      durationMs: nowMs() - start,
-      error:      'executeApprovedAction called on non-input action.',
-      completedAt: nowMs(),
-    };
+    // ── Execute the input action via shared helper ─────────────────────────
+    return executeApprovedInputAction(action, start, preTarget);
   },
 
   // ── Approval management ──────────────────────────────────────────────────────

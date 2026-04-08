@@ -3452,8 +3452,7 @@ export class DispatchServer {
     if (method === 'POST' && handoffResolveMatch) {
       if (!policy.enabled) { this._json(res, 403, { error: 'Remote actions disabled' }); return; }
       const id = decodeURIComponent(handoffResolveMatch[1]);
-      const parsed = await this._readBody(req);
-      const resolution = String(parsed['resolution'] ?? 'approved');
+      const resolution = String(body['resolution'] ?? 'approved');
       const result = await this._handlers.resolveHandoffItem(id, resolution, ctx);
       this._handlers.auditLog('handoff_resolve', id, ctx);
       this._json(res, result.ok ? 200 : 400, result);

@@ -171,13 +171,13 @@ export function buildCouncilContext(
   const watches = simulator.getWatches();
   const triggeringWatch = watches.find(w => w.id === intent.watchId);
   if (triggeringWatch && triggeringWatch.confirmations.length > 0) {
-    const detected = triggeringWatch.confirmations.filter(c => c.detected);
-    const missing = triggeringWatch.confirmations.filter(c => !c.detected);
+    const detected = triggeringWatch.confirmations.filter(c => c.detectedAt);
+    const missing = triggeringWatch.confirmations.filter(c => !c.detectedAt);
     confirmationSummary = {
       totalScore: triggeringWatch.confirmationScore?.total ?? 0,
       threshold: 65,
-      detected: detected.map(c => ({ type: c.type, weight: c.weight })),
-      missing: missing.map(c => ({ type: c.type, weight: c.weight })),
+      detected: detected.map(c => ({ type: c.type, weight: c.strength })),
+      missing: missing.map(c => ({ type: c.type, weight: c.strength })),
     };
   }
 

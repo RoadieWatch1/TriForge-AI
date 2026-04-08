@@ -54,6 +54,7 @@ export const OPERATOR_RISK_FLOOR: Record<OperatorActionType, OperatorActionRisk>
   focus_app:     'focus_only',
   type_text:     'input_action',
   send_key:      'input_action',
+  click_at:      'input_action',
 };
 
 // ── Approval TTL ──────────────────────────────────────────────────────────────

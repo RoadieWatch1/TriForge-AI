@@ -26,7 +26,8 @@ export type NotifyEvent =
   | 'high_risk_blocked'
   | 'github_review_ready'
   | 'jira_action_queued'
-  | 'agent_unhealthy';
+  | 'agent_unhealthy'
+  | 'runbook';
 
 export type NotifyPriority = 'min' | 'low' | 'normal' | 'high' | 'urgent';
 
@@ -64,6 +65,7 @@ export const ALL_NOTIFY_EVENTS: NotifyEvent[] = [
   'github_review_ready',
   'jira_action_queued',
   'agent_unhealthy',
+  'runbook',
 ];
 
 export const DEFAULT_EVENT_SETTINGS: Record<NotifyEvent, EventSetting> = {
@@ -74,6 +76,7 @@ export const DEFAULT_EVENT_SETTINGS: Record<NotifyEvent, EventSetting> = {
   github_review_ready: { enabled: true,  priority: 'normal' },
   jira_action_queued:  { enabled: true,  priority: 'normal' },
   agent_unhealthy:     { enabled: true,  priority: 'high'   },
+  runbook:             { enabled: false, priority: 'normal' },
 };
 
 export const EVENT_LABELS: Record<NotifyEvent, { label: string; description: string }> = {
@@ -84,6 +87,7 @@ export const EVENT_LABELS: Record<NotifyEvent, { label: string; description: str
   github_review_ready: { label: 'GitHub review ready',   description: 'PR review synthesized and ready to post' },
   jira_action_queued:  { label: 'Jira action queued',    description: 'A Jira write action added to the approval queue' },
   agent_unhealthy:     { label: 'Agent unhealthy',       description: 'Background agent restarted or reported an error' },
+  runbook:             { label: 'Runbook notification',  description: 'A runbook step triggered a push notification' },
 };
 
 // ── Priority mappings ─────────────────────────────────────────────────────────
@@ -106,6 +110,7 @@ const EVENT_TAGS: Record<NotifyEvent, string> = {
   github_review_ready: 'octocat',
   jira_action_queued:  'blue_square',
   agent_unhealthy:     'warning,robot_face',
+  runbook:             'scroll',
 };
 
 // ── Deep-link targets per event (relative path appended to dispatch base URL) ───

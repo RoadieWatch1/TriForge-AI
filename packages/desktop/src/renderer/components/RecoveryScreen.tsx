@@ -248,7 +248,7 @@ function HealthTab() {
     setStatus(null);
     try {
       const r = await window.triforge.recovery.validateStore();
-      setResult(r);
+      setResult(r as ValidationResult);
     } finally { setBusy(false); }
   };
 
@@ -257,7 +257,7 @@ function HealthTab() {
     setStatus(null);
     try {
       const r = await window.triforge.recovery.repairStore();
-      setResult(r);
+      setResult(r as ValidationResult);
       setStatus(r.repairedCount > 0
         ? `${r.repairedCount} issue${r.repairedCount !== 1 ? 's' : ''} repaired.`
         : 'No repairable issues found.');

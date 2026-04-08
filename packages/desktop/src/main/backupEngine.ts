@@ -327,7 +327,7 @@ export async function restoreBackupFile(store: Store): Promise<{
   error?: string;
 }> {
   const win  = require('electron').BrowserWindow.getFocusedWindow();
-  const opts = { title: 'Restore TriForge Backup', filters: [{ name: 'TriForge Backup', extensions: ['json'] }], properties: ['openFile'] as const };
+  const opts = { title: 'Restore TriForge Backup', filters: [{ name: 'TriForge Backup', extensions: ['json'] }], properties: ['openFile' as const] };
   const result = await (win ? dialog.showOpenDialog(win, opts) : dialog.showOpenDialog(opts));
   if (result.canceled || !result.filePaths[0]) return { ok: false, error: 'Cancelled' };
 

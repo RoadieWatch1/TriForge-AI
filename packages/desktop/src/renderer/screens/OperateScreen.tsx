@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { Permission } from '../../main/store';
 
 // ── Props ─────────────────────────────────────────────────────────────────────
@@ -54,6 +54,11 @@ interface WorkflowPackSummary {
     permissions: { accessibility?: boolean; screenRecording?: boolean };
   };
   estimatedDurationSec?: number;
+  /**
+   * True when this pack has phases that require a natural-language goal
+   * to auto-generate scripts (adobe_extendscript, blender_python, app_applescript).
+   */
+  needsGoal?: boolean;
 }
 
 interface PackReadiness {
@@ -197,6 +202,31 @@ export function OperateScreen({
   const [operatorApprovals, setOperatorApprovals]  = useState<Record<string, OperatorApprovalInfo>>({});
   const [advancingPackId, setAdvancingPackId]      = useState<string | null>(null);
 
+  // Trust mode — tracked per active session. 'supervised' = require approval,
+  // 'trusted' = auto-execute and audit-log only.
+  const [activeSessionId, setActiveSessionId]      = useState<string | null>(null);
+  const [trustLevel, setTrustLevel]                = useState<'supervised' | 'trusted'>('supervised');
+  const [trustChanging, setTrustChanging]          = useState(false);
+
+  // Proactive app detection nudge
+  interface DetectedAppNudge {
+    appId: string; appName: string; category: string; icon?: string;
+    packIds: string[]; suggestions: string[]; detectedAt: number;
+  }
+  const [detectedApp, setDetectedApp]              = useState<DetectedAppNudge | null>(null);
+
+  // ── AI Task Runner ──────────────────────────────────────────────────────────
+  interface TaskStep {
+    step: number; phase: string; description: string; screenshotPath?: string;
+  }
+  const [taskGoal, setTaskGoal]                       = useState('');
+  const [taskRunning, setTaskRunning]                 = useState(false);
+  const [taskSteps, setTaskSteps]                     = useState<TaskStep[]>([]);
+  const [taskOutcome, setTaskOutcome]                 = useState<{ ok: boolean; summary: string; outcome: string } | null>(null);
+  const [taskPendingApprovalId, setTaskPendingApprovalId] = useState<string | null>(null);
+  const [taskSessionId, setTaskSessionId]             = useState<string | null>(null);
+  const unsubTaskRef                                  = useRef<(() => void) | null>(null);
+
   const tf = (window as unknown as { triforge?: Record<string, unknown> }).triforge;
 
   const fetchData = useCallback(async () => {
@@ -235,11 +265,17 @@ export function OperateScreen({
     }
 
     // Workflow packs (best-effort — don't fail the whole fetch)
+    const SCRIPT_PHASE_KINDS = new Set(['adobe_extendscript', 'blender_python', 'app_applescript']);
     try {
       const packsRes = await (tf['workflows'] as Record<string, () => Promise<unknown>>)?.list?.();
       const allReadinessRes = await (tf['workflows'] as Record<string, () => Promise<unknown>>)?.readinessAll?.();
       if (packsRes && typeof packsRes === 'object' && (packsRes as Record<string, unknown>)['ok']) {
-        const ps = (packsRes as { packs?: WorkflowPackSummary[] }).packs ?? [];
+        const rawPacks = (packsRes as { packs?: Array<WorkflowPackSummary & { phases?: Array<{ kind: string }> }> }).packs ?? [];
+        // Compute needsGoal for each pack based on its phase kinds
+        const ps: WorkflowPackSummary[] = rawPacks.map(p => ({
+          ...p,
+          needsGoal: p.phases?.some(ph => SCRIPT_PHASE_KINDS.has(ph.kind)) ?? false,
+        }));
         setWorkflowPacks(ps);
       }
       if (allReadinessRes && typeof allReadinessRes === 'object' && (allReadinessRes as Record<string, unknown>)['ok']) {
@@ -268,6 +304,18 @@ export function OperateScreen({
     const timer = setInterval(fetchData, 15_000);
     return () => clearInterval(timer);
   }, [fetchData]);
+
+  // Subscribe to proactive app detection from the main process
+  useEffect(() => {
+    if (!tf) return;
+    const op = tf['operator'] as Record<string, (...a: unknown[]) => unknown> | undefined;
+    if (!op?.onAppDetected) return;
+    const unsub = (op.onAppDetected as (cb: (ev: DetectedAppNudge) => void) => () => void)(
+      (ev) => setDetectedApp(ev),
+    );
+    return unsub;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tf]);
 
   const assignWork = async () => {
     if (!goal.trim() || !tf) return;
@@ -333,19 +381,22 @@ export function OperateScreen({
     } catch { /* best effort */ }
   }, [tf]);
 
-  const startWorkflow = async (packId: string, targetApp?: string) => {
+  const startWorkflow = async (packId: string, targetApp?: string, goal?: string) => {
     if (!tf || startingPackId) return;
     setStartingPackId(packId);
     setWorkflowResult(prev => ({ ...prev, [packId]: { ok: false } }));
     // Clear any prior pending run for this pack
     setPendingRuns(prev => { const n = { ...prev }; delete n[packId]; return n; });
     try {
+      const runOpts: Record<string, unknown> = {};
+      if (targetApp) runOpts.targetApp = targetApp;
+      if (goal)      runOpts.goal = goal;
       const res = await (tf['workflows'] as Record<string, (id: string, opts?: Record<string, unknown>) => Promise<{
         ok: boolean;
         run?: { id: string; status: string; pendingApprovalId?: string };
         readinessBlockers?: Array<{ message: string }>;
         error?: string;
-      }>>)?.startRun?.(packId, targetApp ? { targetApp } : {});
+      }>>)?.startRun?.(packId, runOpts);
       if (!res) return;
       if (res.ok && res.run) {
         setWorkflowResult(prev => ({ ...prev, [packId]: { ok: true, status: res.run!.status } }));
@@ -433,12 +484,117 @@ export function OperateScreen({
     }
   };
 
+  // Listen for prefill event from council→operator bridge
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const goal = (e as CustomEvent<string>).detail;
+      if (goal) {
+        setTaskGoal(goal);
+        document.getElementById('ai-task-runner-section')?.scrollIntoView({ behavior: 'smooth' });
+      }
+    };
+    window.addEventListener('triforge:operator-prefill', handler);
+    return () => window.removeEventListener('triforge:operator-prefill', handler);
+  }, []);
+
+  /** Run an AI-driven Sense→Plan→Act→Verify task loop. */
+  const runAiTask = async () => {
+    if (!tf || !taskGoal.trim() || taskRunning) return;
+    setTaskRunning(true);
+    setTaskSteps([]);
+    setTaskOutcome(null);
+    setTaskPendingApprovalId(null);
+
+    const op = tf['operator'] as Record<string, (...a: unknown[]) => Promise<unknown>>;
+    try {
+      // Create (or reuse) a session
+      let sid = activeSessionId ?? taskSessionId;
+      if (!sid) {
+        const r = await op?.startSession?.() as { ok: boolean; session?: { id: string } } | null;
+        if (r?.ok && r.session?.id) { sid = r.session.id; setActiveSessionId(sid); setTaskSessionId(sid); }
+      }
+      if (!sid) { setTaskOutcome({ ok: false, summary: 'Could not create operator session.', outcome: 'error' }); return; }
+
+      // If in trusted mode, apply it to the session
+      if (trustLevel === 'trusted') { await op?.setTrust?.(sid, 'trusted').catch(() => {}); }
+
+      // Subscribe to step-by-step progress
+      if (unsubTaskRef.current) unsubTaskRef.current();
+      unsubTaskRef.current = (op?.onTaskProgress as unknown as ((cb: (ev: TaskStep) => void) => () => void) | undefined)?.(
+        (ev) => setTaskSteps(prev => [...prev, ev]),
+      ) ?? null;
+
+      const result = await op?.runTask?.(sid, taskGoal.trim()) as {
+        ok: boolean; outcome: string; summary: string; stepsExecuted: number;
+        pendingApprovalId?: string;
+      } | null;
+
+      if (result?.outcome === 'approval_pending' && result?.pendingApprovalId) {
+        setTaskPendingApprovalId(result.pendingApprovalId);
+      }
+
+      setTaskOutcome({
+        ok:      result?.ok ?? false,
+        summary: result?.summary ?? 'Task finished.',
+        outcome: result?.outcome ?? 'unknown',
+      });
+    } catch (e) {
+      setTaskOutcome({ ok: false, summary: e instanceof Error ? e.message : 'Task failed.', outcome: 'error' });
+    } finally {
+      setTaskRunning(false);
+      if (unsubTaskRef.current) { unsubTaskRef.current(); unsubTaskRef.current = null; }
+      fetchData();
+    }
+  };
+
+  /** Approve the pending operator action and resume the task loop. */
+  const approveAndResume = async () => {
+    if (!tf || !taskPendingApprovalId || taskRunning) return;
+    const op = tf['operator'] as Record<string, (...a: unknown[]) => Promise<unknown>>;
+    try {
+      const approveRes = await op?.approveAction?.(taskPendingApprovalId) as { ok: boolean; error?: string } | null;
+      if (!approveRes?.ok) {
+        setTaskOutcome({ ok: false, summary: approveRes?.error ?? 'Approval failed.', outcome: 'error' });
+        setTaskPendingApprovalId(null);
+        return;
+      }
+    } catch (e) {
+      setTaskOutcome({ ok: false, summary: e instanceof Error ? e.message : 'Approval failed.', outcome: 'error' });
+      setTaskPendingApprovalId(null);
+      return;
+    }
+    // Approved — clear pending state and re-run from current screen state
+    setTaskPendingApprovalId(null);
+    setTaskOutcome(null);
+    await runAiTask();
+  };
+
+  /** Toggle trust level for the active session. Creates a new session if none is active. */
+  const handleTrustToggle = async () => {
+    if (!tf || trustChanging) return;
+    setTrustChanging(true);
+    try {
+      const op = tf['operator'] as Record<string, (...a: unknown[]) => Promise<unknown>>;
+      let sid = activeSessionId;
+      if (!sid) {
+        const r = await op?.startSession?.() as { ok: boolean; session?: { id: string } } | null;
+        if (r?.ok && r.session?.id) { sid = r.session.id; setActiveSessionId(sid); }
+      }
+      if (!sid) return;
+      const newLevel: 'supervised' | 'trusted' = trustLevel === 'supervised' ? 'trusted' : 'supervised';
+      const res = await op?.setTrust?.(sid, newLevel) as { ok: boolean } | null;
+      if (res?.ok) setTrustLevel(newLevel);
+    } catch { /* ignore */ } finally {
+      setTrustChanging(false);
+    }
+  };
+
   // Derived readiness state
   const connectedProviders    = Object.values(keyStatus).filter(Boolean).length;
   const grantedCount          = permissions.filter(p => p.granted).length;
   const blockedActionPerms    = ACTION_PERM_KEYS.filter(k => !permissions.find(p => p.key === k)?.granted);
   const runningSensors        = sensors.filter(s => s.running);
-  const canAssignWork         = tier === 'business';
+  const canAssignWork         = tier === 'pro';
   const categoryDetail        = CATEGORY_DETAILS[category];
   const categoryPermBlocked   = !!categoryDetail.requiredPerm &&
     !permissions.find(p => p.key === categoryDetail.requiredPerm)?.granted;
@@ -472,13 +628,96 @@ export function OperateScreen({
         )}
       </div>
 
-      {/* ── Supervision Notice ─────────────────────────────────────────────── */}
-      <div style={s.supervisionBar}>
-        <span style={s.supervisionDot} />
-        <span style={s.supervisionText}>
-          Work is supervised. TriForge pauses for your approval before sensitive or destructive actions — nothing runs silently.
-        </span>
+      {/* ── Supervision / Trust Notice ─────────────────────────────────────── */}
+      <div style={{
+        ...s.supervisionBar,
+        justifyContent: 'space-between',
+        background: trustLevel === 'trusted' ? 'rgba(245,158,11,0.07)' : 'rgba(99,102,241,0.06)',
+        borderColor: trustLevel === 'trusted' ? 'rgba(245,158,11,0.22)' : 'rgba(99,102,241,0.15)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{
+            ...s.supervisionDot,
+            background: trustLevel === 'trusted' ? '#f59e0b' : '#6366f1',
+          }} />
+          <span style={{
+            ...s.supervisionText,
+            color: trustLevel === 'trusted' ? 'rgba(245,158,11,0.95)' : 'rgba(99,102,241,0.9)',
+          }}>
+            {trustLevel === 'trusted'
+              ? 'Trust Mode — input actions execute immediately and are audit-logged. Toggle off to require approval.'
+              : 'Supervised Mode — TriForge pauses for your approval before every input action.'}
+          </span>
+        </div>
+        {tier === 'pro' && (
+          <button
+            style={{
+              flexShrink: 0,
+              background: trustLevel === 'trusted' ? 'rgba(245,158,11,0.14)' : 'rgba(99,102,241,0.12)',
+              border: `1px solid ${trustLevel === 'trusted' ? 'rgba(245,158,11,0.35)' : 'rgba(99,102,241,0.3)'}`,
+              borderRadius: 6,
+              color: trustLevel === 'trusted' ? '#f59e0b' : '#6366f1',
+              fontSize: 11,
+              fontWeight: 700,
+              padding: '4px 10px',
+              cursor: trustChanging ? 'not-allowed' : 'pointer',
+              opacity: trustChanging ? 0.5 : 1,
+              letterSpacing: '0.02em',
+              whiteSpace: 'nowrap' as const,
+            }}
+            onClick={handleTrustToggle}
+            disabled={trustChanging}
+          >
+            {trustChanging ? '…' : trustLevel === 'trusted' ? 'Switch to Supervised' : 'Enable Trust Mode'}
+          </button>
+        )}
       </div>
+
+      {/* ── Detected App Nudge ────────────────────────────────────────────── */}
+      {detectedApp && (
+        <div style={{
+          background: 'rgba(16,163,127,0.07)',
+          border: '1px solid rgba(16,163,127,0.22)',
+          borderRadius: 10,
+          padding: '12px 14px',
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: 12,
+        }}>
+          <div style={{ fontSize: 22, lineHeight: 1 }}>{detectedApp.icon ?? '🖥'}</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: '#10a37f' }}>
+                {detectedApp.appName} detected — ready to operate
+              </span>
+              <button
+                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: 13, cursor: 'pointer', padding: 0, lineHeight: 1 }}
+                onClick={() => setDetectedApp(null)}
+              >✕</button>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              {detectedApp.suggestions.slice(0, 2).join(' · ')}
+            </div>
+            {detectedApp.packIds.length > 0 && (
+              <button
+                style={{
+                  marginTop: 7, background: 'rgba(16,163,127,0.12)',
+                  border: '1px solid rgba(16,163,127,0.28)', borderRadius: 5,
+                  color: '#10a37f', fontSize: 11, fontWeight: 700, padding: '4px 11px',
+                  cursor: 'pointer', letterSpacing: '0.02em',
+                }}
+                onClick={() => {
+                  setDetectedApp(null);
+                  // Scroll to workflow packs section
+                  document.getElementById('workflow-packs-section')?.scrollIntoView({ behavior: 'smooth' });
+                }}
+              >
+                View Workflow Packs →
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── Pending Approvals ──────────────────────────────────────────────── */}
       {approvals.length > 0 && (
@@ -656,9 +895,159 @@ export function OperateScreen({
         </p>
       </div>
 
+      {/* ── AI Task Runner ─────────────────────────────────────────────────── */}
+      <div id="ai-task-runner-section" style={s.section}>
+        <div style={s.sectionLabelRow}>
+          <span style={s.sectionLabel}>AI Task Runner</span>
+          <span style={s.sectionMeta}>Sense → Plan → Act → Verify loop</span>
+        </div>
+        <div style={s.workIntake}>
+          <textarea
+            style={s.goalInput}
+            placeholder="Describe what to do in your open app — e.g. 'Export the current Premiere timeline as H.264', 'Click the Render button in Blender'…"
+            value={taskGoal}
+            onChange={e => { setTaskGoal(e.target.value); setTaskOutcome(null); }}
+            rows={2}
+            disabled={taskRunning}
+          />
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+            <button
+              style={{
+                ...s.assignBtn,
+                ...(!taskGoal.trim() || taskRunning ? s.assignBtnDisabled : {}),
+                background: taskRunning ? 'rgba(99,102,241,0.25)' : undefined,
+              }}
+              onClick={runAiTask}
+              disabled={!taskGoal.trim() || taskRunning}
+            >
+              {taskRunning ? 'Running…' : 'Run with AI'}
+            </button>
+          </div>
+        </div>
+
+        {/* Live step feed */}
+        {(taskRunning || taskSteps.length > 0) && (
+          <div style={{
+            marginTop: 10,
+            background: 'rgba(0,0,0,0.15)',
+            border: '1px solid rgba(255,255,255,0.06)',
+            borderRadius: 8,
+            overflow: 'hidden',
+          }}>
+            {taskSteps.map((step, i) => (
+              <div key={i} style={{
+                display: 'flex', alignItems: 'flex-start', gap: 10,
+                padding: '8px 12px',
+                borderBottom: i < taskSteps.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none',
+              }}>
+                <span style={{
+                  flexShrink: 0,
+                  width: 20, height: 20,
+                  borderRadius: '50%',
+                  background: 'rgba(99,102,241,0.18)',
+                  border: '1px solid rgba(99,102,241,0.35)',
+                  color: '#6366f1',
+                  fontSize: 9,
+                  fontWeight: 800,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  letterSpacing: '0.02em',
+                }}>
+                  {step.step}
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: 'rgba(99,102,241,0.85)', marginBottom: 2, letterSpacing: '0.05em', textTransform: 'uppercase' as const }}>
+                    {step.phase}
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.45 }}>
+                    {step.description}
+                  </div>
+                </div>
+              </div>
+            ))}
+            {taskRunning && (
+              <div style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{
+                  display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+                  background: '#6366f1', animation: 'none', opacity: 0.7,
+                }} />
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', fontStyle: 'italic' }}>Working…</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Outcome */}
+        {taskOutcome && (
+          <div style={{
+            marginTop: 10,
+            padding: '10px 14px',
+            borderRadius: 8,
+            background: taskOutcome.outcome === 'approval_pending'
+              ? 'rgba(245,158,11,0.07)'
+              : taskOutcome.ok ? 'rgba(16,163,127,0.07)' : 'rgba(239,68,68,0.07)',
+            border: `1px solid ${
+              taskOutcome.outcome === 'approval_pending'
+                ? 'rgba(245,158,11,0.28)'
+                : taskOutcome.ok ? 'rgba(16,163,127,0.22)' : 'rgba(239,68,68,0.22)'}`,
+          }}>
+            <div style={{
+              fontSize: 11, fontWeight: 700, marginBottom: 3,
+              color: taskOutcome.outcome === 'approval_pending' ? '#f59e0b' : taskOutcome.ok ? '#10a37f' : '#ef4444',
+            }}>
+              {taskOutcome.outcome === 'approval_pending'
+                ? 'Paused — approval required'
+                : taskOutcome.ok ? 'Task complete' : 'Task stopped'}{' '}
+              — {taskOutcome.outcome}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              {taskOutcome.summary}
+            </div>
+            {taskOutcome.outcome === 'approval_pending' && taskPendingApprovalId && (
+              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                <button
+                  style={{
+                    background: 'rgba(245,158,11,0.14)',
+                    border: '1px solid rgba(245,158,11,0.4)',
+                    borderRadius: 6,
+                    color: '#f59e0b',
+                    fontSize: 11,
+                    fontWeight: 700,
+                    padding: '5px 14px',
+                    cursor: taskRunning ? 'not-allowed' : 'pointer',
+                    opacity: taskRunning ? 0.5 : 1,
+                  }}
+                  onClick={approveAndResume}
+                  disabled={taskRunning}
+                >
+                  {taskRunning ? 'Running…' : 'Approve & Continue'}
+                </button>
+                <button
+                  style={{
+                    background: 'rgba(239,68,68,0.08)',
+                    border: '1px solid rgba(239,68,68,0.25)',
+                    borderRadius: 6,
+                    color: '#ef4444',
+                    fontSize: 11,
+                    fontWeight: 600,
+                    padding: '5px 14px',
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => {
+                    setTaskPendingApprovalId(null);
+                    setTaskOutcome({ ok: false, summary: 'Task cancelled by user.', outcome: 'cancelled' });
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* ── Workflow Packs ─────────────────────────────────────────────────── */}
       {workflowPacks.length > 0 && (
-        <div style={s.section}>
+        <div id="workflow-packs-section" style={s.section}>
           <div style={s.sectionLabelRow}>
             <span style={s.sectionLabel}>Workflow Packs</span>
             <span style={s.sectionMeta}>Structured supervised workflows</span>
@@ -677,7 +1066,7 @@ export function OperateScreen({
                   pendingRun={run}
                   pendingApproval={approval}
                   advancing={advancingPackId === pack.id}
-                  onStart={(targetApp) => startWorkflow(pack.id, targetApp)}
+                  onStart={(targetApp, goal) => startWorkflow(pack.id, targetApp, goal)}
                   onApprove={(runId, approvalId) => handleWorkflowApprove(pack.id, runId, approvalId)}
                   onDeny={(approvalId) => handleWorkflowDeny(pack.id, approvalId)}
                 />
@@ -706,6 +1095,9 @@ export function OperateScreen({
           </div>
         </div>
       )}
+
+      {/* ── Live View ──────────────────────────────────────────────────────── */}
+      <LiveViewPanel tf={tf} />
 
       {/* ── Environment ────────────────────────────────────────────────────── */}
       <div style={s.section}>
@@ -740,8 +1132,176 @@ export function OperateScreen({
         <button style={s.utilBtn} onClick={() => onNavigate('builder')}>
           App Builder
         </button>
+        <button style={{ ...s.utilBtn, color: 'var(--accent)', borderColor: 'var(--accent)' }} onClick={() => onNavigate('pack-builder')}>
+          Pack Builder
+        </button>
       </div>
 
+    </div>
+  );
+}
+
+// ── Live View Panel ───────────────────────────────────────────────────────────
+
+interface LiveViewEntry {
+  ts: number;
+  text: string;
+  score?: number;
+}
+
+function LiveViewPanel({ tf }: { tf: Record<string, unknown> | undefined }) {
+  const [open, setOpen]                   = useState(false);
+  const [screenshot, setScreenshot]       = useState<string | null>(null);
+  const [capturing, setCapturing]         = useState(false);
+  const [capturedAt, setCapturedAt]       = useState<number | null>(null);
+  const [watcherRunning, setWatcherRunning] = useState<boolean | null>(null);
+  const [log, setLog]                     = useState<LiveViewEntry[]>([]);
+  const intervalRef                       = useRef<ReturnType<typeof setInterval> | null>(null);
+  const unsubRef                          = useRef<(() => void) | null>(null);
+
+  const addLog = (text: string, score?: number) => {
+    setLog(prev => [{ ts: Date.now(), text, score }, ...prev].slice(0, 50));
+  };
+
+  const capture = useCallback(async () => {
+    if (!tf) return;
+    setCapturing(true);
+    try {
+      const res = await (tf['operator'] as Record<string, () => Promise<{ ok: boolean; dataUrl?: string; error?: string }>>)
+        ?.screenshotBase64?.();
+      if (res?.ok && res.dataUrl) {
+        setScreenshot(res.dataUrl);
+        setCapturedAt(Date.now());
+      }
+    } catch { /* best-effort */ } finally {
+      setCapturing(false);
+    }
+  }, [tf]);
+
+  const loadWatcherStatus = useCallback(async () => {
+    if (!tf) return;
+    try {
+      const res = await (tf['screenWatch'] as Record<string, () => Promise<{ ok: boolean; running: boolean }>>)
+        ?.check?.();
+      setWatcherRunning(res?.running ?? false);
+    } catch { setWatcherRunning(false); }
+  }, [tf]);
+
+  useEffect(() => {
+    if (!open) {
+      // Cleanup when collapsed
+      if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
+      if (unsubRef.current)    { unsubRef.current(); unsubRef.current = null; }
+      return;
+    }
+
+    // Initial capture + watcher status
+    capture();
+    loadWatcherStatus();
+
+    // Subscribe to screen-watch:changed events
+    const screenWatchNs = tf?.['screenWatch'] as Record<string, unknown> | undefined;
+    if (typeof screenWatchNs?.onChanged === 'function') {
+      unsubRef.current = (screenWatchNs.onChanged as (cb: (d: { score: number; imagePath?: string }) => void) => () => void)(
+        (d) => {
+          addLog(`Screen changed`, d.score);
+          capture();
+        }
+      );
+    }
+
+    // Poll for screenshot every 4s
+    intervalRef.current = setInterval(() => {
+      capture();
+      loadWatcherStatus();
+    }, 4_000);
+
+    return () => {
+      if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
+      if (unsubRef.current)    { unsubRef.current(); unsubRef.current = null; }
+    };
+  }, [open, capture, loadWatcherStatus, tf]);
+
+  return (
+    <div style={s.section}>
+      <div style={s.sectionLabelRow}>
+        <span style={s.sectionLabel}>Live View</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {open && (
+            <>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: watcherRunning ? '#10a37f' : '#555' }}>
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: watcherRunning ? '#10a37f' : '#555', display: 'inline-block' }} />
+                {watcherRunning === null ? 'watcher …' : watcherRunning ? 'watcher active' : 'watcher off'}
+              </span>
+              <button
+                style={{ ...s.sectionAction, opacity: capturing ? 0.5 : 1 }}
+                onClick={capture}
+                disabled={capturing}
+              >
+                {capturing ? 'Capturing…' : 'Capture now'}
+              </button>
+            </>
+          )}
+          <button style={s.sectionAction} onClick={() => setOpen(x => !x)}>
+            {open ? 'Collapse ↑' : 'Expand ↓'}
+          </button>
+        </div>
+      </div>
+
+      {!open && (
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+          Expand to see a live screenshot feed and screen-change log.
+        </p>
+      )}
+
+      {open && (
+        <div style={s.liveViewBody}>
+          {/* Screenshot pane */}
+          <div style={s.liveViewScreenshot}>
+            {screenshot ? (
+              <>
+                <img
+                  src={screenshot}
+                  alt="Current screen"
+                  style={{ width: '100%', borderRadius: 6, display: 'block', border: '1px solid var(--border)' }}
+                />
+                {capturedAt && (
+                  <div style={s.liveViewCaption}>
+                    Captured {new Date(capturedAt).toLocaleTimeString()}
+                    {capturing && ' · refreshing…'}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={s.liveViewPlaceholder}>
+                {capturing ? 'Capturing screenshot…' : 'No screenshot yet — Screen Recording permission required.'}
+              </div>
+            )}
+          </div>
+
+          {/* Event log pane */}
+          <div style={s.liveViewLog}>
+            <div style={s.liveViewLogTitle}>Screen Events</div>
+            {log.length === 0 ? (
+              <div style={s.liveViewLogEmpty}>Waiting for screen changes…</div>
+            ) : (
+              log.map((entry, i) => (
+                <div key={i} style={s.liveViewLogEntry}>
+                  <span style={s.liveViewLogTime}>{new Date(entry.ts).toLocaleTimeString()}</span>
+                  <span style={s.liveViewLogText}>
+                    {entry.text}
+                    {entry.score != null && (
+                      <span style={{ color: 'var(--text-muted)', marginLeft: 4 }}>
+                        ({Math.round(entry.score * 100)}% diff)
+                      </span>
+                    )}
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -923,10 +1483,13 @@ function WorkflowPackCard({
   pendingRun: WorkflowRunInfo | null;
   pendingApproval: OperatorApprovalInfo | null;
   advancing: boolean;
-  onStart: (targetApp?: string) => void;
+  onStart: (targetApp?: string, goal?: string) => void;
   onApprove: (runId: string, approvalId: string) => void;
   onDeny: (approvalId: string) => void;
 }) {
+  const [packGoal, setPackGoal]           = React.useState('');
+  const [showGoalInput, setShowGoalInput] = React.useState(false);
+
   const ready     = readiness?.ready ?? false;
   const blockers  = readiness?.blockers ?? [];
   const warnings  = readiness?.warnings ?? [];
@@ -1027,18 +1590,68 @@ function WorkflowPackCard({
         </div>
       )}
 
+      {/* Goal input for script-generating packs */}
+      {!isAwaitingApproval && pack.needsGoal && showGoalInput && (
+        <div style={{ marginTop: 8 }}>
+          <input
+            type="text"
+            style={{
+              width: '100%',
+              background: 'rgba(0,0,0,0.2)',
+              border: '1px solid rgba(99,102,241,0.3)',
+              borderRadius: 6,
+              color: 'var(--text-primary)',
+              fontSize: 12,
+              padding: '6px 10px',
+              outline: 'none',
+              boxSizing: 'border-box' as const,
+            }}
+            placeholder={`What do you want to do in ${pack.name}?`}
+            value={packGoal}
+            onChange={e => setPackGoal(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && packGoal.trim()) onStart(undefined, packGoal.trim());
+              if (e.key === 'Escape') { setShowGoalInput(false); setPackGoal(''); }
+            }}
+            autoFocus
+          />
+          <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+            <button
+              style={{
+                ...s.workflowStartBtn,
+                ...(!packGoal.trim() || starting ? s.workflowStartBtnDisabled : {}),
+                flex: 1,
+              }}
+              onClick={() => { if (packGoal.trim()) onStart(undefined, packGoal.trim()); }}
+              disabled={!packGoal.trim() || starting}
+            >
+              {starting ? 'Starting…' : 'Run with Goal'}
+            </button>
+            <button
+              style={{ ...s.workflowStartBtn, background: 'transparent', color: 'var(--text-muted)', border: '1px solid rgba(255,255,255,0.08)' }}
+              onClick={() => { setShowGoalInput(false); setPackGoal(''); }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Start button — hidden while awaiting approval to prevent double-starts */}
-      {!isAwaitingApproval && (
+      {!isAwaitingApproval && !showGoalInput && (
         <button
           style={{
             ...s.workflowStartBtn,
             ...((!ready || starting) ? s.workflowStartBtnDisabled : {}),
           }}
-          onClick={() => onStart()}
+          onClick={() => {
+            if (pack.needsGoal) { setShowGoalInput(true); }
+            else                { onStart(); }
+          }}
           disabled={!ready || starting || needsTarget}
           title={!ready ? (blockers[0]?.message ?? 'Not ready') : undefined}
         >
-          {starting ? 'Starting…' : 'Run'}
+          {starting ? 'Starting…' : pack.needsGoal ? 'Set Goal & Run' : 'Run'}
         </button>
       )}
     </div>
@@ -1754,5 +2367,70 @@ const s: Record<string, React.CSSProperties> = {
     color: '#f59e0b',
     fontStyle: 'italic' as const,
     padding: '6px 0',
+  },
+
+  // ── Live View ─────────────────────────────────────────────────────────────────
+  liveViewBody: {
+    display: 'flex',
+    gap: 12,
+    marginTop: 10,
+    flexWrap: 'wrap' as const,
+  },
+  liveViewScreenshot: {
+    flex: '1 1 320px',
+    minWidth: 0,
+  },
+  liveViewPlaceholder: {
+    background: 'var(--bg-elevated)',
+    border: '1px solid var(--border)',
+    borderRadius: 6,
+    padding: '28px 16px',
+    textAlign: 'center' as const,
+    fontSize: 12,
+    color: 'var(--text-muted)',
+  },
+  liveViewCaption: {
+    fontSize: 10,
+    color: 'var(--text-muted)',
+    marginTop: 5,
+    textAlign: 'right' as const,
+  },
+  liveViewLog: {
+    flex: '0 0 200px',
+    background: 'var(--bg-elevated)',
+    border: '1px solid var(--border)',
+    borderRadius: 6,
+    padding: '10px 12px',
+    overflowY: 'auto' as const,
+    maxHeight: 320,
+  },
+  liveViewLogTitle: {
+    fontSize: 10,
+    fontWeight: 700,
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.07em',
+    color: 'var(--text-muted)',
+    marginBottom: 8,
+  },
+  liveViewLogEmpty: {
+    fontSize: 11,
+    color: 'var(--text-muted)',
+    fontStyle: 'italic' as const,
+  },
+  liveViewLogEntry: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 1,
+    marginBottom: 8,
+    paddingBottom: 8,
+    borderBottom: '1px solid var(--border)',
+  },
+  liveViewLogTime: {
+    fontSize: 10,
+    color: 'var(--text-muted)',
+  },
+  liveViewLogText: {
+    fontSize: 12,
+    color: 'var(--text-primary)',
   },
 };

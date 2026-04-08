@@ -43,6 +43,7 @@ import {
   type RunbookStepStatus,
   type HandoffQueueItem,
   type BranchDecision,
+  type ConditionExpr,
   makeExecutionId,
   makePauseTokenId,
 } from './runbooks';

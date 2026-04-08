@@ -609,7 +609,7 @@ export class TradovateClient {
     if (!this.session) return;
 
     // Lazy import ws to avoid renderer access
-    const { default: WsClass } = await import('ws') as { default: typeof WebSocket };
+    const { default: WsClass } = await import('ws') as unknown as { default: typeof WebSocket };
 
     const mdUrl = this.session.accountMode === 'live'
       ? 'wss://md.tradovateapi.com/v1/websocket'

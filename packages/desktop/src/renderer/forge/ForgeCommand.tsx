@@ -215,8 +215,8 @@ export function ForgeCommand({ keyStatus, tier, messagesThisMonth, onMessageSent
   const [providers, setProviders] = useState<ProviderState[]>([]);
   const [result, setResult] = useState<MissionResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [gate,  setGate]  = useState<{ feature: string; neededTier: 'pro' | 'business' } | null>(null);
-  const [checkoutUrls, setCheckoutUrls] = useState<{ pro: string; business: string; portal: string }>({ pro: '', business: '', portal: '' });
+  const [gate,  setGate]  = useState<{ feature: string; neededTier: 'pro' } | null>(null);
+  const [checkoutUrls, setCheckoutUrls] = useState<{ pro: string; annual: string; portal: string }>({ pro: '', annual: '', portal: '' });
   const [missions, setMissions] = useState<SavedMission[]>([]);
   const [executing, setExecuting] = useState(false);
   const [executionResult, setExecutionResult] = useState('');
@@ -560,7 +560,7 @@ export function ForgeCommand({ keyStatus, tier, messagesThisMonth, onMessageSent
           onClose={() => { setGate(null); setError(null); }}
           onUpgrade={(url) => { window.triforge.system.openExternal(url); setGate(null); setError(null); }}
           proCheckout={checkoutUrls.pro}
-          bizCheckout={checkoutUrls.business}
+          annualCheckout={checkoutUrls.annual}
         />
       )}
 

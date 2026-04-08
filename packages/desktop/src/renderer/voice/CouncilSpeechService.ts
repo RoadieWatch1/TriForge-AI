@@ -64,7 +64,7 @@ class CouncilSpeechService {
     const truncated = text.slice(0, 4096);
 
     // ── Priority 1: OpenAI TTS streaming ─────────────────────────────────────
-    if (keyStatus.openai && (tier === 'pro' || tier === 'business')) {
+    if (keyStatus.openai && tier === 'pro') {
       try {
         await new Promise<void>((resolve, reject) => {
           const ms = new MediaSource();

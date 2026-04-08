@@ -83,7 +83,7 @@ export function VoiceConversation({ hasGrok, hasOpenAI, sending, onTranscript, o
   const isPlayingRef    = useRef(false);
 
   // Web Speech fallback refs
-  const recognitionRef  = useRef<SpeechRecognition | null>(null);
+  const recognitionRef  = useRef<any | null>(null); // eslint-disable-line @typescript-eslint/no-explicit-any
   const synthRef        = useRef<SpeechSynthesisUtterance | null>(null);
 
   // ── Audio playback queue (Grok path) ────────────────────────────────────────
@@ -215,7 +215,9 @@ export function VoiceConversation({ hasGrok, hasOpenAI, sending, onTranscript, o
   // ── Web Speech fallback path ─────────────────────────────────────────────────
 
   const startWebSpeechLoop = useCallback(() => {
-    const SR = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    type SRCtor = new() => any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    const w  = window as Window & { SpeechRecognition?: SRCtor; webkitSpeechRecognition?: SRCtor };
+    const SR = w.SpeechRecognition ?? w.webkitSpeechRecognition;
     if (!SR) {
       setErrMsg('Web Speech not available. Add an API key to enable voice.');
       setStatus('error');
@@ -231,7 +233,7 @@ export function VoiceConversation({ hasGrok, hasOpenAI, sending, onTranscript, o
       recognitionRef.current = rec;
       setStatus('listening');
 
-      rec.onresult = (e) => {
+      rec.onresult = (e: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
         const text = e.results[0]?.[0]?.transcript ?? '';
         if (text.trim()) {
           setStatus('processing');
@@ -419,10 +421,3 @@ const s: Record<string, React.CSSProperties> = {
   },
 };
 
-// Make Web Speech API types available
-declare global {
-  interface Window {
-    SpeechRecognition?: new () => SpeechRecognition;
-    webkitSpeechRecognition?: new () => SpeechRecognition;
-  }
-}

@@ -15,11 +15,10 @@
 //   - M4_DetectionAggroConfig.json — sight/hearing/chase/aggro shell config
 //   - M4_Manifest.json             — machine-readable manifest with M3 dependency link
 //
-// NOT YET:
-//   - Enemy Blueprint creation inside Unreal Editor
-//   - Behavior tree generation or asset mutation
-//   - RC-based editor automation
-//   - Post-write editor reload
+// NEXT STEPS (done by developer in Unreal Editor):
+//   - Create BP_EnemyBase using specs in M4_EnemyArchetypes.json
+//   - Attach Behavior Tree using sight/hearing ranges from M4_DetectionAggroConfig.json
+//   - Wire combat stats from M4_CombatConfig.json to character Blueprint properties
 
 import fs   from 'fs';
 import path from 'path';
@@ -798,7 +797,7 @@ export async function applyUnrealMilestone4(
   writeFile(
     'M4_DetectionAggroConfig.json',
     buildDetectionAggroConfigJson(projectName, scaffold, generatedAt),
-    'Detection and aggro shell config — sight/hearing ranges, chase radius, aggro state machine spec.',
+    'Detection and aggro config — sight/hearing ranges, chase radius, and aggro state machine spec ready to wire.',
   );
 
   // ── Manifest ──────────────────────────────────────────────────────────────

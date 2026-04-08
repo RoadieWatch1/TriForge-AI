@@ -48,7 +48,7 @@ export function SystemHealth({ onNavigate }: SystemHealthProps) {
 
       // ── GitHub ─────────────────────────────────────────────────────────────
       try {
-        const gh = await window.triforge.github.testConnection();
+        const gh = await window.triforge.github.testConnection() as { ok: boolean; user?: string; error?: string };
         result.push({
           id: 'github',
           label: 'GitHub',
@@ -65,7 +65,7 @@ export function SystemHealth({ onNavigate }: SystemHealthProps) {
 
       // ── Slack ──────────────────────────────────────────────────────────────
       try {
-        const sl = await window.triforge.slack.status();
+        const sl = await window.triforge.slack.status() as { connected?: boolean; ok?: boolean; workspaceName?: string; running?: boolean };
         const slConnected = sl.connected ?? sl.ok ?? false;
         result.push({
           id: 'slack',
@@ -83,7 +83,7 @@ export function SystemHealth({ onNavigate }: SystemHealthProps) {
 
       // ── Jira ───────────────────────────────────────────────────────────────
       try {
-        const jr = await window.triforge.jira.status();
+        const jr = await window.triforge.jira.status() as { connected?: boolean; host?: string };
         result.push({
           id: 'jira',
           label: 'Jira',
@@ -100,7 +100,7 @@ export function SystemHealth({ onNavigate }: SystemHealthProps) {
 
       // ── Linear ─────────────────────────────────────────────────────────────
       try {
-        const ln = await window.triforge.linear.status();
+        const ln = await window.triforge.linear.status() as { connected?: boolean; workspace?: string };
         result.push({
           id: 'linear',
           label: 'Linear',

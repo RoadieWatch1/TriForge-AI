@@ -1,14 +1,11 @@
 /**
- * capabilityRegistry.ts — Phase 41
+ * capabilityRegistry.ts
  *
  * Renderer-side capability registry and gate resolver.
- *
- * Main process sends `FEATURE_LOCKED:{CAP}:{tier}` error strings.
- * This module provides a single parser + label lookup so every surface
- * in the renderer handles locks consistently.
+ * Single paid tier — Pro. All subscribers get everything.
  */
 
-// ── Capability labels (mirror of subscription.ts CAPABILITY_LABELS) ───────────
+// ── Capability labels ─────────────────────────────────────────────────────────
 
 export const CAPABILITY_LABELS: Record<string, string> = {
   MULTI_PROVIDER:      'Multiple AI providers',
@@ -31,11 +28,11 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   VENTURE_DISCOVERY:   'Venture Discovery',
   VIBE_CODING:         'Vibe Coding',
   UNLIMITED_MESSAGES:  'Unlimited messages',
-  // Synthetic codes
+  // Synthetic
   MESSAGE_LIMIT_REACHED: 'Unlimited messages',
 };
 
-// ── Upgrade descriptions per capability ───────────────────────────────────────
+// ── Upgrade descriptions ──────────────────────────────────────────────────────
 
 export const CAPABILITY_DESCRIPTIONS: Record<string, string> = {
   MULTI_PROVIDER:      'Run multiple AI models simultaneously for richer answers.',
@@ -61,41 +58,33 @@ export const CAPABILITY_DESCRIPTIONS: Record<string, string> = {
   MESSAGE_LIMIT_REACHED: 'Remove the monthly message cap entirely.',
 };
 
-// ── Plan feature bullets ──────────────────────────────────────────────────────
+// ── Feature bullets for the upgrade gate ─────────────────────────────────────
 
 export const PRO_FEATURE_BULLETS = [
-  '300 messages per month',
-  'Think Tank — 3-AI consensus synthesis',
+  'Unlimited messages — no cap',
+  'Think Tank — Claude, GPT & Grok consensus',
   'Voice I/O (Whisper STT + TTS)',
+  'Autonomous Task Engine with approval flows',
+  'Browser automation + Email & Calendar access',
   'Execution plan generation & runner',
   'One-click workflow templates',
   'Decision Ledger + Markdown/PDF export',
-  'Forge Profiles (operational intelligence)',
-  'Venture Discovery & Vibe Coding',
-  'Long-term memory — 50 entries',
-  'App Builder Services Guide',
+  'Venture Discovery, Vibe Coding & Income Operator',
+  'Forge Profiles (industry operational intelligence)',
+  'Investment trading via connected brokers',
+  'Long-term memory — 500 entries',
 ];
 
-export const BUSINESS_FEATURE_BULLETS = [
-  'Unlimited messages',
-  'Everything in Pro',
-  'Autonomous Task Engine (trust policies + audit)',
-  'Shared Threads & Team Collaboration in Dispatch',
-  'Browser automation',
-  'Email & Calendar access',
-  'Investment trading via brokers',
-  'Workflow replay from Ledger',
-  'Governance profiles',
-  'Memory up to 200 entries',
-];
+/** @deprecated — kept for call-site compatibility; use PRO_FEATURE_BULLETS */
+export const BUSINESS_FEATURE_BULLETS = PRO_FEATURE_BULLETS;
 
 // ── Gate resolver ─────────────────────────────────────────────────────────────
 
 export interface GateInfo {
-  feature:    string;
-  label:      string;
+  feature:     string;
+  label:       string;
   description: string;
-  neededTier: 'pro' | 'business';
+  neededTier:  'pro';
 }
 
 /**
@@ -107,30 +96,27 @@ export function parseLockedError(error: string): GateInfo | null {
 
   if (error === 'MESSAGE_LIMIT_REACHED') {
     return {
-      feature:    'MESSAGE_LIMIT_REACHED',
-      label:      CAPABILITY_LABELS['MESSAGE_LIMIT_REACHED'],
+      feature:     'MESSAGE_LIMIT_REACHED',
+      label:       CAPABILITY_LABELS['MESSAGE_LIMIT_REACHED'],
       description: CAPABILITY_DESCRIPTIONS['MESSAGE_LIMIT_REACHED'],
-      neededTier: 'pro',
+      neededTier:  'pro',
     };
   }
 
   if (!error.startsWith('FEATURE_LOCKED:')) return null;
 
-  const parts      = error.split(':');
-  const feature    = parts[1] ?? 'unknown';
-  const neededTier = (parts[2] === 'business' ? 'business' : 'pro') as 'pro' | 'business';
+  const parts   = error.split(':');
+  const feature = parts[1] ?? 'unknown';
 
   return {
     feature,
     label:       CAPABILITY_LABELS[feature] ?? feature,
     description: CAPABILITY_DESCRIPTIONS[feature] ?? '',
-    neededTier,
+    neededTier:  'pro',
   };
 }
 
-/**
- * Returns true if the error string is any kind of gate/lock error.
- */
+/** Returns true if the error string is any kind of gate/lock error. */
 export function isGateError(error: string | undefined | null): boolean {
   if (!error) return false;
   return error === 'MESSAGE_LIMIT_REACHED' || error.startsWith('FEATURE_LOCKED:');
@@ -139,19 +125,16 @@ export function isGateError(error: string | undefined | null): boolean {
 // ── Tier display helpers ──────────────────────────────────────────────────────
 
 export const TIER_NAMES: Record<string, string> = {
-  free:     'Free',
-  pro:      'Pro',
-  business: 'Business',
+  free: 'Free',
+  pro:  'Pro',
 };
 
 export const TIER_PRICES: Record<string, string> = {
-  free:     '$0',
-  pro:      '$19/mo',
-  business: '$49/mo',
+  free: '$0',
+  pro:  '$19/mo',
 };
 
 export const TIER_TAGLINES: Record<string, string> = {
-  free:     "Explore what's possible",
-  pro:      'Your personal think tank',
-  business: 'Governance-first AI for serious work',
+  free: "Explore what's possible",
+  pro:  'Full access. Everything included.',
 };

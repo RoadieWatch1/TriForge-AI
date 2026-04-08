@@ -140,7 +140,7 @@ function computeThesis(p: TradeThesisProps): ThesisState {
     actionState = 'BLOCKED';
     blockerText = blockedReason;
     nextUnlock = computeNextUnlock(blockedReason, p);
-    contextSentence = blockerText;
+    contextSentence = blockerText!;
   } else if (sessionClosed) {
     actionState = 'STAND_DOWN';
     contextSentence = 'Session closed — no trading window active';

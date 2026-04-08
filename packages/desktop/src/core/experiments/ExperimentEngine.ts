@@ -118,6 +118,7 @@ export class ExperimentEngine {
           const failedChecks = summary.checks.filter(c => !c.ok && !c.skipped).map(c => c.name);
           try {
             engineMemoryGraph.recordBugfix({
+              missionId:    '',
               symptom:      `Experiment failed: ${candidate.approach.slice(0, 120)}`,
               rootCause:    `Failed checks: ${failedChecks.join(', ') || 'unknown'}`,
               fix:          'avoided — experiment rejected by VerificationRunner',

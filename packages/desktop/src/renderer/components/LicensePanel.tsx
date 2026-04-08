@@ -18,22 +18,36 @@ interface TierConfig {
   memoryLimit: number;
   providers: number;
   checkoutUrl: string;
+  annualCheckoutUrl: string;
 }
 
 interface Props {
   onTierChange: (tier: string) => void;
 }
 
+const PLAN_FEATURES = [
+  'Unlimited messages — no cap',
+  'Think Tank — Claude, GPT & Grok in consensus',
+  'Voice I/O (Whisper STT + TTS)',
+  'Autonomous Task Engine with approval flows',
+  'Browser automation + Email & Calendar access',
+  'Execution plans, workflow templates & Ledger',
+  'Venture Discovery, Vibe Coding & Income Operator',
+  'Forge Profiles (industry operational intelligence)',
+  'Investment trading via connected brokers',
+  'Long-term memory — 500 entries',
+];
+
 export function LicensePanel({ onTierChange }: Props) {
-  const [license, setLicense] = useState<LicenseInfo | null>(null);
-  const [tiers, setTiers] = useState<Record<string, TierConfig>>({});
-  const [urls, setUrls] = useState<{ pro: string; business: string; portal: string }>({ pro: '', business: '', portal: '' });
+  const [license, setLicense]         = useState<LicenseInfo | null>(null);
+  const [tiers, setTiers]             = useState<Record<string, TierConfig>>({});
+  const [urls, setUrls]               = useState<{ pro: string; annual: string; portal: string }>({ pro: '', annual: '', portal: '' });
   const [messagesUsed, setMessagesUsed] = useState(0);
-  const [keyInput, setKeyInput] = useState('');
-  const [activating, setActivating] = useState(false);
+  const [keyInput, setKeyInput]       = useState('');
+  const [activating, setActivating]   = useState(false);
   const [deactivating, setDeactivating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [error, setError]             = useState<string | null>(null);
+  const [success, setSuccess]         = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -45,7 +59,7 @@ export function LicensePanel({ onTierChange }: Props) {
       ]);
       setLicense(lic);
       setTiers(tierData as Record<string, TierConfig>);
-      setUrls(urlData);
+      setUrls(urlData as any);
       setMessagesUsed(usage.messagesThisMonth);
     }
     load();
@@ -62,7 +76,7 @@ export function LicensePanel({ onTierChange }: Props) {
       if (result.valid) {
         setLicense({ expiresAt: null, ...result });
         setKeyInput('');
-        setSuccess(`✓ Activated! You're now on the ${result.tier} plan.`);
+        setSuccess('✓ Activated! You now have full access.');
         onTierChange(result.tier);
       } else {
         setError(result.error ?? 'Invalid license key. Check it and try again.');
@@ -92,46 +106,49 @@ export function LicensePanel({ onTierChange }: Props) {
 
   const openUrl = (url: string) => window.triforge.system.openExternal(url);
 
-  const currentTier = (license?.tier ?? 'free') as 'free' | 'pro' | 'business';
-  const tierConfig = tiers[currentTier];
-  const msgLimit = tierConfig?.maxMessagesPerMonth ?? 30;
+  const isPro    = license?.tier === 'pro' && license?.valid;
+  const msgLimit = isPro ? Infinity : (tiers['free']?.maxMessagesPerMonth ?? 30);
   const unlimited = msgLimit === Infinity;
   const remaining = unlimited ? Infinity : Math.max(0, msgLimit - messagesUsed);
 
-  const TIER_BADGE: Record<string, { label: string; color: string }> = {
-    free:     { label: 'Free',     color: 'var(--text-muted)' },
-    pro:      { label: 'Pro',      color: 'var(--accent)' },
-    business: { label: 'Business', color: 'var(--purple)' },
-  };
-  const badge = TIER_BADGE[currentTier] ?? TIER_BADGE.free;
-
   return (
     <div style={styles.page}>
-      {/* Current plan card */}
+      {/* Current plan */}
       <h2 style={styles.sectionTitle}>Your Plan</h2>
       <div style={styles.planCard}>
         <div style={styles.planCardLeft}>
-          <span style={{ ...styles.tierBadge, color: badge.color, borderColor: badge.color }}>{badge.label}</span>
-          <div style={styles.planName}>{tierConfig?.name ?? 'Free'} plan</div>
-          <div style={styles.planTagline}>{tierConfig?.tagline ?? 'Try TriForge AI'}</div>
+          <span style={{
+            ...styles.tierBadge,
+            color:       isPro ? 'var(--accent)' : 'var(--text-muted)',
+            borderColor: isPro ? 'var(--accent)' : 'var(--text-muted)',
+          }}>
+            {isPro ? 'Pro' : 'Free'}
+          </span>
+          <div style={styles.planName}>{isPro ? 'Pro' : 'Free'} plan</div>
+          <div style={styles.planTagline}>
+            {isPro ? 'Full access. Everything included.' : "Explore what's possible"}
+          </div>
         </div>
         <div style={styles.planCardRight}>
-          {!unlimited && (
+          {!unlimited ? (
             <div style={styles.quotaBlock}>
               <div style={styles.quotaLabel}>Messages this month</div>
               <div style={styles.quotaBar}>
-                <div style={{ ...styles.quotaFill, width: `${Math.min(100, (messagesUsed / msgLimit) * 100)}%`, background: remaining < 5 ? '#ef4444' : 'var(--accent)' }} />
+                <div style={{
+                  ...styles.quotaFill,
+                  width:      `${Math.min(100, (messagesUsed / msgLimit) * 100)}%`,
+                  background: remaining < 5 ? '#ef4444' : 'var(--accent)',
+                }} />
               </div>
               <div style={styles.quotaText}>{remaining} of {msgLimit} remaining</div>
             </div>
-          )}
-          {unlimited && (
+          ) : (
             <div style={styles.unlimitedBadge}>∞ Unlimited messages</div>
           )}
         </div>
       </div>
 
-      {/* License key section */}
+      {/* License key */}
       <h2 style={{ ...styles.sectionTitle, marginTop: 28 }}>License Key</h2>
       {license?.valid && license.key ? (
         <div style={styles.activeKey}>
@@ -146,9 +163,7 @@ export function LicensePanel({ onTierChange }: Props) {
         </div>
       ) : (
         <>
-          <p style={styles.hint}>
-            Enter your license key to unlock Pro or Business features.
-          </p>
+          <p style={styles.hint}>Enter your license key to unlock full access.</p>
           <div style={styles.keyInputRow}>
             <input
               style={styles.keyField}
@@ -168,63 +183,47 @@ export function LicensePanel({ onTierChange }: Props) {
         </>
       )}
 
-      {error  && <div style={styles.errorMsg}>{error}</div>}
+      {error   && <div style={styles.errorMsg}>{error}</div>}
       {success && <div style={styles.successMsg}>{success}</div>}
 
-      {/* Manage subscription */}
       {license?.valid && (
         <button style={styles.portalBtn} onClick={() => openUrl(urls.portal)}>
           Manage subscription →
         </button>
       )}
 
-      {/* Upgrade cards */}
-      {currentTier !== 'business' && (
+      {/* Upgrade section — only shown to free users */}
+      {!isPro && (
         <>
-          <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>Upgrade</h2>
-          <div style={styles.upgradeGrid}>
-            {currentTier === 'free' && (
-              <PlanCard
-                name="Pro"
-                price="$19"
-                period="/mo"
-                annual="$15/mo billed annually"
-                tagline="Your personal think tank"
-                features={[
-                  '300 messages / month',
-                  'Think Tank — 3 AI consensus',
-                  'Voice I/O (Whisper + TTS)',
-                  'Execution plan generation',
-                  'One-click workflow templates',
-                  'Decision Ledger + export',
-                  'Long-term memory (50 entries)',
-                  'App Builder Services Guide',
-                ]}
-                ctaLabel="Upgrade to Pro"
-                accentColor="var(--accent)"
-                onCta={() => openUrl(urls.pro)}
-              />
-            )}
-            <PlanCard
-              name="Business"
-              price="$49"
-              period="/mo"
-              annual="$40/mo billed annually"
-              tagline="Governance-first AI for serious work"
-              features={[
-                'Unlimited messages',
-                'Everything in Pro',
-                'Browser automation',
-                'Email & Calendar access',
-                'Investment trading',
-                'Workflow replay from Ledger',
-                'Governance profiles',
-                'Memory up to 200 entries',
-              ]}
-              ctaLabel="Upgrade to Business"
-              accentColor="var(--purple)"
-              onCta={() => openUrl(urls.business)}
-            />
+          <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>Upgrade to Pro</h2>
+          <div style={styles.upgradeCard}>
+            <div style={styles.upgradeHeader}>
+              <span style={styles.upgradeBadge}>Pro</span>
+              <span style={styles.upgradeTagline}>Full access. Everything included.</span>
+            </div>
+
+            <ul style={styles.featureList}>
+              {PLAN_FEATURES.map(f => (
+                <li key={f} style={styles.featureItem}>
+                  <span style={{ color: 'var(--accent)', fontWeight: 700 }}>✓</span> {f}
+                </li>
+              ))}
+            </ul>
+
+            <div style={styles.pricingRow}>
+              <button style={styles.monthlyBtn} onClick={() => openUrl(urls.pro)}>
+                <div style={styles.btnPriceLabel}>Monthly</div>
+                <div style={styles.btnPrice}>$19 <span style={styles.btnPer}>/mo</span></div>
+                <div style={styles.btnSub}>cancel anytime</div>
+              </button>
+
+              <button style={styles.annualBtn} onClick={() => openUrl(urls.annual)}>
+                <div style={styles.btnBadge}>Save 21%</div>
+                <div style={styles.btnPriceLabel}>Annual</div>
+                <div style={styles.btnPrice}>$15 <span style={styles.btnPer}>/mo</span></div>
+                <div style={styles.btnSub}>$180 billed yearly</div>
+              </button>
+            </div>
           </div>
         </>
       )}
@@ -232,44 +231,13 @@ export function LicensePanel({ onTierChange }: Props) {
   );
 }
 
-// ── Plan Card ────────────────────────────────────────────────────────────────
-
-function PlanCard({ name, price, period, annual, tagline, features, ctaLabel, accentColor, onCta }: {
-  name: string; price: string; period: string; annual: string; tagline: string;
-  features: string[]; ctaLabel: string; accentColor: string; onCta: () => void;
-}) {
-  return (
-    <div style={{ ...styles.planCard2, borderColor: accentColor + '55' }}>
-      <div style={{ ...styles.planBadge2, color: accentColor }}>{name}</div>
-      <div style={styles.planPrice2}>
-        <span style={styles.planAmount}>{price}</span>
-        <span style={styles.planPeriod}>{period}</span>
-      </div>
-      <div style={styles.planAnnual}>{annual}</div>
-      <div style={styles.planTagline2}>{tagline}</div>
-      <ul style={styles.planFeatures}>
-        {features.map(f => (
-          <li key={f} style={styles.planFeatureItem}>
-            <span style={{ color: accentColor, fontWeight: 700 }}>✓</span> {f}
-          </li>
-        ))}
-      </ul>
-      <button style={{ ...styles.planCta, background: accentColor }} onClick={onCta}>{ctaLabel}</button>
-    </div>
-  );
-}
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
 function maskKey(key: string): string {
   if (key.length <= 8) return '••••-••••';
   return key.slice(0, 4) + '-••••-••••-' + key.slice(-4);
 }
 
-// ── Styles ──────────────────────────────────────────────────────────────────
-
 const styles: Record<string, React.CSSProperties> = {
-  page: { flex: 1, overflowY: 'auto', padding: 24 },
+  page:         { flex: 1, overflowY: 'auto', padding: 24 },
   sectionTitle: { fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 12, marginTop: 0 },
 
   planCard: {
@@ -277,46 +245,73 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--bg-elevated)', border: '1px solid var(--border)',
     borderRadius: 12, padding: '16px 20px', gap: 16,
   },
-  planCardLeft: { display: 'flex', flexDirection: 'column', gap: 4 },
+  planCardLeft:  { display: 'flex', flexDirection: 'column', gap: 4 },
   planCardRight: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 },
-  tierBadge: { fontSize: 11, fontWeight: 700, border: '1px solid', borderRadius: 20, padding: '2px 10px', textTransform: 'uppercase', letterSpacing: '0.08em', width: 'fit-content' },
-  planName: { fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' },
+  tierBadge: {
+    fontSize: 11, fontWeight: 700, border: '1px solid', borderRadius: 20,
+    padding: '2px 10px', textTransform: 'uppercase', letterSpacing: '0.08em', width: 'fit-content',
+  },
+  planName:    { fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' },
   planTagline: { fontSize: 12, color: 'var(--text-secondary)' },
 
-  quotaBlock: { display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end' },
-  quotaLabel: { fontSize: 11, color: 'var(--text-muted)' },
-  quotaBar: { width: 120, height: 4, background: 'var(--bg-input)', borderRadius: 2, overflow: 'hidden' },
-  quotaFill: { height: '100%', borderRadius: 2, transition: 'width 0.4s' },
-  quotaText: { fontSize: 12, color: 'var(--text-secondary)' },
+  quotaBlock:     { display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end' },
+  quotaLabel:     { fontSize: 11, color: 'var(--text-muted)' },
+  quotaBar:       { width: 120, height: 4, background: 'var(--bg-input)', borderRadius: 2, overflow: 'hidden' },
+  quotaFill:      { height: '100%', borderRadius: 2, transition: 'width 0.4s' },
+  quotaText:      { fontSize: 12, color: 'var(--text-secondary)' },
   unlimitedBadge: { fontSize: 13, fontWeight: 700, color: 'var(--accent)' },
 
-  hint: { fontSize: 13, color: 'var(--text-secondary)', marginBottom: 10 },
-  keyInputRow: { display: 'flex', gap: 8 },
-  keyField: { flex: 1, background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text-primary)', fontSize: 14, padding: '8px 12px', fontFamily: 'var(--font)', letterSpacing: '0.04em' },
-  activateBtn: { background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 18px', fontSize: 14, fontWeight: 600, cursor: 'pointer' },
+  hint:              { fontSize: 13, color: 'var(--text-secondary)', marginBottom: 10 },
+  keyInputRow:       { display: 'flex', gap: 8 },
+  keyField:          { flex: 1, background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--text-primary)', fontSize: 14, padding: '8px 12px', fontFamily: 'var(--font)', letterSpacing: '0.04em' },
+  activateBtn:       { background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 18px', fontSize: 14, fontWeight: 600, cursor: 'pointer' },
   activateBtnDisabled: { opacity: 0.4, cursor: 'not-allowed' },
 
-  activeKey: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 10, padding: '10px 14px' },
-  keyInfo: { display: 'flex', alignItems: 'center', gap: 10 },
-  keyActive: { fontSize: 12, color: '#10a37f', fontWeight: 600 },
-  keyMasked: { fontSize: 13, color: 'var(--text-primary)', fontFamily: 'monospace' },
-  keyEmail: { fontSize: 12, color: 'var(--text-muted)' },
+  activeKey:    { display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 10, padding: '10px 14px' },
+  keyInfo:      { display: 'flex', alignItems: 'center', gap: 10 },
+  keyActive:    { fontSize: 12, color: '#10a37f', fontWeight: 600 },
+  keyMasked:    { fontSize: 13, color: 'var(--text-primary)', fontFamily: 'monospace' },
+  keyEmail:     { fontSize: 12, color: 'var(--text-muted)' },
   deactivateBtn: { background: 'none', border: '1px solid var(--border)', color: 'var(--text-secondary)', borderRadius: 6, padding: '4px 12px', fontSize: 12, cursor: 'pointer' },
 
-  errorMsg: { background: '#ef444420', border: '1px solid #ef4444', borderRadius: 8, color: '#ef4444', fontSize: 13, padding: '8px 12px', marginTop: 10 },
+  errorMsg:  { background: '#ef444420', border: '1px solid #ef4444', borderRadius: 8, color: '#ef4444', fontSize: 13, padding: '8px 12px', marginTop: 10 },
   successMsg: { background: '#10a37f20', border: '1px solid #10a37f', borderRadius: 8, color: '#10a37f', fontSize: 13, padding: '8px 12px', marginTop: 10 },
-
   portalBtn: { background: 'none', border: 'none', color: 'var(--text-secondary)', fontSize: 13, cursor: 'pointer', marginTop: 12, padding: 0 },
 
-  upgradeGrid: { display: 'flex', gap: 16, flexWrap: 'wrap' },
-  planCard2: { flex: 1, minWidth: 220, background: 'var(--bg-elevated)', border: '1px solid', borderRadius: 12, padding: 20, display: 'flex', flexDirection: 'column', gap: 8 },
-  planBadge2: { fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' },
-  planPrice2: { display: 'flex', alignItems: 'baseline', gap: 2 },
-  planAmount: { fontSize: 28, fontWeight: 800, color: 'var(--text-primary)' },
-  planPeriod: { fontSize: 14, color: 'var(--text-secondary)' },
-  planAnnual: { fontSize: 11, color: 'var(--text-muted)', marginTop: -4 },
-  planTagline2: { fontSize: 13, color: 'var(--text-secondary)' },
-  planFeatures: { listStyle: 'none', padding: 0, margin: '4px 0', display: 'flex', flexDirection: 'column', gap: 5 },
-  planFeatureItem: { fontSize: 13, color: 'var(--text-primary)', display: 'flex', gap: 6 },
-  planCta: { border: 'none', borderRadius: 8, color: '#fff', padding: '10px 0', fontSize: 13, fontWeight: 700, cursor: 'pointer', marginTop: 4 },
+  upgradeCard: {
+    background: 'var(--bg-elevated)', border: '1px solid var(--accent)33',
+    borderRadius: 14, padding: 20, display: 'flex', flexDirection: 'column', gap: 14,
+  },
+  upgradeHeader: { display: 'flex', alignItems: 'center', gap: 10 },
+  upgradeBadge: {
+    fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em',
+    color: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 20,
+    padding: '2px 10px',
+  },
+  upgradeTagline: { fontSize: 14, color: 'var(--text-secondary)' },
+  featureList:    { listStyle: 'none', padding: 0, margin: 0, display: 'flex', flexDirection: 'column', gap: 5 },
+  featureItem:    { fontSize: 13, color: 'var(--text-primary)', display: 'flex', gap: 6 },
+
+  pricingRow: { display: 'flex', gap: 12 },
+  monthlyBtn: {
+    flex: 1, background: 'var(--bg-input)', border: '1px solid var(--border)',
+    borderRadius: 10, padding: '14px 12px', cursor: 'pointer',
+    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+    color: 'var(--text-primary)',
+  },
+  annualBtn: {
+    flex: 1, background: 'linear-gradient(135deg, var(--accent, #6366f1)22, #8b5cf622)',
+    border: '1px solid var(--accent)', borderRadius: 10, padding: '14px 12px',
+    cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+    position: 'relative', color: 'var(--text-primary)',
+  },
+  btnBadge: {
+    position: 'absolute', top: -10, left: '50%', transform: 'translateX(-50%)',
+    background: 'var(--accent)', color: '#fff', fontSize: 10, fontWeight: 700,
+    borderRadius: 20, padding: '2px 8px', letterSpacing: '0.05em',
+  },
+  btnPriceLabel: { fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' },
+  btnPrice:      { fontSize: 24, fontWeight: 800 },
+  btnPer:        { fontSize: 13, fontWeight: 400, color: 'var(--text-secondary)' },
+  btnSub:        { fontSize: 11, color: 'var(--text-muted)' },
 };

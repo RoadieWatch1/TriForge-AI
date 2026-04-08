@@ -52,33 +52,33 @@ export class MemoryManager {
   /** Subscribe to EventBus and auto-record significant events. */
   connectEventBus(): void {
     this._unsubscribers.push(
-      eventBus.on('MISSION_COMPLETED', (ev) => {
+      eventBus.on('MISSION_COMPLETED', (ev: any) => {
         this.add('mission', `Mission completed: ${ev.name}`, { missionId: ev.missionId });
         this._graph.addNode({ id: `mission:${ev.missionId}`, type: 'mission', label: ev.name });
         this._graph.addEdge({ from: 'system', to: `mission:${ev.missionId}`, relation: 'completed' });
         this._persistGraph();
       }),
 
-      eventBus.on('MISSION_FAILED', (ev) => {
+      eventBus.on('MISSION_FAILED', (ev: any) => {
         this.add('mission', `Mission failed: ${ev.name} — ${ev.error}`, { missionId: ev.missionId, error: ev.error });
       }),
 
-      eventBus.on('TOOL_EXECUTE_COMPLETED', (ev) => {
+      eventBus.on('TOOL_EXECUTE_COMPLETED', (ev: any) => {
         this.add('tool', `Tool executed: ${ev.tool}`, { requestId: ev.requestId });
         this._graph.addNode({ id: `tool:${ev.tool}`, type: 'tool', label: ev.tool });
         this._graph.addEdge({ from: 'system', to: `tool:${ev.tool}`, relation: 'executed' });
         this._persistGraph();
       }),
 
-      eventBus.on('TASK_COMPLETED', (ev) => {
+      eventBus.on('TASK_COMPLETED', (ev: any) => {
         this.add('task', `Task completed: ${ev.taskId}`, { taskId: ev.taskId });
       }),
 
-      eventBus.on('TASK_FAILED', (ev) => {
+      eventBus.on('TASK_FAILED', (ev: any) => {
         this.add('task', `Task failed: ${ev.taskId} — ${ev.error}`, { taskId: ev.taskId, error: ev.error });
       }),
 
-      eventBus.on('WORKFLOW_FIRED', (ev) => {
+      eventBus.on('WORKFLOW_FIRED', (ev: any) => {
         this.add('workflow', `Workflow fired: ${ev.workflowName}`, { workflowId: ev.workflowId });
         this._graph.addNode({ id: `workflow:${ev.workflowId}`, type: 'workflow', label: ev.workflowName });
         this._graph.addEdge({ from: 'system', to: `workflow:${ev.workflowId}`, relation: 'triggered' });

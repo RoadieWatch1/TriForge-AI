@@ -583,7 +583,7 @@ export class TriForgeShadowSimulator {
       const watch = this._state.watches.find(w => w.id === intent.watchId)
         ?? this._watchScheduler.getActiveWatches().find(w => w.id === intent.watchId);
       const confirmationTypes = watch?.confirmations
-        .filter(c => c.detected)
+        .filter(c => c.detectedAt)
         .map(c => c.type) ?? [];
 
       // Get current regime and news context
@@ -647,14 +647,14 @@ export class TriForgeShadowSimulator {
       const entry: ExtendedJournalEntry = {
         tradeId: pos.intentId,
         symbol: intent.symbol,
-        direction: intent.side === 'long' ? 'up' : 'down',
+        direction: intent.side === 'long' ? 'long' : 'short',
         levelType: intent.entryLevel.type,
         levelQualityScore: intent.entryLevel.qualityScore,
         routeQualityScore: intent.route.qualityScore,
         confirmationScore: intent.score.confirmationScore,
         tradeScore: intent.score.final,
         tradeScoreBand: intent.score.band,
-        sessionLabel: session?.windowLabel ?? 'unknown',
+        sessionLabel: (session?.windowLabel ?? 'unknown') as import('@triforge/engine').SessionLabel,
         confirmationTypes: confirmationTypes as any[],
         outcome,
         pnlR,
@@ -968,7 +968,7 @@ export class TriForgeShadowSimulator {
 
     // Determine current and intent-time regime
     const currentRegime = regimeCtx?.current?.regime ?? null;
-    const intentRegime = intent.tags?.find(
+    const intentRegime = (intent as unknown as { tags?: string[] }).tags?.find(
       (t: string) => ['open_drive', 'trend', 'range', 'reversal', 'expansion', 'drift'].includes(t),
     ) ?? null;
 

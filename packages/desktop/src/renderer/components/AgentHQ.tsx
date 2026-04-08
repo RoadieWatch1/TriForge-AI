@@ -945,6 +945,8 @@ export function AgentHQ() {
   const [ssExamples, setSsExamples]               = useState<BundledExample[]>([]);
   const [ssUninstallingId, setSsUninstallingId]   = useState<string | null>(null);
   const [ssRunningSkillId, setSsRunningSkillId]   = useState<string | null>(null);
+  const [ssRunGoal, setSsRunGoal]                 = useState('');
+  const [feedbacks]                               = useState<Record<string, { msg: string; color: string }>>({});
 
   // Phase 4 — Local Model Pipeline
   const [lmConfig, setLmConfig] = useState<{ enabled: boolean; baseUrl: string; model: string; fallback: boolean } | null>(null);

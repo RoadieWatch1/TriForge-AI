@@ -210,7 +210,7 @@ function _computeBucket(
   // Points calculations
   const allPnlPoints = entries.map(e => {
     if (e.exitPrice === undefined || e.entryPrice === undefined) return 0;
-    const raw = e.direction === 'up'
+    const raw = e.direction === 'long'
       ? e.exitPrice - e.entryPrice
       : e.entryPrice - e.exitPrice;
     return raw;

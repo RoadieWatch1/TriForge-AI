@@ -55,7 +55,8 @@ export type OperatorActionType =
   | 'list_apps'      // List all visible running apps (read-only)
   | 'screenshot'     // Capture the current screen to a file
   | 'type_text'      // Type a string into the currently focused window
-  | 'send_key';      // Send a named key + optional modifiers
+  | 'send_key'       // Send a named key + optional modifiers
+  | 'click_at';      // Click at pixel coordinates on screen
 
 export interface OperatorAction {
   /** Unique ID for this action instance */
@@ -75,6 +76,12 @@ export interface OperatorAction {
   modifiers?: Array<'cmd' | 'shift' | 'alt' | 'ctrl'>;
   /** Output file path for screenshot (defaults to system temp dir) */
   outputPath?: string;
+  /** X coordinate for click_at (screen pixels, top-left origin) */
+  x?: number;
+  /** Y coordinate for click_at (screen pixels, top-left origin) */
+  y?: number;
+  /** Mouse button for click_at */
+  button?: 'left' | 'right' | 'double';
   /** Operator session this action belongs to */
   sessionId: string;
   /** When this action was requested */
@@ -100,6 +107,7 @@ export const OPERATOR_ACTION_RISKS: Record<OperatorActionType, OperatorActionRis
   focus_app:     'focus_only',
   type_text:     'input_action',
   send_key:      'input_action',
+  click_at:      'input_action',
 };
 
 /**
@@ -113,6 +121,7 @@ export const OPERATOR_REQUIRES_APPROVAL: Record<OperatorActionType, boolean> = {
   focus_app:     false,
   type_text:     true,
   send_key:      true,
+  click_at:      true,
 };
 
 // ── Action Result ─────────────────────────────────────────────────────────────
@@ -260,6 +269,17 @@ export interface OperatorSession {
   status: 'active' | 'completed' | 'failed' | 'stopped';
   stopReason?: string;
   endedAt?: number;
+  /**
+   * Trust level for this session.
+   *
+   * 'supervised' (default) — input actions (type, key, click) require human
+   *   approval before execution. The operator pauses and waits.
+   *
+   * 'trusted' — input actions execute immediately without an approval gate.
+   *   All actions are still logged to the audit trail for review.
+   *   Use when you fully trust the task and want uninterrupted execution.
+   */
+  trustLevel?: 'supervised' | 'trusted';
 }
 
 export interface OperatorSessionEntry {

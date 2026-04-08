@@ -96,7 +96,8 @@ export function ForgeChamber({ visible }: Props) {
   // Subscribe to real engine events
   useEffect(() => {
     if (!visible) return;
-    const unsub = window.triforge.forge.onUpdate((data: ForgeUpdateEvent) => {
+    const unsub = window.triforge.forge.onUpdate((rawData) => {
+      const data = rawData as ForgeUpdateEvent;
       if (!mountedRef.current) return;
       setState(prev => {
         const next: ForgeState = { ...prev, providers: { ...prev.providers } };

@@ -38,8 +38,8 @@ export async function sendMail(opts: MailOptions, creds: CredentialManager): Pro
     from: smtp.fromName ? `"${smtp.fromName}" <${smtp.from}>` : smtp.from,
     to:   Array.isArray(opts.to) ? opts.to.join(', ') : opts.to,
     subject: opts.subject,
-    text: opts.text ?? opts.html,
-    html: opts.html,
+    text: opts.body,
+    html: opts.isHtml ? opts.body : undefined,
   });
 
   return {

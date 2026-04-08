@@ -508,7 +508,7 @@ export class TastytradeClient {
     console.log('[TastytradeClient] dxLink URL:', { raw: rawUrl, normalized: wsUrl });
     console.log(`[TastytradeClient] Connecting to dxLink at ${wsUrl}`);
 
-    const { default: WsClass } = await import('ws') as { default: typeof WebSocket };
+    const { default: WsClass } = await import('ws') as unknown as { default: typeof WebSocket };
     this._ws = new (WsClass as unknown as new (url: string) => WebSocket)(wsUrl);
 
     this._firstMsgLogged = false;

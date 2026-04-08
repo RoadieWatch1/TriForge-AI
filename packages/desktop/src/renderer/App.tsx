@@ -34,6 +34,7 @@ import { TrianglePresence } from './components/TrianglePresence';
 import { voiceService } from './voice/VoiceService';
 import { OperateScreen } from './screens/OperateScreen';
 import { SessionsScreen } from './screens/SessionsScreen';
+import { PackBuilderScreen } from './components/PackBuilderScreen';
 
 // ── Error Boundary ───────────────────────────────────────────────────────────
 export class ErrorBoundary extends React.Component<
@@ -103,7 +104,7 @@ type Screen =
   // Primary pillar wrapper screens (Phase 2)
   | 'operate' | 'sessions'
   // Internal / secondary screens (not primary shell)
-  | 'ledger' | 'plan' | 'builder' | 'profiles'
+  | 'ledger' | 'plan' | 'builder' | 'profiles' | 'pack-builder'
   | 'missioncontrol' | 'agenthq'
   // Legacy destinations — retained for routing, hidden from future primary nav
   | 'dashboard' | 'operator' | 'world' | 'files' | 'inbox'
@@ -444,6 +445,7 @@ export function App() {
             />
           )}
           {screen === 'builder' && <AppBuilder onBack={() => setScreen('operate')} />}
+          {screen === 'pack-builder' && <PackBuilderScreen />}
           {screen === 'profiles' && (
             <ForgeProfiles
               tier={tier}
@@ -531,6 +533,28 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
   const [appVersion, setAppVersion] = useState<string>('');
   const [appTier, setAppTier]       = useState<string>('free');
 
+  // Relay state
+  const [relayStatus, setRelayStatus]     = useState<any>(null);
+  const [relayUrl, setRelayUrl]           = useState('');
+  const [relayLabel, setRelayLabel]       = useState('');
+  const [relaySaving, setRelaySaving]     = useState(false);
+  const [relayError, setRelayError]       = useState<string | null>(null);
+  const [relayExpanded, setRelayExpanded] = useState(false);
+
+  // Social accounts state
+  const [socialAccounts, setSocialAccounts]     = useState<any[]>([]);
+  const [socialConnecting, setSocialConnecting] = useState<string | null>(null);
+  const [socialError, setSocialError]           = useState<string | null>(null);
+
+  // OSK state
+  const [oskOpen, setOskOpen]     = useState<boolean | null>(null);
+  const [oskActing, setOskActing] = useState(false);
+
+  // Screen watcher state
+  const [watcherRunning, setWatcherRunning] = useState<boolean | null>(null);
+  const [watcherLastAt, setWatcherLastAt]   = useState<number | null>(null);
+  const [watcherActing, setWatcherActing]   = useState(false);
+
   useEffect(() => {
     Promise.all([
       window.triforge.app?.version?.().catch(() => ''),
@@ -543,6 +567,17 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
     window.triforge.operatorSafety.getStatus().then(res => {
       if (res.ok) setOperatorEnabled(res.enabled);
     }).catch(() => { /* kill switch unavailable — leave null */ });
+    // Load relay status
+    (window.triforge as any).relay?.status?.().then((s: any) => setRelayStatus(s)).catch(() => {});
+    // Load social accounts
+    (window.triforge as any).social?.getAccounts?.().then((a: any[]) => setSocialAccounts(a ?? [])).catch(() => {});
+    // Load OSK status
+    (window.triforge as any).osk?.status?.().then((r: any) => setOskOpen(r?.open ?? false)).catch(() => {});
+    // Load screen watcher status
+    (window.triforge as any).screenWatch?.check?.().then((r: any) => {
+      setWatcherRunning(r?.running ?? false);
+      setWatcherLastAt(r?.lastChangedAt ?? null);
+    }).catch(() => {});
   }, []);
 
   const handleToggleOperator = async () => {
@@ -562,6 +597,112 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
       setOperatorError(e?.message ?? 'Unexpected error.');
     } finally {
       setOperatorToggling(false);
+    }
+  };
+
+  // ── Relay handlers ──────────────────────────────────────────────────────────
+
+  const handleRelayRegister = async () => {
+    if (!relayUrl.trim()) { setRelayError('Enter a relay URL.'); return; }
+    setRelaySaving(true);
+    setRelayError(null);
+    try {
+      const res = await (window.triforge as any).relay.register(relayUrl.trim(), relayLabel.trim() || 'TriForge Desktop');
+      if (res?.ok) {
+        const s = await (window.triforge as any).relay.status();
+        setRelayStatus(s);
+        setRelayExpanded(false);
+        setRelayUrl('');
+        setRelayLabel('');
+      } else {
+        setRelayError(res?.error ?? 'Registration failed.');
+      }
+    } catch (e: any) {
+      setRelayError(e?.message ?? 'Unexpected error.');
+    } finally {
+      setRelaySaving(false);
+    }
+  };
+
+  const handleRelayDisconnect = async () => {
+    setRelayError(null);
+    try {
+      await (window.triforge as any).relay.disconnect();
+      setRelayStatus(null);
+      setRelayExpanded(false);
+    } catch (e: any) {
+      setRelayError(e?.message ?? 'Disconnect failed.');
+    }
+  };
+
+  // ── Social handlers ──────────────────────────────────────────────────────────
+
+  const handleSocialConnect = async (platform: string) => {
+    setSocialConnecting(platform);
+    setSocialError(null);
+    try {
+      const res = await (window.triforge as any).social.connect(platform);
+      if (res?.ok) {
+        const accounts = await (window.triforge as any).social.getAccounts();
+        setSocialAccounts(accounts ?? []);
+      } else {
+        setSocialError(res?.error ?? `Failed to connect ${platform}.`);
+      }
+    } catch (e: any) {
+      setSocialError(e?.message ?? 'Unexpected error.');
+    } finally {
+      setSocialConnecting(null);
+    }
+  };
+
+  const handleSocialDisconnect = async (platform: string) => {
+    setSocialError(null);
+    try {
+      await (window.triforge as any).social.disconnect(platform);
+      const accounts = await (window.triforge as any).social.getAccounts();
+      setSocialAccounts(accounts ?? []);
+    } catch (e: any) {
+      setSocialError(e?.message ?? 'Unexpected error.');
+    }
+  };
+
+  // ── OSK handler ───────────────────────────────────────────────────────────────
+
+  const handleToggleOsk = async () => {
+    if (oskActing) return;
+    setOskActing(true);
+    try {
+      if (oskOpen) {
+        await (window.triforge as any).osk.close();
+        setOskOpen(false);
+      } else {
+        await (window.triforge as any).osk.open();
+        setOskOpen(true);
+      }
+    } catch {
+      // best-effort
+    } finally {
+      setOskActing(false);
+    }
+  };
+
+  // ── Screen watcher handler ────────────────────────────────────────────────────
+
+  const handleToggleWatcher = async () => {
+    if (watcherActing) return;
+    setWatcherActing(true);
+    try {
+      if (watcherRunning) {
+        await (window.triforge as any).screenWatch.stop();
+        setWatcherRunning(false);
+      } else {
+        await (window.triforge as any).screenWatch.start();
+        setWatcherRunning(true);
+      }
+    } catch {
+      // best-effort
+    } finally {
+      setWatcherActing(false);
     }
   };
 
@@ -780,6 +921,172 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
       {updateStatus && (
         <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginTop: 10 }}>{updateStatus}</p>
       )}
+
+      {/* ── Relay ─────────────────────────────────────────────────────────── */}
+      <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>Remote Relay</h2>
+      <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
+        Connect to a relay server to trigger automation jobs remotely from your phone or browser. Your device polls the relay for pending jobs.
+      </p>
+      {relayStatus?.connected ? (
+        <div style={styles.relayCard}>
+          <div style={styles.relayConnectedRow}>
+            <span style={styles.relayDotGreen} />
+            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', flex: 1 }}>Connected</span>
+            <button style={styles.removeBtn} onClick={handleRelayDisconnect}>Disconnect</button>
+            <button style={{ ...styles.removeBtn, marginLeft: 6 }} onClick={() => setRelayExpanded(x => !x)}>
+              {relayExpanded ? 'Cancel' : 'Re-register'}
+            </button>
+          </div>
+          <div style={styles.relayInfoRow}>
+            <span style={styles.relayInfoKey}>Relay URL</span>
+            <span style={styles.relayInfoVal}>{relayStatus.relayUrl}</span>
+          </div>
+          {relayStatus.deviceId && (
+            <div style={styles.relayInfoRow}>
+              <span style={styles.relayInfoKey}>Device ID</span>
+              <span style={{ ...styles.relayInfoVal, fontFamily: 'monospace', fontSize: 11 }}>{relayStatus.deviceId}</span>
+            </div>
+          )}
+          {relayStatus.label && (
+            <div style={styles.relayInfoRow}>
+              <span style={styles.relayInfoKey}>Label</span>
+              <span style={styles.relayInfoVal}>{relayStatus.label}</span>
+            </div>
+          )}
+          {relayExpanded && (
+            <div style={styles.relayForm}>
+              <input style={styles.keyField} placeholder="Relay URL" value={relayUrl} onChange={e => setRelayUrl(e.target.value)} />
+              <input style={styles.keyField} placeholder="Device label (optional)" value={relayLabel} onChange={e => setRelayLabel(e.target.value)} />
+              <button
+                style={{ ...styles.saveBtn, ...(!relayUrl.trim() || relaySaving ? styles.saveBtnDisabled : {}) }}
+                onClick={handleRelayRegister}
+                disabled={!relayUrl.trim() || relaySaving}
+              >
+                {relaySaving ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={styles.relayCard}>
+          <div style={styles.relayConnectedRow}>
+            <span style={styles.relayDotGray} />
+            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', flex: 1 }}>Not connected</span>
+          </div>
+          <div style={styles.relayForm}>
+            <input style={styles.keyField} placeholder="https://your-relay.railway.app" value={relayUrl} onChange={e => setRelayUrl(e.target.value)} />
+            <input style={styles.keyField} placeholder="Device label (optional)" value={relayLabel} onChange={e => setRelayLabel(e.target.value)} />
+            <button
+              style={{ ...styles.saveBtn, ...(!relayUrl.trim() || relaySaving ? styles.saveBtnDisabled : {}) }}
+              onClick={handleRelayRegister}
+              disabled={!relayUrl.trim() || relaySaving}
+            >
+              {relaySaving ? 'Connecting…' : 'Connect'}
+            </button>
+          </div>
+        </div>
+      )}
+      {relayError && <p style={{ color: '#ef4444', fontSize: 12, marginTop: 6 }}>{relayError}</p>}
+
+      {/* ── Social Accounts ─────────────────────────────────────────────────── */}
+      <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>Social Accounts</h2>
+      <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
+        Connect social platforms to let TriForge publish content on your behalf. OAuth opens in your browser — tokens are stored locally.
+      </p>
+      {(['youtube', 'instagram', 'tiktok', 'facebook'] as const).map(platform => {
+        const account = socialAccounts.find((a: any) => a.platform === platform);
+        const isConnecting = socialConnecting === platform;
+        const icons: Record<string, string> = { youtube: '▶', instagram: '◈', tiktok: '♪', facebook: 'f' };
+        const colors: Record<string, string> = { youtube: '#ff0000', instagram: '#e1306c', tiktok: '#010101', facebook: '#1877f2' };
+        return (
+          <div key={platform} style={styles.permRow}>
+            <div style={{ ...styles.socialIcon, background: colors[platform] }}>{icons[platform]}</div>
+            <div style={{ flex: 1 }}>
+              <div style={styles.permLabel} >{platform.charAt(0).toUpperCase() + platform.slice(1)}</div>
+              <div style={styles.permDesc}>
+                {account?.connected ? `@${account.handle}` : 'Not connected'}
+              </div>
+            </div>
+            {account?.connected ? (
+              <button style={styles.removeBtn} onClick={() => handleSocialDisconnect(platform)}>Disconnect</button>
+            ) : (
+              <button
+                style={{ ...styles.saveBtn, fontSize: 12, padding: '5px 12px', opacity: isConnecting ? 0.6 : 1 }}
+                onClick={() => handleSocialConnect(platform)}
+                disabled={isConnecting || socialConnecting !== null}
+              >
+                {isConnecting ? 'Connecting…' : 'Connect'}
+              </button>
+            )}
+          </div>
+        );
+      })}
+      {socialError && <p style={{ color: '#ef4444', fontSize: 12, marginTop: 4 }}>{socialError}</p>}
+      {socialConnecting && (
+        <p style={{ color: 'var(--text-secondary)', fontSize: 12, marginTop: 4 }}>
+          Waiting for browser OAuth — complete sign-in in the browser window that opened…
+        </p>
+      )}
+
+      {/* ── On-Screen Keyboard ──────────────────────────────────────────────── */}
+      <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>On-Screen Keyboard</h2>
+      <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
+        Toggle the system on-screen keyboard for touchscreen or accessibility input. On macOS this opens the Accessibility Keyboard; on Windows it opens the built-in OSK.
+      </p>
+      <div style={styles.permRow}>
+        <button
+          style={{
+            ...styles.toggle,
+            ...(oskOpen ? styles.toggleOn : {}),
+            opacity: oskOpen === null || oskActing ? 0.5 : 1,
+            cursor: oskOpen === null || oskActing ? 'not-allowed' : 'pointer',
+          }}
+          onClick={handleToggleOsk}
+          disabled={oskOpen === null || oskActing}
+        >
+          <div style={{ ...styles.toggleKnob, ...(oskOpen ? styles.toggleKnobOn : {}) }} />
+        </button>
+        <div>
+          <div style={styles.permLabel}>
+            {oskOpen === null ? 'On-Screen Keyboard' : oskOpen ? 'On-Screen Keyboard — Open' : 'On-Screen Keyboard — Closed'}
+          </div>
+          <div style={styles.permDesc}>
+            {oskOpen === null ? 'Loading…' : oskOpen ? 'Keyboard is visible. Toggle to close it.' : 'Keyboard is hidden. Toggle to open it.'}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Screen Watcher ──────────────────────────────────────────────────── */}
+      <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>Screen Watcher</h2>
+      <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
+        Runs a background screenshot diff loop that detects screen changes. When active, the operator and workflow packs receive real-time screen-change signals to guide automation decisions.
+      </p>
+      <div style={styles.permRow}>
+        <button
+          style={{
+            ...styles.toggle,
+            ...(watcherRunning ? styles.toggleOn : {}),
+            opacity: watcherRunning === null || watcherActing ? 0.5 : 1,
+            cursor: watcherRunning === null || watcherActing ? 'not-allowed' : 'pointer',
+          }}
+          onClick={handleToggleWatcher}
+          disabled={watcherRunning === null || watcherActing}
+        >
+          <div style={{ ...styles.toggleKnob, ...(watcherRunning ? styles.toggleKnobOn : {}) }} />
+        </button>
+        <div>
+          <div style={styles.permLabel}>
+            {watcherRunning === null ? 'Screen Watcher' : watcherRunning ? 'Screen Watcher — Active' : 'Screen Watcher — Stopped'}
+          </div>
+          <div style={styles.permDesc}>
+            {watcherRunning === null
+              ? 'Loading…'
+              : watcherRunning
+                ? `Monitoring screen for changes.${watcherLastAt ? ` Last change: ${new Date(watcherLastAt).toLocaleTimeString()}` : ''}`
+                : 'Screen monitoring is off. Enable to give automation real-time screen awareness.'}
+          </div>
+        </div>
+      </div>
 
       <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>About</h2>
       <div style={styles.aboutCard}>
@@ -1127,4 +1434,15 @@ const styles: Record<string, React.CSSProperties & { WebkitAppRegion?: string }>
   memoryContent: { fontSize: 13, color: 'var(--text-primary)', flex: 1 },
   memoryAge: { fontSize: 11, color: 'var(--text-muted)', flexShrink: 0, whiteSpace: 'nowrap' },
   memoryDeleteBtn: { background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: 13, cursor: 'pointer', padding: '0 2px', flexShrink: 0, opacity: 0.5 },
+
+  relayCard: { background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '12px 14px', marginBottom: 4 },
+  relayConnectedRow: { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 },
+  relayDotGreen: { width: 8, height: 8, borderRadius: '50%', background: '#10a37f', flexShrink: 0 },
+  relayDotGray: { width: 8, height: 8, borderRadius: '50%', background: 'var(--border)', flexShrink: 0 },
+  relayInfoRow: { display: 'flex', gap: 8, alignItems: 'baseline', marginBottom: 4 },
+  relayInfoKey: { fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', minWidth: 80 },
+  relayInfoVal: { fontSize: 12, color: 'var(--text-primary)', wordBreak: 'break-all' as const },
+  relayForm: { display: 'flex', flexDirection: 'column' as const, gap: 8, marginTop: 10 },
+
+  socialIcon: { width: 28, height: 28, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, color: '#fff', flexShrink: 0 },
 };

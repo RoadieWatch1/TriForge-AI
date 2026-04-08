@@ -200,10 +200,18 @@ function detectCameraMode(goal: string): {
  */
 export function generateUnrealSystemScaffold(
   prototypeGoal: string,
-  projectContext?: { projectName?: string; projectPath?: string; bootstrapWarnings?: string[] },
+  projectContext?: { projectName?: string; projectPath?: string; bootstrapWarnings?: string[]; webResearchContext?: string },
 ): UnrealScaffoldResult {
   const assumptions: UnrealScaffoldAssumption[] = [];
   const warnings: string[] = [...(projectContext?.bootstrapWarnings ?? [])];
+
+  // If web research context was provided, record it as a high-value assumption
+  // so every downstream pack (milestones, M1–M5) inherits this knowledge
+  if (projectContext?.webResearchContext) {
+    assumptions.push({
+      message: `Web research summary: ${projectContext.webResearchContext}`,
+    });
+  }
 
   const goal = prototypeGoal.trim();
   if (!goal) {
@@ -347,6 +355,131 @@ export function generateUnrealSystemScaffold(
     assumptions,
     warnings,
   };
+}
+
+// ── AI-driven scaffold generator ─────────────────────────────────────────────
+//
+// Calls Claude Haiku to intelligently plan the game systems needed for ANY goal.
+// Falls back to the heuristic generator if the API key is missing or the call fails.
+// This closes the gap where keyword detection missed unusual games or creative descriptions.
+
+import https from 'https';
+
+export async function generateUnrealSystemScaffoldWithAI(
+  prototypeGoal: string,
+  projectContext?: { projectName?: string; projectPath?: string; bootstrapWarnings?: string[]; webResearchContext?: string },
+  claudeApiKey?: string,
+): Promise<UnrealScaffoldResult> {
+  const key = claudeApiKey ?? (typeof process !== 'undefined' ? process.env.ANTHROPIC_API_KEY : undefined);
+
+  // No key — fall back immediately to heuristic
+  if (!key) {
+    return generateUnrealSystemScaffold(prototypeGoal, projectContext);
+  }
+
+  const webCtx = projectContext?.webResearchContext
+    ? `\n\nWeb research context (use this to inform your decisions):\n${projectContext.webResearchContext}`
+    : '';
+
+  const prompt = [
+    `You are an Unreal Engine 5 game architect. A developer wants to build this game prototype:`,
+    `"${prototypeGoal}"`,
+    webCtx,
+    ``,
+    `List exactly the Blueprint systems and components needed. For each item output ONE line:`,
+    `ID | NAME | CATEGORY | PRIORITY | DESCRIPTION`,
+    ``,
+    `Rules:`,
+    `- ID: lowercase-hyphenated, unique (e.g. "player-character")`,
+    `- NAME: short label (e.g. "Player Character")`,
+    `- CATEGORY: one of: core_loop, player, camera, input, enemy, survival, inventory, ui, world, build`,
+    `- PRIORITY: now (MVP), next (important), or later (nice-to-have)`,
+    `- DESCRIPTION: one sentence, Unreal-specific (mention Blueprint class names like BP_PlayerCharacter)`,
+    ``,
+    `Output ONLY the pipe-delimited lines, no headers, no markdown, no extra text.`,
+    `Include 6-12 items. Always include: core game mode (core_loop), player character (player), camera (camera).`,
+  ].join('\n');
+
+  const body = JSON.stringify({
+    model:      'claude-haiku-4-5-20251001',
+    max_tokens: 1024,
+    messages:   [{ role: 'user', content: prompt }],
+  });
+
+  try {
+    const raw = await new Promise<string>((resolve, reject) => {
+      const req = https.request({
+        hostname: 'api.anthropic.com',
+        path:     '/v1/messages',
+        method:   'POST',
+        headers: {
+          'Content-Type':      'application/json',
+          'Content-Length':    Buffer.byteLength(body),
+          'x-api-key':         key,
+          'anthropic-version': '2023-06-01',
+        },
+      }, res => {
+        let data = '';
+        res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+        res.on('end', () => resolve(data));
+      });
+      req.on('error', reject);
+      req.setTimeout(15_000, () => { req.destroy(); reject(new Error('timeout')); });
+      req.write(body);
+      req.end();
+    });
+
+    const parsed = JSON.parse(raw) as { content?: Array<{ type: string; text?: string }> };
+    const text = parsed.content?.find(c => c.type === 'text')?.text?.trim() ?? '';
+
+    if (!text) throw new Error('empty response');
+
+    // Parse pipe-delimited lines into scaffold items
+    const items: UnrealSystemScaffoldItem[] = [];
+    for (const line of text.split('\n')) {
+      const parts = line.split('|').map(p => p.trim());
+      if (parts.length < 5) continue;
+      const [id, name, categoryRaw, priorityRaw, description] = parts;
+      const validCategories: UnrealScaffoldCategory[] = ['core_loop','player','camera','input','enemy','survival','inventory','ui','world','build'];
+      const validPriorities: UnrealScaffoldPriority[] = ['now','next','later'];
+      const category = validCategories.includes(categoryRaw as UnrealScaffoldCategory)
+        ? (categoryRaw as UnrealScaffoldCategory) : 'core_loop';
+      const priority = validPriorities.includes(priorityRaw as UnrealScaffoldPriority)
+        ? (priorityRaw as UnrealScaffoldPriority) : 'now';
+      if (id && name && description) {
+        items.push({ id, name, category, priority, description });
+      }
+    }
+
+    if (items.length < 3) throw new Error('too few items parsed');
+
+    // Sort: now → next → later
+    items.sort((a, b) => {
+      const rank: Record<UnrealScaffoldPriority, number> = { now: 0, next: 1, later: 2 };
+      return rank[a.priority] - rank[b.priority];
+    });
+
+    const assumptions: UnrealScaffoldAssumption[] = [
+      { message: 'Scaffold generated by Claude AI based on the prototype goal and web research.' },
+    ];
+    if (projectContext?.webResearchContext) {
+      assumptions.push({ message: `Web research was used to inform game system selection.` });
+    }
+
+    return {
+      outcome:       items.length > 0 ? 'scaffold_ready' : 'blocked',
+      projectName:   projectContext?.projectName,
+      projectPath:   projectContext?.projectPath,
+      prototypeGoal: prototypeGoal.trim(),
+      scaffoldItems: items,
+      assumptions,
+      warnings:      projectContext?.bootstrapWarnings ?? [],
+    };
+
+  } catch {
+    // AI call failed — fall back to heuristic so the user always gets a result
+    return generateUnrealSystemScaffold(prototypeGoal, projectContext);
+  }
 }
 
 // ── Pack definition ───────────────────────────────────────────────────────────

@@ -3,17 +3,13 @@ import { Store } from './store';
 export const LEMONSQUEEZY = {
   STORE_ID: 'triforgeai',
 
-  // Pro — monthly and annual variant IDs both map to the pro tier
-  PRO_VARIANT_IDS:  ['1351666', '1351679'],   // [monthly, annual]
-  PRO_VARIANT_ID:   '1351666',                // primary (monthly) — used for single-ID checks
+  // All paid variant IDs resolve to the single 'pro' tier
+  PRO_VARIANT_IDS:  ['1351666', '1351679', '1351723', '1351726'],  // monthly + annual (inc. legacy biz IDs)
+  PRO_VARIANT_ID:   '1351666',                // primary monthly
 
-  // Business — monthly and annual variant IDs both map to the business tier
-  BIZ_VARIANT_IDS:  ['1351723', '1351726'],   // [monthly, annual]
-  BIZ_VARIANT_ID:   '1351723',                // primary (monthly)
-
-  PRO_CHECKOUT:    'https://triforgeai.lemonsqueezy.com/checkout/buy/2f513f94-7aa4-48ca-96e7-afad2f36cbad',
-  BIZ_CHECKOUT:    'https://triforgeai.lemonsqueezy.com/checkout/buy/46dbcdfd-50fc-435d-bd09-9ecef6edb783',
-  CUSTOMER_PORTAL: 'https://app.lemonsqueezy.com/my-orders',
+  PRO_CHECKOUT:         'https://triforgeai.lemonsqueezy.com/checkout/buy/2f513f94-7aa4-48ca-96e7-afad2f36cbad',
+  PRO_ANNUAL_CHECKOUT:  'https://triforgeai.lemonsqueezy.com/checkout/buy/2f513f94-7aa4-48ca-96e7-afad2f36cbad',
+  CUSTOMER_PORTAL:      'https://app.lemonsqueezy.com/my-orders',
 };
 
 export type Tier = 'free' | 'pro' | 'business';
@@ -76,10 +72,8 @@ export async function validateLicense(key: string, instanceName = 'triforge-desk
       return { tier: 'free', valid: false, key: trimmed, email: null, expiresAt: null, activatedAt: null, error: data.error ?? 'Invalid license key' };
     }
 
-    const variantId = String(data.meta.variant_id);
-    let tier: Tier = 'pro'; // any valid LS key → at least pro
-    if (LEMONSQUEEZY.BIZ_VARIANT_IDS.includes(variantId))       tier = 'business';
-    else if (LEMONSQUEEZY.PRO_VARIANT_IDS.includes(variantId))  tier = 'pro';
+    // All valid license keys resolve to 'pro' — single paid tier
+    const tier: Tier = 'pro';
 
     return {
       tier,

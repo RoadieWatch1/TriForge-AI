@@ -9,23 +9,19 @@ interface Props {
 
 type State = 'idle' | 'recording' | 'processing';
 
-// Extend window for webkit prefix
-declare global {
-  interface Window {
-    SpeechRecognition?: new () => SpeechRecognition;
-    webkitSpeechRecognition?: new () => SpeechRecognition;
-  }
-}
 
 export function VoiceButton({ onTranscript, onError, disabled, hasOpenAI }: Props) {
   const [state, setState] = useState<State>('idle');
   const mediaRecorder = useRef<MediaRecorder | null>(null);
   const chunks = useRef<Blob[]>([]);
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recognitionRef = useRef<any | null>(null);
 
   // ── Web Speech Recognition (free, no OpenAI key) ──────────────────────────
   const startWebSpeech = useCallback(() => {
-    const SR = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    type SRCtor = new() => any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    const w  = window as Window & { SpeechRecognition?: SRCtor; webkitSpeechRecognition?: SRCtor };
+    const SR = w.SpeechRecognition ?? w.webkitSpeechRecognition;
     if (!SR) {
       onError?.('Voice input requires an OpenAI API key or a Chromium-based browser with speech recognition.');
       return;
@@ -36,12 +32,12 @@ export function VoiceButton({ onTranscript, onError, disabled, hasOpenAI }: Prop
     recognition.maxAlternatives = 1;
     recognitionRef.current = recognition;
 
-    recognition.onresult = (e) => {
+    recognition.onresult = (e: any) => {
       const text = e.results[0]?.[0]?.transcript ?? '';
       if (text) onTranscript(text);
       setState('idle');
     };
-    recognition.onerror = (e) => {
+    recognition.onerror = (e: any) => {
       onError?.(e.error === 'not-allowed' ? 'Microphone access denied. Enable it in system settings.' : e.error);
       setState('idle');
     };

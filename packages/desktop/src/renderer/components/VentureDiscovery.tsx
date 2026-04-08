@@ -479,7 +479,7 @@ function WebsiteTab({ plan, siteBuild }: { plan: NonNullable<VentureOption['laun
           )}
         </>
       )}
-      {siteBuild && (
+      {!!siteBuild && (
         <div style={{ ...s.field, color: '#22c55e' }}>
           Site has been generated. Preview available in build output.
         </div>

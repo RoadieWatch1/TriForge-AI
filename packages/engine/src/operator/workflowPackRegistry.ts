@@ -28,6 +28,55 @@ import { UNREAL_RC_PROBE }          from './unrealRCProbePack';
 import { UNREAL_M3_EXECUTE }        from './unrealM3ExecutePack';
 import { UNREAL_M4_EXECUTE }        from './unrealM4ExecutePack';
 import { UNREAL_M5_EXECUTE }        from './unrealM5ExecutePack';
+import { UNREAL_EDITOR_OPERATE, UNREAL_EDITOR_COMPILE_ONLY } from './unrealEditorOperatePack';
+import { UNREAL_FULL_BUILD } from './unrealFullBuildPack';
+// Phase 2 — Visual + App packs
+import { VISUAL_OBSERVE, VISUAL_CLICK } from './visualPacks';
+// Phase 3 — iOS packs
+import {
+  IOS_SCAN,
+  IOS_BUILD_SIMULATOR,
+  IOS_SIMULATOR_SCREENSHOT,
+  IOS_BUILD_DEVICE,
+} from './iosPacks';
+// Phase 3 — Android packs
+import {
+  ANDROID_SCAN,
+  ANDROID_BUILD,
+  ANDROID_SCREENSHOT,
+  ANDROID_INPUT,
+  ANDROID_LAUNCH_AVD,
+} from './androidPacks';
+// Phase 5 — Social Media packs
+import {
+  PUBLISH_YOUTUBE,
+  PUBLISH_FACEBOOK,
+  PUBLISH_INSTAGRAM,
+  PUBLISH_TIKTOK,
+} from './socialPacks';
+// Phase 6 — Vision + OSK + Screen Watch packs
+import {
+  VISION_DESCRIBE,
+  VISION_LOCATE,
+  VISION_CLICK,
+  OSK_OPEN,
+  OSK_TYPE,
+  SCREEN_WATCH,
+} from './visionPacks';
+import {
+  ADOBE_PHOTOSHOP_PACK,
+  ADOBE_PREMIERE_PACK,
+  ADOBE_AFTEREFFECTS_PACK,
+  ADOBE_ILLUSTRATOR_PACK,
+  BLENDER_PACK,
+  LOGIC_PRO_PACK,
+  ABLETON_LIVE_PACK,
+  PRO_TOOLS_PACK,
+  XCODE_PACK,
+  ANDROID_STUDIO_PACK,
+  DAVINCI_RESOLVE_PACK,
+  FINAL_CUT_PRO_PACK,
+} from './appPacks';
 
 // ── Pack 1: Focus & Capture ───────────────────────────────────────────────────
 
@@ -323,10 +372,55 @@ const APP_CONTEXT: WorkflowPack = {
 
 /** All registered workflow packs, in display order. */
 export const WORKFLOW_PACK_REGISTRY: WorkflowPack[] = [
+  // ── Generic / diagnostic ───────────────────────────────────────────────────
   READINESS_CHECK,
   APP_CONTEXT,
   FOCUS_CAPTURE,
   SUPERVISED_INPUT,
+  // ── Phase 2: Generic visual packs (any app) ────────────────────────────────
+  VISUAL_OBSERVE,
+  VISUAL_CLICK,
+  // ── Phase 2: Adobe Creative Suite ─────────────────────────────────────────
+  ADOBE_PHOTOSHOP_PACK,
+  ADOBE_PREMIERE_PACK,
+  ADOBE_AFTEREFFECTS_PACK,
+  ADOBE_ILLUSTRATOR_PACK,
+  // ── Phase 2: 3D ────────────────────────────────────────────────────────────
+  BLENDER_PACK,
+  // ── Phase 2: DAWs ──────────────────────────────────────────────────────────
+  LOGIC_PRO_PACK,
+  ABLETON_LIVE_PACK,
+  PRO_TOOLS_PACK,
+  // ── Phase 2: Mobile dev ────────────────────────────────────────────────────
+  XCODE_PACK,
+  ANDROID_STUDIO_PACK,
+  // ── Phase 2: Video production ──────────────────────────────────────────────
+  DAVINCI_RESOLVE_PACK,
+  FINAL_CUT_PRO_PACK,
+  // ── Phase 3: iOS ───────────────────────────────────────────────────────────
+  IOS_SCAN,
+  IOS_BUILD_SIMULATOR,
+  IOS_SIMULATOR_SCREENSHOT,
+  IOS_BUILD_DEVICE,
+  // ── Phase 3: Android ───────────────────────────────────────────────────────
+  ANDROID_SCAN,
+  ANDROID_BUILD,
+  ANDROID_SCREENSHOT,
+  ANDROID_INPUT,
+  ANDROID_LAUNCH_AVD,
+  // ── Phase 6: Vision + OSK + Screen Watch ──────────────────────────────────
+  VISION_DESCRIBE,
+  VISION_LOCATE,
+  VISION_CLICK,
+  OSK_OPEN,
+  OSK_TYPE,
+  SCREEN_WATCH,
+  // ── Phase 5: Social Media ──────────────────────────────────────────────────
+  PUBLISH_YOUTUBE,
+  PUBLISH_FACEBOOK,
+  PUBLISH_INSTAGRAM,
+  PUBLISH_TIKTOK,
+  // ── Unreal Engine ─────────────────────────────────────────────────────────
   UNREAL_BOOTSTRAP,
   UNREAL_BUILD_PACKAGE,
   UNREAL_ERROR_TRIAGE,
@@ -338,6 +432,9 @@ export const WORKFLOW_PACK_REGISTRY: WorkflowPack[] = [
   UNREAL_M3_EXECUTE,
   UNREAL_M4_EXECUTE,
   UNREAL_M5_EXECUTE,
+  UNREAL_EDITOR_OPERATE,
+  UNREAL_EDITOR_COMPILE_ONLY,
+  UNREAL_FULL_BUILD,
 ];
 
 export function getWorkflowPack(id: string): WorkflowPack | undefined {
