@@ -1,0 +1,19 @@
+{
+  "name": "@triforge/relay-server",
+  "version": "1.0.0",
+  "description": "TriForge Cloud Relay — bridges remote job triggers to connected desktop clients",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "npx ts-node src/index.ts"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
+  }
+}
