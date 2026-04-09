@@ -176,6 +176,11 @@ HOW TO INTERACT WITH THE DESKTOP:
 - To right-click for a context menu: use "click" with button="right".
 - To navigate Finder: focus "Finder", then click sidebar items or use cmd+shift+g for Go To Folder.
 
+SYSTEM DIALOGS — BLOCKED CONDITIONS:
+- If you see a macOS password prompt, authentication dialog, or "wants to control your computer" dialog, output "blocked" with reason "macOS authentication dialog requires user input — cannot proceed until user dismisses it".
+- If you see a "Memory Pressure Warning" or similar system alert, try pressing Escape or Return first. If that fails, try clicking the visible button (Dismiss/OK/Close). If both fail, output "blocked".
+- NEVER type into a macOS password field — you must not handle system credentials.
+
 ${history ? `Recent steps:\n${history}\n\n` : ''}Respond with ONLY JSON (no markdown, no explanation):
 {
   "type": "click"|"type"|"key"|"focus"|"wait"|"done"|"blocked",
@@ -331,6 +336,25 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
   const { sessionId, goal, maxSteps = 15, onProgress, priorApprovedAction } = opts;
   const steps: StepResult[]  = [];
   const history: string[]    = [];
+
+  // ── Preflight: check permissions before burning API calls ────────────────
+  // A fresh capability probe catches revoked/missing permissions up front,
+  // rather than discovering them 3 steps into a run.
+  const caps = await OperatorService.getCapabilityMap();
+  if (!caps.canCaptureScreen) {
+    const err =
+      'Screen Recording permission is not granted. ' +
+      'Grant TriForge AI access in: System Settings → Privacy & Security → Screen Recording. ' +
+      'You may need to restart TriForge AI after granting permission.';
+    return { ok: false, stepsExecuted: 0, outcome: 'blocked', summary: err, error: err, steps };
+  }
+  if (!caps.accessibilityGranted) {
+    const err =
+      'Accessibility permission is not granted — the operator cannot type, press keys, or click. ' +
+      'Grant TriForge AI access in: System Settings → Privacy & Security → Accessibility. ' +
+      'You may need to restart TriForge AI after granting permission.';
+    return { ok: false, stepsExecuted: 0, outcome: 'blocked', summary: err, error: err, steps };
+  }
 
   // ── B1 follow-up: Seed history with the just-approved action so the planner
   // does NOT re-issue it after a resume. Without this hint the next iteration
@@ -743,10 +767,10 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
           // Force escalation: name the failed action type so the planner
           // knows to switch to a fundamentally different mechanism.
           const escalationHint =
-            planned.type === 'click' ? 'use a KEYBOARD SHORTCUT (key action) instead of clicking — most apps have a hotkey equivalent for menu items'
+            planned.type === 'click' ? 'use a KEYBOARD SHORTCUT (key action) instead of clicking — try Return/Enter to confirm dialogs, Escape to dismiss, or the app-specific hotkey for menu items'
             : planned.type === 'type' ? 'try a DIFFERENT INPUT METHOD — focus the field first, then send_key per character or paste via keyboard shortcut'
-            : planned.type === 'key'  ? 'try a CLICK on the menu item directly instead of the keyboard shortcut'
-            : planned.type === 'focus' ? 'try clicking the app icon in the dock/taskbar instead of focus_app'
+            : planned.type === 'key'  ? 'try a CLICK on the menu item or button directly instead of the keyboard shortcut'
+            : planned.type === 'focus' ? 'try Spotlight (cmd+space → type app name → return) or click the app icon in the Dock'
             : 'switch to a completely different action type';
           history.push(
             `  ⚠ verify FAILED (2/3): "${planned.description}" failed twice. ` +
@@ -759,7 +783,18 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
     }
 
     // Hard-stop on action failure
-    if (stepResult.outcome === 'failed' || stepResult.outcome === 'permission_denied') {
+    if (stepResult.outcome === 'permission_denied') {
+      const actionLabel = planned.type === 'key' ? 'keyboard input' : planned.type === 'type' ? 'text input' : planned.type === 'click' ? 'mouse click' : planned.type;
+      const err =
+        `Accessibility permission denied for ${actionLabel}. ` +
+        `Grant TriForge AI access in: System Settings → Privacy & Security → Accessibility. ` +
+        `You may need to restart TriForge AI after granting permission.`;
+      emit({ step, phase: 'error', description: err, screenshotPath, action: planned, result: stepResult });
+      endStep('failed', { actionType: planned.type, outcome: 'permission_denied' }, err, screenshotPath);
+      const afterScreenshotPath = await captureAfter();
+      return { ok: false, stepsExecuted: step, outcome: 'blocked', summary: err, error: err, steps, beforeScreenshotPath, afterScreenshotPath };
+    }
+    if (stepResult.outcome === 'failed') {
       const err = stepResult.error ?? `Step ${step} failed (${stepResult.outcome})`;
       emit({ step, phase: 'error', description: err, screenshotPath, action: planned, result: stepResult });
       endStep('failed', { actionType: planned.type, outcome: stepResult.outcome }, err, screenshotPath);
