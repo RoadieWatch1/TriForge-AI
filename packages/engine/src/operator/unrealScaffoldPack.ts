@@ -517,7 +517,7 @@ export const UNREAL_SYSTEM_SCAFFOLD: WorkflowPack = {
   category: 'diagnostic',
   version:  '1.0.0',
   requirements: {
-    platforms:        ['macOS'],
+    platforms:        ['macOS', 'Windows'],
     capabilities:     [],
     permissions:      {},
     targetApp:        null,

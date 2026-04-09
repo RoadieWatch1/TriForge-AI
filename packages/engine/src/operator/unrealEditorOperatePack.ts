@@ -31,7 +31,7 @@ export const UNREAL_EDITOR_OPERATE: WorkflowPack = {
   category: 'input',
   version:  '1.0.0',
   requirements: {
-    platforms:        ['macOS'],
+    platforms:        ['macOS', 'Windows'],
     capabilities:     ['focus_app', 'screenshot', 'click_at', 'send_key'],
     permissions: {
       accessibility:   true,
@@ -106,7 +106,7 @@ export const UNREAL_EDITOR_COMPILE_ONLY: WorkflowPack = {
   category: 'input',
   version:  '1.0.0',
   requirements: {
-    platforms:        ['macOS'],
+    platforms:        ['macOS', 'Windows'],
     capabilities:     ['focus_app', 'screenshot', 'click_at'],
     permissions: {
       accessibility:   true,

@@ -37,7 +37,7 @@ export const UNREAL_FULL_BUILD: WorkflowPack = {
   category: 'input',
   version:  '1.0.0',
   requirements: {
-    platforms:        ['macOS'],
+    platforms:        ['macOS', 'Windows'],
     capabilities:     ['focus_app', 'screenshot', 'click_at', 'type_text', 'send_key', 'get_frontmost'],
     permissions: {
       accessibility:   true,

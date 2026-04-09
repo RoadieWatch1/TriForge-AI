@@ -241,7 +241,7 @@ export const UNREAL_BOOTSTRAP: WorkflowPack = {
   category: 'diagnostic',
   version:  '1.0.0',
   requirements: {
-    platforms:        ['macOS'],
+    platforms:        ['macOS', 'Windows'],
     // The pack uses list_apps and get_frontmost internally but does not
     // require them as hard prerequisites — the Unreal check phase handles
     // graceful degradation if these calls fail.

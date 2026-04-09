@@ -51,24 +51,36 @@ export function evaluateWorkflowReadiness(
 
   let permissionsOk = true;
 
-  if (pack.requirements.permissions.accessibility && !capabilityMap.accessibilityGranted) {
-    permissionsOk = false;
-    blockers.push({
-      type: 'permission_missing',
-      message: `"${pack.name}" requires macOS Accessibility permission, which is not granted.`,
-      remediation:
-        'Open System Settings → Privacy & Security → Accessibility and add TriForge to the list.',
-    });
-  }
+  // Windows uses PowerShell — no separate OS permission grants needed.
+  // Only apply macOS-specific permission checks when actually on macOS.
+  if (capabilityMap.platform !== 'Windows') {
+    if (pack.requirements.permissions.accessibility && !capabilityMap.accessibilityGranted) {
+      permissionsOk = false;
+      blockers.push({
+        type: 'permission_missing',
+        message: `"${pack.name}" requires macOS Accessibility permission, which is not granted.`,
+        remediation:
+          'Open System Settings → Privacy & Security → Accessibility and add TriForge to the list.',
+      });
+    }
 
-  if (pack.requirements.permissions.screenRecording && !capabilityMap.canCaptureScreen) {
-    permissionsOk = false;
-    blockers.push({
-      type: 'permission_missing',
-      message: `"${pack.name}" requires macOS Screen Recording permission, which is not granted.`,
-      remediation:
-        'Open System Settings → Privacy & Security → Screen Recording and add TriForge to the list.',
-    });
+    if (pack.requirements.permissions.screenRecording && !capabilityMap.canCaptureScreen) {
+      permissionsOk = false;
+      blockers.push({
+        type: 'permission_missing',
+        message: `"${pack.name}" requires macOS Screen Recording permission, which is not granted.`,
+        remediation:
+          'Open System Settings → Privacy & Security → Screen Recording and add TriForge to the list.',
+      });
+    }
+  } else {
+    // Windows: if screenshot is needed but canCaptureScreen is false, warn (not block)
+    if (pack.requirements.permissions.screenRecording && !capabilityMap.canCaptureScreen) {
+      warnings.push(
+        'Screenshot capability is unavailable on this Windows machine. ' +
+        'Ensure .NET Framework and user32.dll are accessible.',
+      );
+    }
   }
 
   // ── Capability checks ────────────────────────────────────────────────────────
@@ -101,8 +113,8 @@ export function evaluateWorkflowReadiness(
 
       blockers.push({
         type: 'capability_unavailable',
-        message: `The "${friendlyName}" capability is not available on this platform.`,
-        remediation: 'This capability requires macOS.',
+        message: `The "${friendlyName}" capability is not available on this platform (${capabilityMap.platform}).`,
+        remediation: 'This capability requires macOS or Windows with PowerShell access.',
       });
     }
   }

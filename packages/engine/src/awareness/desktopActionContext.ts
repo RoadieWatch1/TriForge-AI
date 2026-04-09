@@ -199,14 +199,16 @@ export function classifyActionability(
  */
 export function buildDesktopContextSection(op: DesktopOperatorSnapshot): string {
   const killState   = op.operatorEnabled ? 'enabled' : 'DISABLED (kill switch active)';
-  const platform    = op.platformSupported ? 'macOS' : 'unsupported platform';
+  const platformLabel = op.platformSupported
+    ? (op.platformName ?? 'macOS')
+    : `unsupported platform${op.platformName ? ` (${op.platformName})` : ''}`;
   const permGranted = op.permissionsGranted.length > 0 ? op.permissionsGranted.join(', ') : 'none';
   const permMissing = op.permissionsMissing.length > 0 ? op.permissionsMissing.join(', ') : 'none';
 
   const lines: string[] = [
     '',
     '## Desktop Operator State',
-    `Operator: ${killState} | Platform: ${platform}`,
+    `Operator: ${killState} | Platform: ${platformLabel}`,
     `Permissions granted: ${permGranted} | Missing: ${permMissing}`,
   ];
 

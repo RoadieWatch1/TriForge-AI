@@ -78,7 +78,7 @@ export const UNREAL_M5_EXECUTE: WorkflowPack = {
   category: 'diagnostic',
   version:  '1.0.0',
   requirements: {
-    platforms:        ['macOS'],
+    platforms:        ['macOS', 'Windows'],
     capabilities:     [],
     permissions:      {},
     targetApp:        null,

@@ -1051,26 +1051,26 @@ export function setupIpc(store: Store): void {
       const permGranted:  string[] = [];
       const permMissing:  string[] = [];
 
-      if (capMap.platform === 'macOS') {
-        // Read-only — always available on macOS
+      if (capMap.platform === 'macOS' || capMap.platform === 'Windows') {
         if (capMap.canListRunningApps) available.push('list_apps');
         if (capMap.canGetFrontmostApp) available.push('get_frontmost');
         if (capMap.canFocusApp)        available.push('focus_app');
 
-        // Perception — requires Screen Recording
         if (capMap.canCaptureScreen)   available.push('screenshot');
         else                           missing.push('screenshot');
 
-        // Input — requires Accessibility
         if (capMap.canTypeText)        available.push('type_text');
         else                           missing.push('type_text');
         if (capMap.canSendKeystroke)   available.push('send_key');
         else                           missing.push('send_key');
 
-        if (capMap.accessibilityGranted)    permGranted.push('accessibility');
-        else                                permMissing.push('accessibility');
-        if (capMap.screenRecordingGranted)  permGranted.push('screen_recording');
-        else                                permMissing.push('screen_recording');
+        if (capMap.platform === 'macOS') {
+          if (capMap.accessibilityGranted)    permGranted.push('accessibility');
+          else                                permMissing.push('accessibility');
+          if (capMap.screenRecordingGranted)  permGranted.push('screen_recording');
+          else                                permMissing.push('screen_recording');
+        }
+        // Windows: no separate permission grants needed — PowerShell has native access
       }
 
       // ── Phase 2 Step 3: richer runtime signals ───────────────────────────
@@ -1087,14 +1087,16 @@ export function setupIpc(store: Store): void {
       //   ready    — all needed permissions satisfied
       //   undefined — never probed yet (lastCap is null)
       let preflightReadiness: 'ready' | 'degraded' | 'blocked' | undefined;
-      if (lastCap !== null) {
+      if (capMap.platform === 'Windows') {
+        // Windows uses PowerShell — no separate OS permission grants required.
+        // Readiness is driven by whether capabilities are available (PowerShell probe).
+        preflightReadiness = capMap.canCaptureScreen ? 'ready' : 'degraded';
+      } else if (lastCap !== null) {
         if (hasDrift) {
           preflightReadiness = 'blocked';
         } else if (!lastCap.accessibilityGranted) {
-          // Input actions (type_text, send_key) are blocked — this is a hard block
           preflightReadiness = 'blocked';
         } else if (!lastCap.screenRecordingGranted) {
-          // Screenshots blocked, but input still works — degraded
           preflightReadiness = 'degraded';
         } else {
           preflightReadiness = 'ready';
@@ -1103,7 +1105,8 @@ export function setupIpc(store: Store): void {
 
       return {
         operatorEnabled:    enabled,
-        platformSupported:  capMap.platform === 'macOS',
+        platformSupported:  capMap.platform === 'macOS' || capMap.platform === 'Windows',
+        platformName:       capMap.platform,
         availableCapabilities: available,
         missingCapabilities:   missing,
         permissionsGranted:    permGranted,

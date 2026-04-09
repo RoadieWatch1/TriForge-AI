@@ -22,7 +22,8 @@ export interface OperatorIntentResult {
 // ── App name normalisation ────────────────────────────────────────────────────
 
 const APP_PATTERNS: Array<{ keywords: string[]; appName: string; packHint?: string }> = [
-  { keywords: ['unreal', 'ue5', 'ue4', 'unreal engine'],        appName: 'Unreal Editor',      packHint: 'pack.unreal-full-build' },
+  // Unreal Engine — also catch "Roblox-style", "Minecraft-style" game requests (TriForge builds these in Unreal)
+  { keywords: ['unreal', 'ue5', 'ue4', 'unreal engine', 'roblox', 'roblox-style', 'minecraft', 'minecraft-style', 'fortnite'], appName: 'Unreal Editor', packHint: 'pack.unreal-full-build' },
   { keywords: ['blender'],                                        appName: 'Blender',            packHint: 'pack.blender' },
   { keywords: ['photoshop'],                                      appName: 'Photoshop',          packHint: 'pack.adobe-photoshop' },
   { keywords: ['illustrator'],                                    appName: 'Illustrator',        packHint: 'pack.adobe-illustrator' },

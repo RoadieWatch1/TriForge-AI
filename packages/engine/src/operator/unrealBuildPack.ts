@@ -129,7 +129,7 @@ export const UNREAL_BUILD_PACKAGE: WorkflowPack = {
   category: 'diagnostic',
   version:  '1.0.0',
   requirements: {
-    platforms:        ['macOS'],
+    platforms:        ['macOS', 'Windows'],
     capabilities:     [],      // detection is internal; no operator capability needed
     permissions:      {},      // no OS permissions required for subprocess launch
     // targetApp null — bootstrap check gates on Unreal presence internally

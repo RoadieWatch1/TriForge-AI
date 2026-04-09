@@ -53,6 +53,8 @@ export interface DesktopOperatorSnapshot {
   operatorEnabled: boolean;
   /** Whether the current platform has operator substrate support */
   platformSupported: boolean;
+  /** Human-readable platform name, e.g. 'macOS', 'Windows' */
+  platformName?: string;
   /** Action types that are currently executable (permissions satisfied) */
   availableCapabilities: string[];
   /** Action types blocked by missing OS permissions */

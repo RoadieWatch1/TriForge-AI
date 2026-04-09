@@ -276,20 +276,30 @@ export async function preflightOperatorAction(
 
   // ── 3. Platform gate ───────────────────────────────────────────────────────
 
-  if (process.platform !== 'darwin') {
+  const isSupported = process.platform === 'darwin' || process.platform === 'win32';
+  if (!isSupported) {
     return {
       status:       'blocked',
       blocked:      true,
       reason:       'platform_unsupported',
-      message:      'Operator actions are macOS-only in this release.',
-      recoveryHint: 'Windows and Linux operator support is not yet implemented.',
+      message:      'Operator actions are not supported on this platform.',
+      recoveryHint: 'TriForge operator is supported on macOS and Windows.',
     };
   }
 
   // ── 4. Capability check — only for permission-dependent actions ────────────
   //
-  // list_apps, get_frontmost, focus_app do NOT require special permissions
-  // (standard macOS AppleScript access). Skip capability probe for them.
+  // On Windows: PowerShell-based automation requires no special OS permission grants.
+  // On macOS: list_apps, get_frontmost, focus_app do NOT require special permissions
+  // (standard AppleScript access). Skip capability probe for non-macOS or permission-free actions.
+
+  if (process.platform !== 'darwin') {
+    return {
+      status:   'ready',
+      blocked:  false,
+      message:  'Preflight passed.',
+    };
+  }
 
   const needsAccess   = requiresAccessibility(actionType);
   const needsRecording = requiresScreenRecording(actionType);
