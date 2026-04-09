@@ -280,6 +280,9 @@ export function buildDesktopContextSection(op: DesktopOperatorSnapshot): string 
       } else if (run.lastVerifyPassed === true) {
         lines.push(`Last verify: passed`);
       }
+      if (run.consecutiveWaits > 0) {
+        lines.push(`⚠ Consecutive waits: ${run.consecutiveWaits} (force re-plan at 2, abort at 4) — operator may be stuck`);
+      }
       lines.push(
         'Live-run rule: If the user asks about progress or a stuck step, ' +
         'use the data above. If verify is failing, suggest a concrete different ' +

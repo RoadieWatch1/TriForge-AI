@@ -129,6 +129,8 @@ export interface DesktopOperatorSnapshot {
     lastVerifyError?: string;
     /** How many consecutive verify failures the run has logged */
     consecutiveVerifyFailures: number;
+    /** How many consecutive "wait" actions the planner has output — non-zero means the operator may be stuck */
+    consecutiveWaits: number;
     /** Wall-clock time of the most recent emit */
     lastEmitAt: number;
   };

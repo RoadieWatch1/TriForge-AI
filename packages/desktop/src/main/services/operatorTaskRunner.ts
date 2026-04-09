@@ -135,6 +135,8 @@ export interface PlannedAction {
   description: string;
   /** UI element description for vision-based coordinate lookup (click) */
   target?:     string;
+  /** Mouse button for click actions: left (default), right, or double-click */
+  button?:     'left' | 'right' | 'double';
   x?:          number;
   y?:          number;
   text?:       string;
@@ -147,16 +149,39 @@ export interface PlannedAction {
 // ── Planner prompt ────────────────────────────────────────────────────────────
 
 function buildPlannerPrompt(goal: string, screenSummary: string, history: string): string {
-  return `You are controlling a computer to accomplish:
-"${goal}"
+  return `You are a desktop automation agent that physically controls a computer's mouse and keyboard.
+YOU are the one performing every action — there is no other program or assistant doing work for you.
+
+Goal: "${goal}"
 
 Current screen: ${screenSummary}
+
+CRITICAL RULES:
+- YOU control the mouse and keyboard. Do NOT "wait" for something to happen on its own.
+- If you see the TriForge AI window, that is YOUR own interface — ignore it and focus/click on the TARGET app.
+- Every step must make concrete progress: open an app, click a button, type text, press a key.
+- NEVER output a "wait" action unless you just triggered a loading/compiling operation and need the screen to settle.
+- If the screen hasn't changed after your last action, try a DIFFERENT approach — do not repeat the same action.
+
+HOW TO OPEN APPLICATIONS:
+- "focus" activates an app by name. It works whether the app is already running or not (macOS will launch it).
+- If "focus" fails with "not found", the app name may differ from what you expect. Common examples:
+    Unreal Engine → "UnrealEditor" or use Spotlight
+    Visual Studio Code → "Code" or "Visual Studio Code"
+- Spotlight fallback: use "key" with keyCombo "cmd+space", then "type" the app name, then "key" with keyCombo "return".
+- To open a folder or file on the Desktop: use "click" with button "double" on it.
+
+HOW TO INTERACT WITH THE DESKTOP:
+- To open a folder/file on the desktop, double-click it: use "click" with button="double" targeting the item.
+- To right-click for a context menu: use "click" with button="right".
+- To navigate Finder: focus "Finder", then click sidebar items or use cmd+shift+g for Go To Folder.
 
 ${history ? `Recent steps:\n${history}\n\n` : ''}Respond with ONLY JSON (no markdown, no explanation):
 {
   "type": "click"|"type"|"key"|"focus"|"wait"|"done"|"blocked",
-  "description": "one sentence of what you are doing",
+  "description": "one sentence of what you are doing RIGHT NOW",
   "target": "exact UI element label to click (for click)",
+  "button": "left (default) | right | double (for click only)",
   "text": "text to type (for type)",
   "keyCombo": "shortcut e.g. cmd+s, return (for key)",
   "appName": "application name (for focus)",
@@ -236,6 +261,8 @@ export interface LiveRunState {
   lastVerifyPassed?:         boolean;
   lastVerifyError?:          string;
   consecutiveVerifyFailures: number;
+  /** How many consecutive "wait" actions the planner has output. Non-zero means the operator may be stuck. */
+  consecutiveWaits:          number;
   lastEmitAt:                number;
 }
 
@@ -326,6 +353,7 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
     phase:                     'observe',
     lastDescription:           'Starting run…',
     consecutiveVerifyFailures: 0,
+    consecutiveWaits:          0,
     lastEmitAt:                Date.now(),
   };
 
@@ -361,6 +389,13 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
   };
 
   let lastScreenshotPath: string | undefined;
+
+  // ── Stuck-detection: consecutive "wait" actions ──────────────────────────────
+  // If the planner keeps outputting "wait" it means it's confused and thinks
+  // something else is doing the work. After the 1st wait, a post-wait history
+  // nudge discourages another wait. On the 2nd consecutive wait, we force a
+  // re-plan with an aggressive prompt that excludes "wait" as an option.
+  let consecutiveWaits = 0;
 
   // ── B1: Load-bearing verification ────────────────────────────────────────────
   // Tracks how many steps in a row have failed visual verification. Two
@@ -404,6 +439,56 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
       planned = JSON.parse(raw) as PlannedAction;
     } catch {
       planned = { type: 'done', description: planResponse.answer.slice(0, 120), reason: 'JSON parse failed — treating as complete' };
+    }
+
+    // ── Stuck-detection: reject consecutive "wait" actions ─────────────────
+    // When the planner keeps outputting "wait" it thinks something else is
+    // doing the work. After 1 wait, force a re-plan with explicit instructions.
+    if (planned.type === 'wait') {
+      consecutiveWaits++;
+      if (_liveRunState) _liveRunState.consecutiveWaits = consecutiveWaits;
+      // Hard cap: 4+ consecutive waits means the operator is hopelessly stuck
+      // even after multiple force re-plans. Abort rather than burn the budget.
+      if (consecutiveWaits >= 4) {
+        const err = `Operator stuck: ${consecutiveWaits} consecutive "wait" actions. The planner cannot determine how to make progress toward: "${goal}".`;
+        emit({ step, phase: 'error', description: err, screenshotPath, action: planned });
+        steps.push({ step, action: planned, executed: false, outcome: 'blocked', error: err });
+        const afterScreenshotPath = await captureAfter();
+        return { ok: false, stepsExecuted: step, outcome: 'blocked', summary: err, error: err, steps, beforeScreenshotPath, afterScreenshotPath };
+      }
+
+      if (consecutiveWaits >= 2) {
+        const forcePlanResponse = await analyzeScreen(
+          screenshotPath,
+          `You are a desktop automation agent controlling mouse and keyboard. ` +
+          `You have outputted "wait" ${consecutiveWaits} times in a row — you are STUCK. ` +
+          `Nothing will happen unless YOU take action. There is no other program doing work for you.\n\n` +
+          `Goal: "${goal}"\nScreen: ${screenSummary}\n\n` +
+          `You MUST take a concrete action NOW — "focus", "click", "type", or "key". Do NOT output "wait". ` +
+          `To open an app: use "focus" with its name, or open Spotlight with cmd+space and type the app name.\n\n` +
+          `Respond with ONLY JSON:\n` +
+          `{"type":"focus"|"click"|"type"|"key"|"done"|"blocked","description":"...","target":"...","text":"...","keyCombo":"...","appName":"...","reason":"..."}`,
+        );
+        if (forcePlanResponse.ok) {
+          try {
+            const raw2 = forcePlanResponse.answer.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+            const forced = JSON.parse(raw2) as PlannedAction;
+            if (forced.type !== 'wait') {
+              planned = forced;
+              consecutiveWaits = 0;
+              if (_liveRunState) _liveRunState.consecutiveWaits = 0;
+              history.push(`${step}: ⚠ stuck-detection — forced re-plan from "wait" to "${planned.type}"`);
+            } else {
+              history.push(`${step}: ⚠ stuck-detection — force re-plan still returned "wait" (${consecutiveWaits} in a row). Will execute wait but planner must act next step.`);
+            }
+          } catch {
+            history.push(`${step}: ⚠ stuck-detection — force re-plan response was not valid JSON. Falling back to original wait action.`);
+          }
+        }
+      }
+    } else {
+      consecutiveWaits = 0;
+      if (_liveRunState) _liveRunState.consecutiveWaits = 0;
     }
 
     // ── B4: Begin a worker-run step record for this iteration ──────────────
@@ -472,14 +557,30 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
       const stablePath = await waitUntilScreenStable(5000);
       if (stablePath) screenshotPath = stablePath;
       stepResult = { step, action: planned, executed: true, outcome: 'success' };
-      history.push(`${step}: wait (poll-stable)`);
+      history.push(`${step}: wait (poll-stable) — screen settled. You MUST take a concrete action next (focus/click/type/key). Do NOT wait again.`);
 
     } else if (planned.type === 'focus') {
       const appTarget = planned.appName ?? planned.target ?? '';
       const action    = OperatorService.buildAction(sessionId, 'focus_app', { target: appTarget });
       const r         = await OperatorService.executeAction(action);
       stepResult      = { step, action: planned, executed: r.outcome === 'success', outcome: r.outcome, error: r.error };
-      history.push(`${step}: focus "${appTarget}" → ${r.outcome}`);
+
+      // ── Smart recovery hints for focus failures ────────────────────────
+      // When focus fails, inject actionable guidance so the planner doesn't
+      // just retry the same broken app name or give up.
+      if (r.outcome === 'target_not_found' || r.outcome === 'wrong_target') {
+        const hint = r.outcome === 'target_not_found'
+          ? `"${appTarget}" was NOT FOUND. The app name may differ from what you expect. ` +
+            `Try these recovery steps IN ORDER: ` +
+            `1) Try common name variants (e.g. "UnrealEditor" instead of "Unreal Engine", "Code" instead of "VS Code"). ` +
+            `2) Use Spotlight: key cmd+space → type the app name → key return. ` +
+            `3) Look for the app icon in the Dock and click it.`
+          : `Focus landed on the wrong app (got "${(r as unknown as Record<string, unknown>).executedTarget ?? 'unknown'}"). ` +
+            `Try Spotlight instead: key cmd+space → type "${appTarget}" → key return.`;
+        history.push(`${step}: focus "${appTarget}" → ${r.outcome}. ${hint}`);
+      } else {
+        history.push(`${step}: focus "${appTarget}" → ${r.outcome}`);
+      }
 
     } else if (planned.type === 'click') {
       let x = planned.x;
@@ -536,7 +637,7 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
         stepResult = { step, action: planned, executed: false, outcome: 'failed', error: err };
         history.push(`${step}: click "${planned.target}" → not found after retries`);
       } else {
-        const action = OperatorService.buildAction(sessionId, 'click_at', { x, y, button: 'left' });
+        const action = OperatorService.buildAction(sessionId, 'click_at', { x, y, button: planned.button ?? 'left' });
         const r      = await OperatorService.executeAction(action);
         if (r.outcome === 'approval_pending') {
           stepResult = { step, action: planned, executed: false, outcome: 'approval_pending', approvalId: r.approvalId };

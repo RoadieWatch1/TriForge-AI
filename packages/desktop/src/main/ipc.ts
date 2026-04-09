@@ -1121,6 +1121,7 @@ export function setupIpc(store: Store): void {
         lastVerifyPassed:          liveRunRaw.lastVerifyPassed,
         lastVerifyError:           liveRunRaw.lastVerifyError,
         consecutiveVerifyFailures: liveRunRaw.consecutiveVerifyFailures,
+        consecutiveWaits:          liveRunRaw.consecutiveWaits,
         lastEmitAt:                liveRunRaw.lastEmitAt,
       } : undefined;
 
