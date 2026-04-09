@@ -532,6 +532,8 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
   const [socialAccounts, setSocialAccounts]     = useState<any[]>([]);
   const [socialConnecting, setSocialConnecting] = useState<string | null>(null);
   const [socialError, setSocialError]           = useState<string | null>(null);
+  const [socialExpanded, setSocialExpanded]     = useState<string | null>(null);
+  const [socialCreds, setSocialCreds]           = useState<Record<string, Record<string, string>>>({});
 
   // OSK state
   const [oskOpen, setOskOpen]     = useState<boolean | null>(null);
@@ -556,8 +558,11 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
     }).catch(() => { /* kill switch unavailable — leave null */ });
     // Load relay status
     (window.triforge as any).relay?.status?.().then((s: any) => setRelayStatus(s)).catch(() => {});
-    // Load social accounts
-    (window.triforge as any).social?.getAccounts?.().then((a: any[]) => setSocialAccounts(a ?? [])).catch(() => {});
+    // Load social accounts (status returns { ok, status: { youtube: bool, ... } })
+    (window.triforge as any).social?.getAccounts?.().then((res: any) => {
+      const status: Record<string, boolean> = res?.status ?? {};
+      setSocialAccounts(Object.keys(status).map(p => ({ platform: p, connected: !!status[p] })));
+    }).catch(() => {});
     // Load OSK status
     (window.triforge as any).osk?.status?.().then((r: any) => setOskOpen(r?.open ?? false)).catch(() => {});
     // Load screen watcher status
@@ -624,14 +629,66 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
 
   // ── Social handlers ──────────────────────────────────────────────────────────
 
+  /** Required credential field names per platform — matches socialPublisher.connect*. */
+  const SOCIAL_CRED_FIELDS: Record<string, { key: string; label: string; placeholder: string }[]> = {
+    youtube: [
+      { key: 'clientId',     label: 'OAuth Client ID',     placeholder: 'xxxxxxxx.apps.googleusercontent.com' },
+      { key: 'clientSecret', label: 'OAuth Client Secret', placeholder: 'GOCSPX-...' },
+    ],
+    facebook: [
+      { key: 'appId',     label: 'Facebook App ID',     placeholder: '1234567890' },
+      { key: 'appSecret', label: 'Facebook App Secret', placeholder: 'abcd1234…' },
+    ],
+    instagram: [
+      { key: 'appId',     label: 'Facebook App ID',     placeholder: '1234567890' },
+      { key: 'appSecret', label: 'Facebook App Secret', placeholder: 'abcd1234…' },
+    ],
+    tiktok: [
+      { key: 'clientKey',    label: 'TikTok Client Key',    placeholder: 'awxxxxxxxxxxxx' },
+      { key: 'clientSecret', label: 'TikTok Client Secret', placeholder: 'xxxxxxxxxxxxxxxxxx' },
+    ],
+  };
+
+  const SOCIAL_CRED_HINTS: Record<string, { docsUrl: string; label: string }> = {
+    youtube:   { docsUrl: 'https://console.cloud.google.com/apis/credentials',           label: 'Google Cloud Console → Credentials → OAuth client ID (Desktop app)' },
+    facebook:  { docsUrl: 'https://developers.facebook.com/apps/',                       label: 'Meta for Developers → My Apps → Settings → Basic' },
+    instagram: { docsUrl: 'https://developers.facebook.com/apps/',                       label: 'Same as Facebook — IG Business uses the Meta app credentials' },
+    tiktok:    { docsUrl: 'https://developers.tiktok.com/',                              label: 'TikTok for Developers → Manage Apps → App Info' },
+  };
+
+  const reloadSocialAccounts = async () => {
+    const res = await (window.triforge as any).social.getAccounts();
+    const status: Record<string, boolean> = res?.status ?? {};
+    setSocialAccounts(Object.keys(status).map(p => ({ platform: p, connected: !!status[p] })));
+  };
+
+  const handleSocialExpand = (platform: string) => {
+    setSocialError(null);
+    setSocialExpanded(prev => prev === platform ? null : platform);
+  };
+
+  const handleSocialCredChange = (platform: string, field: string, value: string) => {
+    setSocialCreds(prev => ({ ...prev, [platform]: { ...(prev[platform] ?? {}), [field]: value } }));
+  };
+
   const handleSocialConnect = async (platform: string) => {
+    const fields = SOCIAL_CRED_FIELDS[platform];
+    const creds  = socialCreds[platform] ?? {};
+    const missing = fields.filter(f => !creds[f.key]?.trim());
+    if (missing.length > 0) {
+      setSocialError(`Fill in: ${missing.map(m => m.label).join(', ')}`);
+      return;
+    }
+
     setSocialConnecting(platform);
     setSocialError(null);
     try {
-      const res = await (window.triforge as any).social.connect(platform);
+      const res = await (window.triforge as any).social.connect(platform, creds);
       if (res?.ok) {
-        const accounts = await (window.triforge as any).social.getAccounts();
-        setSocialAccounts(accounts ?? []);
+        await reloadSocialAccounts();
+        setSocialExpanded(null);
+        // Wipe local credential cache once stored — they're now in safeStorage
+        setSocialCreds(prev => { const next = { ...prev }; delete next[platform]; return next; });
       } else {
         setSocialError(res?.error ?? `Failed to connect ${platform}.`);
       }
@@ -646,8 +703,7 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
     setSocialError(null);
     try {
       await (window.triforge as any).social.disconnect(platform);
-      const accounts = await (window.triforge as any).social.getAccounts();
-      setSocialAccounts(accounts ?? []);
+      await reloadSocialAccounts();
     } catch (e: any) {
       setSocialError(e?.message ?? 'Unexpected error.');
     }
@@ -978,32 +1034,84 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
       {/* ── Social Accounts ─────────────────────────────────────────────────── */}
       <h2 style={{ ...styles.sectionTitle, marginTop: 32 }}>Social Accounts</h2>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
-        Connect social platforms to let TriForge publish content on your behalf. OAuth opens in your browser — tokens are stored locally.
+        Connect social platforms so TriForge can publish on your behalf. Each platform requires
+        you to register an OAuth app and paste your own client credentials below — TriForge does
+        not ship shared keys. Tokens are encrypted with your OS keychain after authorization.
       </p>
       {(['youtube', 'instagram', 'tiktok', 'facebook'] as const).map(platform => {
         const account = socialAccounts.find((a: any) => a.platform === platform);
         const isConnecting = socialConnecting === platform;
+        const isExpanded   = socialExpanded === platform;
         const icons: Record<string, string> = { youtube: '▶', instagram: '◈', tiktok: '♪', facebook: 'f' };
         const colors: Record<string, string> = { youtube: '#ff0000', instagram: '#e1306c', tiktok: '#010101', facebook: '#1877f2' };
+        const fields = SOCIAL_CRED_FIELDS[platform] ?? [];
+        const hint   = SOCIAL_CRED_HINTS[platform];
+        const creds  = socialCreds[platform] ?? {};
         return (
-          <div key={platform} style={styles.permRow}>
-            <div style={{ ...styles.socialIcon, background: colors[platform] }}>{icons[platform]}</div>
-            <div style={{ flex: 1 }}>
-              <div style={styles.permLabel} >{platform.charAt(0).toUpperCase() + platform.slice(1)}</div>
-              <div style={styles.permDesc}>
-                {account?.connected ? `@${account.handle}` : 'Not connected'}
+          <div key={platform} style={{ ...styles.permRow, flexDirection: 'column' as const, alignItems: 'stretch' as const }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, width: '100%' }}>
+              <div style={{ ...styles.socialIcon, background: colors[platform] }}>{icons[platform]}</div>
+              <div style={{ flex: 1 }}>
+                <div style={styles.permLabel}>{platform.charAt(0).toUpperCase() + platform.slice(1)}</div>
+                <div style={styles.permDesc}>
+                  {account?.connected ? 'Connected — tokens stored in keychain' : 'Not connected'}
+                </div>
               </div>
+              {account?.connected ? (
+                <button style={styles.removeBtn} onClick={() => handleSocialDisconnect(platform)}>Disconnect</button>
+              ) : (
+                <button
+                  style={{ ...styles.saveBtn, fontSize: 12, padding: '5px 12px' }}
+                  onClick={() => handleSocialExpand(platform)}
+                >
+                  {isExpanded ? 'Cancel' : 'Connect'}
+                </button>
+              )}
             </div>
-            {account?.connected ? (
-              <button style={styles.removeBtn} onClick={() => handleSocialDisconnect(platform)}>Disconnect</button>
-            ) : (
-              <button
-                style={{ ...styles.saveBtn, fontSize: 12, padding: '5px 12px', opacity: isConnecting ? 0.6 : 1 }}
-                onClick={() => handleSocialConnect(platform)}
-                disabled={isConnecting || socialConnecting !== null}
-              >
-                {isConnecting ? 'Connecting…' : 'Connect'}
-              </button>
+
+            {isExpanded && !account?.connected && (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {hint && (
+                  <p style={{ fontSize: 12, color: 'var(--text-secondary)', margin: 0 }}>
+                    Get your credentials from{' '}
+                    <a
+                      href={hint.docsUrl}
+                      onClick={e => { e.preventDefault(); (window.triforge as any).system?.openExternal?.(hint.docsUrl); }}
+                      style={{ color: 'var(--accent)', textDecoration: 'underline', cursor: 'pointer' }}
+                    >
+                      {hint.label}
+                    </a>
+                    .
+                  </p>
+                )}
+                {fields.map(f => (
+                  <div key={f.key} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <label style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600 }}>{f.label}</label>
+                    <input
+                      type={f.key.toLowerCase().includes('secret') ? 'password' : 'text'}
+                      value={creds[f.key] ?? ''}
+                      placeholder={f.placeholder}
+                      onChange={e => handleSocialCredChange(platform, f.key, e.target.value)}
+                      style={{
+                        background: 'var(--bg-primary)',
+                        border: '1px solid var(--border)',
+                        borderRadius: 6,
+                        padding: '7px 10px',
+                        color: 'var(--text-primary)',
+                        fontSize: 13,
+                        fontFamily: 'monospace',
+                      }}
+                    />
+                  </div>
+                ))}
+                <button
+                  style={{ ...styles.saveBtn, marginTop: 4, opacity: isConnecting ? 0.6 : 1 }}
+                  disabled={isConnecting}
+                  onClick={() => handleSocialConnect(platform)}
+                >
+                  {isConnecting ? 'Waiting for browser…' : 'Authorize in browser'}
+                </button>
+              </div>
             )}
           </div>
         );

@@ -13886,9 +13886,10 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
   // and reports back — one step at a time, with approval gates for input actions.
 
   ipcMain.handle('operator:task:run', async (event, payload: {
-    sessionId: string;
-    goal:      string;
-    maxSteps?: number;
+    sessionId:           string;
+    goal:                string;
+    maxSteps?:           number;
+    priorApprovedAction?: string;
   }) => {
     if (!payload?.goal || !payload?.sessionId) {
       return { ok: false, error: 'goal and sessionId are required' };
@@ -13919,9 +13920,10 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
 
       const { runOperatorTask } = await import('./services/operatorTaskRunner.js');
       const result = await runOperatorTask({
-        sessionId:  payload.sessionId,
-        goal:       payload.goal,
-        maxSteps:   payload.maxSteps ?? 15,
+        sessionId:           payload.sessionId,
+        goal:                payload.goal,
+        maxSteps:            payload.maxSteps ?? 15,
+        priorApprovedAction: payload.priorApprovedAction,
         onProgress: (ev) => {
           if (!event.sender.isDestroyed()) {
             event.sender.send('operator:task:progress', ev);

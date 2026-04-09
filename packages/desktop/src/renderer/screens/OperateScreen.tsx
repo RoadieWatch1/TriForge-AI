@@ -173,13 +173,18 @@ function capitalize(s: string): string {
 // ── Sample tasks rail (A4) ───────────────────────────────────────────────────
 //
 // Match by simple keyword on the detected app name. Each entry is one starter
-// task the user can run with a single click — pre-fills the AI Task Runner.
+// task the user can run with a single click. Most tasks pre-fill the AI Task
+// Runner; tasks with `runWith: 'pack'` instead launch a workflow pack chain
+// (e.g. Unreal Blueprint generation needs the M1–M5 manifest pipeline, NOT
+// the live click runner — the runner would just thrash through the editor).
 interface SampleTask {
   matchKeywords: RegExp;
   icon: string;
   appLabel: string;
   title: string;
   prompt: string;
+  /** When set, launches a workflow pack instead of the AI Task Runner. */
+  runWith?: { kind: 'pack'; packId: string };
 }
 const SAMPLE_TASKS: SampleTask[] = [
   {
@@ -188,6 +193,7 @@ const SAMPLE_TASKS: SampleTask[] = [
     appLabel:      'Unreal Engine',
     title:         'Build a survival game prototype',
     prompt:        'Build me a survival game in Unreal with health, hunger, basic inventory, and a simple enemy. Generate the Blueprint files and compile.',
+    runWith:       { kind: 'pack', packId: 'pack.unreal-m1-execute' },
   },
   {
     matchKeywords: /photoshop|illustrator/i,
@@ -362,7 +368,15 @@ export function OperateScreen({
   useEffect(() => {
     fetchData();
     const timer = setInterval(fetchData, 15_000);
-    return () => clearInterval(timer);
+    // Refresh readiness state whenever the window regains focus — covers the
+    // common case of the user granting a permission or adding an API key in
+    // System Preferences / Settings and tabbing back to Operate.
+    const onFocus = () => fetchData();
+    window.addEventListener('focus', onFocus);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+    };
   }, [fetchData]);
 
   // Subscribe to proactive app detection from the main process
@@ -377,20 +391,26 @@ export function OperateScreen({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tf]);
 
-  // Load capability scan once on mount — feeds the "Sample tasks for your apps" rail
-  useEffect(() => {
+  // Capability-scan loader. Pulled out as a callable so the rail can offer
+  // a "Re-scan" button after the user installs a new app while Operate is open.
+  const [rescanning, setRescanning] = useState(false);
+  const runCapabilityScan = useCallback(async () => {
     if (!tf) return;
     const scanner = tf['incomeScanner'] as Record<string, () => Promise<unknown>> | undefined;
     if (!scanner?.run) return;
-    let mounted = true;
-    scanner.run().then((r) => {
-      if (!mounted) return;
+    setRescanning(true);
+    try {
+      const r = await scanner.run();
       const result = (r as { result?: { installedApps?: DetectedInstalledApp[] } } | null)?.result;
       if (result?.installedApps) setScannedApps(result.installedApps);
-    }).catch(() => { /* best effort */ });
-    return () => { mounted = false; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    } catch { /* best effort */ }
+    finally { setRescanning(false); }
   }, [tf]);
+
+  // Load capability scan once on mount — feeds the "Sample tasks for your apps" rail
+  useEffect(() => {
+    runCapabilityScan();
+  }, [runCapabilityScan]);
 
   const assignWork = async () => {
     if (!goal.trim() || !tf) return;
@@ -463,15 +483,17 @@ export function OperateScreen({
     // Clear any prior pending run for this pack
     setPendingRuns(prev => { const n = { ...prev }; delete n[packId]; return n; });
     try {
-      const runOpts: Record<string, unknown> = {};
+      const runOpts: { targetApp?: string; goal?: string } = {};
       if (targetApp) runOpts.targetApp = targetApp;
       if (goal)      runOpts.goal = goal;
-      const res = await (tf['workflows'] as Record<string, (id: string, opts?: Record<string, unknown>) => Promise<{
-        ok: boolean;
-        run?: { id: string; status: string; pendingApprovalId?: string };
-        readinessBlockers?: Array<{ message: string }>;
-        error?: string;
-      }>>)?.startRun?.(packId, runOpts);
+      const res = await (tf['workflows'] as {
+        startRun: (id: string, opts?: { targetApp?: string; goal?: string }) => Promise<{
+          ok: boolean;
+          run?: { id: string; status: string; pendingApprovalId?: string };
+          readinessBlockers?: Array<{ message: string }>;
+          error?: string;
+        }>;
+      })?.startRun?.(packId, runOpts);
       if (!res) return;
       if (res.ok && res.run) {
         setWorkflowResult(prev => ({ ...prev, [packId]: { ok: true, status: res.run!.status } }));
@@ -586,11 +608,17 @@ export function OperateScreen({
     return () => window.removeEventListener('triforge:start-pack', handler);
   }, [startWorkflow]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /** Run an AI-driven Sense→Plan→Act→Verify task loop. */
-  const runAiTask = async () => {
+  /**
+   * Run an AI-driven Sense→Plan→Act→Verify task loop.
+   *
+   * `priorApprovedAction` is set when resuming after a paused approval — it
+   * gets seeded into the planner history so the planner does NOT re-issue
+   * the same action and trigger another approval prompt.
+   */
+  const runAiTask = async (priorApprovedAction?: string) => {
     if (!tf || !taskGoal.trim() || taskRunning) return;
     setTaskRunning(true);
-    setTaskSteps([]);
+    if (!priorApprovedAction) setTaskSteps([]);
     setTaskOutcome(null);
     setTaskPendingApprovalId(null);
 
@@ -613,7 +641,7 @@ export function OperateScreen({
         (ev) => setTaskSteps(prev => [...prev, ev]),
       ) ?? null;
 
-      const result = await op?.runTask?.(sid, taskGoal.trim()) as {
+      const result = await op?.runTask?.(sid, taskGoal.trim(), undefined, priorApprovedAction) as {
         ok: boolean; outcome: string; summary: string; stepsExecuted: number;
         pendingApprovalId?: string;
         beforeScreenshotPath?: string;
@@ -643,6 +671,13 @@ export function OperateScreen({
   /** Approve the pending operator action and resume the task loop. */
   const approveAndResume = async () => {
     if (!tf || !taskPendingApprovalId || taskRunning) return;
+    // Capture the description of the action that's about to be approved so
+    // we can seed the planner history on resume — without this hint the
+    // planner may re-issue the same action and re-prompt for approval.
+    const approvalDetails = operatorApprovals[taskPendingApprovalId];
+    const justApprovedDescription =
+      approvalDetails?.description ?? taskSteps[taskSteps.length - 1]?.description;
+
     const op = tf['operator'] as Record<string, (...a: unknown[]) => Promise<unknown>>;
     try {
       const approveRes = await op?.approveAction?.(taskPendingApprovalId) as { ok: boolean; error?: string } | null;
@@ -656,10 +691,11 @@ export function OperateScreen({
       setTaskPendingApprovalId(null);
       return;
     }
-    // Approved — clear pending state and re-run from current screen state
+    // Approved — clear pending state and re-run from current screen state,
+    // injecting the just-approved action so the planner skips re-issuing it.
     setTaskPendingApprovalId(null);
     setTaskOutcome(null);
-    await runAiTask();
+    await runAiTask(justApprovedDescription);
   };
 
   /** Toggle trust level for the active session. Creates a new session if none is active. */
@@ -708,17 +744,19 @@ export function OperateScreen({
             Review readiness, assign autonomous work, and track execution in Sessions.
           </p>
         </div>
-        {hasActiveWork && (
-          <button style={s.sessionsHotlink} onClick={onViewSessions}>
-            {pendingApprovals > 0
-              ? `${pendingApprovals} approval${pendingApprovals > 1 ? 's' : ''} pending`
-              : runningTasks > 0
-              ? `${runningTasks} task${runningTasks > 1 ? 's' : ''} running`
-              : `${queuedTasks} queued`
-            }
-            &nbsp;— Sessions →
-          </button>
-        )}
+        <button
+          style={hasActiveWork ? s.sessionsHotlink : { ...s.sessionsHotlink, background: 'transparent', borderColor: 'var(--border)', color: 'var(--text-muted)' }}
+          onClick={onViewSessions}
+        >
+          {hasActiveWork
+            ? (pendingApprovals > 0
+                ? `${pendingApprovals} approval${pendingApprovals > 1 ? 's' : ''} pending`
+                : runningTasks > 0
+                ? `${runningTasks} task${runningTasks > 1 ? 's' : ''} running`
+                : `${queuedTasks} queued`)
+            : 'Sessions'}
+          &nbsp;→
+        </button>
       </div>
 
       {/* ── Supervision / Trust Notice ─────────────────────────────────────── */}
@@ -742,7 +780,7 @@ export function OperateScreen({
               : 'Supervised Mode — TriForge pauses for your approval before every input action.'}
           </span>
         </div>
-        {tier === 'pro' && (
+        {tier === 'pro' ? (
           <button
             style={{
               flexShrink: 0,
@@ -762,6 +800,26 @@ export function OperateScreen({
             disabled={trustChanging}
           >
             {trustChanging ? '…' : trustLevel === 'trusted' ? 'Switch to Supervised' : 'Enable Trust Mode'}
+          </button>
+        ) : (
+          <button
+            style={{
+              flexShrink: 0,
+              background: 'rgba(255,255,255,0.04)',
+              border: '1px dashed rgba(255,255,255,0.18)',
+              borderRadius: 6,
+              color: 'var(--text-muted)',
+              fontSize: 11,
+              fontWeight: 600,
+              padding: '4px 10px',
+              cursor: 'pointer',
+              letterSpacing: '0.02em',
+              whiteSpace: 'nowrap' as const,
+            }}
+            onClick={() => onNavigate('settings')}
+            title="Trust Mode lets the operator execute input actions without per-action approval. Available on Pro — click to upgrade in Settings."
+          >
+            Trust Mode · Pro →
           </button>
         )}
       </div>
@@ -903,12 +961,60 @@ export function OperateScreen({
         const matchedTasks = SAMPLE_TASKS.filter(task =>
           scannedApps.some(app => task.matchKeywords.test(app.name)),
         );
-        if (matchedTasks.length === 0) return null;
+        const rescanBtn = (
+          <button
+            onClick={runCapabilityScan}
+            disabled={rescanning}
+            style={{
+              background: 'transparent',
+              border: '1px solid var(--border)',
+              color: 'var(--text-muted)',
+              fontSize: 10,
+              fontWeight: 600,
+              padding: '3px 8px',
+              borderRadius: 5,
+              cursor: rescanning ? 'wait' : 'pointer',
+              letterSpacing: '0.04em',
+              textTransform: 'uppercase' as const,
+            }}
+            title="Re-scan installed apps"
+          >
+            {rescanning ? 'Scanning…' : 'Re-scan'}
+          </button>
+        );
+
+        if (matchedTasks.length === 0) {
+          // Empty state — tell users the rail exists and what unlocks it
+          return (
+            <div style={s.section}>
+              <div style={s.sectionLabelRow}>
+                <span style={s.sectionLabel}>Sample Tasks</span>
+                {rescanBtn}
+              </div>
+              <div style={{
+                padding: '14px 16px',
+                background: 'rgba(255,255,255,0.02)',
+                border: '1px dashed var(--border)',
+                borderRadius: 8,
+                fontSize: 12,
+                color: 'var(--text-muted)',
+                lineHeight: 1.55,
+              }}>
+                We didn't find any pro apps on your machine yet. Install one of{' '}
+                <strong style={{ color: 'var(--text-secondary)' }}>Unreal, Photoshop, Blender, Premiere, Maya, or Figma</strong>{' '}
+                to unlock one-click sample tasks tailored to that app.
+              </div>
+            </div>
+          );
+        }
         return (
           <div style={s.section}>
             <div style={s.sectionLabelRow}>
               <span style={s.sectionLabel}>Try a Sample Task</span>
-              <span style={s.sectionMeta}>Scoped to apps you have installed</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={s.sectionMeta}>Scoped to apps you have installed</span>
+                {rescanBtn}
+              </div>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 8 }}>
               {matchedTasks.slice(0, 6).map(task => (
@@ -927,9 +1033,18 @@ export function OperateScreen({
                     transition: 'border-color 0.15s, background 0.15s',
                   }}
                   onClick={() => {
-                    setTaskGoal(task.prompt);
-                    const el = document.getElementById('ai-task-runner-section');
-                    if (el) el.scrollIntoView({ behavior: 'smooth' });
+                    if (task.runWith?.kind === 'pack') {
+                      // Workflow pack route — fires the same listener the
+                      // council→operator bridge uses, so the pack scrolls
+                      // into view and auto-starts with this goal injected.
+                      window.dispatchEvent(new CustomEvent('triforge:start-pack', {
+                        detail: { packId: task.runWith.packId, goal: task.prompt },
+                      }));
+                    } else {
+                      setTaskGoal(task.prompt);
+                      const el = document.getElementById('ai-task-runner-section');
+                      if (el) el.scrollIntoView({ behavior: 'smooth' });
+                    }
                   }}
                   onMouseEnter={(e) => { e.currentTarget.style.borderColor = '#10a37f'; }}
                   onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border)'; }}
@@ -942,7 +1057,7 @@ export function OperateScreen({
                   </div>
                   <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' }}>{task.title}</div>
                   <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.45 }}>
-                    Click to load into Task Runner
+                    {task.runWith?.kind === 'pack' ? 'Click to launch workflow pack' : 'Click to load into Task Runner'}
                   </div>
                 </button>
               ))}
@@ -952,8 +1067,29 @@ export function OperateScreen({
       })()}
 
       {/* ── Assign Work ────────────────────────────────────────────────────── */}
+      {/*
+        Two distinct task surfaces — keep them visually separate so users
+        understand which one to reach for:
+          • Assign Work     → background, scheduled, multi-category, no live click loop (Pro)
+          • AI Task Runner  → live desktop, immediate, no scheduling (Free with daily cap)
+      */}
       <div style={s.section}>
-        <div style={s.sectionLabel}>Assign Work</div>
+        <div style={s.sectionLabelRow}>
+          <span style={s.sectionLabel}>Assign Work</span>
+          <span style={s.sectionMeta}>
+            Background scheduled task · Pro
+          </span>
+        </div>
+        <p style={{
+          fontSize: 11,
+          color: 'var(--text-muted)',
+          margin: '0 0 10px 0',
+          lineHeight: 1.5,
+        }}>
+          Hands a long-running goal to the autonomous task engine — research, file work,
+          shell commands, or multi-step plans. Runs in the background and shows up in Sessions.
+          Use this when the work doesn't need to click on your live desktop.
+        </p>
         <div style={s.workIntake}>
           <textarea
             style={s.goalInput}
@@ -1045,8 +1181,21 @@ export function OperateScreen({
       <div id="ai-task-runner-section" style={s.section}>
         <div style={s.sectionLabelRow}>
           <span style={s.sectionLabel}>AI Task Runner</span>
-          <span style={s.sectionMeta}>Sense → Plan → Act → Verify loop</span>
+          <span style={s.sectionMeta}>
+            Live desktop · Sense → Plan → Act → Verify
+            {tier === 'free' && ' · Free: 1 run/day'}
+          </span>
         </div>
+        <p style={{
+          fontSize: 11,
+          color: 'var(--text-muted)',
+          margin: '0 0 10px 0',
+          lineHeight: 1.5,
+        }}>
+          Drives your open app like a remote-access human — takes a screenshot,
+          decides the next click, executes it, verifies, and repeats. Use this when
+          you need TriForge to physically operate the UI in front of you.
+        </p>
         <div style={s.workIntake}>
           <textarea
             style={s.goalInput}
@@ -1054,22 +1203,38 @@ export function OperateScreen({
             value={taskGoal}
             onChange={e => { setTaskGoal(e.target.value); setTaskOutcome(null); }}
             rows={2}
-            disabled={taskRunning}
+            disabled={taskRunning || connectedProviders === 0}
           />
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
             <button
               style={{
                 ...s.assignBtn,
-                ...(!taskGoal.trim() || taskRunning ? s.assignBtnDisabled : {}),
+                ...(!taskGoal.trim() || taskRunning || connectedProviders === 0 ? s.assignBtnDisabled : {}),
                 background: taskRunning ? 'rgba(99,102,241,0.25)' : undefined,
               }}
-              onClick={runAiTask}
-              disabled={!taskGoal.trim() || taskRunning}
+              onClick={() => runAiTask()}
+              disabled={!taskGoal.trim() || taskRunning || connectedProviders === 0}
             >
               {taskRunning ? 'Running…' : 'Run with AI'}
             </button>
           </div>
         </div>
+
+        {connectedProviders === 0 && (
+          <div style={{
+            marginTop: 8,
+            padding: '8px 12px',
+            background: 'rgba(239,68,68,0.07)',
+            border: '1px solid rgba(239,68,68,0.22)',
+            borderRadius: 6,
+            fontSize: 11,
+            color: 'rgba(239,68,68,0.95)',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+          }}>
+            <span>Connect at least one AI provider to run tasks.</span>
+            <button style={s.inlineLink} onClick={() => onNavigate('settings')}>Open Settings →</button>
+          </div>
+        )}
 
         {/* Live step feed */}
         {(taskRunning || taskSteps.length > 0) && (

@@ -1122,6 +1122,35 @@ const api = {
       ipcRenderer.invoke('social:draft', platform, content) as Promise<{
         ok?: boolean; platform?: string; draft?: string; characterCount?: number; characterLimit?: number; error?: string;
       }>,
+
+    /**
+     * Return one row per OAuth-capable platform with whether the user has
+     * tokens stored. Used by the Settings → Social Accounts panel.
+     */
+    getAccounts: () =>
+      ipcRenderer.invoke('social:auth:status') as Promise<{
+        ok: boolean;
+        status?: Record<string, boolean>;
+        error?: string;
+      }>,
+
+    /**
+     * Start the OAuth flow for one platform. Caller must supply the
+     * platform-specific app credentials (clientId/clientSecret or appId/appSecret).
+     * Opens the system browser; resolves when the user finishes the redirect.
+     */
+    connect: (platform: string, credentials: Record<string, string>) =>
+      ipcRenderer.invoke('social:auth:connect', platform, credentials) as Promise<{
+        ok: boolean;
+        error?: string;
+      }>,
+
+    /** Clear stored OAuth tokens for a platform. */
+    disconnect: (platform: string) =>
+      ipcRenderer.invoke('social:auth:disconnect', platform) as Promise<{
+        ok: boolean;
+        error?: string;
+      }>,
   },
 
   // Phase 7: Compound Engine
@@ -2731,8 +2760,8 @@ const api = {
      * it, verifies, and repeats — just like a remote-access human operator.
      * Progress events are emitted on 'operator:task:progress'.
      */
-    runTask: (sessionId: string, goal: string, maxSteps?: number) =>
-      ipcRenderer.invoke('operator:task:run', { sessionId, goal, maxSteps }) as Promise<{
+    runTask: (sessionId: string, goal: string, maxSteps?: number, priorApprovedAction?: string) =>
+      ipcRenderer.invoke('operator:task:run', { sessionId, goal, maxSteps, priorApprovedAction }) as Promise<{
         ok:                 boolean;
         stepsExecuted:      number;
         outcome:            'completed' | 'max_steps_reached' | 'blocked' | 'error' | 'approval_pending';
@@ -2880,6 +2909,12 @@ const api = {
         inputKey?: string;
         inputModifiers?: string[];
         screenshotOutputPath?: string;
+        /**
+         * Free-form goal text the workflow pack can use as steering input.
+         * Consumed by packs like the Unreal scaffold/M1–M5 chain that adapt
+         * their generated artifacts to the user's prototype description.
+         */
+        goal?: string;
       },
     ) =>
       ipcRenderer.invoke('workflow:run:start', packId, opts ?? {}) as Promise<{

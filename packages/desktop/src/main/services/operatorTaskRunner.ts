@@ -34,6 +34,14 @@ export interface TaskRunnerOptions {
    * decoupled from WorkerRunQueue — the caller (ipc.ts) wires the hooks.
    */
   workerHooks?: WorkerRunHooks;
+  /**
+   * Seeded history line. Use when resuming a run after a paused
+   * approval — the caller passes a description of the action that was
+   * just approved so the planner does NOT re-issue the same action and
+   * trigger another approval prompt. The line is injected into the
+   * planner history before the first iteration.
+   */
+  priorApprovedAction?: string;
 }
 
 // ── B4: Worker-run lifecycle hooks ───────────────────────────────────────────
@@ -293,9 +301,20 @@ export async function runOperatorTask(opts: TaskRunnerOptions): Promise<TaskRunR
 }
 
 async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunResult> {
-  const { sessionId, goal, maxSteps = 15, onProgress } = opts;
+  const { sessionId, goal, maxSteps = 15, onProgress, priorApprovedAction } = opts;
   const steps: StepResult[]  = [];
   const history: string[]    = [];
+
+  // ── B1 follow-up: Seed history with the just-approved action so the planner
+  // does NOT re-issue it after a resume. Without this hint the next iteration
+  // observes a fresh screen and may re-plan the same action, triggering another
+  // approval prompt the user has to repeat.
+  if (priorApprovedAction) {
+    history.push(
+      `0: previously approved by user — "${priorApprovedAction.slice(0, 120)}". ` +
+      `Do NOT re-issue this action. Observe the new screen state and plan the next step toward the goal.`,
+    );
+  }
 
   // ── B3: Initialize the live-run state holder so the council snapshot
   // getter can surface fresh telemetry on every turn while the run is active.
