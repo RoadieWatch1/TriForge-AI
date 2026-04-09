@@ -3198,6 +3198,10 @@ const api = {
       }>,
     stop: () =>
       ipcRenderer.invoke('screen-watch:stop') as Promise<{ ok: boolean }>,
+    status: () =>
+      ipcRenderer.invoke('screen-watch:status') as Promise<{
+        ok: boolean; running?: boolean; lastChangedAt?: number; changeCount?: number; error?: string;
+      }>,
     check: () =>
       ipcRenderer.invoke('screen-watch:check') as Promise<{
         ok: boolean; changed?: boolean; score?: number; description?: unknown; error?: string;

@@ -391,6 +391,14 @@ export function OperateScreen({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tf]);
 
+  // Cleanup the task progress listener on unmount — prevents a leaked
+  // IPC subscription if the user navigates away while a task is running.
+  useEffect(() => {
+    return () => {
+      if (unsubTaskRef.current) { unsubTaskRef.current(); unsubTaskRef.current = null; }
+    };
+  }, []);
+
   // Capability-scan loader. Pulled out as a callable so the rail can offer
   // a "Re-scan" button after the user installs a new app while Operate is open.
   const [rescanning, setRescanning] = useState(false);
@@ -446,7 +454,10 @@ export function OperateScreen({
       await (tf['approvals'] as Record<string, (id: string) => Promise<unknown>>)?.approve?.(approvalId);
       setApprovals(prev => prev.filter(a => a.id !== approvalId));
       fetchData();
-    } catch { /* ignore */ } finally {
+    } catch {
+      // Re-fetch so the item reappears if the approve call failed
+      fetchData();
+    } finally {
       setApprovingId(null);
     }
   };
@@ -458,7 +469,10 @@ export function OperateScreen({
       await (tf['approvals'] as Record<string, (id: string, reason?: string) => Promise<unknown>>)?.deny?.(approvalId);
       setApprovals(prev => prev.filter(a => a.id !== approvalId));
       fetchData();
-    } catch { /* ignore */ } finally {
+    } catch {
+      // Re-fetch so the item reappears if the deny call failed
+      fetchData();
+    } finally {
       setApprovingId(null);
     }
   };
@@ -947,7 +961,7 @@ export function OperateScreen({
             detail={
               canAssignWork
                 ? 'Supervised task execution with approval gates'
-                : 'Requires Business tier — upgrade in Settings'
+                : 'Requires Pro tier — upgrade in Settings'
             }
             action={!canAssignWork ? () => onNavigate('settings') : undefined}
             actionLabel="Upgrade →"
@@ -1136,7 +1150,7 @@ export function OperateScreen({
 
           {!canAssignWork && (
             <div style={s.tierGate}>
-              Autonomous task assignment requires Business tier.{' '}
+              Autonomous task assignment requires Pro tier.{' '}
               <button style={s.inlineLink} onClick={() => onNavigate('settings')}>
                 Upgrade in Settings →
               </button>
@@ -1370,7 +1384,15 @@ export function OperateScreen({
                     padding: '5px 14px',
                     cursor: 'pointer',
                   }}
-                  onClick={() => {
+                  onClick={async () => {
+                    // Deny the pending operator action server-side so it doesn't
+                    // linger in the approval queue for 10 minutes after cancel.
+                    if (taskPendingApprovalId && tf) {
+                      try {
+                        const op = tf['operator'] as Record<string, (...a: unknown[]) => Promise<unknown>>;
+                        await op?.denyAction?.(taskPendingApprovalId, 'Cancelled by user');
+                      } catch { /* best-effort */ }
+                    }
                     setTaskPendingApprovalId(null);
                     setTaskOutcome({ ok: false, summary: 'Task cancelled by user.', outcome: 'cancelled' });
                   }}
@@ -1573,8 +1595,10 @@ function LiveViewPanel({ tf }: { tf: Record<string, unknown> | undefined }) {
   const loadWatcherStatus = useCallback(async () => {
     if (!tf) return;
     try {
+      // Use .status() not .check() — check returns a one-shot diff result
+      // with no 'running' field, so the watcher dot always shows "off".
       const res = await (tf['screenWatch'] as Record<string, () => Promise<{ ok: boolean; running: boolean }>>)
-        ?.check?.();
+        ?.status?.();
       setWatcherRunning(res?.running ?? false);
     } catch { setWatcherRunning(false); }
   }, [tf]);
@@ -1684,7 +1708,7 @@ function LiveViewPanel({ tf }: { tf: Record<string, unknown> | undefined }) {
                     {entry.text}
                     {entry.score != null && (
                       <span style={{ color: 'var(--text-muted)', marginLeft: 4 }}>
-                        ({Math.round(entry.score * 100)}% diff)
+                        ({Math.round(entry.score)}% diff)
                       </span>
                     )}
                   </span>

@@ -14367,6 +14367,16 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     }
   });
 
+  /** Return the current watcher state (running, changeCount, etc.). */
+  ipcMain.handle('screen-watch:status', async () => {
+    try {
+      const { getScreenWatcherState } = await import('./services/screenWatcher.js');
+      return { ok: true, ...getScreenWatcherState() };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
   /** One-shot: did the screen change since the last check? */
   ipcMain.handle('screen-watch:check', async () => {
     try {

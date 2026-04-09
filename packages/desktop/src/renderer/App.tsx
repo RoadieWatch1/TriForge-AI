@@ -579,8 +579,9 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
     }).catch(() => {});
     // Load OSK status
     (window.triforge as any).osk?.status?.().then((r: any) => setOskOpen(r?.open ?? false)).catch(() => {});
-    // Load screen watcher status
-    (window.triforge as any).screenWatch?.check?.().then((r: any) => {
+    // Load screen watcher status (use .status() not .check() — check returns
+    // a one-shot diff result with no 'running' field, so it always reads false)
+    (window.triforge as any).screenWatch?.status?.().then((r: any) => {
       setWatcherRunning(r?.running ?? false);
       setWatcherLastAt(r?.lastChangedAt ?? null);
     }).catch(() => {});
@@ -731,13 +732,19 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
     try {
       if (oskOpen) {
         await (window.triforge as any).osk.close();
-        setOskOpen(false);
       } else {
         await (window.triforge as any).osk.open();
-        setOskOpen(true);
       }
+      // Wait for macOS SystemUIServer restart / Windows OSK launch before
+      // re-checking actual status. Without this delay the status check runs
+      // before the OS has finished toggling the keyboard, causing the toggle
+      // to snap back to its previous state on reload.
+      await new Promise(r => setTimeout(r, 1500));
+      const status = await (window.triforge as any).osk?.status?.();
+      setOskOpen(status?.running ?? !oskOpen);
     } catch {
-      // best-effort
+      // best-effort — flip optimistically so UI isn't stuck
+      setOskOpen(!oskOpen);
     } finally {
       setOskActing(false);
     }
@@ -751,13 +758,16 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
     try {
       if (watcherRunning) {
         await (window.triforge as any).screenWatch.stop();
-        setWatcherRunning(false);
       } else {
         await (window.triforge as any).screenWatch.start();
-        setWatcherRunning(true);
       }
+      // Re-read actual state from the main process to confirm the toggle took effect.
+      const status = await (window.triforge as any).screenWatch?.status?.();
+      setWatcherRunning(status?.running ?? !watcherRunning);
+      setWatcherLastAt(status?.lastChangedAt ?? null);
     } catch {
-      // best-effort
+      // best-effort — flip optimistically
+      setWatcherRunning(!watcherRunning);
     } finally {
       setWatcherActing(false);
     }
