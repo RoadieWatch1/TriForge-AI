@@ -10,7 +10,7 @@ import { Store, LedgerEntry, ForgeScore } from './store';
 import { transcribeAudio, textToSpeechStream } from './voice';
 import { validateLicense, loadLicense, deactivateLicense, LEMONSQUEEZY } from './license';
 import type { Tier } from './license';
-import { isAtMessageLimit, hasCapability, lockedError, getMemoryLimit, TIERS, tradingTrialStatus } from './subscription';
+import { isAtMessageLimit, isAtDailyOperatorLimit, hasCapability, lockedError, getMemoryLimit, TIERS, tradingTrialStatus, FREE_DAILY_OPERATOR_RUNS } from './subscription';
 import { hashPin, verifyPin, isValidPin } from './auth';
 import { buildSystemPrompt } from './systemPrompt';
 import { getProfile, listProfiles } from './profiles';
@@ -73,6 +73,7 @@ import { PushNotifier, DEFAULT_EVENT_SETTINGS, ALL_NOTIFY_EVENTS, EVENT_LABELS }
 import type { NotifyEvent, NotifyPriority, NotifyProvider } from './pushNotifier';
 import { BUILTIN_RECIPES } from './automationRecipes';
 import { getLastProject, getContinuationSuggestion, getAllProjects, forgetProject } from './services/projectMemory';
+import { PatternMemoryService } from './services/patternMemoryService';
 import type { RecipeDef, RecipeState, RecipeView } from './automationRecipes';
 import { WorkspaceCredentialResolver } from './workspaceCredentialResolver';
 import type { IntegrationName } from './workspaceCredentialResolver';
@@ -157,12 +158,14 @@ import type { DecisionInput } from './incomeDecisionEngine';
 import { IncomeAutopilot } from './incomeAutopilot';
 import { getMachineContext } from './services/machineContext';
 import { OperatorService } from './services/operatorService';
+import { getLiveRunState } from './services/operatorTaskRunner';
 import { setVisionApiKey } from './services/visionAnalyzer';
 import { setScriptGenKey } from './services/workflowPackService';
 import { buildUnrealAwarenessSnapshot } from './services/unrealAwareness';
 import { buildAppAwarenessSnapshot, formatAppAwarenessSummary } from './services/appAwareness';
 import { buildIOSAwarenessSnapshot, bootSimulator, captureSimulatorScreen, formatIOSSummary } from './services/iosAwareness';
 import { WorkflowPackService } from './services/workflowPackService';
+import { WorkflowChainService } from './services/workflowChainService';
 import { WorkerRunQueue } from './workerRuntime/workerRunQueue';
 import type { CreateRunOptions } from './workerRuntime/workerRunQueue';
 import { initWorkflowBridge } from './workerRuntime/workflowWorkerRunBridge';
@@ -1103,6 +1106,24 @@ export function setupIpc(store: Store): void {
         }
       }
 
+      // ── B3: Live operator-run telemetry ─────────────────────────────────
+      // Read the most recent step state from the operator task runner. Returns
+      // null when no run is in flight or the last emit is > 2 minutes old.
+      const liveRunRaw = getLiveRunState();
+      const liveRun = liveRunRaw ? {
+        sessionId:                 liveRunRaw.sessionId,
+        goal:                      liveRunRaw.goal,
+        currentStep:               liveRunRaw.currentStep,
+        maxSteps:                  liveRunRaw.maxSteps,
+        phase:                     liveRunRaw.phase,
+        lastDescription:           liveRunRaw.lastDescription,
+        lastActionType:            liveRunRaw.lastActionType,
+        lastVerifyPassed:          liveRunRaw.lastVerifyPassed,
+        lastVerifyError:           liveRunRaw.lastVerifyError,
+        consecutiveVerifyFailures: liveRunRaw.consecutiveVerifyFailures,
+        lastEmitAt:                liveRunRaw.lastEmitAt,
+      } : undefined;
+
       return {
         operatorEnabled:    enabled,
         platformSupported:  capMap.platform === 'macOS' || capMap.platform === 'Windows',
@@ -1130,6 +1151,8 @@ export function setupIpc(store: Store): void {
         // sessionValid is not assessed at snapshot time — set only when a
         // specific session ID is being evaluated, not globally
         sessionValid: undefined,
+        // B3: Live mid-workflow telemetry
+        liveRun,
       };
     } catch {
       return null;
@@ -1170,7 +1193,7 @@ export function setupIpc(store: Store): void {
   // Must run after IPC handlers are registered but before any workflow packs
   // can be started (i.e. before user interaction). The bridge is a no-op until
   // a workflow pack run actually starts, so early registration is safe.
-  initWorkflowBridge(_getWorkerRunQueue());
+  initWorkflowBridge(_getWorkerRunQueue(), store);
 
   // ── Native Intent Router — shared across all three chat handlers ──────────
   const nativeRouter = new NativeIntentRouter({
@@ -2390,6 +2413,15 @@ VERIFY: [1-3 specific things the user should double-check]
   ipcMain.handle('memory:delete', (_e, id: number) => {
     store.deleteMemory(id);
     return store.getMemory();
+  });
+
+  // ── Pattern Memory (cross-session learning) ──────────────────────────────────
+  ipcMain.handle('pattern-memory:list', () => {
+    return PatternMemoryService.listPatterns(store);
+  });
+  ipcMain.handle('pattern-memory:reset', () => {
+    PatternMemoryService.resetPatterns(store);
+    return { ok: true };
   });
 
   // ── Forge Profiles ───────────────────────────────────────────────────────────
@@ -13869,6 +13901,22 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         setVisionApiKey(claudeKeyForTask);
         setScriptGenKey(claudeKeyForTask);
       }
+
+      // ── B4: Create a durable WorkerRun for this operator task ────────────
+      // Direct AI Task Runs (operator:task:run) previously had no persistent
+      // record at all — only workflow-pack runs were captured. We now create
+      // a WorkerRun in 'running' state and feed per-step transcript records
+      // via the runner's workerHooks. The hooks are exception-safe and the
+      // run is settled in onRunEnd regardless of how the runner exits.
+      const wrQueue   = _getWorkerRunQueue();
+      const workerRun = wrQueue.createRun({
+        source:            'operate',
+        goal:              payload.goal,
+        operatorSessionId: payload.sessionId,
+        contextSnapshot:   { source: 'operator:task:run', maxSteps: payload.maxSteps ?? 15 },
+      });
+      wrQueue.transitionStatus(workerRun.id, 'running');
+
       const { runOperatorTask } = await import('./services/operatorTaskRunner.js');
       const result = await runOperatorTask({
         sessionId:  payload.sessionId,
@@ -13886,8 +13934,96 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
             });
           }
         },
+        workerHooks: {
+          onStepBegin: (info) => {
+            try {
+              const wstep = wrQueue.addStep({
+                runId: workerRun.id,
+                title: info.title,
+                type:  'operator',
+                input: {
+                  index:       info.index,
+                  actionType:  info.action.type,
+                  description: info.action.description,
+                  target:      info.action.target,
+                  text:        info.action.text ? info.action.text.slice(0, 200) : undefined,
+                  keyCombo:    info.action.keyCombo,
+                  appName:     info.action.appName,
+                },
+              });
+              wrQueue.startStep(workerRun.id, wstep.id);
+              return wstep.id;
+            } catch (err) {
+              console.error('[operator:task:run] onStepBegin failed:', err);
+              return undefined;
+            }
+          },
+          onStepEnd: (info) => {
+            try {
+              if (info.screenshotPath && info.stepId) {
+                wrQueue.addArtifact({
+                  runId:  workerRun.id,
+                  stepId: info.stepId,
+                  kind:   'screenshot',
+                  path:   info.screenshotPath,
+                  meta:   { stepIndex: info.index, status: info.status },
+                });
+              }
+              if (!info.stepId) return;
+              if (info.status === 'completed') {
+                wrQueue.completeStep(workerRun.id, info.stepId, info.output);
+              } else if (info.status === 'failed') {
+                wrQueue.failStep(workerRun.id, info.stepId, info.error ?? 'Step failed');
+              } else if (info.status === 'blocked') {
+                wrQueue.failStep(workerRun.id, info.stepId, info.error ?? 'Step blocked');
+              } else if (info.status === 'waiting_approval') {
+                // Mark the step complete with an approval marker — the run-level
+                // status (set in onRunEnd) carries the waiting_approval state.
+                wrQueue.completeStep(workerRun.id, info.stepId, { ...(info.output ?? {}), settled: 'waiting_approval' });
+              }
+            } catch (err) {
+              console.error('[operator:task:run] onStepEnd failed:', err);
+            }
+          },
+          onRunEnd: (info) => {
+            try {
+              switch (info.outcome) {
+                case 'completed':
+                  wrQueue.transitionStatus(workerRun.id, 'completed');
+                  break;
+                case 'approval_pending':
+                  wrQueue.transitionStatus(workerRun.id, 'waiting_approval', {
+                    kind:        'approval_required',
+                    message:     info.summary,
+                    recoverable: true,
+                  });
+                  break;
+                case 'blocked':
+                  wrQueue.transitionStatus(workerRun.id, 'blocked', {
+                    kind:        'tool_failed',
+                    message:     info.summary,
+                    recoverable: false,
+                  });
+                  break;
+                case 'max_steps_reached':
+                  wrQueue.transitionStatus(workerRun.id, 'blocked', {
+                    kind:        'user_input_required',
+                    message:     info.summary,
+                    recoverable: true,
+                  });
+                  break;
+                case 'error':
+                default:
+                  wrQueue.transitionStatus(workerRun.id, 'failed');
+                  break;
+              }
+            } catch (err) {
+              console.error('[operator:task:run] onRunEnd failed:', err);
+            }
+          },
+        },
       });
-      return result;
+      return { ...result, workerRunId: workerRun.id };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e), stepsExecuted: 0, outcome: 'error', summary: String(e), steps: [] };
     }
@@ -14594,6 +14730,24 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     } = {},
   ) => {
     try {
+      // ── Free-tier daily quota gate ────────────────────────────────────────
+      // Free users get FREE_DAILY_OPERATOR_RUNS workflow runs per day. This
+      // is the "real taste, not a wall" path: they can feel the operator
+      // once a day before deciding to upgrade. Pro/business have no cap.
+      const license = await store.getLicense();
+      const tier    = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+      const used    = store.getDailyOperatorRunCount();
+      if (isAtDailyOperatorLimit(used, tier)) {
+        return {
+          ok:    false,
+          error: `DAILY_OPERATOR_LIMIT_REACHED:${FREE_DAILY_OPERATOR_RUNS}`,
+          tier,
+          message:
+            `Free tier includes ${FREE_DAILY_OPERATOR_RUNS} operator workflow run per day. ` +
+            `Upgrade to Pro for unlimited runs, or come back tomorrow.`,
+        };
+      }
+
       const result = await WorkflowPackService.startRun(packId, {
         targetApp:             opts.targetApp,
         inputText:             opts.inputText,
@@ -14601,6 +14755,13 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         inputModifiers:        opts.inputModifiers as Array<'cmd'|'shift'|'alt'|'ctrl'> | undefined,
         screenshotOutputPath:  opts.screenshotOutputPath,
       });
+
+      // Only count successful starts toward the quota — failed pre-flights
+      // shouldn't burn the user's daily allowance.
+      if (result && (result as { ok?: boolean }).ok !== false) {
+        store.incrementDailyOperatorRunCount();
+      }
+
       return result;
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -14650,6 +14811,104 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     }
   });
 
+  // ── Phase C1 — Workflow Chains (multi-app composition) ──────────────────────
+
+  /** List all available workflow chains. */
+  ipcMain.handle('workflow-chain:list', async () => {
+    try {
+      return { ok: true, chains: WorkflowChainService.listChains() };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Get a single workflow chain by ID. */
+  ipcMain.handle('workflow-chain:get', async (_e, chainId: string) => {
+    try {
+      const chain = WorkflowChainService.getChain(chainId);
+      if (!chain) return { ok: false, error: `Chain "${chainId}" not found` };
+      return { ok: true, chain };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /**
+   * Start a workflow chain run. Each link is gated by the same daily-operator
+   * quota that governs single packs — the first link's start consumes one slot
+   * and subsequent links proceed without further quota checks for the same chain.
+   */
+  ipcMain.handle('workflow-chain:start', async (_e, chainId: string, initialState: Record<string, unknown> = {}) => {
+    try {
+      const license = await store.getLicense();
+      const tier    = (license.tier ?? 'free') as 'free' | 'pro' | 'business';
+      const used    = store.getDailyOperatorRunCount();
+      if (isAtDailyOperatorLimit(used, tier)) {
+        return {
+          ok:    false,
+          error: `DAILY_OPERATOR_LIMIT_REACHED:${FREE_DAILY_OPERATOR_RUNS}`,
+          tier,
+          message:
+            `Free tier includes ${FREE_DAILY_OPERATOR_RUNS} operator workflow run per day. ` +
+            `Upgrade to Pro for unlimited runs, or come back tomorrow.`,
+        };
+      }
+
+      const result = await WorkflowChainService.startChain(
+        chainId,
+        initialState as Parameters<typeof WorkflowChainService.startChain>[1],
+      );
+
+      if (result.ok) store.incrementDailyOperatorRunCount();
+      return result;
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /**
+   * Advance a chain that is paused on a link approval gate.
+   * The user must first approve the underlying link via operator:approval:approve
+   * + workflow:run:advance, then call this to continue the chain.
+   */
+  ipcMain.handle('workflow-chain:advance', async (_e, chainRunId: string) => {
+    try {
+      return await WorkflowChainService.advanceChain(chainRunId);
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** List all chain runs (active and completed). */
+  ipcMain.handle('workflow-chain:run:list', async () => {
+    try {
+      return { ok: true, runs: WorkflowChainService.listRuns() };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Get a specific chain run. */
+  ipcMain.handle('workflow-chain:run:get', async (_e, runId: string) => {
+    try {
+      const run = WorkflowChainService.getRun(runId);
+      if (!run) return { ok: false, error: `Chain run "${runId}" not found` };
+      return { ok: true, run };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Cancel a chain run. */
+  ipcMain.handle('workflow-chain:run:cancel', async (_e, runId: string) => {
+    try {
+      const ok = WorkflowChainService.cancelRun(runId);
+      return { ok };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
   // ── Pack Builder — custom pack CRUD ──────────────────────────────────────────
 
   /** List all user-built custom packs. */
@@ -14677,6 +14936,80 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     try {
       const deleted = WorkflowPackService.deleteCustomPack(id);
       return { ok: deleted, error: deleted ? undefined : 'Pack not found.' };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /**
+   * Export a custom pack as a portable JSON manifest the user can share or
+   * publish to a marketplace. Wraps the raw pack with a manifest envelope so
+   * future versions can detect and migrate old exports.
+   */
+  ipcMain.handle('pack-builder:export', async (_e, id: string) => {
+    try {
+      const all = WorkflowPackService.listCustomPacks() as Array<{ id: string; name?: string }>;
+      const pack = all.find(p => p.id === id);
+      if (!pack) return { ok: false, error: 'Pack not found.' };
+
+      const manifest = {
+        kind:        'triforge.pack',
+        manifestVer: 1,
+        exportedAt:  new Date().toISOString(),
+        exportedBy:  store.getAuth().username ?? 'TriForge user',
+        pack,
+      };
+
+      const safeName = (pack.name || pack.id).replace(/[^a-z0-9._-]+/gi, '-').slice(0, 60);
+      const result = await dialog.showSaveDialog({
+        title:       'Export TriForge Pack',
+        defaultPath: path.join(os.homedir(), 'Downloads', `${safeName}.triforge-pack.json`),
+        filters:     [{ name: 'TriForge Pack', extensions: ['json'] }],
+      });
+      if (!result.filePath) return { ok: false };
+
+      await fs.promises.writeFile(result.filePath, JSON.stringify(manifest, null, 2), 'utf8');
+      try { shell.showItemInFolder(result.filePath); } catch { /* not fatal on headless test runs */ }
+      return { ok: true, path: result.filePath };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /**
+   * Import a pack manifest exported by pack-builder:export. Validates the
+   * envelope, prefixes the imported id to avoid collisions with existing
+   * packs, and persists via the same path as save.
+   */
+  ipcMain.handle('pack-builder:import', async () => {
+    try {
+      const result = await dialog.showOpenDialog({
+        title:      'Import TriForge Pack',
+        properties: ['openFile'],
+        filters:    [{ name: 'TriForge Pack', extensions: ['json'] }],
+      });
+      if (result.canceled || result.filePaths.length === 0) return { ok: false };
+
+      const raw = await fs.promises.readFile(result.filePaths[0], 'utf8');
+      let parsed: unknown;
+      try { parsed = JSON.parse(raw); } catch {
+        return { ok: false, error: 'File is not valid JSON.' };
+      }
+      const env = parsed as { kind?: string; manifestVer?: number; pack?: { id?: string; name?: string } };
+      if (env?.kind !== 'triforge.pack' || !env.pack?.id) {
+        return { ok: false, error: 'Not a TriForge pack manifest.' };
+      }
+
+      // Suffix id to avoid clobbering an existing pack with the same id
+      const existing = WorkflowPackService.listCustomPacks() as Array<{ id: string }>;
+      let importedId = env.pack.id;
+      if (existing.some(p => p.id === importedId)) {
+        importedId = `${importedId}-imported-${Date.now().toString(36)}`;
+      }
+      const incoming = { ...env.pack, id: importedId } as import('@triforge/engine').WorkflowPack;
+
+      WorkflowPackService.saveCustomPack(incoming);
+      return { ok: true, packId: importedId, packName: env.pack.name ?? importedId };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }

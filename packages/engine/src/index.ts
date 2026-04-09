@@ -175,6 +175,26 @@ export {
   evaluateAllPackReadiness,
 } from './operator/workflowReadiness';
 
+// ── Workflow Chains (Phase C1) ────────────────────────────────────────────────
+
+export {
+  WORKFLOW_CHAIN_REGISTRY,
+  LOGO_TO_LAUNCH_CHAIN,
+  PHOTO_BATCH_BACKUP_CHAIN,
+  listWorkflowChains,
+  getWorkflowChain,
+  substituteChainState,
+} from './operator/workflowChainRegistry';
+export type {
+  WorkflowChain,
+  WorkflowChainLink,
+  WorkflowChainRun,
+  WorkflowChainRunStatus,
+  WorkflowChainLinkResult,
+  ChainState,
+  ChainStateContributor,
+} from './operator/workflowChainRegistry';
+
 // ── Unreal Bootstrap Pack ─────────────────────────────────────────────────────
 
 export { UNREAL_BOOTSTRAP, evaluateUnrealBootstrapReadiness } from './operator/unrealBootstrapPack';

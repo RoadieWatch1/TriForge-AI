@@ -254,6 +254,38 @@ export function buildDesktopContextSection(op: DesktopOperatorSnapshot): string 
     lines.push(`Workflow packs: ${op.workflowsAvailable.join(', ')}`);
   }
 
+  // ── B3: Live operator-run telemetry ─────────────────────────────────────
+  // When a run is in flight, surface the current step state so the council
+  // can react to mid-workflow questions ("why is it stuck?", "what step is
+  // it on?") with real data instead of stale snapshots.
+  if (op.liveRun) {
+    const run = op.liveRun;
+    const ageMs = Date.now() - run.lastEmitAt;
+    // Only surface if the emit is recent (< 2 minutes) — older = task ended
+    if (ageMs < 120_000) {
+      lines.push('');
+      lines.push('## Live Operator Run');
+      lines.push(`Session: ${run.sessionId} | Step: ${run.currentStep}/${run.maxSteps} | Phase: ${run.phase}`);
+      lines.push(`Goal: ${run.goal.slice(0, 140)}`);
+      lines.push(`Last: ${run.lastDescription.slice(0, 160)}`);
+      if (run.lastActionType) {
+        lines.push(`Last action type: ${run.lastActionType}`);
+      }
+      if (run.lastVerifyPassed === false) {
+        lines.push(`Last verify: FAILED — ${run.lastVerifyError?.slice(0, 140) ?? '(no detail)'}`);
+        lines.push(`Consecutive verify failures: ${run.consecutiveVerifyFailures}/3 (run aborts at 3)`);
+      } else if (run.lastVerifyPassed === true) {
+        lines.push(`Last verify: passed`);
+      }
+      lines.push(
+        'Live-run rule: If the user asks about progress or a stuck step, ' +
+        'use the data above. If verify is failing, suggest a concrete different ' +
+        'approach (different element, keyboard shortcut, focus check) — do NOT ' +
+        'tell the user to "try again". The retry/escalate logic is automatic.',
+      );
+    }
+  }
+
   lines.push('');
   lines.push(
     'Operator rule: Classify every desktop request as ' +

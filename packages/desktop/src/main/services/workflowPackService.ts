@@ -112,6 +112,173 @@ import { probeUnrealRemoteControl, UNREAL_RC_DEFAULT_PORT, UNREAL_RC_PROBE_TIMEO
 import { eventBus } from '@triforge/engine';
 import https from 'https';
 
+// ── Platform detection ────────────────────────────────────────────────────────
+
+const PLATFORM   = process.platform;
+const IS_MACOS   = PLATFORM === 'darwin';
+const IS_WINDOWS = PLATFORM === 'win32';
+
+// ── Cross-platform Adobe ExtendScript bridge ──────────────────────────────────
+//
+// macOS:    osascript → "tell application "Photoshop" to do JavaScript ..."
+// Windows:  PowerShell → New-Object -ComObject "Photoshop.Application" → DoJavaScript($script)
+//
+// Both produce the same outcome: ExtendScript runs inside the host Adobe app.
+// The Windows COM bridge requires no plugin — Adobe CC apps register a COM
+// progid (Photoshop.Application, Illustrator.Application, etc.) on install.
+
+const ADOBE_COM_PROGID: Record<string, string> = {
+  'Adobe Photoshop':       'Photoshop.Application',
+  'Photoshop':             'Photoshop.Application',
+  'Adobe Illustrator':     'Illustrator.Application',
+  'Illustrator':           'Illustrator.Application',
+  'Adobe Premiere Pro':    'PremierePro.Application',
+  'Premiere Pro':          'PremierePro.Application',
+  'Adobe After Effects':   'AfterFX.Application',
+  'After Effects':         'AfterFX.Application',
+  'Adobe InDesign':        'InDesign.Application',
+  'Adobe Audition':        'Audition.Application',
+};
+
+function escapeForAppleScript(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+}
+
+function escapePsSingleQuoted(s: string): string {
+  // PowerShell single-quoted strings: only ' itself needs escaping (as '')
+  return s.replace(/'/g, "''");
+}
+
+async function runAdobeExtendScript(appName: string, script: string): Promise<string> {
+  const { exec } = await import('child_process');
+
+  if (IS_MACOS) {
+    const escaped = escapeForAppleScript(script);
+    const osaCmd  = `osascript -e 'tell application "${appName}" to do JavaScript "${escaped}"'`;
+    return new Promise<string>((resolve, reject) => {
+      exec(osaCmd, { timeout: 30_000 }, (err, stdout, stderr) => {
+        if (err) reject(new Error(stderr?.trim() || err.message));
+        else resolve(stdout?.trim() ?? '');
+      });
+    });
+  }
+
+  if (IS_WINDOWS) {
+    const progid = ADOBE_COM_PROGID[appName]
+      ?? Object.entries(ADOBE_COM_PROGID).find(([k]) => appName.toLowerCase().includes(k.toLowerCase()))?.[1];
+    if (!progid) {
+      throw new Error(`No COM ProgID known for "${appName}". Supported: ${Object.keys(ADOBE_COM_PROGID).join(', ')}`);
+    }
+    const psScript = `
+$ErrorActionPreference = 'Stop'
+$app = New-Object -ComObject '${progid}'
+$script = '${escapePsSingleQuoted(script)}'
+$result = $app.DoJavaScript($script)
+if ($null -ne $result) { Write-Output $result }
+`.trim();
+    const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+    const cmd     = `powershell.exe -NoProfile -NonInteractive -EncodedCommand ${encoded}`;
+    return new Promise<string>((resolve, reject) => {
+      exec(cmd, { timeout: 30_000, windowsHide: true }, (err, stdout, stderr) => {
+        if (err) reject(new Error(stderr?.trim() || err.message));
+        else resolve(stdout?.trim() ?? '');
+      });
+    });
+  }
+
+  throw new Error(`adobe_extendscript not supported on platform: ${PLATFORM}`);
+}
+
+// ── Cross-platform Blender Python runner ──────────────────────────────────────
+//
+// Resolves the Blender executable on either platform and runs the given Python
+// script in --background mode. Returns the captured stdout.
+
+async function findBlenderExecutable(): Promise<string> {
+  const { exec } = await import('child_process');
+
+  if (IS_WINDOWS) {
+    // Try Get-Process for a running Blender first, then fall back to known install dirs
+    return new Promise<string>(resolve => {
+      exec(
+        `powershell -NoProfile -Command "(Get-Process -Name blender -ErrorAction SilentlyContinue | Select-Object -First 1).Path"`,
+        { timeout: 5_000, windowsHide: true },
+        (_err, stdout) => {
+          const found = stdout?.trim();
+          if (found && fs.existsSync(found)) { resolve(found); return; }
+          // Fall back to common install paths
+          const candidates = [
+            'C:\\Program Files\\Blender Foundation\\Blender 4.3\\blender.exe',
+            'C:\\Program Files\\Blender Foundation\\Blender 4.2\\blender.exe',
+            'C:\\Program Files\\Blender Foundation\\Blender 4.1\\blender.exe',
+            'C:\\Program Files\\Blender Foundation\\Blender 4.0\\blender.exe',
+            'C:\\Program Files\\Blender Foundation\\Blender 3.6\\blender.exe',
+          ];
+          const hit = candidates.find(c => fs.existsSync(c));
+          resolve(hit ?? 'blender.exe');
+        },
+      );
+    });
+  }
+
+  // macOS / Linux: ps lookup, then well-known mac path, then $PATH
+  return new Promise<string>(resolve => {
+    exec(
+      `ps -ax -o args | grep -i "Blender" | grep -v grep | head -1 | awk '{print $1}'`,
+      { timeout: 5_000 },
+      (_err, stdout) => {
+        const found = stdout?.trim();
+        if (found && fs.existsSync(found)) { resolve(found); return; }
+        const macAppCandidate = '/Applications/Blender.app/Contents/MacOS/Blender';
+        if (fs.existsSync(macAppCandidate)) { resolve(macAppCandidate); return; }
+        resolve('blender');
+      },
+    );
+  });
+}
+
+async function runBlenderPython(script: string): Promise<{ output: string; scriptPath: string }> {
+  const { exec } = await import('child_process');
+  const { writeFileSync } = await import('fs');
+  const { join }          = await import('path');
+  const { tmpdir }        = await import('os');
+
+  const scriptPath = join(tmpdir(), `tf-blender-${Date.now()}.py`);
+  writeFileSync(scriptPath, script, 'utf8');
+  const blenderBin = await findBlenderExecutable();
+  const cmd = IS_WINDOWS
+    ? `"${blenderBin}" --background --python "${scriptPath}"`
+    : `"${blenderBin}" --background --python "${scriptPath}"`;
+
+  const output = await new Promise<string>((resolve, reject) => {
+    exec(cmd, { timeout: 60_000, windowsHide: IS_WINDOWS }, (err, stdout, stderr) => {
+      if (err && !stdout) reject(new Error(stderr?.trim() || err.message));
+      else resolve(stdout?.trim() ?? '');
+    });
+  });
+
+  return { output, scriptPath };
+}
+
+// ── Cross-platform ADB resolver ───────────────────────────────────────────────
+
+async function findAdbExecutable(): Promise<string> {
+  const { exec } = await import('child_process');
+
+  const lookupCmd = IS_WINDOWS ? 'where adb' : 'which adb';
+  const fallback  = IS_WINDOWS
+    ? path.join(os.homedir(), 'AppData', 'Local', 'Android', 'Sdk', 'platform-tools', 'adb.exe')
+    : path.join(os.homedir(), 'Library', 'Android', 'sdk', 'platform-tools', 'adb');
+
+  return new Promise<string>(resolve => {
+    exec(lookupCmd, { timeout: 3_000, windowsHide: IS_WINDOWS }, (_err, stdout) => {
+      const lines = (stdout || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      const found = lines[0];
+      resolve(found || fallback);
+    });
+  });
+}
+
 // ── Script fallback library ───────────────────────────────────────────────────
 //
 // Pre-written scripts for the most common operations in each supported language.
@@ -2253,14 +2420,19 @@ async function executePhase(
 
     // ── adobe_extendscript ─────────────────────────────────────────────────────
     //
-    // Runs a JavaScript snippet inside an Adobe CC app via osascript.
-    // The app must be running and frontmost. The script is passed as opts.script.
-    // Adobe apps expose a `do JavaScript` AppleScript command for ExtendScript.
+    // Runs a JavaScript snippet inside an Adobe CC app.
+    // macOS:   osascript → 'tell application "X" to do JavaScript ...'
+    // Windows: PowerShell COM → New-Object Photoshop.Application → DoJavaScript()
+    // The app must be running. The script is passed as opts.script (or auto-
+    // generated from opts.goal).
     case 'adobe_extendscript': {
       let script    = opts?.script as string | undefined;
       const appName = (pack.requirements.targetApp ?? opts?.targetApp) as string;
 
       if (!appName) return fail('adobe_extendscript requires a targetApp on the pack or in opts.');
+      if (!IS_MACOS && !IS_WINDOWS) {
+        return fail(`adobe_extendscript is not supported on platform: ${PLATFORM}`);
+      }
 
       // Auto-generate script from goal when not provided
       if (!script) {
@@ -2271,23 +2443,14 @@ async function executePhase(
         script = generated;
       }
 
-      // Escape for AppleScript string embedding
-      const escaped = script.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-      const osaCmd  = `osascript -e 'tell application "${appName}" to do JavaScript "${escaped}"'`;
-
       try {
-        const { exec } = await import('child_process');
-        const output   = await new Promise<string>((resolve, reject) => {
-          exec(osaCmd, { timeout: 30_000 }, (err, stdout, stderr) => {
-            if (err) reject(new Error(stderr?.trim() || err.message));
-            else resolve(stdout?.trim() ?? '');
-          });
-        });
+        const output = await runAdobeExtendScript(appName, script);
         return {
           phaseResult: makePhaseResult(phase, 'completed', {
             extendscriptOutput: output,
             scriptLength:       script.length,
             targetApp:          appName,
+            platform:           IS_WINDOWS ? 'Windows (COM)' : 'macOS (osascript)',
           }),
           shouldStop: false,
         };
@@ -2298,11 +2461,15 @@ async function executePhase(
 
     // ── blender_python ─────────────────────────────────────────────────────────
     //
-    // Runs a Python script in Blender's embedded interpreter.
-    // Blender must be running. Script is passed as opts.script (Python source).
-    // Uses: blender --background --python-expr "<script>" or writes to tmp file.
+    // Runs a Python script in Blender's embedded interpreter on macOS or Windows.
+    // Script is passed as opts.script (Python source) or generated from opts.goal.
+    // Uses: blender --background --python <tmpfile>
     case 'blender_python': {
       let script = opts?.script as string | undefined;
+
+      if (!IS_MACOS && !IS_WINDOWS) {
+        return fail(`blender_python is not supported on platform: ${PLATFORM}`);
+      }
 
       // Auto-generate script from goal when not provided
       if (!script) {
@@ -2313,46 +2480,24 @@ async function executePhase(
         script = generated;
       }
 
-      const { exec } = await import('child_process');
-      const { writeFileSync, unlinkSync } = await import('fs');
-      const { join } = await import('path');
-      const { tmpdir } = await import('os');
-
-      const scriptPath = join(tmpdir(), `tf-blender-${Date.now()}.py`);
+      const { unlinkSync } = await import('fs');
+      let scriptPath = '';
       try {
-        writeFileSync(scriptPath, script, 'utf8');
-
-        // Try to find the Blender executable from running process
-        const blenderBin = await new Promise<string>(resolve => {
-          exec(
-            `ps -ax -o args | grep -i "Blender" | grep -v grep | head -1 | awk '{print $1}'`,
-            { timeout: 5_000 },
-            (_err, stdout) => resolve(stdout?.trim() || 'blender'),
-          );
-        });
-
-        const output = await new Promise<string>((resolve, reject) => {
-          exec(
-            `"${blenderBin}" --background --python "${scriptPath}"`,
-            { timeout: 60_000 },
-            (err, stdout, stderr) => {
-              if (err && !stdout) reject(new Error(stderr?.trim() || err.message));
-              else resolve(stdout?.trim() ?? '');
-            },
-          );
-        });
+        const result = await runBlenderPython(script);
+        scriptPath = result.scriptPath;
 
         return {
           phaseResult: makePhaseResult(phase, 'completed', {
-            blenderOutput: output,
+            blenderOutput: result.output,
             scriptPath,
+            platform:      IS_WINDOWS ? 'Windows' : 'macOS',
           }),
           shouldStop: false,
         };
       } catch (err) {
         return fail(`Blender Python script failed: ${String(err)}`);
       } finally {
-        try { unlinkSync(scriptPath); } catch { /* best-effort cleanup */ }
+        try { if (scriptPath) unlinkSync(scriptPath); } catch { /* best-effort cleanup */ }
       }
     }
 
@@ -2361,7 +2506,15 @@ async function executePhase(
     // Runs an AppleScript against any macOS app.
     // opts.script = the raw AppleScript source.
     // opts.targetApp = app name for scoping (optional if script is self-contained).
+    // AppleScript is macOS-only by definition.
     case 'app_applescript': {
+      if (!IS_MACOS) {
+        return fail(
+          'app_applescript is macOS-only. ' +
+          'On Windows, use adobe_extendscript (Adobe apps) or queue_input/vision_plan_act for visual control.',
+        );
+      }
+
       let script = opts?.script as string | undefined;
       const asAppName = (opts?.targetApp ?? pack.requirements.targetApp) as string | undefined;
 
@@ -2399,6 +2552,8 @@ async function executePhase(
     // ── adb_command ────────────────────────────────────────────────────────────
     //
     // Runs an ADB command against a connected Android device/emulator.
+    // Cross-platform: resolves adb via `where` (Windows) or `which` (mac/linux),
+    // with platform-appropriate fallback to the default Android SDK install.
     // opts.adbArgs = the arguments after "adb", e.g. "install /path/to/app.apk"
     case 'adb_command': {
       const adbArgs = opts?.adbArgs as string | undefined;
@@ -2406,16 +2561,10 @@ async function executePhase(
 
       try {
         const { exec } = await import('child_process');
-        // Try to find adb — it may be in Android SDK platform-tools
-        const adbPath  = await new Promise<string>(resolve => {
-          exec('which adb', { timeout: 3_000 }, (_err, stdout) => {
-            const found = stdout?.trim();
-            resolve(found || `${process.env.HOME}/Library/Android/sdk/platform-tools/adb`);
-          });
-        });
+        const adbPath  = await findAdbExecutable();
 
         const output = await new Promise<string>((resolve, reject) => {
-          exec(`"${adbPath}" ${adbArgs}`, { timeout: 60_000 }, (err, stdout, stderr) => {
+          exec(`"${adbPath}" ${adbArgs}`, { timeout: 60_000, windowsHide: IS_WINDOWS }, (err, stdout, stderr) => {
             if (err && !stdout) reject(new Error(stderr?.trim() || err.message));
             else resolve((stdout + '\n' + stderr).trim());
           });
@@ -2425,6 +2574,7 @@ async function executePhase(
           phaseResult: makePhaseResult(phase, 'completed', {
             adbOutput: output,
             adbArgs,
+            adbPath,
           }),
           shouldStop: false,
         };
@@ -2439,6 +2589,13 @@ async function executePhase(
     // opts.xcodebuildArgs = arguments string, e.g. "-scheme MyApp -configuration Debug build"
     // opts.projectPath = path to .xcodeproj or .xcworkspace (optional)
     case 'xcodebuild': {
+      if (!IS_MACOS) {
+        return fail(
+          'xcodebuild is macOS-only (requires Apple Xcode toolchain). ' +
+          'For Windows-side iOS work, use a remote macOS build host.',
+        );
+      }
+
       const xcodebuildArgs = opts?.xcodebuildArgs as string | undefined;
       const projectPath    = opts?.projectPath as string | undefined;
 
@@ -2489,6 +2646,9 @@ async function executePhase(
     // Enumerates all iOS simulators (via simctl) and connected real devices
     // (via devicectl). Returns a structured snapshot used by subsequent iOS phases.
     case 'ios_awareness_check': {
+      if (!IS_MACOS) {
+        return fail('iOS scanning requires macOS (uses xcrun simctl + devicectl).');
+      }
       const runningApps   = await OperatorService.listRunningApps();
       const frontmost     = await OperatorService.getFrontmostApp();
       const snapshot      = await buildIOSAwarenessSnapshot(
@@ -2534,6 +2694,9 @@ async function executePhase(
     // opts.simctlArgs = string of arguments after "simctl", e.g. "boot <UDID>"
     // opts.udid       = UDID shorthand — used when simctlArgs is "boot" or "shutdown"
     case 'ios_simctl': {
+      if (!IS_MACOS) {
+        return fail('xcrun simctl is macOS-only (Apple Simulator runtime is not available on Windows).');
+      }
       // If this phase is for booting, use the bootSimulator helper (handles "already booted")
       const simctlArgs = opts?.simctlArgs as string | undefined;
       const udid       = (opts?.udid as string | undefined)
@@ -2584,6 +2747,9 @@ async function executePhase(
     // Picks the first booted simulator from prior ios_awareness_check output.
     // opts.udid = specific simulator UDID (optional — auto-selects if omitted)
     case 'ios_simulator_screenshot': {
+      if (!IS_MACOS) {
+        return fail('iOS simulator screenshots are macOS-only (requires xcrun simctl).');
+      }
       // Find UDID: opts → prior booted result → fail
       const udid: string | undefined =
         (opts?.udid as string | undefined) ??
@@ -2634,6 +2800,9 @@ async function executePhase(
     //   opts.udid         — simulator UDID (auto-selects booted if omitted)
     //   opts.bundleId     — app bundle identifier (for launch)
     case 'ios_build_simulator': {
+      if (!IS_MACOS) {
+        return fail('iOS Simulator builds are macOS-only (requires Xcode + simctl).');
+      }
       const { exec } = await import('child_process');
 
       // Resolve project path
@@ -2752,6 +2921,9 @@ async function executePhase(
     // opts.projectPath, opts.scheme, opts.deviceIdentifier required.
     // Actual install is handled by ios_devicectl phase.
     case 'ios_build_device': {
+      if (!IS_MACOS) {
+        return fail('iOS device builds are macOS-only (requires Xcode + provisioning).');
+      }
       const { exec } = await import('child_process');
 
       const projectPath = opts?.projectPath as string | undefined;
@@ -2829,6 +3001,9 @@ async function executePhase(
     // Primary use: install app after ios_build_device.
     // opts.devicectlArgs = string of arguments after "devicectl"
     case 'ios_devicectl': {
+      if (!IS_MACOS) {
+        return fail('xcrun devicectl is macOS-only.');
+      }
       const { exec } = await import('child_process');
 
       // Resolve device identifier
@@ -3550,13 +3725,20 @@ async function executePhase(
 
       if (!avdName) return fail('android_launch_avd: no AVD name. Run android_awareness_check first or set opts.avdName.');
 
-      // Resolve emulator binary by checking known paths
+      // Resolve emulator binary by checking known paths (cross-platform)
+      const emulatorBinName = IS_WINDOWS ? 'emulator.exe' : 'emulator';
       const knownEmulatorPaths = [
-        ...(process.env.ANDROID_HOME ? [path.join(process.env.ANDROID_HOME, 'emulator', 'emulator')] : []),
-        path.join(os.homedir(), 'Library', 'Android', 'sdk', 'emulator', 'emulator'),
-        path.join(os.homedir(), 'Android', 'Sdk', 'emulator', 'emulator'),
-        '/usr/local/bin/emulator',
-        '/opt/homebrew/bin/emulator',
+        ...(process.env.ANDROID_HOME ? [path.join(process.env.ANDROID_HOME, 'emulator', emulatorBinName)] : []),
+        ...(IS_MACOS ? [
+          path.join(os.homedir(), 'Library', 'Android', 'sdk', 'emulator', emulatorBinName),
+          '/usr/local/bin/emulator',
+          '/opt/homebrew/bin/emulator',
+        ] : []),
+        ...(IS_WINDOWS ? [
+          path.join(os.homedir(), 'AppData', 'Local', 'Android', 'Sdk', 'emulator', emulatorBinName),
+        ] : [
+          path.join(os.homedir(), 'Android', 'Sdk', 'emulator', emulatorBinName),
+        ]),
       ];
       const fs = await import('fs');
       let emulatorPath: string | null = null;
@@ -3566,7 +3748,10 @@ async function executePhase(
       if (!emulatorPath) {
         const { exec } = await import('child_process');
         const { promisify } = await import('util');
-        const fromPath = await promisify(exec)('which emulator', { timeout: 3000 }).then(r => r.stdout.trim()).catch(() => '');
+        const lookupCmd = IS_WINDOWS ? 'where emulator' : 'which emulator';
+        const fromPath = await promisify(exec)(lookupCmd, { timeout: 3000, windowsHide: IS_WINDOWS })
+          .then(r => r.stdout.trim().split(/\r?\n/)[0] ?? '')
+          .catch(() => '');
         if (fromPath && !fromPath.includes('not found')) emulatorPath = fromPath;
       }
       if (!emulatorPath) return fail('android_launch_avd: emulator binary not found. Install Android SDK.');

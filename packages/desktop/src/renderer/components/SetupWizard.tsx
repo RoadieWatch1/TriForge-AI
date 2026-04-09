@@ -82,6 +82,25 @@ export function SetupWizard({ permissions: initialPermissions, onComplete }: Set
   const [keyStatus, setKeyStatus] = useState<Record<string, boolean>>({ openai: false, claude: false, grok: false });
   const [apiKeys,   setApiKeys]   = useState<Record<string, string>>({ openai: '', claude: '', grok: '' });
   const [saving,    setSaving]    = useState<string | null>(null);
+  const [keyError,  setKeyError]  = useState<Record<string, string>>({});
+
+  // Inline format validation — runs before save so users get instant feedback
+  // instead of saving an obviously broken key and finding out later.
+  const PROVIDER_PREFIX: Record<string, RegExp> = {
+    openai: /^sk-[A-Za-z0-9_-]{20,}$/,
+    claude: /^sk-ant-[A-Za-z0-9_-]{20,}$/,
+    grok:   /^xai-[A-Za-z0-9_-]{20,}$/,
+  };
+  const validateKey = (provider: string, key: string): string | null => {
+    const k = key.trim();
+    if (!k) return null;
+    const re = PROVIDER_PREFIX[provider];
+    if (re && !re.test(k)) {
+      const expected = provider === 'openai' ? 'sk-…' : provider === 'claude' ? 'sk-ant-…' : 'xai-…';
+      return `Format looks off — expected ${expected}`;
+    }
+    return null;
+  };
 
   // Step 4: Integrations
   const [githubToken, setGithubToken] = useState('');
@@ -92,6 +111,18 @@ export function SetupWizard({ permissions: initialPermissions, onComplete }: Set
 
   // Step 5: Permissions
   const [permissions, setPermissions] = useState<Permission[]>(initialPermissions);
+
+  // Capability scan — kicked off in the background while user grants permissions, shown on Step 6
+  type DetectedApp = { name: string; version?: string; path: string; exportFormats: string[]; incomeRelevant: string[] };
+  type CapabilityScan = {
+    scannedAt: number;
+    installedApps: DetectedApp[];
+    gpuName?: string;
+    gpuVramMB?: number;
+    storageGB: number;
+  };
+  const [capabilityScan, setCapabilityScan] = useState<CapabilityScan | null>(null);
+  const [scanLoading,    setScanLoading]    = useState(true);
 
   useEffect(() => {
     let mounted = true;
@@ -104,6 +135,27 @@ export function SetupWizard({ permissions: initialPermissions, onComplete }: Set
         .then(s => { if (mounted) setOskStatus(s); })
         .catch(() => {});
     }
+    // Kick off capability scan in the background — by the time the user reaches the
+    // Ready step (Step 6) we'll have a "We found these on your machine" panel ready.
+    if (window.triforge.incomeScanner) {
+      window.triforge.incomeScanner.run()
+        .then(r => {
+          if (!mounted) return;
+          if (r && r.result) {
+            setCapabilityScan({
+              scannedAt:     r.result.scannedAt,
+              installedApps: r.result.installedApps,
+              gpuName:       r.result.gpuName,
+              gpuVramMB:     r.result.gpuVramMB,
+              storageGB:     r.result.storageGB,
+            });
+          }
+          setScanLoading(false);
+        })
+        .catch(() => { if (mounted) setScanLoading(false); });
+    } else {
+      setScanLoading(false);
+    }
     return () => { mounted = false; };
   }, []);
 
@@ -114,11 +166,20 @@ export function SetupWizard({ permissions: initialPermissions, onComplete }: Set
   const saveKey = async (provider: string) => {
     const key = apiKeys[provider].trim();
     if (!key) return;
+    // Inline format check — surface obvious typos before we hit the keychain.
+    const validationError = validateKey(provider, key);
+    if (validationError) {
+      setKeyError(e => ({ ...e, [provider]: validationError }));
+      return;
+    }
+    setKeyError(e => ({ ...e, [provider]: '' }));
     setSaving(provider);
     try {
       await window.triforge.keys.set(provider, key);
       await refreshKeys();
       setApiKeys(k => ({ ...k, [provider]: '' }));
+    } catch (err) {
+      setKeyError(e => ({ ...e, [provider]: err instanceof Error ? err.message : 'Save failed' }));
     } finally {
       setSaving(null);
     }
@@ -412,45 +473,72 @@ export function SetupWizard({ permissions: initialPermissions, onComplete }: Set
                 {connectedCount === 3 && <span style={s.checkMark}>✓ Full consensus active</span>}
               </div>
 
-              {PROVIDERS.map(p => (
-                <div key={p.id} style={s.keyRow}>
-                  <div style={{ ...s.providerDot, background: p.color }} />
-                  <div style={{ flex: 1 }}>
-                    <div style={s.providerLabel}>{p.label}</div>
-                    {keyStatus[p.id] ? (
-                      <div style={s.keyConfigured}>
-                        <span style={{ color: '#10a37f', fontSize: 12 }}>● Connected</span>
-                        <button style={s.removeBtn} onClick={() => removeKey(p.id)}>Remove</button>
-                      </div>
-                    ) : (
-                      <div style={s.keyInputRow}>
-                        <input
-                          type="password"
-                          style={s.keyField}
-                          placeholder={p.placeholder}
-                          value={apiKeys[p.id]}
-                          onChange={e => setApiKeys(k => ({ ...k, [p.id]: e.target.value }))}
-                          onKeyDown={e => e.key === 'Enter' && saveKey(p.id)}
-                        />
-                        <button
-                          style={{ ...s.primaryBtn, ...((!apiKeys[p.id].trim() || saving === p.id) ? s.btnDisabled : {}) }}
-                          onClick={() => saveKey(p.id)}
-                          disabled={!apiKeys[p.id].trim() || saving === p.id}
-                        >
-                          {saving === p.id ? '…' : 'Save'}
-                        </button>
-                        <a
-                          href={p.keysUrl}
-                          onClick={e => { e.preventDefault(); window.triforge.system.openExternal(p.keysUrl); }}
-                          style={s.getKeyLink}
-                        >
-                          Get key →
-                        </a>
-                      </div>
-                    )}
+              {PROVIDERS.map(p => {
+                const liveError = keyError[p.id] || (apiKeys[p.id] ? validateKey(p.id, apiKeys[p.id]) : null);
+                return (
+                  <div key={p.id} style={s.keyRow}>
+                    <div style={{ ...s.providerDot, background: p.color }} />
+                    <div style={{ flex: 1 }}>
+                      <div style={s.providerLabel}>{p.label}</div>
+                      {keyStatus[p.id] ? (
+                        <div style={s.keyConfigured}>
+                          <span style={{ color: '#10a37f', fontSize: 12 }}>● Connected — stored locally on this device</span>
+                          <button style={s.removeBtn} onClick={() => removeKey(p.id)}>Remove</button>
+                        </div>
+                      ) : (
+                        <>
+                          <div style={s.keyInputRow}>
+                            <input
+                              type="password"
+                              style={{
+                                ...s.keyField,
+                                ...(liveError ? { borderColor: '#ef4444' } : {}),
+                              }}
+                              placeholder={p.placeholder}
+                              value={apiKeys[p.id]}
+                              onChange={e => {
+                                setApiKeys(k => ({ ...k, [p.id]: e.target.value }));
+                                if (keyError[p.id]) setKeyError(err => ({ ...err, [p.id]: '' }));
+                              }}
+                              onKeyDown={e => e.key === 'Enter' && saveKey(p.id)}
+                            />
+                            <button
+                              style={{ ...s.primaryBtn, ...((!apiKeys[p.id].trim() || saving === p.id) ? s.btnDisabled : {}) }}
+                              onClick={() => saveKey(p.id)}
+                              disabled={!apiKeys[p.id].trim() || saving === p.id}
+                            >
+                              {saving === p.id ? '…' : 'Save'}
+                            </button>
+                            <a
+                              href={p.keysUrl}
+                              onClick={e => { e.preventDefault(); window.triforge.system.openExternal(p.keysUrl); }}
+                              style={s.getKeyLink}
+                            >
+                              Get key →
+                            </a>
+                          </div>
+                          {liveError && (
+                            <div style={{ fontSize: 11, color: '#ef4444', marginTop: 4 }}>
+                              {liveError}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
+
+              {/* Skip-for-now callout — make it explicit that this step is optional
+                  so users don't feel forced into the browser detour. */}
+              <div style={{
+                marginTop: 14, padding: '10px 12px',
+                background: 'var(--surface-alt, #16161a)',
+                border: '1px solid var(--border)', borderRadius: 6,
+                fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.5,
+              }}>
+                Don't have a key right now? <strong style={{ color: 'var(--text-primary)' }}>Click Next</strong> — you can add keys anytime in Settings → API Keys. TriForge will guide you back here. Keys are stored only on this device, never sent to TriForge servers.
+              </div>
             </div>
           )}
 
@@ -599,6 +687,54 @@ export function SetupWizard({ permissions: initialPermissions, onComplete }: Set
                   value={ROLE_OPTIONS.find(r => r.id === role)?.label ?? role}
                   status="neutral"
                 />
+              </div>
+
+              {/* Capability scan result — what TriForge found installed on this machine */}
+              <div style={s.scanPanel}>
+                <div style={s.scanPanelTitle}>
+                  Detected on this machine
+                  {scanLoading && <span style={s.scanPanelHint}>  scanning…</span>}
+                </div>
+                {!scanLoading && capabilityScan && capabilityScan.installedApps.length > 0 && (
+                  <>
+                    <div style={s.scanAppsRow}>
+                      {capabilityScan.installedApps.slice(0, 12).map(app => {
+                        const isOperatorApp = /unreal|photoshop|blender|premiere|after effects|davinci|illustrator|figma|maya|houdini|substance/i.test(app.name);
+                        return (
+                          <div
+                            key={app.path}
+                            style={{
+                              ...s.scanAppChip,
+                              borderColor: isOperatorApp ? '#10a37f' : 'var(--border)',
+                              color:       isOperatorApp ? '#10a37f' : 'var(--text)',
+                            }}
+                            title={app.path}
+                          >
+                            {app.name}
+                            {app.version && <span style={s.scanAppVer}>  {app.version}</span>}
+                          </div>
+                        );
+                      })}
+                      {capabilityScan.installedApps.length > 12 && (
+                        <div style={{ ...s.scanAppChip, borderStyle: 'dashed' }}>
+                          +{capabilityScan.installedApps.length - 12} more
+                        </div>
+                      )}
+                    </div>
+                    <div style={s.scanMeta}>
+                      {capabilityScan.gpuName && <span>GPU: {capabilityScan.gpuName}{capabilityScan.gpuVramMB ? ` (${(capabilityScan.gpuVramMB / 1024).toFixed(1)} GB)` : ''}</span>}
+                      {capabilityScan.storageGB > 0 && <span>  •  Storage: {capabilityScan.storageGB.toFixed(0)} GB free</span>}
+                    </div>
+                    <div style={s.scanCallout}>
+                      TriForge can drive these apps directly from the Operate tab — open one and tell the Council what to build.
+                    </div>
+                  </>
+                )}
+                {!scanLoading && (!capabilityScan || capabilityScan.installedApps.length === 0) && (
+                  <div style={s.scanEmpty}>
+                    No creator apps detected. TriForge can still help with chat, browser, files, and email — install Unreal, Photoshop, or Blender to unlock the Operate workflows.
+                  </div>
+                )}
               </div>
 
               {/* Next steps by role */}
@@ -829,6 +965,37 @@ const s: Record<string, React.CSSProperties> = {
   nextList: {
     margin: 0, paddingLeft: 18,
     fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.8,
+  },
+
+  // Capability scan panel (Step 6)
+  scanPanel: {
+    background: 'var(--surface-alt, #16161a)',
+    border: '1px solid var(--border)',
+    borderRadius: 7, padding: '12px 14px',
+    marginBottom: 12,
+  },
+  scanPanelTitle: {
+    fontSize: 12, fontWeight: 700, color: 'var(--text-primary)',
+    marginBottom: 10,
+  },
+  scanPanelHint:  { fontSize: 11, fontWeight: 400, color: 'var(--text-muted)' },
+  scanAppsRow: {
+    display: 'flex', flexWrap: 'wrap', gap: 6,
+  },
+  scanAppChip: {
+    fontSize: 11, padding: '4px 8px',
+    border: '1px solid var(--border)', borderRadius: 4,
+    background: 'var(--bg)',
+  },
+  scanAppVer: { fontSize: 10, color: 'var(--text-muted)', marginLeft: 4 },
+  scanMeta: {
+    fontSize: 11, color: 'var(--text-muted)', marginTop: 8,
+  },
+  scanCallout: {
+    fontSize: 11, color: '#10a37f', marginTop: 8, lineHeight: 1.5,
+  },
+  scanEmpty: {
+    fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6,
   },
 
   // Buttons

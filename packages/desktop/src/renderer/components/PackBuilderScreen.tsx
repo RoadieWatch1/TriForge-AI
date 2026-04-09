@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-import crypto from 'crypto';
 
 // ── Types (local mirrors of engine types — avoids import chain in renderer) ──
 
@@ -133,6 +132,25 @@ export function PackBuilderScreen() {
     if (editing?.id === id) setEditing(null);
   };
 
+  const exportPack = async (id: string) => {
+    const res = await tf()?.packBuilder?.export(id);
+    if (res?.ok) {
+      setSaveMsg({ text: `Exported to ${res.path}`, ok: true });
+    } else if (res?.error) {
+      setSaveMsg({ text: `Export failed: ${res.error}`, ok: false });
+    }
+  };
+
+  const importPack = async () => {
+    const res = await tf()?.packBuilder?.import();
+    if (res?.ok) {
+      await load();
+      setSaveMsg({ text: `Imported "${res.packName}".`, ok: true });
+    } else if (res?.error) {
+      setSaveMsg({ text: `Import failed: ${res.error}`, ok: false });
+    }
+  };
+
   const savePack = async () => {
     if (!editing) return;
     if (!editing.name.trim()) { setSaveMsg({ text: 'Name is required.', ok: false }); return; }
@@ -204,7 +222,10 @@ export function PackBuilderScreen() {
       <div style={pb.sidebar}>
         <div style={pb.sidebarHeader}>
           <span style={pb.sidebarTitle}>Custom Packs</span>
-          <button style={pb.newBtn} onClick={newPack}>+ New</button>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button style={pb.importBtn} onClick={importPack} title="Import a .triforge-pack.json file">Import</button>
+            <button style={pb.newBtn} onClick={newPack}>+ New</button>
+          </div>
         </div>
         {saved.length === 0 && (
           <p style={pb.sidebarEmpty}>No custom packs yet. Click "+ New" to build one.</p>
@@ -253,6 +274,13 @@ export function PackBuilderScreen() {
                     {saveMsg.text}
                   </span>
                 )}
+                <button
+                  style={pb.secondaryBtn}
+                  onClick={() => exportPack(editing.id)}
+                  title="Export this pack as a portable JSON manifest"
+                >
+                  Export
+                </button>
                 <button
                   style={{ ...pb.primaryBtn, opacity: saving ? 0.6 : 1 }}
                   onClick={savePack}
@@ -503,6 +531,26 @@ const pb: Record<string, React.CSSProperties> = {
     borderRadius: 5,
     padding: '4px 10px',
     fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
+  importBtn: {
+    background: 'transparent',
+    color: 'var(--text-secondary)',
+    border: '1px solid var(--border)',
+    borderRadius: 5,
+    padding: '4px 10px',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
+  secondaryBtn: {
+    background: 'transparent',
+    color: 'var(--text-secondary)',
+    border: '1px solid var(--border)',
+    borderRadius: 7,
+    padding: '8px 14px',
+    fontSize: 13,
     fontWeight: 600,
     cursor: 'pointer',
   },

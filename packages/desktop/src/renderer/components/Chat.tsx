@@ -8,7 +8,7 @@ import type { ContextualIntelligenceResult } from '@triforge/engine';
 import { ForgeChamber } from './ForgeChamber';
 import { CouncilChamber } from './forge/CouncilChamber';
 import { loadLastMission, type LastMissionSummary } from '../forge/ForgeContextStore';
-import { voiceService, type WakeStatus } from '../voice/VoiceService';
+import { voiceService } from '../voice/VoiceService';
 import { councilSpeech } from '../voice/CouncilSpeechService';
 import { unifiedVoiceSession } from '../voice/UnifiedVoiceSession';
 import { onCouncilCommand, dispatchCommand } from '../command/CommandDispatcher';
@@ -288,7 +288,6 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
   };
   const [voiceChatActive, setVoiceChatActive] = useState(false);
   const [handsFreeMode, setHandsFreeMode] = useState(false);
-  const [wakeStatus, setWakeStatus] = useState(() => voiceService.status);
   const [councilListening, setCouncilListening] = useState(false);
   // Council Deliberation Mode — 3-phase cross-reaction before full response
   const [deliberateMode, setDeliberateMode] = useState(() =>
@@ -509,13 +508,6 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
     const combined = userMsgs.map(m => m.content.toLowerCase()).join(' ');
     if (STRATEGIC_KEYWORDS.some(kw => combined.includes(kw))) setEscalationSuggested(true);
   }, [messages]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Track wake engine status (loading → ready | error)
-  useEffect(() => {
-    const handler = (e: Event) => setWakeStatus((e as CustomEvent<WakeStatus>).detail);
-    window.addEventListener('triforge:wake-status', handler);
-    return () => window.removeEventListener('triforge:wake-status', handler);
-  }, []);
 
   // Sync speaking state from CouncilSpeechService events
   useEffect(() => {
@@ -1597,16 +1589,6 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
               >
                 {handsFreeMode ? '◉ Council: Active' : '◎ Council Mode'}
               </button>
-              {wakeStatus !== 'idle' && (
-                <div style={{
-                  fontSize: 9, fontWeight: 700, letterSpacing: '0.07em', textAlign: 'center',
-                  padding: '2px 6px', borderRadius: 3, marginTop: -1,
-                  color: wakeStatus === 'ready' ? '#34d399' : wakeStatus === 'error' ? '#f87171' : '#fbbf24',
-                  background: wakeStatus === 'ready' ? 'rgba(52,211,153,0.08)' : wakeStatus === 'error' ? 'rgba(248,113,113,0.08)' : 'rgba(251,191,36,0.08)',
-                }}>
-                  {wakeStatus === 'loading' ? '⏳ WAKE LOADING…' : wakeStatus === 'ready' ? '● WAKE READY' : '✕ WAKE FAILED'}
-                </div>
-              )}
               <button
                 style={{ ...cs.dockBtn, ...(voiceChatActive ? { color: 'var(--accent)', borderColor: 'rgba(99,102,241,0.4)' } : {}) }}
                 onClick={() => {

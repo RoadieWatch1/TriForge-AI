@@ -96,6 +96,42 @@ export interface DesktopOperatorSnapshot {
    * undefined = session validity not yet assessed.
    */
   sessionValid?: boolean;
+
+  // ── B3: Live operator-run telemetry ──────────────────────────────────────
+  //
+  // When an operator task is mid-flight, these fields surface the most recent
+  // step state to the council so it can react to in-progress runs (e.g. advise
+  // on a stuck step, propose a different approach mid-workflow). Stale values
+  // (older than ~2 minutes) should be cleared by the producer.
+
+  /**
+   * The currently-running operator task summary, if any. undefined when no
+   * task is in flight or the most recent task has finished.
+   */
+  liveRun?: {
+    /** Task session id (matches OperatorService session id) */
+    sessionId: string;
+    /** Goal text the task was started with */
+    goal: string;
+    /** Current step number (1-indexed) */
+    currentStep: number;
+    /** Maximum allowed steps for this run */
+    maxSteps: number;
+    /** Phase of the most recent step emit */
+    phase: 'observe' | 'plan' | 'act' | 'verify' | 'done' | 'blocked' | 'error' | 'continuation_prompt';
+    /** Description of the most recent action / observation */
+    lastDescription: string;
+    /** Action type of the most recent planned action, if any */
+    lastActionType?: 'click' | 'type' | 'key' | 'focus' | 'wait' | 'done' | 'blocked';
+    /** Whether the most recent verification passed */
+    lastVerifyPassed?: boolean;
+    /** Last verify failure message (if any) — populated when verification failed */
+    lastVerifyError?: string;
+    /** How many consecutive verify failures the run has logged */
+    consecutiveVerifyFailures: number;
+    /** Wall-clock time of the most recent emit */
+    lastEmitAt: number;
+  };
 }
 
 /**

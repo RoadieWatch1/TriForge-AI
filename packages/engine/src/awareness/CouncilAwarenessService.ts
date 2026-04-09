@@ -178,7 +178,19 @@ export function buildCouncilAwarenessAddendum(snapshot: SystemStateSnapshot): st
     `Permissions: Files=${permissions.files ? '✓' : '✗'} ` +
       `Browser=${permissions.browser ? '✓' : '✗'} ` +
       `Printer=${permissions.printer ? '✓' : '✗'} ` +
-      `Email=${permissions.email ? '✓' : '✗'}`,
+      `Email=${permissions.email ? '✓' : '✗'} ` +
+      `Operator=${snapshot.desktopOperator?.operatorEnabled ? '✓' : '✗'}`,
+    '',
+    'Capability scope (read this before answering "what can TriForge do"): TriForge is ' +
+    'a desktop operator that runs INSIDE the user\'s own apps on macOS and Windows. ' +
+    'It detects installed software, sees the screen, focuses windows, types text, sends ' +
+    'keystrokes, and runs autonomous multi-step workflow packs (Unreal build/package, ' +
+    'Adobe ExtendScript, Blender Python, ADB, Android emulator, generic app automation). ' +
+    'When asked "can TriForge use remote access" — clarify: it is not TeamViewer-style ' +
+    'screen sharing, it is an in-process autonomous operator with per-action approval. ' +
+    'Autonomous task execution = YES (with approvals). Never describe TriForge as ' +
+    'limited to "Files, Browser, Printer, Email" — those are user-data permissions, ' +
+    'not the operator\'s execution surface.',
     '',
     `Available now: ${ready.length > 0 ? ready.join(' | ') : 'none'}`,
   ];

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { MissionControl } from '../components/MissionControl';
 import { AgentHQ } from '../components/AgentHQ';
+import { MissionQueueScreen } from './MissionQueueScreen';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -280,7 +281,7 @@ function argsPreview(args?: Record<string, unknown>): string {
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 
-type SessionsView = 'overview' | 'queue' | 'history';
+type SessionsView = 'overview' | 'missions' | 'queue' | 'history';
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
@@ -307,6 +308,7 @@ export function SessionsScreen() {
       {/* Sub-nav */}
       <div style={styles.subnav}>
         <TabBtn active={view === 'overview'} onClick={() => setView('overview')}>Overview</TabBtn>
+        <TabBtn active={view === 'missions'} onClick={() => setView('missions')}>Mission Queue</TabBtn>
         <TabBtn active={view === 'queue'}    onClick={() => setView('queue')}>Task Queue</TabBtn>
         <TabBtn active={view === 'history'}  onClick={() => setView('history')}>History</TabBtn>
       </div>
@@ -314,6 +316,11 @@ export function SessionsScreen() {
       {/* Content */}
       <div style={styles.content}>
         {view === 'overview' && <SessionsOverview />}
+        {view === 'missions' && (
+          <div style={styles.embeddedSurface}>
+            <MissionQueueScreen />
+          </div>
+        )}
         {view === 'queue' && (
           <div style={styles.embeddedSurface}>
             <AgentHQ />

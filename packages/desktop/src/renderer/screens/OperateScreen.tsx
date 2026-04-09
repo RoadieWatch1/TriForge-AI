@@ -170,6 +170,62 @@ function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+// ── Sample tasks rail (A4) ───────────────────────────────────────────────────
+//
+// Match by simple keyword on the detected app name. Each entry is one starter
+// task the user can run with a single click — pre-fills the AI Task Runner.
+interface SampleTask {
+  matchKeywords: RegExp;
+  icon: string;
+  appLabel: string;
+  title: string;
+  prompt: string;
+}
+const SAMPLE_TASKS: SampleTask[] = [
+  {
+    matchKeywords: /unreal/i,
+    icon:          '⬡',
+    appLabel:      'Unreal Engine',
+    title:         'Build a survival game prototype',
+    prompt:        'Build me a survival game in Unreal with health, hunger, basic inventory, and a simple enemy. Generate the Blueprint files and compile.',
+  },
+  {
+    matchKeywords: /photoshop|illustrator/i,
+    icon:          '◬',
+    appLabel:      'Photoshop',
+    title:         'Auto-resize the open image for social',
+    prompt:        'Take the currently open image in Photoshop and export 1:1, 16:9, and 9:16 versions sized for Instagram, YouTube, and TikTok.',
+  },
+  {
+    matchKeywords: /blender/i,
+    icon:          '◇',
+    appLabel:      'Blender',
+    title:         'Render the current scene',
+    prompt:        'Render the current Blender scene at 1080p with Cycles, save the PNG to my desktop, and report when done.',
+  },
+  {
+    matchKeywords: /premiere|davinci|after.?effects/i,
+    icon:          '▶',
+    appLabel:      'Premiere',
+    title:         'Export the open timeline as H.264',
+    prompt:        'Export the current Premiere timeline as 1080p H.264 to my desktop and report the file path when complete.',
+  },
+  {
+    matchKeywords: /maya|houdini/i,
+    icon:          '◐',
+    appLabel:      '3D Tools',
+    title:         'Set up a basic lighting rig',
+    prompt:        'Add a 3-point lighting rig to the current scene with a key, fill, and rim light. Use studio lighting defaults.',
+  },
+  {
+    matchKeywords: /figma/i,
+    icon:          '◳',
+    appLabel:      'Figma',
+    title:         'Export selected frames as PNG',
+    prompt:        'Export every selected Figma frame as 2x PNG to my desktop, in a folder named with today\'s date.',
+  },
+];
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function OperateScreen({
@@ -214,6 +270,10 @@ export function OperateScreen({
     packIds: string[]; suggestions: string[]; detectedAt: number;
   }
   const [detectedApp, setDetectedApp]              = useState<DetectedAppNudge | null>(null);
+
+  // ── Sample tasks rail (A4) — scoped to apps the capability scanner found ──
+  interface DetectedInstalledApp { name: string; version?: string }
+  const [scannedApps, setScannedApps] = useState<DetectedInstalledApp[]>([]);
 
   // ── AI Task Runner ──────────────────────────────────────────────────────────
   interface TaskStep {
@@ -314,6 +374,21 @@ export function OperateScreen({
       (ev) => setDetectedApp(ev),
     );
     return unsub;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tf]);
+
+  // Load capability scan once on mount — feeds the "Sample tasks for your apps" rail
+  useEffect(() => {
+    if (!tf) return;
+    const scanner = tf['incomeScanner'] as Record<string, () => Promise<unknown>> | undefined;
+    if (!scanner?.run) return;
+    let mounted = true;
+    scanner.run().then((r) => {
+      if (!mounted) return;
+      const result = (r as { result?: { installedApps?: DetectedInstalledApp[] } } | null)?.result;
+      if (result?.installedApps) setScannedApps(result.installedApps);
+    }).catch(() => { /* best effort */ });
+    return () => { mounted = false; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tf]);
 
@@ -822,6 +897,59 @@ export function OperateScreen({
 
         </div>
       </div>
+
+      {/* ── Sample Tasks Rail (A4) — scoped to detected apps ──────────────── */}
+      {(() => {
+        const matchedTasks = SAMPLE_TASKS.filter(task =>
+          scannedApps.some(app => task.matchKeywords.test(app.name)),
+        );
+        if (matchedTasks.length === 0) return null;
+        return (
+          <div style={s.section}>
+            <div style={s.sectionLabelRow}>
+              <span style={s.sectionLabel}>Try a Sample Task</span>
+              <span style={s.sectionMeta}>Scoped to apps you have installed</span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 8 }}>
+              {matchedTasks.slice(0, 6).map(task => (
+                <button
+                  key={task.title}
+                  style={{
+                    background: 'var(--bg)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 8,
+                    padding: '12px 13px',
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 5,
+                    transition: 'border-color 0.15s, background 0.15s',
+                  }}
+                  onClick={() => {
+                    setTaskGoal(task.prompt);
+                    const el = document.getElementById('ai-task-runner-section');
+                    if (el) el.scrollIntoView({ behavior: 'smooth' });
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = '#10a37f'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border)'; }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 13, color: '#10a37f' }}>{task.icon}</span>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: '#10a37f', letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+                      {task.appLabel}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' }}>{task.title}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.45 }}>
+                    Click to load into Task Runner
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Assign Work ────────────────────────────────────────────────────── */}
       <div style={s.section}>

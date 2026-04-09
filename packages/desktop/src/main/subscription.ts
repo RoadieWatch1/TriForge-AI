@@ -34,7 +34,32 @@ export type Capability =
 
 // ── Capability sets ───────────────────────────────────────────────────────────
 
-const FREE_CAPS: ReadonlySet<Capability> = new Set<Capability>([]);
+// Free tier — curated taste of the product, NOT an empty wall.
+//
+// The original FREE_CAPS was an empty set, which meant a brand-new user hit
+// FEATURE_LOCKED errors the moment they touched anything past plain chat. They
+// never saw the operator, the templates, or the decision ledger — the actual
+// differentiators of the product. This list lets a free user feel the operator
+// (one workflow run per day, see the FREE_DAILY_OPERATOR_RUNS quota below)
+// and see the surrounding surfaces (plans, ledger, exports, scanner, replay)
+// while keeping the heavy paid surfaces (autonomous agent, browser, email,
+// finance trading, ventures, income operator) gated.
+const FREE_CAPS: ReadonlySet<Capability> = new Set<Capability>([
+  'WORKFLOW_TEMPLATES',  // operator pack templates — quota-limited via FREE_DAILY_OPERATOR_RUNS
+  'EXECUTION_PLANS',     // generate plans (no autonomous execution — that's AGENT_TASKS)
+  'DECISION_LEDGER',     // see the council's decision history
+  'EXPORT_TOOLS',        // export plans/ledger as MD/PDF
+  'APP_ANALYSIS',        // App Builder Services Guide
+  'INCOME_SCANNER',      // local capability scan — already runs on the user's machine, free is fine
+  'WORKFLOW_REPLAY',     // replay past plans from the ledger
+]);
+
+/**
+ * Daily operator workflow runs allowed for the free tier.
+ * Counted in store.operatorRunsDaily, gated at the workflow:run:start IPC.
+ * Pro/business have no daily cap.
+ */
+export const FREE_DAILY_OPERATOR_RUNS = 1;
 
 // Paid subscribers get access to everything — no feature tiers
 const PRO_CAPS: ReadonlySet<Capability> = new Set<Capability>([
@@ -180,6 +205,15 @@ export function getMemoryLimit(tier: Tier): number {
 export function isAtMessageLimit(used: number, tier: Tier): boolean {
   const limit = TIERS[tier].maxMessagesPerMonth;
   return limit !== Infinity && used >= limit;
+}
+
+/**
+ * Returns true if the given tier has hit its daily operator-run quota.
+ * Only free tier has a daily cap; pro/business return false unconditionally.
+ */
+export function isAtDailyOperatorLimit(used: number, tier: Tier): boolean {
+  if (tier !== 'free') return false;
+  return used >= FREE_DAILY_OPERATOR_RUNS;
 }
 
 /** Returns remaining messages for display ("30 / 30" or "∞"). */

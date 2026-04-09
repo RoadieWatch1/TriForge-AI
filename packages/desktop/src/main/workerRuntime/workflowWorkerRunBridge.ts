@@ -32,13 +32,18 @@ import type { WorkerRunQueue }   from './workerRunQueue';
 import type { WorkflowRun }      from '@triforge/engine';
 import type { WorkflowPack }     from '@triforge/engine';
 import type { WorkerRunStatus, WorkerBlocker } from './types';
+import type { Store }            from '../store';
+import { PatternMemoryService }  from '../services/patternMemoryService';
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
 let _queue: WorkerRunQueue | null = null;
+let _store: Store | null = null;
 
 /** workflowRunId → workerRunId */
 const _runMap = new Map<string, string>();
+/** workflowRunId → originating pack (preserved across settle for pattern recording) */
+const _packMap = new Map<string, WorkflowPack>();
 
 // ── Registration ──────────────────────────────────────────────────────────────
 
@@ -46,8 +51,9 @@ const _runMap = new Map<string, string>();
  * Register the WorkerRunQueue with this bridge.
  * Call once at app startup, after _getWorkerRunQueue() is initialized.
  */
-export function initWorkflowBridge(queue: WorkerRunQueue): void {
+export function initWorkflowBridge(queue: WorkerRunQueue, store?: Store): void {
   _queue = queue;
+  if (store) _store = store;
 }
 
 // ── Lifecycle hooks ───────────────────────────────────────────────────────────
@@ -95,6 +101,7 @@ export function onWorkflowRunStarted(wfRun: WorkflowRun, pack: WorkflowPack): vo
 
     // Record the mapping for subsequent updates
     _runMap.set(wfRun.id, workerRun.id);
+    _packMap.set(wfRun.id, pack);
   } catch (e) {
     // Bridge errors must never crash WorkflowPackService
     console.error('[WorkflowBridge] onWorkflowRunStarted error:', e);
@@ -125,8 +132,10 @@ export function onWorkflowRunSettled(wfRun: WorkflowRun): void {
       case 'completed': {
         if (step) _queue.completeStep(workerRunId, step.id, { phaseCount: wfRun.phaseResults.length });
         _queue.transitionStatus(workerRunId, 'completed');
+        _recordPattern(wfRun, 'completed');
         // Clean up mapping — run is terminal
         _runMap.delete(wfRun.id);
+        _packMap.delete(wfRun.id);
         break;
       }
 
@@ -134,7 +143,9 @@ export function onWorkflowRunSettled(wfRun: WorkflowRun): void {
         const errorMsg = wfRun.error ?? 'Workflow execution failed';
         if (step) _queue.failStep(workerRunId, step.id, errorMsg);
         _queue.transitionStatus(workerRunId, 'failed');
+        _recordPattern(wfRun, 'failed');
         _runMap.delete(wfRun.id);
+        _packMap.delete(wfRun.id);
         break;
       }
 
@@ -152,7 +163,9 @@ export function onWorkflowRunSettled(wfRun: WorkflowRun): void {
       case 'stopped': {
         if (step) _queue.failStep(workerRunId, step.id, 'Workflow stopped by user');
         _queue.transitionStatus(workerRunId, 'cancelled');
+        _recordPattern(wfRun, 'cancelled');
         _runMap.delete(wfRun.id);
+        _packMap.delete(wfRun.id);
         break;
       }
 
@@ -168,6 +181,28 @@ export function onWorkflowRunSettled(wfRun: WorkflowRun): void {
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
+
+/**
+ * Forward run summary into PatternMemoryService so cross-session counters
+ * compound. No-ops if no store was registered (engine-only / test contexts).
+ */
+function _recordPattern(
+  wfRun: WorkflowRun,
+  outcome: 'completed' | 'failed' | 'cancelled',
+): void {
+  if (!_store) return;
+  try {
+    const pack = _packMap.get(wfRun.id);
+    PatternMemoryService.recordRunPatterns(_store, {
+      packId:        pack?.id,
+      targetApp:     wfRun.targetApp ?? undefined,
+      prototypeGoal: wfRun.goal ?? undefined,
+      outcome,
+    });
+  } catch (e) {
+    console.error('[WorkflowBridge] _recordPattern error:', e);
+  }
+}
 
 function _attachScreenshots(workerRunId: string, wfRun: WorkflowRun): void {
   if (!_queue) return;

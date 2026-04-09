@@ -2284,10 +2284,9 @@ const api = {
   incomeScanner: {
     run: () =>
       ipcRenderer.invoke('scanner:run') as Promise<{
-        ok?: boolean;
-        scan?: {
+        result?: {
           scannedAt: number;
-          installedApps: Array<{ name: string; path: string; exportFormats: string[]; incomeRelevant: string[] }>;
+          installedApps: Array<{ name: string; version?: string; path: string; exportFormats: string[]; incomeRelevant: string[] }>;
           gpuName?: string;
           gpuVramMB?: number;
           storageGB: number;
@@ -3177,6 +3176,76 @@ const api = {
       ipcRenderer.invoke('pack-builder:save', pack) as Promise<{ ok: boolean; error?: string }>,
     delete: (id: string) =>
       ipcRenderer.invoke('pack-builder:delete', id) as Promise<{ ok: boolean; error?: string }>,
+    export: (id: string) =>
+      ipcRenderer.invoke('pack-builder:export', id) as Promise<{ ok: boolean; path?: string; error?: string }>,
+    import: () =>
+      ipcRenderer.invoke('pack-builder:import') as Promise<{ ok: boolean; packId?: string; packName?: string; error?: string }>,
+  },
+
+  // ── Workflow Chains (Phase C1 — multi-app composition) ────────────────────
+  workflowChain: {
+    list: () =>
+      ipcRenderer.invoke('workflow-chain:list') as Promise<{
+        ok: boolean;
+        chains?: Array<{
+          id: string;
+          name: string;
+          tagline: string;
+          description: string;
+          links: Array<{
+            packId: string;
+            label: string;
+            description: string;
+          }>;
+          estimatedDurationSec?: number;
+          tags?: string[];
+        }>;
+        error?: string;
+      }>,
+    get: (chainId: string) =>
+      ipcRenderer.invoke('workflow-chain:get', chainId) as Promise<{
+        ok: boolean; chain?: unknown; error?: string;
+      }>,
+    start: (chainId: string, initialState?: Record<string, unknown>) =>
+      ipcRenderer.invoke('workflow-chain:start', chainId, initialState ?? {}) as Promise<{
+        ok: boolean;
+        run?: {
+          id: string;
+          chainId: string;
+          chainName: string;
+          startedAt: number;
+          status: string;
+          currentLinkIndex: number;
+          linkResults: Array<{
+            linkIndex: number;
+            packId: string;
+            workflowRunId?: string;
+            status: string;
+            startedAt: number;
+            endedAt?: number;
+            error?: string;
+          }>;
+          state: Record<string, unknown>;
+          error?: string;
+        };
+        error?: string;
+      }>,
+    advance: (chainRunId: string) =>
+      ipcRenderer.invoke('workflow-chain:advance', chainRunId) as Promise<{
+        ok: boolean; run?: unknown; error?: string;
+      }>,
+    listRuns: () =>
+      ipcRenderer.invoke('workflow-chain:run:list') as Promise<{
+        ok: boolean; runs?: unknown[]; error?: string;
+      }>,
+    getRun: (runId: string) =>
+      ipcRenderer.invoke('workflow-chain:run:get', runId) as Promise<{
+        ok: boolean; run?: unknown; error?: string;
+      }>,
+    cancelRun: (runId: string) =>
+      ipcRenderer.invoke('workflow-chain:run:cancel', runId) as Promise<{
+        ok: boolean; error?: string;
+      }>,
   },
 
   // ── Project Memory ─────────────────────────────────────────────────────────
@@ -3192,6 +3261,16 @@ const api = {
       }>>,
     forget: (projectPath: string) =>
       ipcRenderer.invoke('project-memory:forget', projectPath) as Promise<{ ok: boolean; error?: string }>,
+  },
+
+  // ── Pattern Memory (cross-session learning) ────────────────────────────────
+  patternMemory: {
+    list: () =>
+      ipcRenderer.invoke('pattern-memory:list') as Promise<Array<{
+        id: number; content: string; created_at: number;
+      }>>,
+    reset: () =>
+      ipcRenderer.invoke('pattern-memory:reset') as Promise<{ ok: boolean }>,
   },
 };
 

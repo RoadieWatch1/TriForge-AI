@@ -22,6 +22,8 @@ import fs   from 'fs';
 import path from 'path';
 import type { UnrealScaffoldResult }  from '@triforge/engine';
 import type { UnrealMilestoneResult } from '@triforge/engine';
+import { validateMilestoneBatch }     from './unrealMilestoneValidator';
+import { buildMilestone2PythonScript } from './unrealMilestonePython';
 
 // ── Output types ──────────────────────────────────────────────────────────────
 
@@ -526,6 +528,32 @@ export async function applyUnrealMilestone2(
     JSON.stringify(manifest, null, 2),
     'Machine-readable manifest of all M2 generated files for future pack chaining.',
   );
+
+  // Companion Python script — run from Unreal Editor → Tools → Execute Python
+  // Script to materialize the M2 health/HUD assets directly. Idempotent.
+  writeFile(
+    'M2_Apply.py',
+    buildMilestone2PythonScript(projectName, scaffold, milestone, generatedAt),
+    'Companion Python script — runs inside Unreal Editor to create the health, ' +
+    'HUD widget, and survival component scaffolds described above.',
+  );
+
+  // ── B5: Post-write validation ──────────────────────────────────────────
+  const validation = validateMilestoneBatch(
+    appliedFiles.map(f => ({
+      absolutePath:      f.absolutePath,
+      relativePath:      f.relativePath,
+      expectedMilestone: 'M2',
+      isManifest:        f.relativePath.endsWith('M2_Manifest.json'),
+    })),
+  );
+  if (validation.failed.length > 0) {
+    warnings.push(...validation.warnings);
+    const failedPaths = new Set(validation.failed.map(f => f.absolutePath));
+    const survivingFiles = appliedFiles.filter(f => !failedPaths.has(f.absolutePath));
+    appliedFiles.length = 0;
+    appliedFiles.push(...survivingFiles);
+  }
 
   const ok = appliedFiles.length > 0 && errors.length === 0;
   return { ok, projectRoot, triforgeDir, appliedFiles, warnings, errors };

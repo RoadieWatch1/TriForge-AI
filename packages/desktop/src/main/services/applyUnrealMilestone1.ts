@@ -23,6 +23,8 @@ import fs   from 'fs';
 import path from 'path';
 import type { UnrealScaffoldResult }   from '@triforge/engine';
 import type { UnrealMilestoneResult }  from '@triforge/engine';
+import { validateMilestoneBatch }      from './unrealMilestoneValidator';
+import { buildMilestone1PythonScript } from './unrealMilestonePython';
 
 // ── Output types ──────────────────────────────────────────────────────────────
 
@@ -415,6 +417,15 @@ export async function applyUnrealMilestone1(
     'player character defaults, camera mode, and test level configuration.',
   );
 
+  // Companion Python script — run from Unreal Editor → Tools → Execute Python
+  // Script to materialize the M1 assets directly. Idempotent and safe to re-run.
+  writeFile(
+    'M1_Apply.py',
+    buildMilestone1PythonScript(projectName, scaffold, milestone, generatedAt),
+    'Companion Python script — runs inside Unreal Editor to create the folder ' +
+    'structure, Blueprints, Input Actions, and IMC described above.',
+  );
+
   // ── 4. Write a manifest so future packs can discover what was generated ───
   const manifest = {
     triforgeVersion:  '1.0',
@@ -434,6 +445,27 @@ export async function applyUnrealMilestone1(
     JSON.stringify(manifest, null, 2),
     'Machine-readable manifest of all M1 generated files for future pack chaining.',
   );
+
+  // ── 5. B5: Post-write validation ──────────────────────────────────────────
+  // Read each written file back from disk and verify structural integrity
+  // (parseable JSON, required header fields, milestone tag matches). Files
+  // that fail validation are removed from appliedFiles so the pack outcome
+  // reflects reality — we cannot honestly report a corrupt file as applied.
+  const validation = validateMilestoneBatch(
+    appliedFiles.map(f => ({
+      absolutePath:      f.absolutePath,
+      relativePath:      f.relativePath,
+      expectedMilestone: 'M1',
+      isManifest:        f.relativePath.endsWith('M1_Manifest.json'),
+    })),
+  );
+  if (validation.failed.length > 0) {
+    warnings.push(...validation.warnings);
+    const failedPaths = new Set(validation.failed.map(f => f.absolutePath));
+    const survivingFiles = appliedFiles.filter(f => !failedPaths.has(f.absolutePath));
+    appliedFiles.length = 0;
+    appliedFiles.push(...survivingFiles);
+  }
 
   const ok = appliedFiles.length > 0 && errors.length === 0;
 

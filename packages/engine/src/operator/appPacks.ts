@@ -59,7 +59,7 @@ export const ADOBE_PHOTOSHOP_PACK: WorkflowPack = {
   category: 'handoff',
   version: '1.0.0',
   requirements: {
-    platforms: ['macOS'],
+    platforms: ['macOS', 'Windows'],
     capabilities: ['focus_app', 'screenshot', 'click_at'],
     permissions: { accessibility: true, screenRecording: true },
     targetApp: 'Adobe Photoshop',
@@ -103,7 +103,7 @@ export const ADOBE_PREMIERE_PACK: WorkflowPack = {
   category: 'handoff',
   version: '1.0.0',
   requirements: {
-    platforms: ['macOS'],
+    platforms: ['macOS', 'Windows'],
     capabilities: ['focus_app', 'screenshot', 'click_at'],
     permissions: { accessibility: true, screenRecording: true },
     targetApp: 'Adobe Premiere Pro',
@@ -147,7 +147,7 @@ export const ADOBE_AFTEREFFECTS_PACK: WorkflowPack = {
   category: 'handoff',
   version: '1.0.0',
   requirements: {
-    platforms: ['macOS'],
+    platforms: ['macOS', 'Windows'],
     capabilities: ['focus_app', 'screenshot', 'click_at'],
     permissions: { accessibility: true, screenRecording: true },
     targetApp: 'Adobe After Effects',
@@ -190,7 +190,7 @@ export const ADOBE_ILLUSTRATOR_PACK: WorkflowPack = {
   category: 'handoff',
   version: '1.0.0',
   requirements: {
-    platforms: ['macOS'],
+    platforms: ['macOS', 'Windows'],
     capabilities: ['focus_app', 'screenshot', 'click_at'],
     permissions: { accessibility: true, screenRecording: true },
     targetApp: 'Adobe Illustrator',
@@ -235,7 +235,7 @@ export const BLENDER_PACK: WorkflowPack = {
   category: 'handoff',
   version: '1.0.0',
   requirements: {
-    platforms: ['macOS'],
+    platforms: ['macOS', 'Windows'],
     capabilities: ['focus_app', 'screenshot', 'click_at'],
     permissions: { accessibility: true, screenRecording: true },
     targetApp: 'Blender',
@@ -325,7 +325,7 @@ export const ABLETON_LIVE_PACK: WorkflowPack = {
   category: 'input',
   version: '2.0.0',
   requirements: {
-    platforms: ['macOS'],
+    platforms: ['macOS', 'Windows'],
     capabilities: ['focus_app', 'screenshot', 'click_at', 'send_key'],
     permissions: { accessibility: true, screenRecording: true },
     targetApp: 'Ableton Live',
@@ -402,7 +402,7 @@ export const PRO_TOOLS_PACK: WorkflowPack = {
   category: 'input',
   version: '2.0.0',
   requirements: {
-    platforms: ['macOS'],
+    platforms: ['macOS', 'Windows'],
     capabilities: ['focus_app', 'screenshot', 'click_at', 'send_key'],
     permissions: { accessibility: true, screenRecording: true },
     targetApp: 'Pro Tools',
@@ -523,7 +523,7 @@ export const ANDROID_STUDIO_PACK: WorkflowPack = {
   category: 'handoff',
   version: '1.0.0',
   requirements: {
-    platforms: ['macOS'],
+    platforms: ['macOS', 'Windows'],
     capabilities: ['focus_app', 'screenshot'],
     permissions: { accessibility: false, screenRecording: true },
     targetApp: 'Android Studio',

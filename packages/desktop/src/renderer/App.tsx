@@ -31,9 +31,9 @@ import { TradeDesk } from './components/TradeDesk';
 import { LiveTradeAdvisor } from './components/LiveTradeAdvisor';
 import { ImageGenerator } from './components/ImageGenerator';
 import { TrianglePresence } from './components/TrianglePresence';
-import { voiceService } from './voice/VoiceService';
 import { OperateScreen } from './screens/OperateScreen';
 import { SessionsScreen } from './screens/SessionsScreen';
+import { MissionQueueScreen } from './screens/MissionQueueScreen';
 import { PackBuilderScreen } from './components/PackBuilderScreen';
 
 // ── Error Boundary ───────────────────────────────────────────────────────────
@@ -105,7 +105,7 @@ type Screen =
   | 'operate' | 'sessions'
   // Internal / secondary screens (not primary shell)
   | 'ledger' | 'plan' | 'builder' | 'profiles' | 'pack-builder'
-  | 'missioncontrol' | 'agenthq'
+  | 'missioncontrol' | 'agenthq' | 'missions'
   // Legacy destinations — retained for routing, hidden from future primary nav
   | 'dashboard' | 'operator' | 'world' | 'files' | 'inbox'
   | 'automation' | 'hustle' | 'forgehub'
@@ -247,23 +247,9 @@ export function App() {
     });
   }, []);
 
-  // Wake engine lifecycle — owns the mic from App level so it fires on every screen
-  useEffect(() => {
-    voiceService.start();
-    return () => voiceService.stop();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Listen for wake word — jump straight to hands-free chat (no auth screen)
-  useEffect(() => {
-    const handler = () => {
-      voiceService.disable();
-      setPrimaryPillar('triforge');
-      setScreen('chat');
-      setPendingSessionName('Commander');
-    };
-    window.addEventListener('triforge:council-wake', handler);
-    return () => window.removeEventListener('triforge:council-wake', handler);
-  }, []);
+  // Wake-word voice has been removed by user request — no Vosk wake engine,
+  // no auto-route on wake phrase. Manual hands-free voice (Council Mode in
+  // the Chat sidebar) is unaffected and still available as a click-to-start.
 
   const refreshKeys = async () => {
     const keys = await window.triforge.keys.status();
@@ -456,6 +442,7 @@ export function App() {
             />
           )}
           {screen === 'agenthq' && <AgentHQ />}
+          {screen === 'missions' && <MissionQueueScreen onNavigate={s => setScreen(s as Screen)} />}
           {screen === 'missioncontrol' && <MissionControl />}
           {screen === 'ledger' && <Ledger tier={tier} onUpgradeClick={() => setScreen('plan')} />}
           {screen === 'settings' && (

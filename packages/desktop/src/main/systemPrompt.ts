@@ -90,7 +90,12 @@ export async function buildSystemPrompt(store: Store, professionAdditions?: stri
   const hasBrowser    = grantedPerms.some(p => p.key === 'browser') && hasCapability('BROWSER_AUTOMATION', tier);
   const hasEmail      = grantedPerms.some(p => p.key === 'email_s' || p.key === 'email_r') && hasCapability('EMAIL_CALENDAR', tier);
   const hasImageGen   = true; // Visual Engine always available
-  const hasOperator   = grantedPerms.some(p => p.key === 'screen_recording' || p.key === 'accessibility') && tier !== 'free';
+  // Desktop Operator: always advertised on paid tiers. The underlying capability
+  // map and approval store enforce per-action gating at execution time, so the
+  // self-model should reflect that the operator EXISTS — otherwise the council
+  // tells users "TriForge can't operate desktop apps" which is false on every
+  // platform. Cross-platform: macOS (osascript+Swift) and Windows (PowerShell).
+  const hasOperator   = tier !== 'free';
 
   const systemTools: string[] = [];
   if (hasFiles) {
@@ -189,7 +194,7 @@ export async function buildSystemPrompt(store: Store, professionAdditions?: stri
   if (hasCapability('FINANCE_DASHBOARD', tier)) aiCaps.push('Finance dashboard and portfolio analysis');
   if (hasCapability('FINANCE_TRADING', tier))  aiCaps.push('Investment trade proposals with council-reviewed reasoning (execution is always performed manually by the user)');
   aiCaps.push('Live web search: automatically searches the web when your question needs current information (news, weather, prices, scores, events)');
-  if (hasCapability('VENTURE_DISCOVERY', tier)) aiCaps.push('Venture Discovery + Build: autonomous market research, opportunity scoring, venture creation, website generation, audience building, and daily growth — with bounded budget and staged user approval');
+  if (hasCapability('VENTURE_DISCOVERY', tier)) aiCaps.push('Venture Research: market signal analysis, opportunity scoring, brand/positioning drafts, launch packs, and 30-day plans. The Council produces a research package the user executes themselves in their own accounts — TriForge does not autonomously publish, transact, or run growth campaigns.');
   if (hasCapability('VENTURE_DISCOVERY', tier)) aiCaps.push('Venture Learning Brain: learns from user decisions, venture outcomes, and market trends to improve future scoring and recommendations. Each council member may consult specialists before returning its position.');
   if (hasCapability('VENTURE_DISCOVERY', tier)) aiCaps.push('Expert Workforce: a dynamic roster of specialists that assist each council member — experts are promoted, benched, retired, or replaced based on their contribution to outcomes. Only relevant specialists activate per task.');
   if (tier === 'business') aiCaps.push('Performance Hunter: monitors component and expert health, safely quarantines dormant subsystems, shadow-tests before removal, auto-restores after 24h. Protected categories are never quarantined.');
@@ -206,9 +211,9 @@ For tasks within your wired system tools (files, printer, browser, email, deskto
 ## Execution Boundary — Non-Negotiable
 TriForge has direct execution authority only over its wired system tools listed below. For everything else — financial trades, bank transfers, medical procedures, legal filings, external account actions — TriForge prepares analysis, a reasoned plan, and step-by-step execution instructions. The user executes manually. Never claim to execute actions outside your wired tools. If you imply you can execute something you cannot, you destroy trust. State the boundary clearly and immediately, then deliver the best possible plan.
 
-For Venture Discovery + Build, the Council may create and operate a venture in practical terms — research, brand, website, traffic, audience, daily growth — before legal formation when the venture type allows it. Legal identity-bound steps such as EIN submission, state registration, formal banking setup, and certain compliance actions require explicit user approval or legal authorization. The Council should never answer venture questions with a blanket refusal — it should distinguish between operational execution and legal formation.
+For Venture Research, the Council researches markets, drafts brand and positioning, generates a launch pack, a website blueprint, an audience plan, and a 30-day growth roadmap. These are research artifacts the user executes themselves — TriForge does not autonomously publish a site to the open internet, run paid acquisition, or transact on the user's behalf. Legal identity-bound steps (EIN, state filing, banking) are surfaced as recommendations for the user to act on.
 
-If the user asks "Can you create a business and run it?" — answer yes in operational terms: research, brand, website, traffic, audience, daily growth are all within Council authority. Explain that filing/formalization is optional, staged, and approval-based.
+If the user asks "Can you create a business and run it?" — answer honestly: TriForge produces a complete research and launch package (brand, copy, plan, KPIs), and the user runs the launch from their own accounts. Do not promise autonomous publishing or growth.
 
 ## High-Stakes Advisory Protocol
 When a query involves financial decisions, legal matters, medical choices, or significant personal risk:

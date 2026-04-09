@@ -252,9 +252,9 @@ export function VentureDiscovery({ tier }: VentureDiscoveryProps) {
         {/* Discovery bar */}
         {!proposal && !loading && (
           <div style={s.discoveryBar}>
-            <div style={s.discoveryTitle}>Discover a Venture</div>
+            <div style={s.discoveryTitle}>Research a Venture Idea</div>
             <div style={s.discoveryDesc}>
-              The Council will research live market signals, score opportunities, and propose 3 venture options within your budget.
+              The Council will research live market signals, score opportunities, and propose 3 venture options within your budget. This produces a research plan and launch pack — you'll still execute the launch yourself in your own accounts.
             </div>
             <div style={s.budgetRow}>
               <label style={s.budgetLabel}>Budget ($)</label>
@@ -267,7 +267,7 @@ export function VentureDiscovery({ tier }: VentureDiscoveryProps) {
                 max={50000}
               />
               <button style={s.discoverBtn} onClick={handleDiscover} disabled={tier === 'free'}>
-                {tier === 'free' ? 'Upgrade to Discover' : 'Discover Venture'}
+                {tier === 'free' ? 'Upgrade to Research' : 'Research Venture'}
               </button>
             </div>
             {tier === 'free' && (

@@ -4,7 +4,7 @@
 //
 // Responsible for:
 //   - Discovering the Unreal Engine root from the running UnrealEditor process
-//   - Locating the appropriate build script (Build.sh / RunUAT.sh)
+//   - Locating the appropriate build script (Build.sh/.bat / RunUAT.sh/.bat)
 //   - Constructing the build command for the detected project
 //   - Launching the build subprocess (detached, stdout+stderr → temp log file)
 //   - Returning a structured launch result with PID, command, and log path
@@ -13,25 +13,21 @@
 // and will outlive the workflow pack execution. Progress monitoring is via the
 // log file at the returned logPath.
 //
-// TRULY IMPLEMENTED (macOS):
-//   - Engine root discovery from running UnrealEditor process args (ps)
-//   - Build.sh path resolution (editor C++ compilation via UBT)
-//   - RunUAT.sh path resolution (cook+build+stage+pak via UAT)
+// TRULY IMPLEMENTED (macOS + Windows):
+//   - Engine root discovery from running UnrealEditor process args (ps / Get-Process)
+//   - Build.sh / Build.bat path resolution (editor C++ compilation via UBT)
+//   - RunUAT.sh / RunUAT.bat path resolution (cook+build+stage+pak via UAT)
 //   - Build command construction for both 'build' and 'package' modes
 //   - Detached subprocess launch with temp log file capture
-//
-// NOT YET:
-//   - Windows or Linux support
-//   - Synchronous build completion tracking
-//   - Custom build targets beyond '<ProjectName>Editor' / Development config
-//   - Package output directory configuration
 
 import { exec, spawn } from 'child_process';
 import path             from 'path';
 import os               from 'os';
 import fs               from 'fs';
 
-const IS_MACOS = process.platform === 'darwin';
+const IS_MACOS   = process.platform === 'darwin';
+const IS_WINDOWS = process.platform === 'win32';
+const PLATFORM_NAME: 'Mac' | 'Win64' | null = IS_MACOS ? 'Mac' : IS_WINDOWS ? 'Win64' : null;
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -49,72 +45,76 @@ function safeExec(cmd: string, timeoutMs = 5000): Promise<string> {
  * Given the full path to the UnrealEditor executable, navigate to the engine
  * install root (the directory that directly contains the `Engine/` folder).
  *
- * Expected path structure (Epic Games Launcher install):
- *   /Users/Shared/Epic Games/UE_5.3/Engine/Binaries/Mac/UnrealEditor
- *                                   ↑ this is the engine install root
+ * Expected path structures:
+ *   macOS:    /Users/Shared/Epic Games/UE_5.3/Engine/Binaries/Mac/UnrealEditor
+ *   Windows:  C:\Program Files\Epic Games\UE_5.3\Engine\Binaries\Win64\UnrealEditor.exe
+ *                                            ↑ install root
  *
  * Strategy: walk up the path components looking for an `Engine` segment, then
  * return the parent of that `Engine` directory.
  */
 export function deriveEngineRoot(execPath: string): string | null {
-  const parts = execPath.split(path.sep);
+  // Normalize separators so Windows backslash paths split correctly
+  const normalized = execPath.replace(/\\/g, '/');
+  const parts = normalized.split('/');
 
-  // Find the index of 'Engine' in the path (case-sensitive on macOS)
   const engineIdx = parts.indexOf('Engine');
   if (engineIdx <= 0) return null;
 
-  // The install root is the directory that contains 'Engine/'
-  return parts.slice(0, engineIdx).join(path.sep) || path.sep;
+  const root = parts.slice(0, engineIdx).join(path.sep);
+  return root || path.sep;
 }
 
 /**
  * Discover the Unreal Engine install root by inspecting the running
- * UnrealEditor process arguments via `ps`.
- *
- * Returns the engine install root path (e.g. /Users/Shared/Epic Games/UE_5.3),
- * or null if no Unreal process is found or the path cannot be derived.
+ * UnrealEditor process. Uses `ps` on macOS and `Get-Process` on Windows.
  */
 export async function findEngineRootFromProcess(): Promise<string | null> {
-  if (!IS_MACOS) return null;
+  if (IS_MACOS) {
+    const raw = await safeExec(
+      `ps -ax -o args | grep -iE "UnrealEditor|UE4Editor" | grep -v grep | head -n 1`,
+      5000,
+    );
+    if (!raw) return null;
+    const execPath = raw.trim().split(/\s+/)[0];
+    if (!execPath || !execPath.includes('/')) return null;
+    return deriveEngineRoot(execPath);
+  }
 
-  const raw = await safeExec(
-    `ps -ax -o args | grep -iE "UnrealEditor|UE4Editor" | grep -v grep | head -n 1`,
-    5000,
-  );
-  if (!raw) return null;
+  if (IS_WINDOWS) {
+    const raw = await safeExec(
+      `powershell -NoProfile -Command "(Get-Process -Name UnrealEditor,UE4Editor -ErrorAction SilentlyContinue | Select-Object -First 1).Path"`,
+      5000,
+    );
+    if (!raw) return null;
+    return deriveEngineRoot(raw);
+  }
 
-  // Extract the executable path — first token (before any arguments)
-  const execPath = raw.trim().split(/\s+/)[0];
-  if (!execPath || !execPath.includes('/')) return null;
-
-  return deriveEngineRoot(execPath);
+  return null;
 }
 
 // ── Build script discovery ────────────────────────────────────────────────────
 
 /**
- * Verify that the Build.sh script exists for UBT-based C++ compilation.
+ * Verify that Build.sh / Build.bat exists for UBT-based C++ compilation.
  * Returns the absolute path if found, null if not present.
  */
 export function findBuildScript(engineRoot: string): string | null {
-  const scriptPath = path.join(
-    engineRoot, 'Engine', 'Build', 'BatchFiles', 'Mac', 'Build.sh',
-  );
-  try {
-    return fs.existsSync(scriptPath) ? scriptPath : null;
-  } catch {
-    return null;
+  const candidates = IS_WINDOWS
+    ? [path.join(engineRoot, 'Engine', 'Build', 'BatchFiles', 'Build.bat')]
+    : [path.join(engineRoot, 'Engine', 'Build', 'BatchFiles', 'Mac', 'Build.sh')];
+  for (const c of candidates) {
+    try { if (fs.existsSync(c)) return c; } catch { /* ignore */ }
   }
+  return null;
 }
 
 /**
- * Verify that the RunUAT.sh script exists for full cook+build+stage+package.
- * Returns the absolute path if found, null if not present.
+ * Verify that RunUAT.sh / RunUAT.bat exists for full cook+build+stage+package.
  */
 export function findRunUATScript(engineRoot: string): string | null {
-  const scriptPath = path.join(
-    engineRoot, 'Engine', 'Build', 'BatchFiles', 'RunUAT.sh',
-  );
+  const scriptName = IS_WINDOWS ? 'RunUAT.bat' : 'RunUAT.sh';
+  const scriptPath = path.join(engineRoot, 'Engine', 'Build', 'BatchFiles', scriptName);
   try {
     return fs.existsSync(scriptPath) ? scriptPath : null;
   } catch {
@@ -125,18 +125,21 @@ export function findRunUATScript(engineRoot: string): string | null {
 // ── Command construction ──────────────────────────────────────────────────────
 
 /**
- * Construct the shell arguments for a UBT C++ build (Build.sh).
+ * Construct the shell arguments for a UBT C++ build (Build.sh / Build.bat).
  *
- * Produces a command of the form:
- *   Build.sh <ProjectName>Editor Mac Development "<projectPath>" -WaitMutex
+ * macOS:    Build.sh   <ProjectName>Editor Mac    Development "<projectPath>" -WaitMutex
+ * Windows:  Build.bat  <ProjectName>Editor Win64  Development "<projectPath>" -WaitMutex
  *
  * Target: '<ProjectName>Editor' builds the editor module, which is the most
  * common development build target in an Unreal project.
  */
 function buildUBTArgs(projectPath: string, projectName: string): string[] {
+  if (!PLATFORM_NAME) {
+    throw new Error(`Unsupported platform for Unreal build: ${process.platform}`);
+  }
   return [
     `${projectName}Editor`,   // Build target
-    'Mac',                    // Platform
+    PLATFORM_NAME,            // Platform: Mac or Win64
     'Development',            // Configuration
     projectPath,              // .uproject path
     '-WaitMutex',             // Prevent concurrent UBT runs
@@ -144,19 +147,22 @@ function buildUBTArgs(projectPath: string, projectName: string): string[] {
 }
 
 /**
- * Construct the shell arguments for a UAT build+cook+package (RunUAT.sh).
+ * Construct the shell arguments for a UAT build+cook+package (RunUAT.sh / .bat).
  *
- * Produces a BuildCookRun command targeting Mac Development with staging.
- * Output archive is written to <ProjectRoot>/Build/Packaged/Mac/.
+ * Produces a BuildCookRun command targeting the host platform Development with
+ * staging. Output archive is written to <ProjectRoot>/Build/Packaged/<Platform>/.
  */
 function buildUATArgs(projectPath: string): string[] {
-  const projectRoot  = path.dirname(projectPath);
-  const archiveDir   = path.join(projectRoot, 'Build', 'Packaged', 'Mac');
+  if (!PLATFORM_NAME) {
+    throw new Error(`Unsupported platform for Unreal package: ${process.platform}`);
+  }
+  const projectRoot = path.dirname(projectPath);
+  const archiveDir  = path.join(projectRoot, 'Build', 'Packaged', PLATFORM_NAME);
 
   return [
     'BuildCookRun',
     `-project=${projectPath}`,
-    '-platform=Mac',
+    `-platform=${PLATFORM_NAME}`,
     '-clientconfig=Development',
     '-cook',
     '-allmaps',
@@ -206,8 +212,8 @@ export async function launchUnrealBuild(
   engineRoot: string,
   buildMode: 'build' | 'package',
 ): Promise<UnrealBuildLaunchResult> {
-  if (!IS_MACOS) {
-    return { ok: false, error: 'Unreal build execution is only supported on macOS.' };
+  if (!IS_MACOS && !IS_WINDOWS) {
+    return { ok: false, error: `Unreal build execution is not supported on platform: ${process.platform}` };
   }
 
   // Resolve the correct script
@@ -217,60 +223,63 @@ export async function launchUnrealBuild(
   if (buildMode === 'build') {
     scriptPath = findBuildScript(engineRoot);
     if (!scriptPath) {
-      return {
-        ok: false,
-        error: `Build.sh not found at expected path: ${path.join(engineRoot, 'Engine/Build/BatchFiles/Mac/Build.sh')}`,
-      };
+      const expected = IS_WINDOWS
+        ? path.join(engineRoot, 'Engine\\Build\\BatchFiles\\Build.bat')
+        : path.join(engineRoot, 'Engine/Build/BatchFiles/Mac/Build.sh');
+      return { ok: false, error: `Build script not found at expected path: ${expected}` };
     }
     args = buildUBTArgs(projectPath, projectName);
   } else {
     // package
     scriptPath = findRunUATScript(engineRoot);
     if (!scriptPath) {
-      return {
-        ok: false,
-        error: `RunUAT.sh not found at expected path: ${path.join(engineRoot, 'Engine/Build/BatchFiles/RunUAT.sh')}`,
-      };
+      const expected = IS_WINDOWS
+        ? path.join(engineRoot, 'Engine\\Build\\BatchFiles\\RunUAT.bat')
+        : path.join(engineRoot, 'Engine/Build/BatchFiles/RunUAT.sh');
+      return { ok: false, error: `RunUAT script not found at expected path: ${expected}` };
     }
     args = buildUATArgs(projectPath);
   }
 
-  // Ensure the script is executable
-  try {
-    fs.chmodSync(scriptPath, 0o755);
-  } catch {
-    // Non-fatal — spawn will fail with a clear error if it can't execute
+  // On macOS the .sh script needs to be executable. On Windows .bat is run by
+  // cmd.exe so chmod doesn't apply.
+  if (IS_MACOS) {
+    try { fs.chmodSync(scriptPath, 0o755); } catch { /* non-fatal */ }
   }
 
   // Create a timestamped log file for stdout/stderr capture
-  const logPath = path.join(
-    os.tmpdir(),
-    `tf-unreal-${buildMode}-${Date.now()}.log`,
-  );
+  const logPath = path.join(os.tmpdir(), `tf-unreal-${buildMode}-${Date.now()}.log`);
 
-  const command = `${scriptPath} ${args.map(a => a.includes(' ') ? `"${a}"` : a).join(' ')}`;
+  const quoted = args.map(a => a.includes(' ') ? `"${a}"` : a).join(' ');
+  const command = IS_WINDOWS ? `cmd /c "${scriptPath}" ${quoted}` : `${scriptPath} ${quoted}`;
 
   try {
     const logStream = fs.createWriteStream(logPath, { flags: 'w' });
-
-    // Write a header so the log is identifiable
     logStream.write(
       `# TriForge Unreal ${buildMode === 'build' ? 'Build' : 'Package'} Log\n` +
       `# Started: ${new Date().toISOString()}\n` +
+      `# Platform: ${IS_WINDOWS ? 'Windows' : 'macOS'}\n` +
       `# Command: ${command}\n` +
       `# Project: ${projectPath}\n\n`,
     );
 
-    const proc = spawn(scriptPath, args, {
-      detached: true,
-      stdio:    ['ignore', logStream, logStream],
-      cwd:      path.dirname(projectPath),
-    });
+    // Windows: invoke the .bat through cmd.exe so PATH/quoting work correctly.
+    // macOS:   spawn the .sh directly (already chmod +x'd above).
+    const proc = IS_WINDOWS
+      ? spawn('cmd.exe', ['/c', scriptPath, ...args], {
+          detached: true,
+          stdio:    ['ignore', logStream, logStream],
+          cwd:      path.dirname(projectPath),
+          windowsHide: true,
+        })
+      : spawn(scriptPath, args, {
+          detached: true,
+          stdio:    ['ignore', logStream, logStream],
+          cwd:      path.dirname(projectPath),
+        });
 
-    // Allow the build to outlive this process
     proc.unref();
 
-    // If spawn fails synchronously (e.g. ENOENT), pid will be undefined
     if (!proc.pid) {
       return {
         ok: false,
@@ -280,20 +289,10 @@ export async function launchUnrealBuild(
       };
     }
 
-    return {
-      ok:      true,
-      pid:     proc.pid,
-      command,
-      logPath,
-    };
+    return { ok: true, pid: proc.pid, command, logPath };
 
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
-    return {
-      ok: false,
-      command,
-      logPath,
-      error: `Failed to spawn build process: ${msg}`,
-    };
+    return { ok: false, command, logPath, error: `Failed to spawn build process: ${msg}` };
   }
 }

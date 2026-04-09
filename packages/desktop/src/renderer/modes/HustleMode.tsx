@@ -179,8 +179,8 @@ export function HustleMode({ onNavigate }: Props) {
 
   return (
     <ModeShell
-      title="Income Operator"
-      subtitle="Run controlled income experiments — budget-capped, approval-first, ROI-driven."
+      title="Income Research"
+      subtitle="Plan income experiments, score lanes, and draft launch strategies. Publishing and platform billing live in your own accounts — TriForge does the research, you push the button."
     >
       {/* Tab bar */}
       <div style={styles.tabBar}>

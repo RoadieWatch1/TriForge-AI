@@ -59,6 +59,8 @@ interface StoreData {
   license: StoredLicense;
   // message usage: key = "YYYY-MM" → count
   messageUsage: Record<string, number>;
+  // operator workflow runs: key = "YYYY-MM-DD" → count (used to enforce free-tier daily quota)
+  operatorRunsDaily?: Record<string, number>;
   auth: StoredAuth;
   ledger: LedgerEntry[];
   shadowStrategyConfig?: ShadowStrategyConfig;
@@ -74,6 +76,11 @@ interface StoreData {
   incomeLanes?: IncomeLaneConfig[];
   incomeExperiments?: IncomeExperiment[];
   incomeBudget?: BudgetState;
+  // ── Phase D1: cross-session pattern learning ──────────────────────────────
+  // Counters keyed by feature name. When a counter crosses a threshold, the
+  // pattern memory service flushes a 'pattern' memory entry that the council
+  // can read in subsequent sessions.
+  patternCounters?: Record<string, { count: number; lastSeenAt: number; meta?: Record<string, string> }>;
 }
 
 // ── Income Operator types ──────────────────────────────────────────────────
@@ -178,6 +185,7 @@ function emptyData(): StoreData {
     firstRunDone: false, userProfile: {}, nextMemoryId: 1,
     license: { key: null, tier: 'free', valid: false, email: null, expiresAt: null, activatedAt: null, lastChecked: null },
     messageUsage: {},
+    operatorRunsDaily: {},
     auth: { username: null, pinHash: null, salt: null },
     ledger: [],
     activeProfileId: null,
@@ -452,6 +460,11 @@ export class Store implements StorageAdapter {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   }
 
+  private dayKey(): string {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  }
+
   getMonthlyMessageCount(): number {
     return this.data.messageUsage[this.monthKey()] ?? 0;
   }
@@ -466,10 +479,71 @@ export class Store implements StorageAdapter {
     return this.data.messageUsage[k];
   }
 
-  addMemory(type: 'fact' | 'goal' | 'preference' | 'business', content: string, source?: string): void {
+  /** Returns operator workflow runs counted for today (used by the free-tier daily quota gate). */
+  getDailyOperatorRunCount(): number {
+    return this.data.operatorRunsDaily?.[this.dayKey()] ?? 0;
+  }
+
+  /** Increment today's operator-run counter. Mirrors incrementMessageCount; prunes to last 7 days. */
+  incrementDailyOperatorRunCount(): number {
+    if (!this.data.operatorRunsDaily) this.data.operatorRunsDaily = {};
+    const k = this.dayKey();
+    this.data.operatorRunsDaily[k] = (this.data.operatorRunsDaily[k] ?? 0) + 1;
+    // Prune old days (keep last 7)
+    const keys = Object.keys(this.data.operatorRunsDaily).sort();
+    while (keys.length > 7) { delete this.data.operatorRunsDaily[keys.shift()!]; }
+    this.save();
+    return this.data.operatorRunsDaily[k];
+  }
+
+  addMemory(type: 'fact' | 'goal' | 'preference' | 'business' | 'pattern', content: string, source?: string): void {
     this.data.memory.unshift({ id: this.data.nextMemoryId++, type, content, created_at: Date.now(), source });
     if (this.data.memory.length > 200) this.data.memory = this.data.memory.slice(0, 200);
     this.save();
+  }
+
+  // ── Phase D1: pattern counters ─────────────────────────────────────────────
+
+  /**
+   * Increment a named pattern counter and update its lastSeenAt timestamp.
+   * Returns the new counter value. Used by the pattern memory service to
+   * decide when to flush a high-frequency observation into a pattern memory.
+   */
+  incrementPatternCounter(key: string, meta?: Record<string, string>): number {
+    if (!this.data.patternCounters) this.data.patternCounters = {};
+    const existing = this.data.patternCounters[key];
+    const next = (existing?.count ?? 0) + 1;
+    this.data.patternCounters[key] = {
+      count:      next,
+      lastSeenAt: Date.now(),
+      meta:       { ...(existing?.meta ?? {}), ...(meta ?? {}) },
+    };
+    this.save();
+    return next;
+  }
+
+  /**
+   * Read a single pattern counter, or all counters if no key is supplied.
+   */
+  getPatternCounters(): Record<string, { count: number; lastSeenAt: number; meta?: Record<string, string> }> {
+    return this.data.patternCounters ?? {};
+  }
+
+  /**
+   * Reset (clear) all pattern counters. Used by the user to forget the
+   * inferred patterns and start fresh.
+   */
+  clearPatternCounters(): void {
+    this.data.patternCounters = {};
+    this.save();
+  }
+
+  /**
+   * Returns true if a pattern memory with this exact content already exists.
+   * Prevents the pattern service from flushing duplicate entries on every run.
+   */
+  hasPatternMemory(content: string): boolean {
+    return this.data.memory.some(m => m.type === 'pattern' && m.content === content);
   }
 
   getMemory(limit = 50): Array<{ id: number; type: string; content: string; created_at: number; source?: string }> {

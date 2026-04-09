@@ -27,6 +27,58 @@ export interface TaskRunnerOptions {
   goal:        string;
   maxSteps?:   number;
   onProgress?: (event: TaskProgressEvent) => void;
+  /**
+   * B4: Optional persistence hooks. When provided, the runner notifies the
+   * caller at every meaningful boundary so it can mirror the run as a
+   * durable WorkerRun + per-step WorkerStep transcript. The runner remains
+   * decoupled from WorkerRunQueue — the caller (ipc.ts) wires the hooks.
+   */
+  workerHooks?: WorkerRunHooks;
+}
+
+// ── B4: Worker-run lifecycle hooks ───────────────────────────────────────────
+//
+// The runner calls these at well-defined boundaries so the caller can persist
+// a step-level transcript without the runner having to know anything about
+// WorkerRunQueue. All hook implementations MUST be exception-safe — the
+// runner wraps every call in try/catch, but hooks should still be defensive.
+
+export interface WorkerRunHooks {
+  /**
+   * Called once per step after the plan is decided and before execution.
+   * Should return an opaque step id used to correlate the matching
+   * onStepEnd call. May return undefined if the caller doesn't care about
+   * correlation.
+   */
+  onStepBegin?(info: {
+    index:  number;            // 0-based step index
+    title:  string;            // short human-readable label
+    action: PlannedAction;
+  }): string | undefined;
+
+  /**
+   * Called when a step finishes — successfully, with failure, blocked, or
+   * suspended waiting for approval. The runner emits this exactly once per
+   * step that began (paired with onStepBegin).
+   */
+  onStepEnd?(info: {
+    stepId?:        string;
+    index:          number;
+    status:         'completed' | 'failed' | 'blocked' | 'waiting_approval';
+    output?:        Record<string, unknown>;
+    error?:         string;
+    screenshotPath?: string;
+  }): void;
+
+  /**
+   * Called exactly once when the entire run reaches a terminal state, from
+   * the public-entry try/finally so it always fires even on early exits.
+   */
+  onRunEnd?(info: {
+    outcome: TaskRunResult['outcome'];
+    summary: string;
+    error?:  string;
+  }): void;
 }
 
 export interface TaskProgressEvent {
@@ -157,14 +209,124 @@ async function waitUntilScreenStable(maxWaitMs = 5000): Promise<string | null> {
 interface CachedElement { x: number; y: number; locatedAt: number; }
 const _elementCache = new Map<string, CachedElement>();
 
+// ── B3: Live-run state holder ────────────────────────────────────────────────
+//
+// Module-level state that the desktopOperator snapshot getter (in ipc.ts)
+// reads on every Council turn. Updated on every progress emit so the council
+// always sees fresh telemetry. The shape mirrors DesktopOperatorSnapshot.liveRun
+// in packages/engine/src/awareness/types.ts but is kept local here to avoid a
+// cross-package import in this hot-path module.
+
+export interface LiveRunState {
+  sessionId:                 string;
+  goal:                      string;
+  currentStep:               number;
+  maxSteps:                  number;
+  phase:                     TaskProgressEvent['phase'];
+  lastDescription:           string;
+  lastActionType?:           PlannedAction['type'];
+  lastVerifyPassed?:         boolean;
+  lastVerifyError?:          string;
+  consecutiveVerifyFailures: number;
+  lastEmitAt:                number;
+}
+
+let _liveRunState: LiveRunState | null = null;
+
+/** Read the most recent live-run state, or null if no run is in flight. */
+export function getLiveRunState(): LiveRunState | null {
+  if (!_liveRunState) return null;
+  // Stale results (> 2 minutes) are treated as "no run" — the runner finished
+  // or crashed without clearing state. The council should not see stale data.
+  if (Date.now() - _liveRunState.lastEmitAt > 120_000) {
+    _liveRunState = null;
+    return null;
+  }
+  return _liveRunState;
+}
+
+/** Clear the live-run state — called when a run finishes, errors, or aborts. */
+function clearLiveRunState() {
+  _liveRunState = null;
+}
+
 // ── Core run loop ─────────────────────────────────────────────────────────────
 
+/**
+ * Public entry point — wraps the core loop in try/finally so:
+ *   • the live-run state holder is always cleared on exit (B3), and
+ *   • the worker-run onRunEnd hook always fires exactly once (B4),
+ * even when the loop throws or an early return path is taken.
+ */
 export async function runOperatorTask(opts: TaskRunnerOptions): Promise<TaskRunResult> {
+  let result: TaskRunResult | undefined;
+  let thrown: unknown;
+  try {
+    result = await _runOperatorTaskCore(opts);
+    return result;
+  } catch (e) {
+    thrown = e;
+    throw e;
+  } finally {
+    clearLiveRunState();
+    // B4: Notify the worker-run bridge that the run finished. This must
+    // never throw — hook errors are swallowed to keep the runner robust.
+    if (opts.workerHooks?.onRunEnd) {
+      try {
+        if (result) {
+          opts.workerHooks.onRunEnd({
+            outcome: result.outcome,
+            summary: result.summary,
+            error:   result.error,
+          });
+        } else {
+          const msg = thrown instanceof Error ? thrown.message : String(thrown ?? 'unknown error');
+          opts.workerHooks.onRunEnd({
+            outcome: 'error',
+            summary: msg,
+            error:   msg,
+          });
+        }
+      } catch { /* hook must not crash the runner */ }
+    }
+  }
+}
+
+async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunResult> {
   const { sessionId, goal, maxSteps = 15, onProgress } = opts;
   const steps: StepResult[]  = [];
   const history: string[]    = [];
 
-  const emit = (ev: TaskProgressEvent) => { try { onProgress?.(ev); } catch { /**/ } };
+  // ── B3: Initialize the live-run state holder so the council snapshot
+  // getter can surface fresh telemetry on every turn while the run is active.
+  _liveRunState = {
+    sessionId,
+    goal,
+    currentStep:               0,
+    maxSteps,
+    phase:                     'observe',
+    lastDescription:           'Starting run…',
+    consecutiveVerifyFailures: 0,
+    lastEmitAt:                Date.now(),
+  };
+
+  const emit = (ev: TaskProgressEvent) => {
+    // B3: Update live-run state on every emit so the council sees fresh data.
+    if (_liveRunState) {
+      _liveRunState.currentStep     = ev.step;
+      _liveRunState.phase           = ev.phase;
+      _liveRunState.lastDescription = ev.description;
+      _liveRunState.lastEmitAt      = Date.now();
+      if (ev.action?.type) _liveRunState.lastActionType = ev.action.type;
+      if (ev.result && 'verifyPassed' in ev.result) {
+        _liveRunState.lastVerifyPassed = ev.result.verifyPassed;
+        if (ev.result.verifyPassed === false) {
+          _liveRunState.lastVerifyError = ev.description;
+        }
+      }
+    }
+    try { onProgress?.(ev); } catch { /**/ }
+  };
 
   let beforeScreenshotPath: string | undefined;
   try {
@@ -180,6 +342,13 @@ export async function runOperatorTask(opts: TaskRunnerOptions): Promise<TaskRunR
   };
 
   let lastScreenshotPath: string | undefined;
+
+  // ── B1: Load-bearing verification ────────────────────────────────────────────
+  // Tracks how many steps in a row have failed visual verification. Two
+  // consecutive verification failures abort the run — preventing the silent
+  // failure mode where an action reports outcome=success but landed on the
+  // wrong UI element and the workflow keeps marching forward into garbage.
+  let consecutiveVerifyFailures = 0;
 
   for (let step = 1; step <= maxSteps; step++) {
 
@@ -218,6 +387,45 @@ export async function runOperatorTask(opts: TaskRunnerOptions): Promise<TaskRunR
       planned = { type: 'done', description: planResponse.answer.slice(0, 120), reason: 'JSON parse failed — treating as complete' };
     }
 
+    // ── B4: Begin a worker-run step record for this iteration ──────────────
+    // Called after planning, before action execution. The hook owner (ipc.ts)
+    // creates a WorkerStep and returns its id; we hold it in iteration scope
+    // so the matching endStep call can correlate.
+    let currentStepId: string | undefined;
+    try {
+      currentStepId = opts.workerHooks?.onStepBegin?.({
+        index:  step - 1,
+        title:  planned.description.slice(0, 80) || `Step ${step}`,
+        action: planned,
+      });
+    } catch { /* hook errors are swallowed */ }
+
+    /**
+     * Notify the worker-run bridge that this iteration's step has finished.
+     * Safe to call multiple times — only the first call after a beginStep
+     * fires the hook (subsequent calls are no-ops because currentStepId is
+     * cleared). Defensive against hook exceptions.
+     */
+    const endStep = (
+      status:  'completed' | 'failed' | 'blocked' | 'waiting_approval',
+      output?: Record<string, unknown>,
+      error?:  string,
+      shotPath?: string,
+    ): void => {
+      if (currentStepId === undefined && !opts.workerHooks?.onStepEnd) return;
+      try {
+        opts.workerHooks?.onStepEnd?.({
+          stepId:         currentStepId,
+          index:          step - 1,
+          status,
+          output,
+          error,
+          screenshotPath: shotPath,
+        });
+      } catch { /* hook errors are swallowed */ }
+      currentStepId = undefined;
+    };
+
     emit({ step, phase: 'act', description: planned.description, screenshotPath, action: planned });
 
     // Terminal states
@@ -225,6 +433,7 @@ export async function runOperatorTask(opts: TaskRunnerOptions): Promise<TaskRunR
       const summary = planned.reason ?? planned.description;
       steps.push({ step, action: planned, executed: true, outcome: 'done' });
       emit({ step, phase: 'done', description: summary, screenshotPath });
+      endStep('completed', { actionType: 'done', reason: summary }, undefined, screenshotPath);
       const afterScreenshotPath = await captureAfter();
       return { ok: true, stepsExecuted: step, outcome: 'completed', summary, steps, beforeScreenshotPath, afterScreenshotPath };
     }
@@ -232,6 +441,7 @@ export async function runOperatorTask(opts: TaskRunnerOptions): Promise<TaskRunR
       const summary = planned.reason ?? planned.description;
       steps.push({ step, action: planned, executed: false, outcome: 'blocked' });
       emit({ step, phase: 'blocked', description: summary, screenshotPath });
+      endStep('blocked', { actionType: 'blocked', reason: summary }, summary, screenshotPath);
       const afterScreenshotPath = await captureAfter();
       return { ok: false, stepsExecuted: step - 1, outcome: 'blocked', summary, error: summary, steps, beforeScreenshotPath, afterScreenshotPath };
     }
@@ -314,6 +524,7 @@ export async function runOperatorTask(opts: TaskRunnerOptions): Promise<TaskRunR
           steps.push(stepResult);
           const summary = `Approval needed: click "${planned.target ?? `(${x},${y})`}"`;
           emit({ step, phase: 'blocked', description: summary, screenshotPath, action: planned, result: stepResult });
+          endStep('waiting_approval', { actionType: 'click', x, y, target: planned.target, approvalId: r.approvalId }, summary, screenshotPath);
           return { ok: false, stepsExecuted: step - 1, outcome: 'approval_pending', summary, pendingApprovalId: r.approvalId, steps };
         }
         stepResult = { step, action: planned, executed: r.outcome === 'success', outcome: r.outcome, error: r.error };
@@ -329,6 +540,7 @@ export async function runOperatorTask(opts: TaskRunnerOptions): Promise<TaskRunR
         steps.push(stepResult);
         const summary = `Approval needed: type "${text.slice(0, 40)}"`;
         emit({ step, phase: 'blocked', description: summary, screenshotPath, action: planned, result: stepResult });
+        endStep('waiting_approval', { actionType: 'type', text: text.slice(0, 100), approvalId: r.approvalId }, summary, screenshotPath);
         return { ok: false, stepsExecuted: step - 1, outcome: 'approval_pending', summary, pendingApprovalId: r.approvalId, steps };
       }
       stepResult = { step, action: planned, executed: r.outcome === 'success', outcome: r.outcome, error: r.error };
@@ -343,6 +555,7 @@ export async function runOperatorTask(opts: TaskRunnerOptions): Promise<TaskRunR
         steps.push(stepResult);
         const summary = `Approval needed: key "${planned.keyCombo}"`;
         emit({ step, phase: 'blocked', description: summary, screenshotPath, action: planned, result: stepResult });
+        endStep('waiting_approval', { actionType: 'key', keyCombo: planned.keyCombo, approvalId: r.approvalId }, summary, screenshotPath);
         return { ok: false, stepsExecuted: step - 1, outcome: 'approval_pending', summary, pendingApprovalId: r.approvalId, steps };
       }
       stepResult = { step, action: planned, executed: r.outcome === 'success', outcome: r.outcome, error: r.error };
@@ -352,13 +565,76 @@ export async function runOperatorTask(opts: TaskRunnerOptions): Promise<TaskRunR
     steps.push(stepResult);
 
     // ── 4. Verify ─────────────────────────────────────────────────────────────
-    if (stepResult.executed) {
+    // B1: verification is now load-bearing.
+    //   • Skip verify for `wait` actions (implicitly successful — no UI change to verify)
+    //   • Emit a 'verify' phase event so the UI/council see the verdict live
+    //   • On failure: increment a consecutive-failure counter, inject a
+    //     prescriptive line into the planner history (so the next iteration
+    //     re-plans with a different approach), and surface the failure
+    //   • Two consecutive verify failures abort the run with a clear outcome
+    //     instead of silently marching the workflow into garbage state
+    if (stepResult.executed && planned.type !== 'wait') {
       const stablePath = await waitUntilScreenStable(5000);
-      if (stablePath) {
-        const vr     = await analyzeScreen(stablePath, `Did this action succeed: "${planned.description}"? Answer YES or NO then one sentence.`);
-        const passed = vr.ok && isVerificationPassed(vr.answer);
-        stepResult.verifyPassed = passed;
-        history.push(`  verify: ${passed ? '✓' : '✗'} ${vr.answer.slice(0, 80)}`);
+      const verifyShot = stablePath ?? screenshotPath;
+      const vr         = await analyzeScreen(
+        verifyShot,
+        `Did this action succeed: "${planned.description}"? Answer YES or NO then one sentence explaining what you see.`,
+      );
+      const passed = vr.ok && isVerificationPassed(vr.answer);
+      stepResult.verifyPassed = passed;
+
+      const verifyDesc = passed
+        ? `Verified: ${vr.answer.slice(0, 100)}`
+        : `Verification FAILED: ${vr.answer.slice(0, 120)}`;
+      emit({
+        step,
+        phase:          'verify',
+        description:    verifyDesc,
+        screenshotPath: verifyShot,
+        action:         planned,
+        result:         stepResult,
+      });
+
+      if (passed) {
+        consecutiveVerifyFailures = 0;
+        if (_liveRunState) _liveRunState.consecutiveVerifyFailures = 0;
+        history.push(`  verify: ✓ ${vr.answer.slice(0, 80)}`);
+      } else {
+        consecutiveVerifyFailures += 1;
+        if (_liveRunState) _liveRunState.consecutiveVerifyFailures = consecutiveVerifyFailures;
+        // ── B2: Retry-with-strategy ────────────────────────────────────────
+        // The planner reads the last 8 history entries each iteration, so
+        // the line we inject here is the steering signal for the next
+        // re-plan. We escalate the directive based on the failure count:
+        //
+        //   1st failure → "re-plan with different element / approach"
+        //   2nd failure → "FORCE a different action type entirely"
+        //                 (click → keyboard shortcut, type → key combo, etc.)
+        //   3rd failure → abort (handled in the hard-stop below)
+        //
+        // The total step budget is unchanged — each retry burns one step.
+        if (consecutiveVerifyFailures === 1) {
+          history.push(
+            `  ⚠ verify FAILED (1/3): "${planned.description}" did not appear to take effect. ` +
+            `Vision says: ${vr.answer.slice(0, 100)}. ` +
+            `Re-plan with a different approach (different element label, scroll to find, or fresh focus).`,
+          );
+        } else if (consecutiveVerifyFailures === 2) {
+          // Force escalation: name the failed action type so the planner
+          // knows to switch to a fundamentally different mechanism.
+          const escalationHint =
+            planned.type === 'click' ? 'use a KEYBOARD SHORTCUT (key action) instead of clicking — most apps have a hotkey equivalent for menu items'
+            : planned.type === 'type' ? 'try a DIFFERENT INPUT METHOD — focus the field first, then send_key per character or paste via keyboard shortcut'
+            : planned.type === 'key'  ? 'try a CLICK on the menu item directly instead of the keyboard shortcut'
+            : planned.type === 'focus' ? 'try clicking the app icon in the dock/taskbar instead of focus_app'
+            : 'switch to a completely different action type';
+          history.push(
+            `  ⚠ verify FAILED (2/3): "${planned.description}" failed twice. ` +
+            `Vision says: ${vr.answer.slice(0, 100)}. ` +
+            `ESCALATE: do NOT retry the same ${planned.type} action — instead, ${escalationHint}. ` +
+            `If escalation also fails the run will abort.`,
+          );
+        }
       }
     }
 
@@ -366,7 +642,33 @@ export async function runOperatorTask(opts: TaskRunnerOptions): Promise<TaskRunR
     if (stepResult.outcome === 'failed' || stepResult.outcome === 'permission_denied') {
       const err = stepResult.error ?? `Step ${step} failed (${stepResult.outcome})`;
       emit({ step, phase: 'error', description: err, screenshotPath, action: planned, result: stepResult });
+      endStep('failed', { actionType: planned.type, outcome: stepResult.outcome }, err, screenshotPath);
       return { ok: false, stepsExecuted: step, outcome: 'error', summary: err, error: err, steps };
+    }
+
+    // B1+B2: Hard-stop after 3 consecutive verification failures.
+    // The planner now gets two chances to self-correct via the prescriptive
+    // history lines above (re-plan, then escalate to a different action type).
+    // If the third attempt still fails verification we abort with a clear
+    // outcome instead of silently marching the workflow into garbage state.
+    if (consecutiveVerifyFailures >= 3) {
+      const lastMsg = stepResult.action.description;
+      const err = `Three consecutive steps failed visual verification — last action "${lastMsg}" did not produce the expected screen change after re-plan and action-type escalation. Aborting to prevent silent corruption of the workflow state.`;
+      emit({ step, phase: 'error', description: err, screenshotPath, action: planned, result: stepResult });
+      endStep('failed', { actionType: planned.type, verifyFailures: consecutiveVerifyFailures }, err, screenshotPath);
+      return { ok: false, stepsExecuted: step, outcome: 'error', summary: err, error: err, steps, beforeScreenshotPath, afterScreenshotPath: await captureAfter() };
+    }
+
+    // ── B4: Natural end of iteration ─────────────────────────────────────────
+    // No early-return path was taken, so this step is "settled" in its
+    // own right. Persist its outcome — completed if verify passed (or wait
+    // action), failed if verify failed but we haven't yet tripped the
+    // 3-failure abort. The runner's next iteration will continue with
+    // re-plan/escalation as steered by the history lines.
+    if (stepResult.verifyPassed === false) {
+      endStep('failed', { actionType: planned.type, outcome: stepResult.outcome, verifyPassed: false }, 'Visual verification did not confirm the action took effect', screenshotPath);
+    } else {
+      endStep('completed', { actionType: planned.type, outcome: stepResult.outcome, verifyPassed: stepResult.verifyPassed ?? null }, undefined, screenshotPath);
     }
   }
 
