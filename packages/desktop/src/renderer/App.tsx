@@ -471,6 +471,7 @@ export function App() {
               onPinChanged={handlePinChanged}
               voiceMode={voiceMode}
               onToggleVoice={handleVoiceModeChange}
+              onNavigate={s => setScreen(s as Screen)}
             />
           )}
           {screen === 'memory' && <MemoryScreen />}
@@ -503,6 +504,7 @@ interface SettingsProps {
   onPinChanged: () => void;
   voiceMode: boolean;
   onToggleVoice: (on: boolean) => void;
+  onNavigate: (screen: string) => void;
 }
 
 const PROVIDERS = [
@@ -511,7 +513,7 @@ const PROVIDERS = [
   { id: 'grok', label: 'xAI Grok', placeholder: 'xai-…', color: '#6366f1', billingUrl: 'https://console.x.ai/', keysUrl: 'https://console.x.ai/' },
 ];
 
-function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, hasPin, lockUsername, onSaveKey, onRemoveKey, onUpdatePermissions, onPinChanged, voiceMode, onToggleVoice }: SettingsProps) {
+function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, hasPin, lockUsername, onSaveKey, onRemoveKey, onUpdatePermissions, onPinChanged, voiceMode, onToggleVoice, onNavigate }: SettingsProps) {
   const connectedCount = PROVIDERS.filter(p => keyStatus[p.id]).length;
 
   const togglePermission = async (key: string) => {
@@ -1209,14 +1211,16 @@ function SettingsScreen({ keyStatus, apiKeys, setApiKeys, permissions, saving, h
         )}
         <div style={styles.aboutRow}>
           <span style={styles.aboutKey}>Plan</span>
-          <span style={{ ...styles.aboutVal, color: appTier === 'free' ? 'var(--text-muted)' : 'var(--accent)', fontWeight: 700, textTransform: 'capitalize' as const }}>
-            {appTier}
-          </span>
-        </div>
-        <div style={styles.aboutRow}>
-          <span style={styles.aboutKey}>License</span>
-          <span style={styles.aboutVal}>
-            {appTier !== 'free' ? 'Active' : 'Free tier — upgrade for full capabilities'}
+          <span style={{ ...styles.aboutVal, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ color: appTier === 'free' ? 'var(--text-muted)' : 'var(--accent)', fontWeight: 700, textTransform: 'capitalize' as const }}>
+              {appTier}
+            </span>
+            <button
+              style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--accent)', fontSize: 12, padding: '2px 10px', cursor: 'pointer', fontWeight: 600 }}
+              onClick={() => onNavigate('plan')}
+            >
+              {appTier === 'free' ? 'Activate License' : 'Manage Plan'}
+            </button>
           </span>
         </div>
         <div style={styles.aboutRow}>
