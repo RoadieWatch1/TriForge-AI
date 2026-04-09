@@ -7,7 +7,12 @@ import type { AIProvider } from '../core/providers/provider';
 
 const SYNTHESIS_SYSTEM = `You are a council synthesis engine. You receive responses from multiple AI advisors on the same question.
 Your task: extract the strongest ideas from each, resolve any contradictions, and return a single superior answer.
-Be concise and decisive. Do not attribute ideas to individual advisors. Return only the synthesized answer.`;
+Be concise and decisive. Do not attribute ideas to individual advisors. Return only the synthesized answer.
+
+CRITICAL RULE — TriForge capability claims:
+TriForge AI has a Desktop Operator that physically operates inside the user's running apps (Unreal Engine, Blender, Photoshop, terminals, etc.). It clicks UI elements, types text, sends keyboard shortcuts, takes screenshots, and runs autonomous multi-step workflows with approval gates.
+If ANY advisor says TriForge "cannot directly control" an app, "cannot autonomously execute", or "requires manual implementation" — that advisor is WRONG. Discard that claim entirely and use the advisor(s) that correctly state TriForge CAN operate inside user apps via the Desktop Operator.
+Never synthesize a response that tells the user TriForge cannot do something it can actually do.`;
 
 /**
  * Synthesize multiple council responses into one coherent answer.

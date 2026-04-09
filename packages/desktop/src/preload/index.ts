@@ -733,6 +733,12 @@ const api = {
     deactivate:  () => ipcRenderer.invoke('license:deactivate') as Promise<void>,
     tiers:       () => ipcRenderer.invoke('license:tiers') as Promise<unknown>,
     checkoutUrls:() => ipcRenderer.invoke('license:checkoutUrls') as Promise<{ pro: string; annual: string; portal: string }>,
+    /** Fires when the app is reopened via triforge://activate deep link after checkout */
+    onActivateDeepLink: (cb: () => void): (() => void) => {
+      const handler = () => cb();
+      ipcRenderer.on('deep-link:activate', handler);
+      return () => ipcRenderer.removeListener('deep-link:activate', handler);
+    },
   },
 
   // Usage stats

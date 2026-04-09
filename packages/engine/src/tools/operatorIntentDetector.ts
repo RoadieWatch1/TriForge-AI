@@ -46,6 +46,7 @@ const ACTION_VERBS = [
   'add', 'implement', 'write', 'produce', 'export', 'compile', 'render',
   'record', 'edit', 'cut', 'mix', 'publish', 'deploy', 'launch', 'run',
   'fix', 'debug', 'refactor', 'test', 'open', 'close', 'save',
+  'take over', 'take control', 'control my', 'operate',
 ];
 
 // Suppress if the message is clearly meta / question / explanation-seeking
@@ -53,6 +54,12 @@ const SUPPRESS_PATTERNS = [
   'how do i', 'how to', 'can you explain', 'what is', 'what are', 'why does',
   'tell me about', 'help me understand', 'what should i', 'should i',
   'is it possible', 'can triforge', 'does triforge',
+];
+
+// Override suppress when the message is clearly a command to act, not a question
+const SUPPRESS_OVERRIDE = [
+  'take over', 'take control', 'control my mouse', 'control my keyboard',
+  'use my mouse', 'use my keyboard', 'operate my',
 ];
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -70,8 +77,9 @@ export function detectOperatorIntent(message: string): OperatorIntentResult {
   // Too short to be a meaningful task
   if (lower.length < 8) return noResult;
 
-  // Suppress meta / question patterns
-  if (SUPPRESS_PATTERNS.some(p => lower.startsWith(p) || lower.includes(p))) return noResult;
+  // Suppress meta / question patterns — unless the message explicitly commands action
+  const isCommandOverride = SUPPRESS_OVERRIDE.some(o => lower.includes(o));
+  if (!isCommandOverride && SUPPRESS_PATTERNS.some(p => lower.startsWith(p) || lower.includes(p))) return noResult;
 
   // Must contain an action verb
   const hasVerb = ACTION_VERBS.some(v => lower.includes(v));

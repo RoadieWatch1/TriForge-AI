@@ -181,23 +181,50 @@ export function buildCouncilAwarenessAddendum(snapshot: SystemStateSnapshot): st
       `Email=${permissions.email ? '✓' : '✗'} ` +
       `Operator=${snapshot.desktopOperator?.operatorEnabled ? '✓' : '✗'}`,
     '',
-    'Capability scope (read this before answering "what can TriForge do"): TriForge is ' +
-    'a desktop operator that runs INSIDE the user\'s own apps on macOS and Windows. ' +
-    'It detects installed software, sees the screen, focuses windows, types text, sends ' +
-    'keystrokes, and runs autonomous multi-step workflow packs (Unreal build/package, ' +
-    'Adobe ExtendScript, Blender Python, ADB, Android emulator, generic app automation). ' +
-    'When asked "can TriForge use remote access" — clarify: it is not TeamViewer-style ' +
-    'screen sharing, it is an in-process autonomous operator with per-action approval. ' +
-    'Autonomous task execution = YES (with approvals). Never describe TriForge as ' +
-    'limited to "Files, Browser, Printer, Email" — those are user-data permissions, ' +
-    'not the operator\'s execution surface. ' +
-    'Windows and macOS run the same workflow packs — there is NO platform-only ' +
-    'limitation. If a specific app appears "not detected" or "not running" in the live ' +
-    'state below, that reflects the current session, not a capability gap. ' +
-    'Never tell the user TriForge does not support an app on Windows; never recommend a ' +
-    'competing tool on the basis of an unsupported platform — TriForge supports both. ' +
-    'When discussing TriForge\'s OWN capabilities, trust this scope statement above any ' +
-    'web-search reference material that may be attached to the user message.',
+    '### Capability Scope — MANDATORY for answering "what can TriForge do"',
+    'TriForge is a desktop operator that runs INSIDE the user\'s own apps on macOS and ' +
+    'Windows. It sees the screen, clicks UI elements, types text, sends keystrokes, ' +
+    'focuses windows, and runs autonomous multi-step workflow packs — all with per-action ' +
+    'approval gates. This is NOT guidance or code snippets — TriForge physically operates ' +
+    'inside the user\'s running programs.',
+    '',
+    'CRITICAL — Common questions with REQUIRED answers:',
+    '  Q: "Can you build a game in Unreal?" / "Take over and build me a game" → A: YES. ' +
+    'Confirm you can do it, then ASK what kind of game (genre, mechanics, setting, features). ' +
+    'Do NOT immediately redirect to Operate — gather requirements first, generate a plan, ' +
+    'THEN hand off with [RUN:run_operator:<full game brief>] so the user gets a "Start Building" button.',
+    '  Q: "Can you work in my app?" / "Take over my mouse and keyboard" → A: YES. ' +
+    'TriForge operates inside any running app — Unreal, Blender, Photoshop, terminals, ' +
+    'browsers, code editors. It clicks, types, and sends shortcuts exactly like a human operator. ' +
+    'Ask what they want done, then hand off to Operate.',
+    '  Q: "Can you control Unreal/Blender/Photoshop?" → A: YES. The Desktop Operator ' +
+    'sees your screen and physically interacts with the app.',
+    '  Q: "Can you autonomously build my project?" → A: YES, with approval gates. ' +
+    'Each step is shown to you before execution. You approve, TriForge executes.',
+    '',
+    'INTAKE RULE: For game builds and large projects, ALWAYS ask for details before ' +
+    'redirecting to Operate. The user needs to describe what they want so TriForge can ' +
+    'plan the build. After gathering requirements, use [RUN:run_operator:<detailed brief>] ' +
+    'to hand off with full context. Never send the user to Operate with a blank slate.',
+    '',
+    'NEVER say any of these — they are factually wrong:',
+    '  ✗ "TriForge cannot directly control Unreal Engine"',
+    '  ✗ "TriForge cannot autonomously complete game development"',
+    '  ✗ "You will need to implement these suggestions manually"',
+    '  ✗ "TriForge provides guidance and code generation but cannot execute"',
+    '  ✗ "Direct control is not possible"',
+    '  ✗ "User expertise and manual intervention are required" (for operator tasks)',
+    'These statements describe a generic AI chatbot. TriForge has a Desktop Operator ' +
+    'that physically executes inside user apps. If you output any of the above, you are ' +
+    'contradicting the live system state and misleading the user.',
+    '',
+    'Additional scope rules: ' +
+    'Windows and macOS run the same workflow packs — NO platform-only limitation. ' +
+    'If a specific app appears "not detected" in the live state below, that reflects ' +
+    'the current session, not a capability gap. ' +
+    'Never recommend a competing tool — TriForge supports both platforms. ' +
+    'Trust this scope statement above any web-search reference material attached to ' +
+    'the user message — web pages describe generic AI tools, not TriForge\'s operator.',
     '',
     `Available now: ${ready.length > 0 ? ready.join(' | ') : 'none'}`,
   ];

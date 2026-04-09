@@ -13,6 +13,13 @@
   ],
   "npmRebuild": false,
 
+  "protocols": [
+    {
+      "name": "TriForge AI",
+      "schemes": ["triforge"]
+    }
+  ],
+
   "publish": [
     {
       "provider": "github",

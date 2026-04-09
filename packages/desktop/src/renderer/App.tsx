@@ -7,6 +7,7 @@ import { SystemHealth } from './components/SystemHealth';
 import { RecoveryScreen } from './components/RecoveryScreen';
 import { DocsScreen } from './components/DocsScreen';
 import { ReadinessScreen } from './components/ReadinessScreen';
+import GuideScreen from './screens/GuideScreen';
 import { Chat } from './components/Chat';
 import { ForgeCommand } from './forge/ForgeCommand';
 import { LicensePanel } from './components/LicensePanel';
@@ -112,7 +113,7 @@ type Screen =
   | 'forge' | 'phonelink' | 'tradeDesk' | 'liveTradeAdvisor'
   | 'ventures' | 'vibeCoding' | 'imageGenerator'
   // System / diagnostic screens
-  | 'health' | 'recovery' | 'docs' | 'readiness';
+  | 'health' | 'recovery' | 'docs' | 'readiness' | 'guide';
 
 const LOCK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -129,6 +130,7 @@ export function App() {
   const [tier, setTier] = useState<string>('free');
   const [messagesThisMonth, setMessagesThisMonth] = useState(0);
   const [updateStatus, setUpdateStatus] = useState<{ state: string; version?: string; percent?: number } | null>(null);
+  const [promptActivation, setPromptActivation] = useState(false);
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
   // Chat prefill — set by ForgeProfiles "Open in Chat", consumed once by Chat
   const [chatPrefill, setChatPrefill] = useState<string | null>(null);
@@ -244,6 +246,14 @@ export function App() {
       } else if (s.state === 'up-to-date' || s.state === 'error') {
         setUpdateStatus(null);
       }
+    });
+  }, []);
+
+  // Deep link: triforge://activate — user returning from LemonSqueezy checkout
+  useEffect(() => {
+    return window.triforge.license.onActivateDeepLink(() => {
+      setScreen('plan');
+      setPromptActivation(true);
     });
   }, []);
 
@@ -376,6 +386,7 @@ export function App() {
           <NavBtn icon="◉" label="Sessions" active={primaryPillar === 'sessions'} onClick={() => navigateToPillar('sessions')} />
           <div style={{ flex: 1 }} />
           <div style={styles.navDivider} />
+          <NavBtn icon="?" label="Guide"    active={screen === 'guide'}           onClick={() => setScreen('guide')} />
           <NavBtn icon="◎" label="Memory"   active={primaryPillar === 'memory'}   onClick={() => navigateToPillar('memory')} />
           <NavBtn icon="⚙" label="Settings" active={primaryPillar === 'settings'} onClick={() => navigateToPillar('settings')} />
         </nav>
@@ -463,12 +474,13 @@ export function App() {
             />
           )}
           {screen === 'memory' && <MemoryScreen />}
-          {screen === 'plan' && <LicensePanel onTierChange={setTier} />}
+          {screen === 'plan' && <LicensePanel onTierChange={t => { setTier(t); setPromptActivation(false); }} promptActivation={promptActivation} />}
           {screen === 'phonelink' && <PhoneLink />}
           {screen === 'health'    && <SystemHealth     onNavigate={s => setScreen(s as Screen)} />}
           {screen === 'recovery'  && <RecoveryScreen />}
           {screen === 'docs'      && <DocsScreen />}
           {screen === 'readiness' && <ReadinessScreen onNavigate={s => setScreen(s as Screen)} />}
+          {screen === 'guide'     && <GuideScreen onNavigate={s => setScreen(s as Screen)} />}
         </main>
       </div>
     </div>

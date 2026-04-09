@@ -1402,11 +1402,16 @@ export function setupIpc(store: Store): void {
   });
 
   ipcMain.handle('license:tiers', () => TIERS);
-  ipcMain.handle('license:checkoutUrls', () => ({
-    pro:      LEMONSQUEEZY.PRO_CHECKOUT,
-    annual:   LEMONSQUEEZY.PRO_ANNUAL_CHECKOUT,
-    portal:   LEMONSQUEEZY.CUSTOMER_PORTAL,
-  }));
+  ipcMain.handle('license:checkoutUrls', () => {
+    // Append success_url so LemonSqueezy redirects the user back to the app
+    // after checkout completes — triggers the triforge://activate deep link
+    const successParam = '?checkout[success_url]=' + encodeURIComponent('triforge://activate');
+    return {
+      pro:    LEMONSQUEEZY.PRO_CHECKOUT + successParam,
+      annual: LEMONSQUEEZY.PRO_ANNUAL_CHECKOUT + successParam,
+      portal: LEMONSQUEEZY.CUSTOMER_PORTAL,
+    };
+  });
 
   // ── Usage ─────────────────────────────────────────────────────────────────────
   ipcMain.handle('usage:get', () => ({

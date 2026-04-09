@@ -8,6 +8,7 @@ import { loadCustomPacks, loadRunHistory } from './services/workflowPackService'
 import { runMigrations } from './migrationEngine';
 import { setupTray } from './tray';
 import { setupAutoUpdater } from './updater';
+import { isQuitting, markQuitting } from './appState';
 import { TaskStore, Scheduler, AuditLedger } from '@triforge/engine';
 import { bootLog, bootError } from './bootLogger';
 import { supervisor } from '../core/supervisor';
@@ -20,6 +21,16 @@ import { getMemoryManager } from '../core/memory/memoryManager';
 // enable-features=SpeechRecognition: ensures the Web Speech API is active
 app.commandLine.appendSwitch('enable-speech-dispatcher');
 app.commandLine.appendSwitch('enable-features', 'SpeechRecognition');
+
+// ── Deep link protocol ──────────────────────────────────────────────────────
+// Register triforge:// so LemonSqueezy checkout can redirect back to the app.
+// Must be called before app.whenReady on macOS.
+if (process.defaultApp) {
+  // Dev mode: pass the app path so Electron resolves the protocol to this script
+  app.setAsDefaultProtocolClient('triforge', process.execPath, [path.resolve(process.argv[1])]);
+} else {
+  app.setAsDefaultProtocolClient('triforge');
+}
 
 // Single instance lock
 if (!app.requestSingleInstanceLock()) {
@@ -138,10 +149,12 @@ function createWindow(): void {
     mainWindow?.webContents.toggleDevTools();
   });
 
-  // Minimize to tray on close
+  // Minimize to tray on close (unless we're quitting for real — e.g. update install)
   mainWindow.on('close', (e) => {
-    e.preventDefault();
-    mainWindow?.hide();
+    if (!isQuitting) {
+      e.preventDefault();
+      mainWindow?.hide();
+    }
   });
 
   mainWindow.on('closed', () => {
@@ -430,11 +443,37 @@ app.whenReady().then(async () => {
     () => { store?.close(); }
   );
 
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, argv) => {
     mainWindow?.show();
     mainWindow?.focus();
+    // Windows/Linux: deep link URL arrives as the last argv element
+    const deepLink = argv.find(a => a.startsWith('triforge://'));
+    if (deepLink) handleDeepLink(deepLink);
   });
 });
+
+// ── Deep link handler ──────────────────────────────────────────────────────
+// macOS: open-url fires when the OS opens a triforge:// URL
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  handleDeepLink(url);
+});
+
+function handleDeepLink(url: string) {
+  try {
+    // triforge://activate?key=XXXX-XXXX-XXXX-XXXX
+    const parsed = new URL(url);
+    if (parsed.hostname === 'activate' || parsed.pathname === '//activate' || parsed.pathname === '/activate') {
+      mainWindow?.show();
+      mainWindow?.focus();
+      // Tell renderer to show the activation panel (user still needs to enter key
+      // since LemonSqueezy doesn't include it in the redirect URL)
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('deep-link:activate');
+      }
+    }
+  } catch { /* ignore malformed URLs */ }
+}
 
 app.on('window-all-closed', () => {
   // Stay alive in tray — don't quit
@@ -447,6 +486,7 @@ app.on('activate', () => {
 });
 
 app.on('before-quit', () => {
+  markQuitting();
   disposeIpcSingletons();
   store?.close();
   OperatorService.terminateTesseract().catch(() => {});
@@ -456,7 +496,4 @@ app.on('before-quit', () => {
   import('./services/screenWatcher.js').then(({ stopScreenWatcher }) => stopScreenWatcher()).catch(() => {});
   import('./services/deviceEventWatcher.js').then(({ stopDeviceWatcher }) => stopDeviceWatcher()).catch(() => {});
   import('./services/appForegroundWatcher.js').then(({ stopAppForegroundWatcher }) => stopAppForegroundWatcher()).catch(() => {});
-
-  // Remove 'close' intercept so app actually quits
-  mainWindow?.removeAllListeners('close');
 });

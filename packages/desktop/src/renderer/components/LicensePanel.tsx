@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 interface LicenseInfo {
   tier: string;
@@ -23,6 +23,8 @@ interface TierConfig {
 
 interface Props {
   onTierChange: (tier: string) => void;
+  /** When true, the panel scrolls to the key input and highlights it (triggered by deep link) */
+  promptActivation?: boolean;
 }
 
 const PLAN_FEATURES = [
@@ -38,7 +40,7 @@ const PLAN_FEATURES = [
   'Long-term memory — 500 entries',
 ];
 
-export function LicensePanel({ onTierChange }: Props) {
+export function LicensePanel({ onTierChange, promptActivation }: Props) {
   const [license, setLicense]         = useState<LicenseInfo | null>(null);
   const [tiers, setTiers]             = useState<Record<string, TierConfig>>({});
   const [urls, setUrls]               = useState<{ pro: string; annual: string; portal: string }>({ pro: '', annual: '', portal: '' });
@@ -48,6 +50,8 @@ export function LicensePanel({ onTierChange }: Props) {
   const [deactivating, setDeactivating] = useState(false);
   const [error, setError]             = useState<string | null>(null);
   const [success, setSuccess]         = useState<string | null>(null);
+  const [awaitingKey, setAwaitingKey] = useState(false);
+  const keyInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     async function load() {
@@ -65,6 +69,14 @@ export function LicensePanel({ onTierChange }: Props) {
     load();
   }, []);
 
+  // When promptActivation flips to true (deep link or post-checkout), focus the key input
+  useEffect(() => {
+    if (promptActivation) {
+      setAwaitingKey(true);
+      setTimeout(() => keyInputRef.current?.focus(), 200);
+    }
+  }, [promptActivation]);
+
   const activate = async () => {
     const trimmed = keyInput.trim();
     if (!trimmed) return;
@@ -76,6 +88,7 @@ export function LicensePanel({ onTierChange }: Props) {
       if (result.valid) {
         setLicense({ expiresAt: null, ...result });
         setKeyInput('');
+        setAwaitingKey(false);
         setSuccess('✓ Activated! You now have full access.');
         onTierChange(result.tier);
       } else {
@@ -104,6 +117,13 @@ export function LicensePanel({ onTierChange }: Props) {
     }
   };
 
+  const openCheckout = (url: string) => {
+    window.triforge.system.openExternal(url);
+    // After opening checkout, show the "waiting for key" state so the user
+    // knows what to do when they come back from the browser
+    setAwaitingKey(true);
+    setTimeout(() => keyInputRef.current?.focus(), 300);
+  };
   const openUrl = (url: string) => window.triforge.system.openExternal(url);
 
   const isPro    = license?.tier === 'pro' && license?.valid;
@@ -150,6 +170,18 @@ export function LicensePanel({ onTierChange }: Props) {
 
       {/* License key */}
       <h2 style={{ ...styles.sectionTitle, marginTop: 28 }}>License Key</h2>
+
+      {/* Post-checkout prompt — shown when user returns from LemonSqueezy */}
+      {awaitingKey && !license?.valid && (
+        <div style={styles.awaitingBanner}>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Almost there!</div>
+          <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5 }}>
+            After completing your purchase, check your email for a license key from LemonSqueezy.
+            Paste it below to unlock Pro.
+          </p>
+        </div>
+      )}
+
       {license?.valid && license.key ? (
         <div style={styles.activeKey}>
           <div style={styles.keyInfo}>
@@ -163,10 +195,18 @@ export function LicensePanel({ onTierChange }: Props) {
         </div>
       ) : (
         <>
-          <p style={styles.hint}>Enter your license key to unlock full access.</p>
+          <p style={styles.hint}>
+            {awaitingKey
+              ? 'Paste your license key from the confirmation email:'
+              : 'Enter your license key to unlock full access.'}
+          </p>
           <div style={styles.keyInputRow}>
             <input
-              style={styles.keyField}
+              ref={keyInputRef}
+              style={{
+                ...styles.keyField,
+                ...(awaitingKey ? { borderColor: 'var(--accent)', boxShadow: '0 0 0 2px rgba(99,102,241,0.25)' } : {}),
+              }}
               placeholder="XXXX-XXXX-XXXX-XXXX"
               value={keyInput}
               onChange={e => setKeyInput(e.target.value)}
@@ -211,13 +251,13 @@ export function LicensePanel({ onTierChange }: Props) {
             </ul>
 
             <div style={styles.pricingRow}>
-              <button style={styles.monthlyBtn} onClick={() => openUrl(urls.pro)}>
+              <button style={styles.monthlyBtn} onClick={() => openCheckout(urls.pro)}>
                 <div style={styles.btnPriceLabel}>Monthly</div>
                 <div style={styles.btnPrice}>$19 <span style={styles.btnPer}>/mo</span></div>
                 <div style={styles.btnSub}>cancel anytime</div>
               </button>
 
-              <button style={styles.annualBtn} onClick={() => openUrl(urls.annual)}>
+              <button style={styles.annualBtn} onClick={() => openCheckout(urls.annual)}>
                 <div style={styles.btnBadge}>Save 21%</div>
                 <div style={styles.btnPriceLabel}>Annual</div>
                 <div style={styles.btnPrice}>$15 <span style={styles.btnPer}>/mo</span></div>
@@ -274,6 +314,10 @@ const styles: Record<string, React.CSSProperties> = {
   keyEmail:     { fontSize: 12, color: 'var(--text-muted)' },
   deactivateBtn: { background: 'none', border: '1px solid var(--border)', color: 'var(--text-secondary)', borderRadius: 6, padding: '4px 12px', fontSize: 12, cursor: 'pointer' },
 
+  awaitingBanner: {
+    background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.4)',
+    borderRadius: 10, padding: '12px 16px', marginBottom: 12, color: 'var(--text-primary)',
+  },
   errorMsg:  { background: '#ef444420', border: '1px solid #ef4444', borderRadius: 8, color: '#ef4444', fontSize: 13, padding: '8px 12px', marginTop: 10 },
   successMsg: { background: '#10a37f20', border: '1px solid #10a37f', borderRadius: 8, color: '#10a37f', fontSize: 13, padding: '8px 12px', marginTop: 10 },
   portalBtn: { background: 'none', border: 'none', color: 'var(--text-secondary)', fontSize: 13, cursor: 'pointer', marginTop: 12, padding: 0 },

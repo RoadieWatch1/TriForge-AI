@@ -1713,6 +1713,7 @@ export function Chat({ mode, keyStatus, tier, messagesThisMonth, onMessageSent, 
                           else if (action === 'open_ledger')                    onNavigate?.('ledger');
                           else if (action === 'open_settings')                  onNavigate?.('settings');
                           else if (action === 'open_profiles')                  onNavigate?.('profiles');
+                          else if (action === 'open_guide')                    onNavigate?.('guide');
                           else if (action?.startsWith('run_pack:')) {
                             // Format: run_pack:<packId>:<goal>
                             const rest   = action.slice('run_pack:'.length);
@@ -2084,7 +2085,7 @@ function ForgeRow({ icon, label, text }: { icon: string; label: string; text: st
 
 // ── RUN tag parser ────────────────────────────────────────────────────────────
 
-const RUN_TAG_RE = /\[RUN:((?:search_docs:[^\]]+)|(?:generate_image:[^\]]+)|index_docs|find_photos|organize|organize_deep|organize_desktop|organize_downloads|organize_documents|search_photos|find_similar|print|open_chat|open_forge|open_builder|open_vibe|open_ventures|open_hustle|open_imageGenerator|open_memory|open_ledger|open_settings|open_profiles|open_operate)\]/i;
+const RUN_TAG_RE = /\[RUN:((?:search_docs:[^\]]+)|(?:generate_image:[^\]]+)|(?:run_pack:[^\]]+)|(?:run_operator:[^\]]+)|index_docs|find_photos|organize|organize_deep|organize_desktop|organize_downloads|organize_documents|search_photos|find_similar|print|open_chat|open_forge|open_builder|open_vibe|open_ventures|open_hustle|open_imageGenerator|open_memory|open_ledger|open_settings|open_profiles|open_operate|open_guide)\]/i;
 
 const RUN_LABELS: Record<string, string> = {
   index_docs:              'Index Documents',
@@ -2108,6 +2109,7 @@ const RUN_LABELS: Record<string, string> = {
   open_ledger:             'Open Ledger',
   open_settings:           'Open Settings',
   open_profiles:           'Open Forge Profiles',
+  open_guide:              'Open Guide',
 };
 
 // ── Photo Results Grid ────────────────────────────────────────────────────────
@@ -2308,7 +2310,7 @@ function MessageBubble({ msg, isSpeaking, canSpeak, onSpeak, onRetry, onRunActio
             style={cs.runActionBtn}
             onClick={() => onRunAction(runAction)}
           >
-            ▶ {runAction.startsWith('search_docs:') ? `Search: "${runAction.slice('search_docs:'.length)}"` : runAction.startsWith('generate_image:') ? `Generate: "${runAction.slice('generate_image:'.length).slice(0, 40)}${runAction.length > 'generate_image:'.length + 40 ? '…' : ''}"` : (RUN_LABELS[runAction] ?? 'Run')}
+            ⚡ {runAction.startsWith('run_pack:') ? 'Start Building' : runAction.startsWith('run_operator:') ? 'Start Building' : runAction.startsWith('search_docs:') ? `Search: "${runAction.slice('search_docs:'.length)}"` : runAction.startsWith('generate_image:') ? `Generate: "${runAction.slice('generate_image:'.length).slice(0, 40)}${runAction.length > 'generate_image:'.length + 40 ? '…' : ''}"` : (RUN_LABELS[runAction] ?? 'Run')}
           </button>
         )}
         {!isUser && msg.operatorSuggestion && onRunAction && (

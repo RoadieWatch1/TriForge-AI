@@ -1,5 +1,6 @@
 import { autoUpdater } from 'electron-updater';
 import { BrowserWindow, ipcMain, app } from 'electron';
+import { markQuitting } from './appState';
 
 export type UpdateStatus =
   | { state: 'idle' }
@@ -32,7 +33,10 @@ export function setupAutoUpdater(win: BrowserWindow): void {
   // Use ipcMain.on (fire-and-forget) — quitAndInstall() terminates the process
   // so ipcMain.handle would never send a response back, which can abort the quit.
   // isSilent=false, isForceRunAfter=true ensures the app relaunches after install on macOS.
-  ipcMain.on('updater:install', () => { autoUpdater.quitAndInstall(false, true); });
+  ipcMain.on('updater:install', () => {
+    markQuitting();                       // let close-handler know this is a real quit
+    autoUpdater.quitAndInstall(false, true);
+  });
 
   // First check 12s after launch — enough time for the app to be fully shown
   setTimeout(() => autoUpdater.checkForUpdates().catch(() => {}), 12_000);
