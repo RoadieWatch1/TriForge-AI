@@ -1602,7 +1602,15 @@ export function setupIpc(store: Store): void {
         const webContext = webResults
           .map((r, i) => `[${i + 1}] ${r.title}\n${r.snippet}\nSource: ${r.url}`)
           .join('\n\n');
-        message = `[WEB SEARCH RESULTS — live data retrieved just now]\n${webContext}\n[END WEB SEARCH RESULTS]\n\nUser question: ${message}`;
+        message =
+          `[REFERENCE MATERIAL — third-party web search results from a live query. ` +
+          `These describe the open web, NOT TriForge itself. ` +
+          `When the user asks about TriForge's own capabilities, trust the system prompt's "Capability scope" section over these results — ` +
+          `web pages may be outdated, biased, or from competitors. ` +
+          `These are useful for general facts, tutorials, current events, and external context.]\n` +
+          `${webContext}\n` +
+          `[END REFERENCE MATERIAL]\n\n` +
+          `User question: ${message}`;
         if (!event.sender.isDestroyed())
           event.sender.send('forge:update', { phase: 'web:search:done', resultCount: webResults.length });
       }
@@ -2028,7 +2036,15 @@ VERIFY: [1-3 specific things the user should double-check]
         const webContext = webResults
           .map((r, i) => `[${i + 1}] ${r.title}\n${r.snippet}\nSource: ${r.url}`)
           .join('\n\n');
-        message = `[WEB SEARCH RESULTS — live data retrieved just now]\n${webContext}\n[END WEB SEARCH RESULTS]\n\nUser question: ${message}`;
+        message =
+          `[REFERENCE MATERIAL — third-party web search results from a live query. ` +
+          `These describe the open web, NOT TriForge itself. ` +
+          `When the user asks about TriForge's own capabilities, trust the system prompt's "Capability scope" section over these results — ` +
+          `web pages may be outdated, biased, or from competitors. ` +
+          `These are useful for general facts, tutorials, current events, and external context.]\n` +
+          `${webContext}\n` +
+          `[END REFERENCE MATERIAL]\n\n` +
+          `User question: ${message}`;
         if (!event.sender.isDestroyed())
           event.sender.send('forge:update', { phase: 'web:search:done', resultCount: webResults.length });
       }

@@ -773,9 +773,9 @@ async function executePhase(
     // ── readiness_check ────────────────────────────────────────────────────────
     case 'readiness_check': {
       const capMap = await OperatorService.getCapabilityMap();
-      const runningApps = capMap.platform === 'macOS'
-        ? await OperatorService.listRunningApps()
-        : [];
+      // listRunningApps() is now cross-platform — operatorService routes to
+      // windowsListRunningApps() on Windows. Do not gate on platform here.
+      const runningApps = await OperatorService.listRunningApps();
       const allResults: Record<string, WorkflowReadinessResult> = {};
       for (const [id, res] of evaluateAllPackReadiness(
         WORKFLOW_PACK_REGISTRY,
@@ -3974,7 +3974,10 @@ export const WorkflowPackService = {
     if (!pack) return null;
 
     const capMap = await OperatorService.getCapabilityMap();
-    const runningApps = capMap.platform === 'macOS' && (pack.requirements.targetApp || targetApp)
+    // Cross-platform: only fetch the running-apps list when we actually need it
+    // (i.e. the pack has a target app to check). Platform gating removed —
+    // listRunningApps() now works on Windows via windowsListRunningApps().
+    const runningApps = (pack.requirements.targetApp || targetApp)
       ? await OperatorService.listRunningApps()
       : undefined;
 
@@ -3987,9 +3990,8 @@ export const WorkflowPackService = {
 
   async evaluateAllReadiness(): Promise<Record<string, WorkflowReadinessResult>> {
     const capMap = await OperatorService.getCapabilityMap();
-    const runningApps = capMap.platform === 'macOS'
-      ? await OperatorService.listRunningApps()
-      : undefined;
+    // Cross-platform — listRunningApps() routes to windowsListRunningApps() on Windows.
+    const runningApps = await OperatorService.listRunningApps();
     const results: Record<string, WorkflowReadinessResult> = {};
     for (const [id, res] of evaluateAllPackReadiness(
       WORKFLOW_PACK_REGISTRY,

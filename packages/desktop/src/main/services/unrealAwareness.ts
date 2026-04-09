@@ -4,13 +4,19 @@
 // log/build signals. Produces an UnrealAwarenessSnapshot for injection into
 // the Council awareness pipeline.
 //
-// TRULY IMPLEMENTED:
-//   - Unreal Editor process detection via running-apps list (osascript)
+// TRULY IMPLEMENTED (cross-platform — macOS + Windows):
+//   - Unreal Editor process detection via running-apps list
 //   - Frontmost-app check for Unreal
 //   - Project detection from process command-line args (.uproject path in argv)
+//     macOS:   ps -ax -o args
+//     Windows: PowerShell Get-CimInstance Win32_Process
 //   - Project name extraction from window title (medium confidence)
-//   - Install detection via known macOS paths (Epic Games Launcher, app bundle)
-//   - Recent log file discovery (~Library/Logs/Unreal Engine/)
+//   - Install detection via known platform paths
+//     macOS:   /Applications/Epic Games Launcher.app, ~/Library/...
+//     Windows: C:\Program Files\Epic Games\, %PROGRAMDATA%\Epic\...
+//   - Recent log file discovery
+//     macOS:   ~/Library/Logs/Unreal Engine/
+//     Windows: %LOCALAPPDATA%\UnrealEngine\<version>\Saved\Logs\
 //   - Basic build/package signal from last 50 lines of active log
 //   - Obvious crash/fatal error hint from last 50 log lines
 //
@@ -26,7 +32,8 @@ import os          from 'os';
 import fs          from 'fs';
 import type { UnrealAwarenessSnapshot } from '@triforge/engine';
 
-const IS_MACOS = process.platform === 'darwin';
+const IS_MACOS   = process.platform === 'darwin';
+const IS_WINDOWS = process.platform === 'win32';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -73,8 +80,11 @@ function isFrontmostUnreal(frontmostAppName: string | null | undefined): boolean
 // ── Project detection ─────────────────────────────────────────────────────────
 
 /**
- * Use `ps` to get the full command line of Unreal Editor processes and look for
- * a .uproject argument. This is the highest-confidence project detection path.
+ * Get the full command line of Unreal Editor processes and look for a
+ * .uproject argument. This is the highest-confidence project detection path.
+ *
+ * macOS:   `ps -ax -o args | grep UnrealEditor`
+ * Windows: PowerShell `Get-CimInstance Win32_Process` filtered by image name
  *
  * Returns null if no .uproject is found in the process args.
  */
@@ -82,17 +92,33 @@ async function detectProjectFromProcessArgs(): Promise<{
   projectPath: string;
   projectName: string;
 } | null> {
-  if (!IS_MACOS) return null;
+  let raw = '';
 
-  // Pull full argv of all Unreal-related processes (limit to 3 lines to be safe)
-  const raw = await safeExec(
-    `ps -ax -o args | grep -iE "UnrealEditor|UE4Editor" | grep -v grep | head -n 3`,
-    5000,
-  );
+  if (IS_MACOS) {
+    raw = await safeExec(
+      `ps -ax -o args | grep -iE "UnrealEditor|UE4Editor" | grep -v grep | head -n 3`,
+      5000,
+    );
+  } else if (IS_WINDOWS) {
+    // Get-CimInstance is the modern PowerShell replacement for wmic (deprecated).
+    // -NoProfile keeps startup fast; -Command runs a single expression then exits.
+    // We pull CommandLine for any UnrealEditor / UE4Editor process and emit raw text.
+    raw = await safeExec(
+      `powershell.exe -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -Filter \\"Name='UnrealEditor.exe' OR Name='UE4Editor.exe' OR Name='UnrealEditor-Win64-DebugGame.exe'\\" | Select-Object -ExpandProperty CommandLine"`,
+      8000,
+    );
+  } else {
+    return null;
+  }
+
   if (!raw) return null;
 
-  // Find the first .uproject path in the output
-  const match = raw.match(/([^\s"']+\.uproject)/i);
+  // Find the first .uproject path in the output. The path may contain spaces
+  // and may be wrapped in quotes (Windows command lines almost always quote it).
+  // First try a quoted match, then fall back to unquoted.
+  const quoted   = raw.match(/"([^"]+\.uproject)"/i);
+  const unquoted = quoted ? null : raw.match(/([^\s"']+\.uproject)/i);
+  const match    = quoted ?? unquoted;
   if (!match) return null;
 
   const projectPath = match[1];
@@ -128,22 +154,47 @@ function extractProjectFromWindowTitle(windowTitle: string | undefined): string 
 // ── Install detection ─────────────────────────────────────────────────────────
 
 /**
- * Check whether Unreal Engine is likely installed by probing known macOS paths.
+ * Check whether Unreal Engine is likely installed by probing known platform paths.
  * Returns true if strong evidence found, undefined if inconclusive, false only
  * if we actively verified absence (not implemented — we return undefined).
  */
 function checkUnrealInstalled(): boolean | undefined {
-  if (!IS_MACOS) return undefined;
-
   const home = os.homedir();
-  const knownPaths = [
-    '/Applications/Epic Games Launcher.app',
-    path.join(home, 'Applications', 'Epic Games Launcher.app'),
-    path.join(home, 'Library', 'Application Support', 'Epic', 'EpicGamesLauncher'),
-    // Direct UE installs outside the launcher
-    '/Applications/UnrealEditor.app',
-    '/Users/Shared/Epic Games',
-  ];
+  const knownPaths: string[] = [];
+
+  if (IS_MACOS) {
+    knownPaths.push(
+      '/Applications/Epic Games Launcher.app',
+      path.join(home, 'Applications', 'Epic Games Launcher.app'),
+      path.join(home, 'Library', 'Application Support', 'Epic', 'EpicGamesLauncher'),
+      // Direct UE installs outside the launcher
+      '/Applications/UnrealEditor.app',
+      '/Users/Shared/Epic Games',
+    );
+  } else if (IS_WINDOWS) {
+    const programFiles   = process.env['ProgramFiles']   ?? 'C:\\Program Files';
+    const programFilesX86 = process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)';
+    const programData    = process.env['ProgramData']    ?? 'C:\\ProgramData';
+    const localAppData   = process.env['LOCALAPPDATA']   ?? path.join(home, 'AppData', 'Local');
+
+    knownPaths.push(
+      // Default Epic Games Launcher install root — engine versions live under here
+      path.join(programFiles, 'Epic Games'),
+      path.join(programFilesX86, 'Epic Games'),
+      // Launcher state / install manifests
+      path.join(programData, 'Epic', 'EpicGamesLauncher'),
+      path.join(programData, 'Epic', 'UnrealEngineLauncher'),
+      // User-local engine state (UE writes here even for source builds)
+      path.join(localAppData, 'UnrealEngine'),
+    );
+
+    // Also probe specific engine version directories — finding any one is strong proof
+    for (const ver of ['UE_5.5', 'UE_5.4', 'UE_5.3', 'UE_5.2', 'UE_5.1', 'UE_5.0', 'UE_4.27', 'UE_4.26']) {
+      knownPaths.push(path.join(programFiles, 'Epic Games', ver));
+    }
+  } else {
+    return undefined;
+  }
 
   for (const p of knownPaths) {
     try {
@@ -159,40 +210,102 @@ function checkUnrealInstalled(): boolean | undefined {
 // ── Log detection ─────────────────────────────────────────────────────────────
 
 /**
- * Locate the most recently modified Unreal log file.
+ * Recursively walk a directory looking for `.log` files. Returns up to `maxFiles`
+ * results — bounded to avoid runaway scans on large engine installs. Errors at any
+ * subdirectory are swallowed and skipped.
+ */
+function collectLogFiles(rootDir: string, maxFiles = 50): string[] {
+  const out: string[] = [];
+  const stack: string[] = [rootDir];
+  const visited = new Set<string>();
+
+  while (stack.length > 0 && out.length < maxFiles) {
+    const dir = stack.pop()!;
+    if (visited.has(dir)) continue;
+    visited.add(dir);
+
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (out.length >= maxFiles) break;
+      const full = path.join(dir, entry.name);
+      try {
+        if (entry.isDirectory()) {
+          stack.push(full);
+        } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.log')) {
+          out.push(full);
+        }
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Locate the most recently modified Unreal log file (cross-platform).
  *
- * Search order:
+ * macOS search order:
  *   1. ~/Library/Logs/Unreal Engine/      (UE4/5 system-level logs)
  *   2. ~/Library/Logs/EpicGames/          (launcher logs — may overlap)
  *
- * Returns the absolute path, or null if nothing found.
+ * Windows search order:
+ *   1. %LOCALAPPDATA%\UnrealEngine\<version>\Saved\Logs\
+ *   2. %LOCALAPPDATA%\EpicGamesLauncher\Saved\Logs\
+ *
+ * Returns the absolute path of the most-recently-modified candidate, or null.
  */
 async function findRecentLogPath(): Promise<string | null> {
-  if (!IS_MACOS) return null;
-
   const home = os.homedir();
-  const searchDirs = [
-    path.join(home, 'Library', 'Logs', 'Unreal Engine'),
-    path.join(home, 'Library', 'Logs', 'EpicGames'),
-  ];
+  const searchDirs: string[] = [];
+
+  if (IS_MACOS) {
+    searchDirs.push(
+      path.join(home, 'Library', 'Logs', 'Unreal Engine'),
+      path.join(home, 'Library', 'Logs', 'EpicGames'),
+    );
+  } else if (IS_WINDOWS) {
+    const localAppData = process.env['LOCALAPPDATA'] ?? path.join(home, 'AppData', 'Local');
+    searchDirs.push(
+      path.join(localAppData, 'UnrealEngine'),
+      path.join(localAppData, 'EpicGamesLauncher', 'Saved', 'Logs'),
+    );
+  } else {
+    return null;
+  }
+
+  let bestPath: string | null = null;
+  let bestMtime = -Infinity;
 
   for (const dir of searchDirs) {
     try {
       if (!fs.existsSync(dir)) continue;
 
-      // Find the most recently touched .log file in this directory subtree
-      const candidate = await safeExec(
-        `find "${dir}" -name "*.log" -type f -print0 | xargs -0 ls -t 2>/dev/null | head -n 1`,
-        3000,
-      );
-
-      if (candidate && fs.existsSync(candidate)) return candidate;
+      const candidates = collectLogFiles(dir, 50);
+      for (const candidate of candidates) {
+        try {
+          const stat = fs.statSync(candidate);
+          if (stat.mtimeMs > bestMtime) {
+            bestMtime = stat.mtimeMs;
+            bestPath  = candidate;
+          }
+        } catch {
+          continue;
+        }
+      }
     } catch {
       continue;
     }
   }
 
-  return null;
+  return bestPath;
 }
 
 /**
@@ -206,6 +319,32 @@ function getProjectLogPath(projectPath: string, projectName: string): string {
 // ── Build / error signal ──────────────────────────────────────────────────────
 
 /**
+ * Read the last `n` lines of a text file without shelling out to `tail`.
+ * Falls back to reading the whole file if it's smaller than the tail window —
+ * Unreal logs grow large, so we cap reads at the trailing 64 KB.
+ */
+function readLastLines(filePath: string, lineCount: number): string {
+  try {
+    const stat = fs.statSync(filePath);
+    const tailBytes = 64 * 1024;
+    const start = Math.max(0, stat.size - tailBytes);
+
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const buf = Buffer.alloc(stat.size - start);
+      fs.readSync(fd, buf, 0, buf.length, start);
+      const text = buf.toString('utf8');
+      const lines = text.split(/\r?\n/);
+      return lines.slice(-lineCount).join('\n');
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Scan the last 50 lines of the active log for build/package keywords.
  * Does NOT do deep parsing — this is a lightweight signal only.
  */
@@ -217,7 +356,7 @@ async function detectBuildState(
   try {
     if (!fs.existsSync(logPath)) return 'unknown';
 
-    const recent = await safeExec(`tail -n 50 "${logPath}"`, 2000);
+    const recent = readLastLines(logPath, 50);
     if (!recent) return 'unknown';
 
     const lower = recent.toLowerCase();
@@ -256,7 +395,7 @@ async function detectObviousError(logPath: string | null): Promise<string | null
   try {
     if (!fs.existsSync(logPath)) return null;
 
-    const recent = await safeExec(`tail -n 50 "${logPath}"`, 2000);
+    const recent = readLastLines(logPath, 50);
     if (!recent) return null;
 
     const lines = recent.split('\n').reverse();

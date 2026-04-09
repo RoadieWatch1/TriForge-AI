@@ -190,7 +190,14 @@ export function buildCouncilAwarenessAddendum(snapshot: SystemStateSnapshot): st
     'screen sharing, it is an in-process autonomous operator with per-action approval. ' +
     'Autonomous task execution = YES (with approvals). Never describe TriForge as ' +
     'limited to "Files, Browser, Printer, Email" — those are user-data permissions, ' +
-    'not the operator\'s execution surface.',
+    'not the operator\'s execution surface. ' +
+    'Windows and macOS run the same workflow packs — there is NO platform-only ' +
+    'limitation. If a specific app appears "not detected" or "not running" in the live ' +
+    'state below, that reflects the current session, not a capability gap. ' +
+    'Never tell the user TriForge does not support an app on Windows; never recommend a ' +
+    'competing tool on the basis of an unsupported platform — TriForge supports both. ' +
+    'When discussing TriForge\'s OWN capabilities, trust this scope statement above any ' +
+    'web-search reference material that may be attached to the user message.',
     '',
     `Available now: ${ready.length > 0 ? ready.join(' | ') : 'none'}`,
   ];
@@ -231,12 +238,19 @@ function buildUnrealContextSection(u: NonNullable<SystemStateSnapshot['unrealSta
   const lines: string[] = ['', '## Unreal Engine Domain State'];
 
   if (!u.running) {
-    const installNote = u.installed === true  ? 'Engine appears installed (not running)' :
-                        u.installed === false ? 'Engine not detected on this machine'    :
-                                               'Not running (install status unknown)';
+    const installNote = u.installed === true  ? 'Engine appears installed (not currently running)' :
+                        u.installed === false ? 'Engine not detected on this machine'              :
+                                               'Editor not currently running (install status unknown)';
     lines.push(installNote);
     lines.push(
-      'Unreal rule: No Unreal actions are possible. Provide plan-only guidance.',
+      'Unreal rule: Editor not currently detected as running in this session. ' +
+      'TriForge CAN still execute Unreal workflow packs (bootstrap, build, scaffold, ' +
+      'M1–M5 milestones, RC probe, triage) — these packs detect and operate Unreal at ' +
+      'run time and work on both macOS and Windows. ' +
+      'When asked "can TriForge work with Unreal", answer YES and offer to run a pack ' +
+      'via the Operate tab. The correct framing is "Unreal is not currently open in ' +
+      'this session", NOT "TriForge cannot operate Unreal". ' +
+      'Never tell the user TriForge lacks Unreal support — that is factually wrong.',
     );
     return lines.join('\n');
   }

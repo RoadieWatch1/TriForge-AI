@@ -114,7 +114,7 @@ export function classifyActionability(
   if (!context.platformSupported) {
     return {
       classification: 'CAPABILITY_BLOCKED',
-      reason: 'Desktop operator is not supported on this platform. macOS is required.',
+      reason: 'Desktop operator is not supported on this platform. macOS or Windows is required.',
       nextStep: 'Explain the platform limitation. Offer to plan the steps instead.',
     };
   }
@@ -199,8 +199,11 @@ export function classifyActionability(
  */
 export function buildDesktopContextSection(op: DesktopOperatorSnapshot): string {
   const killState   = op.operatorEnabled ? 'enabled' : 'DISABLED (kill switch active)';
+  // Default the visible label to the actual host platform, never to a hardcoded
+  // "macOS" — that hidden default would render Windows snapshots as macOS in the
+  // council prompt and mislead any model reading the live state.
   const platformLabel = op.platformSupported
-    ? (op.platformName ?? 'macOS')
+    ? (op.platformName ?? (process.platform === 'win32' ? 'Windows' : process.platform === 'darwin' ? 'macOS' : process.platform))
     : `unsupported platform${op.platformName ? ` (${op.platformName})` : ''}`;
   const permGranted = op.permissionsGranted.length > 0 ? op.permissionsGranted.join(', ') : 'none';
   const permMissing = op.permissionsMissing.length > 0 ? op.permissionsMissing.join(', ') : 'none';
