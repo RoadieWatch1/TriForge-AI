@@ -17,9 +17,10 @@
 
 import { createHash } from 'crypto';
 import { readFileSync } from 'fs';
-import { OperatorService } from './operatorService';
+import { OperatorService, getDisplayScaleFactor } from './operatorService';
 import { analyzeScreen, describeScreen, locateElement } from './visionAnalyzer';
 import { buildAppAwarenessSnapshot, formatAppAwarenessSummary } from './appAwareness';
+import { imageSize } from './imageSize';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -43,6 +44,18 @@ export interface TaskRunnerOptions {
    * planner history before the first iteration.
    */
   priorApprovedAction?: string;
+  /**
+   * When true, the runner captures a screenshot and returns a description
+   * without entering the action loop. Observe-only tasks never attempt
+   * clicks, typing, or any input action.
+   */
+  observeOnly?: boolean;
+  /**
+   * Restrict the planner to only interact with this app. If the frontmost
+   * app is not the target, the runner will focus it first. Actions that
+   * would target other apps are rejected by the planner prompt constraint.
+   */
+  targetApp?: string;
 }
 
 // ── B4: Worker-run lifecycle hooks ───────────────────────────────────────────
@@ -149,9 +162,15 @@ export interface PlannedAction {
 
 // ── Planner prompt ────────────────────────────────────────────────────────────
 
-function buildPlannerPrompt(goal: string, screenSummary: string, history: string, appContext?: string): string {
+function buildPlannerPrompt(goal: string, screenSummary: string, history: string, appContext?: string, targetApp?: string): string {
   const appSection = appContext
     ? `\nAPP AWARENESS — what is currently running on this computer:\n${appContext}\nUse this information to decide which app to focus and interact with.\n`
+    : '';
+
+  const scopeSection = targetApp
+    ? `\nAPP SCOPE CONSTRAINT:\nYou are ONLY allowed to interact with "${targetApp}". ` +
+      `Do NOT focus, click, type, or send keys to any other application. ` +
+      `If the goal requires a different app, output "blocked" with reason "Goal requires app outside scope: only ${targetApp} is allowed".\n`
     : '';
 
   return `You are a desktop automation agent that physically controls a computer's mouse and keyboard.
@@ -160,7 +179,7 @@ YOU are the one performing every action — there is no other program or assista
 Goal: "${goal}"
 
 Current screen: ${screenSummary}
-${appSection}
+${appSection}${scopeSection}
 CRITICAL RULES:
 - YOU control the mouse and keyboard. Do NOT "wait" for something to happen on its own.
 - If you see the TriForge AI window, that is YOUR own interface — ignore it and focus/click on the TARGET app.
@@ -242,6 +261,22 @@ function isVerificationPassed(answer: string): boolean {
   if (!lower.includes('yes')) return false;
   const NEGATING = /\b(but|however|although|except|unless|failed|error|not|didn't|did not|unable|couldn't|could not)\b/;
   return !NEGATING.test(lower.slice(lower.indexOf('yes')));
+}
+
+// ── Priority 3: Observe-only goal detection ─────────────────────────────────
+//
+// Heuristic: if the goal is clearly asking for observation only (describe,
+// inspect, read, what's visible, etc.) and does NOT contain action verbs
+// (click, open, close, type, dismiss, enter, press, navigate, set up), route
+// it through the observe-only fast path instead of the action loop.
+
+function isObserveOnlyGoal(goal: string): boolean {
+  const lower = goal.toLowerCase().trim();
+  const OBSERVE_PATTERNS = /^(describe|what.?s on|what do you see|what is|observe|look at|inspect|read|show me|tell me what|list what|identify|check what|report what|summarize what)/;
+  const ACTION_VERBS = /\b(click|open|close|dismiss|type|enter|press|navigate|set up|configure|create|delete|remove|install|build|run|execute|start|stop|save|submit|move|drag|select|change|modify|activate|launch|switch to)\b/;
+
+  if (OBSERVE_PATTERNS.test(lower) && !ACTION_VERBS.test(lower)) return true;
+  return false;
 }
 
 // ── Fix 2: Poll-until-stable ──────────────────────────────────────────────────
@@ -377,13 +412,48 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
       'You may need to restart TriForge AI after granting permission.';
     return { ok: false, stepsExecuted: 0, outcome: 'blocked', summary: err, error: err, steps };
   }
-  if (!caps.accessibilityGranted) {
+  if (!caps.accessibilityGranted && !opts.observeOnly) {
     const err =
       'Accessibility permission is not granted — the operator cannot type, press keys, or click. ' +
       'Grant TriForge AI access in: System Settings → Privacy & Security → Accessibility. ' +
       'You may need to restart TriForge AI after granting permission.';
     return { ok: false, stepsExecuted: 0, outcome: 'blocked', summary: err, error: err, steps };
   }
+
+  // ── Priority 3: Observe-only fast path ──────────────────────────────────────
+  // When the caller (or heuristic) marks the task as observe-only, we capture
+  // a screenshot, describe it via Vision, and return immediately — no action
+  // loop, no JSON parsing, no input injection. This eliminates the entire
+  // class of bugs where observation prompts leak into the action pipeline.
+  if (opts.observeOnly || isObserveOnlyGoal(goal)) {
+    const ss = await OperatorService.captureScreen();
+    if (!ss.ok || !ss.path) {
+      const err = ss.error ?? 'Screenshot failed';
+      return { ok: false, stepsExecuted: 0, outcome: 'error', summary: err, error: err, steps };
+    }
+
+    // Use the goal as the freeform question, or fall back to a general describe
+    const isGenericObserve = /^(describe|what.?s on|what do you see|observe|look at|inspect|read|show me)/i.test(goal);
+    const observePrompt = isGenericObserve
+      ? 'Describe everything visible on this screen in detail. Include: the active application, visible windows/dialogs, buttons, text fields, and any notable UI state. Be specific about what is readable vs. unclear.'
+      : goal;
+
+    const result = await analyzeScreen(ss.path, observePrompt);
+    const summary = result.ok ? result.answer : (result.error ?? 'Observation failed');
+    return {
+      ok: result.ok,
+      stepsExecuted: 0,
+      outcome: result.ok ? 'completed' : 'error',
+      summary,
+      error: result.ok ? undefined : summary,
+      steps,
+      beforeScreenshotPath: ss.path,
+      afterScreenshotPath: ss.path,
+    };
+  }
+
+  // ── Detect display scale factor for Retina coordinate correction ──────────
+  const displayScale = await getDisplayScaleFactor();
 
   // ── B1 follow-up: Seed history with the just-approved action so the planner
   // does NOT re-issue it after a resume. Without this hint the next iteration
@@ -509,7 +579,7 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
     emit({ step, phase: 'plan', description: 'Planning…', screenshotPath });
     const planResponse = await analyzeScreen(
       screenshotPath,
-      buildPlannerPrompt(goal, screenSummary, history.slice(-8).join('\n'), appContext),
+      buildPlannerPrompt(goal, screenSummary, history.slice(-8).join('\n'), appContext, opts.targetApp),
     );
     if (!planResponse.ok) {
       const err = planResponse.error ?? 'Planning call failed';
@@ -522,7 +592,36 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
       const raw = planResponse.answer.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
       planned = JSON.parse(raw) as PlannedAction;
     } catch {
-      planned = { type: 'done', description: planResponse.answer.slice(0, 120), reason: 'JSON parse failed — treating as complete' };
+      // ── FIX: JSON parse failure must NOT be treated as success ───────
+      // Previously this manufactured type:'done', causing silent fake
+      // completion. Now we inject an error into history and force a
+      // re-plan. After 2 consecutive parse failures we abort the run.
+      const rawSnippet = planResponse.answer.slice(0, 200);
+      history.push(
+        `${step}: ⚠ PLANNER OUTPUT WAS NOT VALID JSON. Raw: "${rawSnippet}". ` +
+        `You MUST respond with ONLY a raw JSON object — no markdown, no code fences, no explanation.`,
+      );
+      // Re-plan once with an explicit reminder
+      const retryPlan = await analyzeScreen(
+        screenshotPath,
+        `Your previous response was NOT valid JSON. You MUST respond with ONLY a raw JSON object.\n\n` +
+        buildPlannerPrompt(goal, screenSummary, history.slice(-8).join('\n'), appContext, opts.targetApp),
+      );
+      if (retryPlan.ok) {
+        try {
+          const raw2 = retryPlan.answer.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+          planned = JSON.parse(raw2) as PlannedAction;
+        } catch {
+          // Two consecutive parse failures — abort with a real error
+          const err = `Planner produced invalid JSON twice. Last raw output: "${retryPlan.answer.slice(0, 120)}"`;
+          emit({ step, phase: 'error', description: err, screenshotPath });
+          return { ok: false, stepsExecuted: step - 1, outcome: 'error', summary: err, error: err, steps };
+        }
+      } else {
+        const err = `Planner re-plan call failed: ${retryPlan.error ?? 'unknown'}`;
+        emit({ step, phase: 'error', description: err, screenshotPath });
+        return { ok: false, stepsExecuted: step - 1, outcome: 'error', summary: err, error: err, steps };
+      }
     }
 
     // ── Stuck-detection: reject consecutive "wait" actions ─────────────────
@@ -669,6 +768,7 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
     } else if (planned.type === 'click') {
       let x = planned.x;
       let y = planned.y;
+      let locConfidence: 'high' | 'medium' | 'low' | undefined;
 
       const cacheKey = `${sessionId}:${planned.target ?? ''}`;
       if ((x === undefined || y === undefined) && planned.target) {
@@ -677,10 +777,38 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
           x = cached.x;
           y = cached.y;
         } else {
+          /**
+           * Locate helper: wraps locateElement with Retina scaling and
+           * coordinate validation. Returns scaled logical-point coords.
+           */
+          const locateAndScale = async (imgPath: string, target: string) => {
+            const loc = await locateElement(imgPath, target);
+            if (!loc.found || loc.x === undefined || loc.y === undefined) return loc;
+
+            // ── Priority 1: Retina coordinate scaling ─────────────────
+            // Vision reports coordinates in image-pixel space. On Retina
+            // displays the image is 2x (or Nx) the logical screen size.
+            // CGEvent clicks use logical points → divide by scale factor.
+            if (displayScale > 1) {
+              loc.x = Math.round(loc.x / displayScale);
+              loc.y = Math.round(loc.y / displayScale);
+              if (loc.width)  loc.width  = Math.round(loc.width / displayScale);
+              if (loc.height) loc.height = Math.round(loc.height / displayScale);
+            }
+
+            // Sanity check: reject obviously out-of-bounds coordinates
+            // (negative or > 10000 logical points — no display is that big)
+            if (loc.x < 0 || loc.y < 0 || loc.x > 10000 || loc.y > 10000) {
+              return { ...loc, found: false, description: `Coordinates (${loc.x}, ${loc.y}) out of valid screen range after scaling` };
+            }
+
+            return loc;
+          };
+
           // Attempt 1 — direct locate
-          const loc1 = await locateElement(screenshotPath, planned.target);
+          const loc1 = await locateAndScale(screenshotPath, planned.target);
           if (loc1.found && loc1.x !== undefined && loc1.y !== undefined) {
-            x = loc1.x; y = loc1.y;
+            x = loc1.x; y = loc1.y; locConfidence = loc1.confidence;
             _elementCache.set(cacheKey, { x, y, locatedAt: Date.now() });
           }
 
@@ -692,9 +820,9 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
             await new Promise(r => setTimeout(r, 600));
             const ss2 = await OperatorService.captureScreen();
             if (ss2.ok && ss2.path) {
-              const loc2 = await locateElement(ss2.path, planned.target);
+              const loc2 = await locateAndScale(ss2.path, planned.target);
               if (loc2.found && loc2.x !== undefined && loc2.y !== undefined) {
-                x = loc2.x; y = loc2.y;
+                x = loc2.x; y = loc2.y; locConfidence = loc2.confidence;
                 _elementCache.set(cacheKey, { x, y, locatedAt: Date.now() });
               }
             }
@@ -705,9 +833,9 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
             emit({ step, phase: 'act', description: `Still not found — re-capturing screen…`, screenshotPath });
             const ss3 = await OperatorService.captureScreen();
             if (ss3.ok && ss3.path) {
-              const loc3 = await locateElement(ss3.path, planned.target);
+              const loc3 = await locateAndScale(ss3.path, planned.target);
               if (loc3.found && loc3.x !== undefined && loc3.y !== undefined) {
-                x = loc3.x; y = loc3.y;
+                x = loc3.x; y = loc3.y; locConfidence = loc3.confidence;
                 _elementCache.set(cacheKey, { x, y, locatedAt: Date.now() });
               }
             }
@@ -715,7 +843,28 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
         }
       }
 
-      if (x === undefined || y === undefined) {
+      // ── Priority 1: Scale planner-supplied coordinates too ──────────────
+      // If the planner itself supplied x/y (from a previous locate or its
+      // own estimate), those are also in image-pixel space and need scaling.
+      if (planned.x !== undefined && planned.y !== undefined && displayScale > 1) {
+        x = Math.round((planned.x) / displayScale);
+        y = Math.round((planned.y) / displayScale);
+      }
+
+      // ── Priority 5: Reject low-confidence clicks ───────────────────────
+      // When the element was located with low confidence, do not click
+      // blindly. Instead, inject an error into history so the planner can
+      // try a different approach (keyboard shortcut, scroll to reveal, etc.)
+      if (x !== undefined && y !== undefined && locConfidence === 'low') {
+        const err = `"${planned.target}" was located at (${x},${y}) but with LOW confidence — the element may be ambiguous, partially visible, or misidentified. Skipping click to avoid misfire.`;
+        stepResult = { step, action: planned, executed: false, outcome: 'failed', error: err };
+        history.push(
+          `${step}: click "${planned.target}" → SKIPPED (low confidence). ` +
+          `Try a keyboard shortcut instead (Escape to dismiss, Return to confirm), or scroll to reveal the element more clearly.`,
+        );
+        // Clear cached low-confidence coords so a re-locate can try fresh
+        _elementCache.delete(cacheKey);
+      } else if (x === undefined || y === undefined) {
         // All 3 attempts exhausted
         const err = `Could not locate "${planned.target ?? 'target'}" after 3 attempts (direct, scroll, re-capture)`;
         stepResult = { step, action: planned, executed: false, outcome: 'failed', error: err };
@@ -732,7 +881,7 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
           return { ok: false, stepsExecuted: step - 1, outcome: 'approval_pending', summary, pendingApprovalId: r.approvalId, steps };
         }
         stepResult = { step, action: planned, executed: r.outcome === 'success', outcome: r.outcome, error: r.error };
-        history.push(`${step}: click (${x},${y}) → ${r.outcome}`);
+        history.push(`${step}: click (${x},${y}) [scale=${displayScale}, conf=${locConfidence ?? 'n/a'}] → ${r.outcome}`);
       }
 
     } else if (planned.type === 'type') {

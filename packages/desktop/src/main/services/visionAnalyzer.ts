@@ -220,6 +220,10 @@ export async function describeScreen(imagePath: string): Promise<VisionScreenDes
 /**
  * Find the screen coordinates of a named UI element.
  * Returns center (x, y) and approximate bounding box.
+ *
+ * Coordinates are returned in image-pixel space (not logical points).
+ * The caller (operatorTaskRunner) is responsible for dividing by the
+ * display scale factor before passing to CGEvent click.
  */
 export async function locateElement(
   imagePath:   string,
@@ -227,7 +231,14 @@ export async function locateElement(
 ): Promise<VisionElementLocation> {
   const result = await analyzeScreen(
     imagePath,
-    `Find the UI element described as: "${elementDesc}". Give its center pixel coordinates (x, y) and approximate width/height in pixels. If not visible, say so.`,
+    `Find the UI element described as: "${elementDesc}".
+
+IMPORTANT RULES:
+- Give the center pixel coordinates (x, y) of the element AS IT APPEARS IN THIS IMAGE.
+- Base your coordinates strictly on what you see — do not guess from standard UI layouts.
+- If the element is partially visible, clipped, low-contrast, or you are uncertain, set confidence to "low".
+- If you cannot see the element at all, set found to false.
+- Do NOT assume coordinates from prior knowledge of app layouts — use only the visual evidence in this image.`,
     'Respond in JSON: { "found": boolean, "x": number|null, "y": number|null, "width": number|null, "height": number|null, "confidence": "high"|"medium"|"low", "description": string }. No markdown.',
   );
 

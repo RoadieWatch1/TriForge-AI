@@ -113,6 +113,58 @@ const PLATFORM   = process.platform;
 const IS_MACOS   = PLATFORM === 'darwin';
 const IS_WINDOWS = PLATFORM === 'win32';
 
+// ── Display scale factor (Retina handling) ──────────────────────────────────
+//
+// macOS screencapture produces images at native resolution (e.g. 2880×1800 on
+// a Retina display). Vision models return pixel coordinates in that image space.
+// CGEvent mouse clicks use logical-point coordinates (1440×900). We must divide
+// image-pixel coords by the backing scale factor before clicking.
+//
+// Cached per-process. Defaults to 2 on macOS (virtually all modern Macs are
+// Retina) if detection fails.
+
+let _cachedScaleFactor: number | null = null;
+
+/** Detect the main display's backing scale factor. Cached after first call. */
+export async function getDisplayScaleFactor(): Promise<number> {
+  if (_cachedScaleFactor !== null) return _cachedScaleFactor;
+
+  if (IS_MACOS) {
+    try {
+      // system_profiler returns the native and scaled resolutions — comparing
+      // them gives the exact scale factor. If that fails, use the Electron
+      // screen module. Fallback to 2 (standard Retina).
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { screen } = require('electron') as typeof import('electron');
+        const primary = screen.getPrimaryDisplay();
+        _cachedScaleFactor = primary.scaleFactor ?? 2;
+        return _cachedScaleFactor;
+      } catch { /* Electron screen not available (test context) */ }
+
+      const raw = await shellExec(
+        `system_profiler SPDisplaysDataType 2>/dev/null | grep -i "resolution" | head -1`,
+        3000,
+      );
+      // Example: "Resolution: 2880 x 1800 Retina" or "3024 x 1964 @ 2.00x"
+      const retinaMatch = raw.match(/(\d+)\s*x\s*(\d+).*?Retina/i);
+      if (retinaMatch) { _cachedScaleFactor = 2; return 2; }
+      const explicitMatch = raw.match(/@\s*([\d.]+)x/);
+      if (explicitMatch) { _cachedScaleFactor = parseFloat(explicitMatch[1]) || 2; return _cachedScaleFactor; }
+      // No Retina indicator — likely a non-Retina external display
+      _cachedScaleFactor = 1;
+      return 1;
+    } catch {
+      _cachedScaleFactor = 2; // safe default for modern Macs
+      return 2;
+    }
+  }
+
+  // Windows DPI is handled by the Windows operator module; default 1
+  _cachedScaleFactor = 1;
+  return 1;
+}
+
 // ── Capability detection ──────────────────────────────────────────────────────
 
 /** Probe whether Accessibility permission is granted on macOS. */

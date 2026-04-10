@@ -13922,6 +13922,8 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     goal:                string;
     maxSteps?:           number;
     priorApprovedAction?: string;
+    observeOnly?:        boolean;
+    targetApp?:          string;
   }) => {
     if (!payload?.goal || !payload?.sessionId) {
       return { ok: false, error: 'goal and sessionId are required' };
@@ -14059,6 +14061,8 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
           priorApprovedAction: priorAction,
           onProgress,
           workerHooks,
+          observeOnly:         payload.observeOnly,
+          targetApp:           payload.targetApp,
         });
 
         totalStepsExecuted += result.stepsExecuted;

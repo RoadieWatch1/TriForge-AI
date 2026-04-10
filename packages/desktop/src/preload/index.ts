@@ -2766,8 +2766,8 @@ const api = {
      * it, verifies, and repeats — just like a remote-access human operator.
      * Progress events are emitted on 'operator:task:progress'.
      */
-    runTask: (sessionId: string, goal: string, maxSteps?: number, priorApprovedAction?: string) =>
-      ipcRenderer.invoke('operator:task:run', { sessionId, goal, maxSteps, priorApprovedAction }) as Promise<{
+    runTask: (sessionId: string, goal: string, maxSteps?: number, priorApprovedAction?: string, observeOnly?: boolean, targetApp?: string) =>
+      ipcRenderer.invoke('operator:task:run', { sessionId, goal, maxSteps, priorApprovedAction, observeOnly, targetApp }) as Promise<{
         ok:                 boolean;
         stepsExecuted:      number;
         outcome:            'completed' | 'max_steps_reached' | 'blocked' | 'error' | 'approval_pending';
