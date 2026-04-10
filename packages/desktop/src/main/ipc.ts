@@ -161,6 +161,16 @@ import { OperatorService } from './services/operatorService';
 import { getLiveRunState } from './services/operatorTaskRunner';
 import { setVisionApiKey } from './services/visionAnalyzer';
 import { setScriptGenKey } from './services/workflowPackService';
+import {
+  setSelfImproveKey,
+  runImprovement,
+  scanForImprovements,
+  onOperatorTaskFailure,
+  getImprovementHistory,
+  getStatus as getSelfImproveStatus,
+  setAutoImprove,
+  isAutoImproveEnabled,
+} from './services/selfImproveService';
 import { buildUnrealAwarenessSnapshot } from './services/unrealAwareness';
 import { buildAppAwarenessSnapshot, formatAppAwarenessSummary } from './services/appAwareness';
 import { buildIOSAwarenessSnapshot, bootSimulator, captureSimulatorScreen, formatIOSSummary } from './services/iosAwareness';
@@ -1013,7 +1023,7 @@ export function setupIpc(store: Store): void {
     const ollama = !!(await store.getSecret('triforge.ollama.url'));
     // Eagerly wire Claude key into vision analyzer and script generator so they
     // work whenever a key is present, not just when task:run is called.
-    if (claude) { setVisionApiKey(claude); setScriptGenKey(claude); }
+    if (claude) { setVisionApiKey(claude); setScriptGenKey(claude); setSelfImproveKey(claude); }
     // Refresh mail/twitter as side-effect — this getter is already async per turn
     const cm = _getCredentialManager(store);
     const [smtp, twit] = await Promise.all([cm.getSmtp(), cm.getTwitter()]);
@@ -13936,53 +13946,51 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
         source:            'operate',
         goal:              payload.goal,
         operatorSessionId: payload.sessionId,
-        contextSnapshot:   { source: 'operator:task:run', maxSteps: payload.maxSteps ?? 15 },
+        contextSnapshot:   { source: 'operator:task:run', maxSteps: payload.maxSteps ?? 50 },
       });
       wrQueue.transitionStatus(workerRun.id, 'running');
 
       const { runOperatorTask } = await import('./services/operatorTaskRunner.js');
-      const result = await runOperatorTask({
-        sessionId:           payload.sessionId,
-        goal:                payload.goal,
-        maxSteps:            payload.maxSteps ?? 15,
-        priorApprovedAction: payload.priorApprovedAction,
-        onProgress: (ev) => {
-          if (!event.sender.isDestroyed()) {
-            event.sender.send('operator:task:progress', ev);
-            // Step 6: Narration channel — live operator commentary in Chat
-            event.sender.send('chat:operator-narration', {
-              step:      ev.step,
-              phase:     ev.phase,
-              message:   buildNarrationMessage(ev as Parameters<typeof buildNarrationMessage>[0]),
-              timestamp: Date.now(),
+      const stepsPerRound = payload.maxSteps ?? 50;
+      const MAX_CONTINUATIONS = 3; // up to 3 rounds × 50 = 150 total steps
+
+      const onProgress = (ev: { step: number; phase: string; description?: string; screenshotPath?: string; action?: unknown; result?: unknown; continuationSummary?: string }) => {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('operator:task:progress', ev);
+          event.sender.send('chat:operator-narration', {
+            step:      ev.step,
+            phase:     ev.phase,
+            message:   buildNarrationMessage(ev as Parameters<typeof buildNarrationMessage>[0]),
+            timestamp: Date.now(),
+          });
+        }
+      };
+
+      const workerHooks = {
+        onStepBegin: (info: { index: number; title: string; action: { type: string; description: string; target?: string; text?: string; keyCombo?: string; appName?: string } }) => {
+          try {
+            const wstep = wrQueue.addStep({
+              runId: workerRun.id,
+              title: info.title,
+              type:  'operator',
+              input: {
+                index:       info.index,
+                actionType:  info.action.type,
+                description: info.action.description,
+                target:      info.action.target,
+                text:        info.action.text ? info.action.text.slice(0, 200) : undefined,
+                keyCombo:    info.action.keyCombo,
+                appName:     info.action.appName,
+              },
             });
+            wrQueue.startStep(workerRun.id, wstep.id);
+            return wstep.id;
+          } catch (err) {
+            console.error('[operator:task:run] onStepBegin failed:', err);
+            return undefined;
           }
         },
-        workerHooks: {
-          onStepBegin: (info) => {
-            try {
-              const wstep = wrQueue.addStep({
-                runId: workerRun.id,
-                title: info.title,
-                type:  'operator',
-                input: {
-                  index:       info.index,
-                  actionType:  info.action.type,
-                  description: info.action.description,
-                  target:      info.action.target,
-                  text:        info.action.text ? info.action.text.slice(0, 200) : undefined,
-                  keyCombo:    info.action.keyCombo,
-                  appName:     info.action.appName,
-                },
-              });
-              wrQueue.startStep(workerRun.id, wstep.id);
-              return wstep.id;
-            } catch (err) {
-              console.error('[operator:task:run] onStepBegin failed:', err);
-              return undefined;
-            }
-          },
-          onStepEnd: (info) => {
+          onStepEnd: (info: { stepId?: string; index: number; status: string; output?: Record<string, unknown>; error?: string; screenshotPath?: string }) => {
             try {
               if (info.screenshotPath && info.stepId) {
                 wrQueue.addArtifact({
@@ -14001,52 +14009,93 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
               } else if (info.status === 'blocked') {
                 wrQueue.failStep(workerRun.id, info.stepId, info.error ?? 'Step blocked');
               } else if (info.status === 'waiting_approval') {
-                // Mark the step complete with an approval marker — the run-level
-                // status (set in onRunEnd) carries the waiting_approval state.
                 wrQueue.completeStep(workerRun.id, info.stepId, { ...(info.output ?? {}), settled: 'waiting_approval' });
               }
             } catch (err) {
               console.error('[operator:task:run] onStepEnd failed:', err);
             }
           },
-          onRunEnd: (info) => {
-            try {
-              switch (info.outcome) {
-                case 'completed':
-                  wrQueue.transitionStatus(workerRun.id, 'completed');
-                  break;
-                case 'approval_pending':
-                  wrQueue.transitionStatus(workerRun.id, 'waiting_approval', {
-                    kind:        'approval_required',
-                    message:     info.summary,
-                    recoverable: true,
-                  });
-                  break;
-                case 'blocked':
-                  wrQueue.transitionStatus(workerRun.id, 'blocked', {
-                    kind:        'tool_failed',
-                    message:     info.summary,
-                    recoverable: false,
-                  });
-                  break;
-                case 'max_steps_reached':
-                  wrQueue.transitionStatus(workerRun.id, 'blocked', {
-                    kind:        'user_input_required',
-                    message:     info.summary,
-                    recoverable: true,
-                  });
-                  break;
-                case 'error':
-                default:
-                  wrQueue.transitionStatus(workerRun.id, 'failed');
-                  break;
-              }
-            } catch (err) {
-              console.error('[operator:task:run] onRunEnd failed:', err);
+          // onRunEnd is set per-round below (only the final round settles the WorkerRun)
+          onRunEnd: undefined as undefined | ((info: { outcome: string; summary: string; error?: string }) => void),
+        };
+
+      // ── Auto-continue loop ────────────────────────────────────────────────
+      // When a round ends with max_steps_reached, automatically start the
+      // next round with the same goal. The last step's description is seeded
+      // as priorApprovedAction so the planner doesn't repeat it.
+      // Caps at MAX_CONTINUATIONS rounds to prevent runaway loops.
+      let result: Awaited<ReturnType<typeof runOperatorTask>> | undefined;
+      let totalStepsExecuted = 0;
+      let priorAction = payload.priorApprovedAction;
+
+      for (let round = 0; round <= MAX_CONTINUATIONS; round++) {
+        const isLastRound = round === MAX_CONTINUATIONS;
+
+        // Only the FINAL round's onRunEnd settles the WorkerRun status.
+        // Intermediate rounds that end with max_steps_reached should not
+        // mark the run as blocked — the next round continues the work.
+        workerHooks.onRunEnd = isLastRound
+          ? (info: { outcome: string; summary: string; error?: string }) => {
+              try {
+                switch (info.outcome) {
+                  case 'completed':     wrQueue.transitionStatus(workerRun.id, 'completed'); break;
+                  case 'approval_pending':
+                    wrQueue.transitionStatus(workerRun.id, 'waiting_approval', { kind: 'approval_required', message: info.summary, recoverable: true }); break;
+                  case 'blocked':
+                    wrQueue.transitionStatus(workerRun.id, 'blocked', { kind: 'tool_failed', message: info.summary, recoverable: false }); break;
+                  case 'max_steps_reached':
+                    wrQueue.transitionStatus(workerRun.id, 'blocked', { kind: 'user_input_required', message: info.summary, recoverable: true }); break;
+                  case 'error': default:
+                    wrQueue.transitionStatus(workerRun.id, 'failed'); break;
+                }
+              } catch (err) { console.error('[operator:task:run] onRunEnd failed:', err); }
             }
-          },
-        },
-      });
+          : undefined; // intermediate rounds — don't settle the WorkerRun yet
+
+        result = await runOperatorTask({
+          sessionId:           payload.sessionId,
+          goal:                payload.goal,
+          maxSteps:            stepsPerRound,
+          priorApprovedAction: priorAction,
+          onProgress,
+          workerHooks,
+        });
+
+        totalStepsExecuted += result.stepsExecuted;
+
+        // If the run finished for any reason other than step exhaustion, stop.
+        if (result.outcome !== 'max_steps_reached') break;
+
+        // If this was the last allowed round, settle the WorkerRun via onRunEnd above.
+        if (isLastRound) break;
+
+        // Notify the renderer that we're auto-continuing
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('operator:task:progress', {
+            step: totalStepsExecuted,
+            phase: 'plan' as const,
+            description: `Step limit reached — auto-continuing (round ${round + 2} of ${MAX_CONTINUATIONS + 1})…`,
+          });
+        }
+
+        // Seed the next round with the last action so the planner doesn't repeat it
+        const lastStep = result.steps.at(-1);
+        priorAction = lastStep?.action.description ?? `Completed ${totalStepsExecuted} steps so far. Continue working toward the goal.`;
+      }
+
+      if (result) result.stepsExecuted = totalStepsExecuted;
+
+      // Auto-trigger self-improvement on failures (fire-and-forget, non-blocking)
+      if (result && (result.outcome === 'error' || result.outcome === 'blocked')) {
+        onOperatorTaskFailure({
+          goal:          payload.goal,
+          outcome:       result.outcome,
+          error:         result.error,
+          summary:       result.summary,
+          stepsExecuted: totalStepsExecuted,
+        }).catch(() => { /* self-improve errors must not affect the operator response */ });
+      }
+
       return { ...result, workerRunId: workerRun.id };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e), stepsExecuted: 0, outcome: 'error', summary: String(e), steps: [] };
@@ -14098,6 +14147,98 @@ Respond with ONLY the JSON array. No markdown. No explanation before or after.`;
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
+  });
+
+  // ── Unreal Hero Flow ────────────────────────────────────────────────────────
+
+  /**
+   * Run the Unreal hero flow — full pipeline from detection to verified success.
+   * This is the proof run: detect Unreal, probe RC, focus, configure, verify.
+   */
+  ipcMain.handle('unreal:hero-flow:run', async (event, payload?: {
+    projectTemplate?: string;
+    projectName?: string;
+    detectOnly?: boolean;
+  }) => {
+    try {
+      const { runUnrealHeroFlow } = await import('./services/unrealHeroFlow.js');
+      const result = await runUnrealHeroFlow({
+        projectTemplate: (payload?.projectTemplate as 'third-person' | 'first-person' | 'top-down' | 'blank') ?? 'third-person',
+        projectName: payload?.projectName,
+        detectOnly: payload?.detectOnly,
+        onProgress: (step) => {
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('unreal:hero-flow:progress', step);
+          }
+        },
+      });
+      return { ok: true, result };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Check if the hero flow is currently running. */
+  ipcMain.handle('unreal:hero-flow:status', async () => {
+    try {
+      const { isHeroFlowRunning } = await import('./services/unrealHeroFlow.js');
+      return { ok: true, running: isHeroFlowRunning() };
+    } catch (e) {
+      return { ok: false, running: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Get the hybrid executor state (RC availability, control method stats). */
+  ipcMain.handle('unreal:hybrid:status', async () => {
+    try {
+      const { getExecutorState, refreshRcStatus } = await import('./services/unrealHybridExecutor.js');
+      const rcAvailable = await refreshRcStatus();
+      return { ok: true, ...getExecutorState(), rcAvailable };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  // ── Self-Improvement ──────────────────────────────────────────────────────────
+
+  /** Manually trigger a self-improvement run with a goal. */
+  ipcMain.handle('self-improve:run', async (_e, payload: { goal: string }) => {
+    try {
+      const result = await runImprovement(payload.goal, { trigger: 'manual' });
+      return { ok: true, result };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Run a proactive code health scan. */
+  ipcMain.handle('self-improve:scan', async () => {
+    try {
+      const result = await scanForImprovements();
+      return { ok: true, result };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Get the improvement history log. */
+  ipcMain.handle('self-improve:history', async () => {
+    try {
+      return { ok: true, history: getImprovementHistory() };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+  /** Get self-improvement status (running, auto-enabled, stats). */
+  ipcMain.handle('self-improve:status', async () => {
+    return getSelfImproveStatus();
+  });
+
+  /** Enable or disable auto-improvement after operator failures. */
+  ipcMain.handle('self-improve:auto-toggle', async (_e, enabled: boolean) => {
+    setAutoImprove(enabled);
+    return { ok: true, autoEnabled: isAutoImproveEnabled() };
   });
 
   // ── iOS ──────────────────────────────────────────────────────────────────────

@@ -293,6 +293,22 @@ export function OperateScreen({
   const [taskSessionId, setTaskSessionId]             = useState<string | null>(null);
   const unsubTaskRef                                  = useRef<(() => void) | null>(null);
 
+  // ── Unreal Hero Flow ───────────────────────────────────────────────────────
+  interface HeroFlowStepUI {
+    stage: string; action: string; ok: boolean;
+    controlMethod: string; detail: string;
+    screenshotPath?: string; durationMs: number; timestamp: string;
+  }
+  interface HeroFlowResultUI {
+    ok: boolean; summary: string; stages: HeroFlowStepUI[];
+    primaryControl: string; projectName?: string; totalDurationMs: number;
+  }
+  const [heroFlowRunning, setHeroFlowRunning]         = useState(false);
+  const [heroFlowSteps, setHeroFlowSteps]             = useState<HeroFlowStepUI[]>([]);
+  const [heroFlowResult, setHeroFlowResult]           = useState<HeroFlowResultUI | null>(null);
+  const [heroFlowTemplate, setHeroFlowTemplate]       = useState<string>('third-person');
+  const unsubHeroRef                                  = useRef<(() => void) | null>(null);
+
   const tf = (window as unknown as { triforge?: Record<string, unknown> }).triforge;
 
   const fetchData = useCallback(async () => {
@@ -396,6 +412,7 @@ export function OperateScreen({
   useEffect(() => {
     return () => {
       if (unsubTaskRef.current) { unsubTaskRef.current(); unsubTaskRef.current = null; }
+      if (unsubHeroRef.current) { unsubHeroRef.current(); unsubHeroRef.current = null; }
     };
   }, []);
 
@@ -729,6 +746,51 @@ export function OperateScreen({
       if (res?.ok) setTrustLevel(newLevel);
     } catch { /* ignore */ } finally {
       setTrustChanging(false);
+    }
+  };
+
+  /** Run the Unreal Hero Flow: detect → probe → focus → configure → verify. */
+  const startHeroFlow = async () => {
+    if (!tf || heroFlowRunning) return;
+    setHeroFlowRunning(true);
+    setHeroFlowSteps([]);
+    setHeroFlowResult(null);
+
+    const heroNs = tf['unrealHeroFlow'] as Record<string, (...a: unknown[]) => unknown> | undefined;
+    if (!heroNs) { setHeroFlowRunning(false); return; }
+
+    // Subscribe to step-by-step progress
+    if (unsubHeroRef.current) unsubHeroRef.current();
+    unsubHeroRef.current = (heroNs.onProgress as (cb: (step: HeroFlowStepUI) => void) => () => void)?.(
+      (step) => setHeroFlowSteps(prev => [...prev, step]),
+    ) ?? null;
+
+    try {
+      const res = await heroNs.run?.({ projectTemplate: heroFlowTemplate }) as {
+        ok: boolean; result?: HeroFlowResultUI; error?: string;
+      } | null;
+      if (res?.ok && res.result) {
+        setHeroFlowResult(res.result);
+      } else {
+        setHeroFlowResult({
+          ok: false,
+          summary: res?.error ?? 'Hero flow failed.',
+          stages: [],
+          primaryControl: 'visual',
+          totalDurationMs: 0,
+        });
+      }
+    } catch (e) {
+      setHeroFlowResult({
+        ok: false,
+        summary: e instanceof Error ? e.message : 'Hero flow failed.',
+        stages: [],
+        primaryControl: 'visual',
+        totalDurationMs: 0,
+      });
+    } finally {
+      setHeroFlowRunning(false);
+      if (unsubHeroRef.current) { unsubHeroRef.current(); unsubHeroRef.current = null; }
     }
   };
 
@@ -1399,6 +1461,208 @@ export function OperateScreen({
                 >
                   Cancel
                 </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Unreal Hero Flow ─────────────────────────────────────────────── */}
+      <div id="hero-flow-section" style={s.section}>
+        <div style={s.sectionLabelRow}>
+          <span style={s.sectionLabel}>Set Up Unreal Project</span>
+          <span style={s.sectionMeta}>
+            Detect → Probe → Focus → Configure → Verify
+          </span>
+        </div>
+        <p style={{
+          fontSize: 11,
+          color: 'var(--text-muted)',
+          margin: '0 0 10px 0',
+          lineHeight: 1.5,
+        }}>
+          Automatically detects Unreal Engine, probes the Remote Control plugin,
+          focuses the editor, sets up a project template, and verifies the result
+          — all in one pipeline. Uses the fastest available control path (RC API or visual).
+        </p>
+
+        {/* Template selector + trigger */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+        }}>
+          <select
+            value={heroFlowTemplate}
+            onChange={e => setHeroFlowTemplate(e.target.value)}
+            disabled={heroFlowRunning}
+            style={{
+              background: 'var(--bg-input)',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              color: 'var(--text-primary)',
+              fontSize: 12,
+              padding: '6px 10px',
+              cursor: heroFlowRunning ? 'not-allowed' : 'pointer',
+            }}
+          >
+            <option value="third-person">Third Person</option>
+            <option value="first-person">First Person</option>
+            <option value="top-down">Top Down</option>
+            <option value="blank">Blank</option>
+          </select>
+          <button
+            style={{
+              ...s.assignBtn,
+              ...(heroFlowRunning || connectedProviders === 0 ? s.assignBtnDisabled : {}),
+              background: heroFlowRunning ? 'rgba(99,102,241,0.25)' : '#6366f1',
+            }}
+            onClick={startHeroFlow}
+            disabled={heroFlowRunning || connectedProviders === 0}
+          >
+            {heroFlowRunning ? 'Running…' : 'Set Up Unreal Project'}
+          </button>
+        </div>
+
+        {connectedProviders === 0 && (
+          <div style={{
+            marginTop: 8,
+            padding: '8px 12px',
+            background: 'rgba(239,68,68,0.07)',
+            border: '1px solid rgba(239,68,68,0.22)',
+            borderRadius: 6,
+            fontSize: 11,
+            color: 'rgba(239,68,68,0.95)',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+          }}>
+            <span>Connect at least one AI provider to run the hero flow.</span>
+            <button style={s.inlineLink} onClick={() => onNavigate('settings')}>Open Settings →</button>
+          </div>
+        )}
+
+        {/* Live step ledger */}
+        {(heroFlowRunning || heroFlowSteps.length > 0) && (
+          <div style={{
+            marginTop: 10,
+            background: 'rgba(0,0,0,0.15)',
+            border: '1px solid rgba(255,255,255,0.06)',
+            borderRadius: 8,
+            overflow: 'hidden',
+          }}>
+            {heroFlowSteps.map((step, i) => {
+              const stageColor: Record<string, string> = {
+                DETECT: '#6366f1', PROBE: '#8b5cf6', FOCUS: '#f59e0b',
+                CONFIGURE: '#10a37f', VERIFY: '#06b6d4', REPORT: '#10a37f',
+              };
+              const methodBadge: Record<string, { label: string; color: string }> = {
+                rc:              { label: 'RC',     color: '#10a37f' },
+                visual:          { label: 'VISUAL', color: '#f59e0b' },
+                detect:          { label: 'DETECT', color: '#6366f1' },
+                probe:           { label: 'PROBE',  color: '#8b5cf6' },
+                mixed:           { label: 'MIXED',  color: '#06b6d4' },
+                'vision-verify': { label: 'VERIFY', color: '#06b6d4' },
+                failed:          { label: 'FAILED', color: '#ef4444' },
+              };
+              const badge = methodBadge[step.controlMethod] ?? { label: step.controlMethod, color: 'var(--text-muted)' };
+              const color = stageColor[step.stage] ?? '#6366f1';
+              return (
+                <div key={i} style={{
+                  display: 'flex', alignItems: 'flex-start', gap: 10,
+                  padding: '8px 12px',
+                  borderBottom: i < heroFlowSteps.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none',
+                }}>
+                  {/* Stage badge */}
+                  <span style={{
+                    flexShrink: 0,
+                    padding: '2px 7px',
+                    borderRadius: 4,
+                    background: `${color}18`,
+                    border: `1px solid ${color}40`,
+                    color,
+                    fontSize: 9,
+                    fontWeight: 800,
+                    letterSpacing: '0.06em',
+                  }}>
+                    {step.stage}
+                  </span>
+                  {/* Content */}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>
+                        {step.action}
+                      </span>
+                      <span style={{
+                        fontSize: 9, fontWeight: 700,
+                        padding: '1px 5px', borderRadius: 3,
+                        background: `${badge.color}18`,
+                        color: badge.color,
+                        letterSpacing: '0.05em',
+                      }}>
+                        {badge.label}
+                      </span>
+                      {step.ok ? (
+                        <span style={{ fontSize: 10, color: '#10a37f', fontWeight: 700 }}>OK</span>
+                      ) : (
+                        <span style={{ fontSize: 10, color: '#ef4444', fontWeight: 700 }}>FAIL</span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.45 }}>
+                      {step.detail}
+                    </div>
+                    {step.durationMs > 0 && (
+                      <span style={{ fontSize: 10, color: 'var(--text-muted)', opacity: 0.6 }}>
+                        {step.durationMs < 1000 ? `${step.durationMs}ms` : `${(step.durationMs / 1000).toFixed(1)}s`}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            {heroFlowRunning && (
+              <div style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{
+                  display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+                  background: '#6366f1', opacity: 0.7,
+                }} />
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                  Pipeline running — {heroFlowSteps.length} step{heroFlowSteps.length !== 1 ? 's' : ''} completed…
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Final result */}
+        {heroFlowResult && (
+          <div style={{
+            marginTop: 10,
+            padding: '10px 14px',
+            borderRadius: 8,
+            background: heroFlowResult.ok ? 'rgba(16,163,127,0.07)' : 'rgba(239,68,68,0.07)',
+            border: `1px solid ${heroFlowResult.ok ? 'rgba(16,163,127,0.22)' : 'rgba(239,68,68,0.22)'}`,
+          }}>
+            <div style={{
+              fontSize: 11, fontWeight: 700, marginBottom: 4,
+              color: heroFlowResult.ok ? '#10a37f' : '#ef4444',
+            }}>
+              {heroFlowResult.ok ? 'Unreal Project Setup Complete' : 'Setup Failed'}
+              {heroFlowResult.totalDurationMs > 0 && (
+                <span style={{ fontWeight: 500, marginLeft: 8, color: 'var(--text-muted)' }}>
+                  {(heroFlowResult.totalDurationMs / 1000).toFixed(1)}s total
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              {heroFlowResult.summary}
+            </div>
+            {heroFlowResult.primaryControl && (
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>
+                Primary control: <strong style={{ color: heroFlowResult.primaryControl === 'rc' ? '#10a37f' : '#f59e0b' }}>
+                  {heroFlowResult.primaryControl === 'rc' ? 'Remote Control API' : heroFlowResult.primaryControl === 'visual' ? 'Visual Automation' : 'Mixed'}
+                </strong>
+                {heroFlowResult.projectName && (
+                  <span> · Project: <strong style={{ color: 'var(--text-secondary)' }}>{heroFlowResult.projectName}</strong></span>
+                )}
               </div>
             )}
           </div>

@@ -3001,6 +3001,69 @@ const api = {
       }>,
   },
 
+  // ── Unreal Hero Flow — proof-run pipeline from detection to success ────────
+  unrealHeroFlow: {
+    /** Run the full hero flow: detect → probe RC → focus → configure → verify. */
+    run: (opts?: { projectTemplate?: string; projectName?: string; detectOnly?: boolean }) =>
+      ipcRenderer.invoke('unreal:hero-flow:run', opts) as Promise<{
+        ok: boolean; result?: unknown; error?: string;
+      }>,
+
+    /** Check if the hero flow is currently running. */
+    getStatus: () =>
+      ipcRenderer.invoke('unreal:hero-flow:status') as Promise<{
+        ok: boolean; running: boolean; error?: string;
+      }>,
+
+    /** Get hybrid executor state (RC availability, control stats). */
+    getHybridStatus: () =>
+      ipcRenderer.invoke('unreal:hybrid:status') as Promise<{
+        ok: boolean; rcAvailable?: boolean; rcSuccessCount?: number;
+        visualFallbackCount?: number; error?: string;
+      }>,
+
+    /** Listen for progress events during the hero flow. */
+    onProgress: (cb: (step: unknown) => void): (() => void) => {
+      const handler = (_e: unknown, step: unknown) => cb(step);
+      ipcRenderer.on('unreal:hero-flow:progress', handler);
+      return () => ipcRenderer.removeListener('unreal:hero-flow:progress', handler);
+    },
+  },
+
+  // ── Self-Improvement — TriForge analyses and patches its own code ─────────
+  selfImprove: {
+    /** Trigger a manual improvement run with a specific goal. */
+    run: (goal: string) =>
+      ipcRenderer.invoke('self-improve:run', { goal }) as Promise<{
+        ok: boolean; result?: unknown; error?: string;
+      }>,
+
+    /** Run a proactive code health scan. */
+    scan: () =>
+      ipcRenderer.invoke('self-improve:scan') as Promise<{
+        ok: boolean; result?: unknown; error?: string;
+      }>,
+
+    /** Get the improvement history log. */
+    getHistory: () =>
+      ipcRenderer.invoke('self-improve:history') as Promise<{
+        ok: boolean; history?: unknown[]; error?: string;
+      }>,
+
+    /** Get self-improvement status (running, auto-enabled, stats). */
+    getStatus: () =>
+      ipcRenderer.invoke('self-improve:status') as Promise<{
+        running: boolean; currentGoal?: string; autoEnabled: boolean;
+        lastRunAt?: string; totalRuns: number; totalEdits: number;
+      }>,
+
+    /** Enable or disable auto-improvement after operator failures. */
+    toggleAuto: (enabled: boolean) =>
+      ipcRenderer.invoke('self-improve:auto-toggle', enabled) as Promise<{
+        ok: boolean; autoEnabled: boolean;
+      }>,
+  },
+
   // ── Worker Runtime — durable run persistence (Phase 1) ────────────────────
   workerRuntime: {
     /**

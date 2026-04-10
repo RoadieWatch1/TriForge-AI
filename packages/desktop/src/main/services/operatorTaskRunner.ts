@@ -19,6 +19,7 @@ import { createHash } from 'crypto';
 import { readFileSync } from 'fs';
 import { OperatorService } from './operatorService';
 import { analyzeScreen, describeScreen, locateElement } from './visionAnalyzer';
+import { buildAppAwarenessSnapshot, formatAppAwarenessSummary } from './appAwareness';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -148,14 +149,18 @@ export interface PlannedAction {
 
 // ── Planner prompt ────────────────────────────────────────────────────────────
 
-function buildPlannerPrompt(goal: string, screenSummary: string, history: string): string {
+function buildPlannerPrompt(goal: string, screenSummary: string, history: string, appContext?: string): string {
+  const appSection = appContext
+    ? `\nAPP AWARENESS — what is currently running on this computer:\n${appContext}\nUse this information to decide which app to focus and interact with.\n`
+    : '';
+
   return `You are a desktop automation agent that physically controls a computer's mouse and keyboard.
 YOU are the one performing every action — there is no other program or assistant doing work for you.
 
 Goal: "${goal}"
 
 Current screen: ${screenSummary}
-
+${appSection}
 CRITICAL RULES:
 - YOU control the mouse and keyboard. Do NOT "wait" for something to happen on its own.
 - If you see the TriForge AI window, that is YOUR own interface — ignore it and focus/click on the TARGET app.
@@ -357,7 +362,7 @@ export async function runOperatorTask(opts: TaskRunnerOptions): Promise<TaskRunR
 }
 
 async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunResult> {
-  const { sessionId, goal, maxSteps = 15, onProgress, priorApprovedAction } = opts;
+  const { sessionId, goal, maxSteps = 50, onProgress, priorApprovedAction } = opts;
   const steps: StepResult[]  = [];
   const history: string[]    = [];
 
@@ -438,6 +443,26 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
 
   let lastScreenshotPath: string | undefined;
 
+  // ── App awareness: gather running apps + frontmost for planner context ──────
+  // Refreshed once before the loop. The frontmost app may change mid-run, but
+  // we refresh it at each step to keep the planner grounded.
+  let appContext: string | undefined;
+  try {
+    const [runningApps, frontmostTarget] = await Promise.all([
+      OperatorService.listRunningApps(),
+      OperatorService.getFrontmostApp(),
+    ]);
+    const snapshot = buildAppAwarenessSnapshot(
+      runningApps,
+      frontmostTarget?.appName,
+      frontmostTarget?.windowTitle,
+    );
+    const summary = formatAppAwarenessSummary(snapshot);
+    if (summary && summary !== 'No known apps currently running.') {
+      appContext = summary;
+    }
+  } catch { /* non-fatal — planner works without it */ }
+
   // ── Stuck-detection: consecutive "wait" actions ──────────────────────────────
   // If the planner keeps outputting "wait" it means it's confused and thinks
   // something else is doing the work. After the 1st wait, a post-wait history
@@ -469,11 +494,22 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
     const screenDesc    = await describeScreen(screenshotPath);
     const screenSummary = screenDesc.summary || 'Screen captured.';
 
+    // Refresh app awareness each step — frontmost app may change as we work
+    try {
+      const [ra, ft] = await Promise.all([
+        OperatorService.listRunningApps(),
+        OperatorService.getFrontmostApp(),
+      ]);
+      const snap = buildAppAwarenessSnapshot(ra, ft?.appName, ft?.windowTitle);
+      const sum  = formatAppAwarenessSummary(snap);
+      appContext = (sum && sum !== 'No known apps currently running.') ? sum : appContext;
+    } catch { /* keep previous appContext */ }
+
     // ── 2. Plan ───────────────────────────────────────────────────────────────
     emit({ step, phase: 'plan', description: 'Planning…', screenshotPath });
     const planResponse = await analyzeScreen(
       screenshotPath,
-      buildPlannerPrompt(goal, screenSummary, history.slice(-8).join('\n')),
+      buildPlannerPrompt(goal, screenSummary, history.slice(-8).join('\n'), appContext),
     );
     if (!planResponse.ok) {
       const err = planResponse.error ?? 'Planning call failed';
