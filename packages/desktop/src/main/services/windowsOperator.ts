@@ -152,12 +152,15 @@ const WIN32_USER32_TYPE_DEF = `
 using System;
 using System.Runtime.InteropServices;
 public class Win32User32 {
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern int GetWindowThreadProcessId(IntPtr hWnd, out int lpdwProcessId);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
 }
 `.trim();
 
@@ -449,6 +452,90 @@ Write-Output ok
     const out = await shellExecPs(script, 8000);
     if (out.includes('ok')) return { ok: true };
     return { ok: false, error: 'Click script did not confirm success.' };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+}
+
+// ── Window bounds + region capture (Phase 5: side-by-side support) ───────────
+
+export interface WindowsAppBounds {
+  appName:      string;
+  windowTitle?: string;
+  x:            number;
+  y:            number;
+  width:        number;
+  height:       number;
+  isFrontmost:  boolean;
+}
+
+/**
+ * Return the bounds of the front window of the named app, in PHYSICAL pixels.
+ *
+ * Caller must be DPI-aware (the runner uses display scale factor 1 on Windows
+ * by default — most modern Windows apps use per-monitor DPI v2 manifests).
+ *
+ * Matches process by ProcessName or MainWindowTitle. Returns the largest
+ * matching window if multiple are open.
+ */
+export async function windowsGetAppWindowBounds(appName: string): Promise<WindowsAppBounds | null> {
+  const safeName = appName.replace(/'/g, "''");
+  try {
+    await _psHost.ensureTypesLoaded(WIN32_USER32_TYPE_DEF);
+    const script = `
+$target = Get-Process | Where-Object {
+  ($_.ProcessName -like '*${safeName}*' -or $_.MainWindowTitle -like '*${safeName}*') -and $_.MainWindowHandle -ne 0
+} | Sort-Object { $_.MainWindowTitle.Length } -Descending | Select-Object -First 1
+if (-not $target) { Write-Output 'notfound'; return }
+$rect = New-Object Win32User32+RECT
+$ok = [Win32User32]::GetWindowRect($target.MainWindowHandle, [ref]$rect)
+if (-not $ok) { Write-Output 'norect'; return }
+$frontHwnd = [Win32User32]::GetForegroundWindow()
+$isFront = ($frontHwnd -eq $target.MainWindowHandle)
+Write-Output ($rect.Left.ToString() + ',' + $rect.Top.ToString() + ',' + ($rect.Right - $rect.Left).ToString() + ',' + ($rect.Bottom - $rect.Top).ToString() + ',' + $isFront.ToString().ToLower() + ',' + $target.MainWindowTitle)
+    `.trim();
+    const raw = await shellExecPs(script, 5000);
+    if (!raw || raw === 'notfound' || raw === 'norect') return null;
+
+    const parts = raw.split(',').map(s => s.trim());
+    if (parts.length < 5) return null;
+    const x = Number(parts[0]);
+    const y = Number(parts[1]);
+    const w = Number(parts[2]);
+    const h = Number(parts[3]);
+    const isFront = parts[4] === 'true';
+    if ([x, y, w, h].some(v => !Number.isFinite(v))) return null;
+    if (w < 50 || h < 50) return null;
+
+    const windowTitle = parts.slice(5).join(',').trim() || undefined;
+    return { appName, windowTitle, x, y, width: w, height: h, isFrontmost: isFront };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Capture a rectangular region of the screen to a PNG.
+ * Region is in physical pixels (matches windowsGetAppWindowBounds).
+ */
+export async function windowsCaptureScreenRegion(
+  outputPath: string,
+  region: { x: number; y: number; width: number; height: number },
+): Promise<{ ok: boolean; error?: string }> {
+  const dest = outputPath.replace(/\\/g, '\\\\');
+  const script = `
+Add-Type -AssemblyName System.Drawing
+$bmp = New-Object System.Drawing.Bitmap(${region.width}, ${region.height})
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.CopyFromScreen(${region.x}, ${region.y}, 0, 0, [System.Drawing.Size]::new(${region.width}, ${region.height}))
+$bmp.Save('${dest}', [System.Drawing.Imaging.ImageFormat]::Png)
+$g.Dispose(); $bmp.Dispose()
+Write-Output ok
+  `.trim();
+  try {
+    const out = await shellExecPs(script, 12_000);
+    if (out.includes('ok')) return { ok: true };
+    return { ok: false, error: 'Region screenshot script did not confirm success.' };
   } catch (err) {
     return { ok: false, error: String(err) };
   }

@@ -17,7 +17,7 @@
 
 import { createHash } from 'crypto';
 import { readFileSync } from 'fs';
-import { OperatorService, getDisplayScaleFactor } from './operatorService';
+import { OperatorService, getDisplayScaleFactor, type AppWindowBounds } from './operatorService';
 import { analyzeScreen, describeScreen, locateElement } from './visionAnalyzer';
 import { buildAppAwarenessSnapshot, formatAppAwarenessSummary } from './appAwareness';
 import { imageSize } from './imageSize';
@@ -162,7 +162,15 @@ export interface PlannedAction {
 
 // ── Planner prompt ────────────────────────────────────────────────────────────
 
-function buildPlannerPrompt(goal: string, screenSummary: string, history: string, appContext?: string, targetApp?: string): string {
+function buildPlannerPrompt(
+  goal: string,
+  screenSummary: string,
+  history: string,
+  appContext?: string,
+  targetApp?: string,
+  regionInfo?: { cropped: boolean; windowTitle?: string },
+  continuityHint?: string,
+): string {
   const appSection = appContext
     ? `\nAPP AWARENESS — what is currently running on this computer:\n${appContext}\nUse this information to decide which app to focus and interact with.\n`
     : '';
@@ -173,13 +181,33 @@ function buildPlannerPrompt(goal: string, screenSummary: string, history: string
       `If the goal requires a different app, output "blocked" with reason "Goal requires app outside scope: only ${targetApp} is allowed".\n`
     : '';
 
+  // Phase 5: When the screenshot is a region crop of the target app's window,
+  // tell the planner explicitly. Otherwise it tries to reason about "where
+  // the TriForge window is" or "is the target visible" — both irrelevant when
+  // the image already only contains the target's pixels.
+  const regionSection = regionInfo?.cropped
+    ? `\nVIEW SCOPE:\nThe screenshot you are looking at has ALREADY been cropped to ` +
+      `${targetApp ? `the "${targetApp}" window` : 'the target app window'}` +
+      `${regionInfo.windowTitle ? ` (window title: "${regionInfo.windowTitle}")` : ''}. ` +
+      `It does NOT contain TriForge or any other app's UI — every pixel you see is inside the target. ` +
+      `Do NOT report TriForge UI as "visible". Plan your action against this cropped view; coordinates ` +
+      `you would output in image-pixel space will be auto-translated to absolute screen coords.\n`
+    : '';
+
+  // Phase 5: State continuity nudge — pass the model the previously-confirmed
+  // screen state so it doesn't oscillate between "Home Panel" and "New Project"
+  // interpretations of the same screen across consecutive steps.
+  const continuitySection = continuityHint
+    ? `\nSTATE CONTINUITY:\n${continuityHint}\n`
+    : '';
+
   return `You are a desktop automation agent that physically controls a computer's mouse and keyboard.
 YOU are the one performing every action — there is no other program or assistant doing work for you.
 
 Goal: "${goal}"
 
 Current screen: ${screenSummary}
-${appSection}${scopeSection}
+${appSection}${scopeSection}${regionSection}${continuitySection}
 CRITICAL RULES:
 - YOU control the mouse and keyboard. Do NOT "wait" for something to happen on its own.
 - If you see the TriForge AI window, that is YOUR own interface — ignore it and focus/click on the TARGET app.
@@ -455,6 +483,109 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
   // ── Detect display scale factor for Retina coordinate correction ──────────
   const displayScale = await getDisplayScaleFactor();
 
+  // ── Phase 5: Side-by-side / snapped window support ───────────────────────
+  //
+  // When the runner is invoked with `targetApp`, every observation, planner
+  // call, and verification is scoped to that app's window region. The model
+  // sees only the target's pixels, so it can no longer confuse Unreal's
+  // half-screen state with TriForge's own UI floating beside it.
+  //
+  // 1. Bind session.intendedTarget so executeApprovedInputAction's pre-input
+  //    fuzzy gate validates input lands in the right app.
+  // 2. Re-fetch window bounds at each iteration (snapped layouts can move).
+  // 3. Crop the screenshot to the bounds rectangle.
+  // 4. After locateElement on the cropped image, translate region-relative
+  //    pixel coords back to screen-absolute logical points before clicking.
+  //
+  // If the target app is not running, bounds detection fails, or we're in a
+  // platform without bounds support — we silently fall through to full-screen
+  // capture and the legacy code path. Honest degradation, never block.
+  const targetApp = opts.targetApp?.trim() || undefined;
+  if (targetApp) {
+    try {
+      OperatorService.setSessionIntendedTarget(sessionId, targetApp);
+    } catch { /* best-effort */ }
+  }
+
+  // Snapshot of the most recently confirmed target window state. Used by the
+  // state-continuity nudge that gets injected into the planner prompt so the
+  // model doesn't oscillate between mutually-exclusive interpretations of the
+  // same screen ("Home Panel" vs "New Project") across consecutive steps.
+  let lastConfirmedTargetTitle: string | undefined;
+  let lastConfirmedScreenSummary: string | undefined;
+
+  /**
+   * Resolve the target app's bounds for this iteration.
+   * Returns null when there is no targetApp set, or when bounds detection
+   * failed (caller falls back to full-screen capture).
+   */
+  const resolveTargetBounds = async (): Promise<AppWindowBounds | null> => {
+    if (!targetApp) return null;
+    try {
+      return await OperatorService.getAppWindowBounds(targetApp);
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * Capture the screen and return either:
+   *   - a region crop of the target app's window (preferred when bounds known), or
+   *   - a full-screen capture (fallback)
+   *
+   * When `bounds` is supplied, the returned imageOrigin is the bounds (x,y)
+   * in logical points — used to translate vision-pixel coordinates back to
+   * absolute screen logical points.
+   */
+  const captureForTarget = async (
+    bounds: AppWindowBounds | null,
+  ): Promise<{ path: string; origin: { x: number; y: number }; cropped: boolean } | null> => {
+    if (bounds) {
+      // Inflate by a small margin so window borders / title bars are included
+      // — vision often anchors to chrome elements ("close button", "menu bar").
+      const region = {
+        x:      Math.max(0, bounds.x - 4),
+        y:      Math.max(0, bounds.y - 4),
+        width:  bounds.width + 8,
+        height: bounds.height + 8,
+      };
+      const r = await OperatorService.captureScreenRegion(region);
+      if (r.ok && r.path) {
+        return { path: r.path, origin: { x: region.x, y: region.y }, cropped: true };
+      }
+      // Fall through to full screen on region capture failure
+    }
+    const ss = await OperatorService.captureScreen();
+    if (!ss.ok || !ss.path) return null;
+    return { path: ss.path, origin: { x: 0, y: 0 }, cropped: false };
+  };
+
+  /**
+   * Re-assert focus on the target app if it isn't already frontmost.
+   * Called immediately before any input dispatch (click/type/key) when the
+   * runner is scoped to a target app. This is the single biggest reliability
+   * win for side-by-side layouts: TriForge's own approval-prompt rendering
+   * frequently steals focus from the target between observe and act.
+   *
+   * Returns the (possibly updated) bounds for the target — null if focusing
+   * the app or reading bounds failed.
+   */
+  const ensureTargetFocused = async (): Promise<AppWindowBounds | null> => {
+    if (!targetApp) return null;
+    let bounds = await resolveTargetBounds();
+    if (bounds?.isFrontmost) return bounds;
+
+    try {
+      const action = OperatorService.buildAction(sessionId, 'focus_app', { target: targetApp });
+      await OperatorService.executeAction(action);
+      // Brief settle so the OS finishes raising the window before we read bounds
+      await new Promise(r => setTimeout(r, 200));
+    } catch { /* best-effort */ }
+
+    bounds = await resolveTargetBounds();
+    return bounds;
+  };
+
   // ── B1 follow-up: Seed history with the just-approved action so the planner
   // does NOT re-issue it after a resume. Without this hint the next iteration
   // observes a fresh screen and may re-plan the same action, triggering another
@@ -551,13 +682,32 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
 
     // ── 1. Observe ────────────────────────────────────────────────────────────
     emit({ step, phase: 'observe', description: 'Taking screenshot…' });
-    const ss = await OperatorService.captureScreen();
-    if (!ss.ok || !ss.path) {
-      const err = ss.error ?? 'Screenshot failed';
+
+    // Phase 5: when scoped to a target app, re-assert focus first so the
+    // window we're about to crop is the live, frontmost window. Without this
+    // re-assertion, TriForge's own UI can steal focus between iterations and
+    // every subsequent observation captures the wrong app.
+    let targetBounds: AppWindowBounds | null = null;
+    if (targetApp) {
+      targetBounds = await ensureTargetFocused();
+      if (!targetBounds) {
+        history.push(
+          `${step}: ⚠ targetApp "${targetApp}" not found or has no visible window. ` +
+          `Either it's not running, or window bounds are unavailable. ` +
+          `Falling back to full-screen observation.`,
+        );
+      }
+    }
+
+    const cap = await captureForTarget(targetBounds);
+    if (!cap) {
+      const err = 'Screenshot failed';
       emit({ step, phase: 'error', description: err });
       return { ok: false, stepsExecuted: step - 1, outcome: 'error', summary: err, error: err, steps };
     }
-    let screenshotPath = ss.path;
+    let screenshotPath = cap.path;
+    let regionOrigin   = cap.origin;
+    let regionCropped  = cap.cropped;
     lastScreenshotPath = screenshotPath;
 
     emit({ step, phase: 'observe', description: 'Reading screen…', screenshotPath });
@@ -577,9 +727,24 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
 
     // ── 2. Plan ───────────────────────────────────────────────────────────────
     emit({ step, phase: 'plan', description: 'Planning…', screenshotPath });
+
+    // Phase 5: Build a state-continuity hint when we have a previously
+    // confirmed target window state that hasn't changed across this step's
+    // observation. This stops the planner from oscillating between mutually-
+    // exclusive interpretations of the same Unreal Editor screen.
+    let continuityHint: string | undefined;
+    if (targetApp && lastConfirmedTargetTitle && targetBounds?.windowTitle === lastConfirmedTargetTitle) {
+      continuityHint =
+        `The "${targetApp}" window title is still "${lastConfirmedTargetTitle}" — ` +
+        `the same screen state you previously confirmed${lastConfirmedScreenSummary ? ` ("${lastConfirmedScreenSummary.slice(0, 120)}")` : ''}. ` +
+        `Treat this as continuous with that prior observation. Do NOT re-interpret it as a different page unless ` +
+        `there is unambiguous visual evidence of a UI transition.`;
+    }
+    const regionInfo = { cropped: regionCropped, windowTitle: targetBounds?.windowTitle };
+
     const planResponse = await analyzeScreen(
       screenshotPath,
-      buildPlannerPrompt(goal, screenSummary, history.slice(-8).join('\n'), appContext, opts.targetApp),
+      buildPlannerPrompt(goal, screenSummary, history.slice(-8).join('\n'), appContext, opts.targetApp, regionInfo, continuityHint),
     );
     if (!planResponse.ok) {
       const err = planResponse.error ?? 'Planning call failed';
@@ -605,7 +770,7 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
       const retryPlan = await analyzeScreen(
         screenshotPath,
         `Your previous response was NOT valid JSON. You MUST respond with ONLY a raw JSON object.\n\n` +
-        buildPlannerPrompt(goal, screenSummary, history.slice(-8).join('\n'), appContext, opts.targetApp),
+        buildPlannerPrompt(goal, screenSummary, history.slice(-8).join('\n'), appContext, opts.targetApp, regionInfo, continuityHint),
       );
       if (retryPlan.ok) {
         try {
@@ -778,23 +943,68 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
           y = cached.y;
         } else {
           /**
-           * Locate helper: wraps locateElement with Retina scaling and
-           * coordinate validation. Returns scaled logical-point coords.
+           * Locate helper: wraps locateElement with Retina scaling, region
+           * origin translation, and coordinate validation.
+           *
+           * Returns ABSOLUTE screen-space logical-point coordinates ready for
+           * CGEvent / SetCursorPos.
+           *
+           * Pipeline:
+           *   1. locateElement returns IMAGE-PIXEL coords inside `imgPath`.
+           *   2. Divide by image scale (per-screenshot, computed from PNG
+           *      dimensions vs. the cropped image's logical size or the
+           *      primary display) → REGION-RELATIVE LOGICAL points.
+           *   3. Add `origin.{x,y}` (the region's top-left in absolute screen
+           *      logical space) → ABSOLUTE LOGICAL points.
+           *
+           * When `origin = (0,0)` and the image is the full screen, this
+           * collapses to the legacy full-screen behavior.
            */
-          const locateAndScale = async (imgPath: string, target: string) => {
+          const locateAndScale = async (
+            imgPath: string,
+            target: string,
+            origin: { x: number; y: number },
+            cropped: boolean,
+          ) => {
             const loc = await locateElement(imgPath, target);
             if (!loc.found || loc.x === undefined || loc.y === undefined) return loc;
 
-            // ── Priority 1: Retina coordinate scaling ─────────────────
-            // Vision reports coordinates in image-pixel space. On Retina
-            // displays the image is 2x (or Nx) the logical screen size.
-            // CGEvent clicks use logical points → divide by scale factor.
-            if (displayScale > 1) {
-              loc.x = Math.round(loc.x / displayScale);
-              loc.y = Math.round(loc.y / displayScale);
-              if (loc.width)  loc.width  = Math.round(loc.width / displayScale);
-              if (loc.height) loc.height = Math.round(loc.height / displayScale);
+            // ── Compute actual scale from image header vs. logical size ──
+            // For cropped region captures we don't know the logical width
+            // ahead of time — but the bounds we asked for ARE in logical
+            // points, so we can divide image width by the region's logical
+            // width to get the scale. For full-screen captures we use the
+            // primary display logical width.
+            let imgScale = displayScale;
+            try {
+              const dims = imageSize(imgPath);
+              if (dims) {
+                let logicalW: number | undefined;
+                if (cropped && targetBounds) {
+                  // The region we requested was bounds.width + 8 margin
+                  logicalW = targetBounds.width + 8;
+                } else {
+                  // eslint-disable-next-line @typescript-eslint/no-require-imports
+                  const { screen } = require('electron') as typeof import('electron');
+                  logicalW = screen.getPrimaryDisplay().size.width;
+                }
+                if (logicalW && logicalW > 0) {
+                  const measured = dims.width / logicalW;
+                  if (measured >= 0.95 && measured <= 4.05) imgScale = measured;
+                }
+              }
+            } catch { /* fall back to cached displayScale */ }
+
+            if (imgScale > 1) {
+              loc.x = Math.round(loc.x / imgScale);
+              loc.y = Math.round(loc.y / imgScale);
+              if (loc.width)  loc.width  = Math.round(loc.width / imgScale);
+              if (loc.height) loc.height = Math.round(loc.height / imgScale);
             }
+
+            // Translate from region-relative → absolute screen-logical
+            loc.x += origin.x;
+            loc.y += origin.y;
 
             // Sanity check: reject obviously out-of-bounds coordinates
             // (negative or > 10000 logical points — no display is that big)
@@ -805,22 +1015,24 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
             return loc;
           };
 
-          // Attempt 1 — direct locate
-          const loc1 = await locateAndScale(screenshotPath, planned.target);
+          // Attempt 1 — direct locate on the cropped (or full) screenshot
+          const loc1 = await locateAndScale(screenshotPath, planned.target, regionOrigin, regionCropped);
           if (loc1.found && loc1.x !== undefined && loc1.y !== undefined) {
             x = loc1.x; y = loc1.y; locConfidence = loc1.confidence;
             _elementCache.set(cacheKey, { x, y, locatedAt: Date.now() });
           }
 
-          // Attempt 2 — scroll down and retry
+          // Attempt 2 — scroll down and retry (re-capture from same region)
           if (x === undefined || y === undefined) {
             emit({ step, phase: 'act', description: `"${planned.target}" not found — scrolling to search…`, screenshotPath });
             const scrollAction = OperatorService.buildAction(sessionId, 'send_key', { key: 'page_down', modifiers: [] });
             await OperatorService.executeAction(scrollAction);
             await new Promise(r => setTimeout(r, 600));
-            const ss2 = await OperatorService.captureScreen();
-            if (ss2.ok && ss2.path) {
-              const loc2 = await locateAndScale(ss2.path, planned.target);
+            // Re-fetch bounds in case the window moved during scroll
+            const bounds2 = targetApp ? await resolveTargetBounds() : null;
+            const cap2 = await captureForTarget(bounds2 ?? targetBounds);
+            if (cap2) {
+              const loc2 = await locateAndScale(cap2.path, planned.target, cap2.origin, cap2.cropped);
               if (loc2.found && loc2.x !== undefined && loc2.y !== undefined) {
                 x = loc2.x; y = loc2.y; locConfidence = loc2.confidence;
                 _elementCache.set(cacheKey, { x, y, locatedAt: Date.now() });
@@ -828,12 +1040,13 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
             }
           }
 
-          // Attempt 3 — fresh screenshot + locate
+          // Attempt 3 — fresh screenshot + locate (re-fetch bounds again)
           if (x === undefined || y === undefined) {
             emit({ step, phase: 'act', description: `Still not found — re-capturing screen…`, screenshotPath });
-            const ss3 = await OperatorService.captureScreen();
-            if (ss3.ok && ss3.path) {
-              const loc3 = await locateAndScale(ss3.path, planned.target);
+            const bounds3 = targetApp ? await resolveTargetBounds() : null;
+            const cap3 = await captureForTarget(bounds3 ?? targetBounds);
+            if (cap3) {
+              const loc3 = await locateAndScale(cap3.path, planned.target, cap3.origin, cap3.cropped);
               if (loc3.found && loc3.x !== undefined && loc3.y !== undefined) {
                 x = loc3.x; y = loc3.y; locConfidence = loc3.confidence;
                 _elementCache.set(cacheKey, { x, y, locatedAt: Date.now() });
@@ -843,12 +1056,25 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
         }
       }
 
-      // ── Priority 1: Scale planner-supplied coordinates too ──────────────
-      // If the planner itself supplied x/y (from a previous locate or its
-      // own estimate), those are also in image-pixel space and need scaling.
-      if (planned.x !== undefined && planned.y !== undefined && displayScale > 1) {
-        x = Math.round((planned.x) / displayScale);
-        y = Math.round((planned.y) / displayScale);
+      // ── Planner-supplied coordinate fallback ──────────────────────────
+      // Only use the planner's x/y when locateElement was NOT attempted
+      // (no target string) or all 3 locate attempts failed. Never overwrite
+      // a successful locateElement result — the planner's coordinates are
+      // less accurate and may be in a different coordinate frame (it may
+      // echo back already-scaled logical points from history, or estimate
+      // from image-pixel space inconsistently).
+      //
+      // When the screenshot was a region crop, the planner's image-pixel
+      // coordinates are RELATIVE TO THE CROP. We must translate them back
+      // to absolute screen-space the same way locateAndScale does.
+      if (x === undefined && y === undefined && planned.x !== undefined && planned.y !== undefined) {
+        if (displayScale > 1) {
+          x = Math.round(planned.x / displayScale) + regionOrigin.x;
+          y = Math.round(planned.y / displayScale) + regionOrigin.y;
+        } else {
+          x = planned.x + regionOrigin.x;
+          y = planned.y + regionOrigin.y;
+        }
       }
 
       // ── Priority 5: Reject low-confidence clicks ───────────────────────
@@ -870,6 +1096,31 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
         stepResult = { step, action: planned, executed: false, outcome: 'failed', error: err };
         history.push(`${step}: click "${planned.target}" → not found after retries`);
       } else {
+        // Phase 5: Re-assert focus on the target app immediately before
+        // dispatching the click. Approval prompts and any TriForge UI
+        // interaction frequently steal focus between observe and act in
+        // side-by-side layouts; if the target isn't frontmost the click
+        // will land in the wrong app.
+        if (targetApp) {
+          const focusedBounds = await ensureTargetFocused();
+          if (focusedBounds && !focusedBounds.isFrontmost) {
+            history.push(
+              `${step}: ⚠ pre-click focus re-assert: "${targetApp}" still not frontmost after activate. ` +
+              `Click may land in another app — proceeding with dispatch but flagging risk.`,
+            );
+          }
+        }
+
+        // Diagnostic: log the full coordinate pipeline for every click
+        const coordSource = planned.target ? 'locateElement' : 'planner';
+        const diagLog = `CLICK_DIAG step=${step} target="${planned.target ?? 'none'}" ` +
+          `source=${coordSource} ` +
+          `plannerXY=(${planned.x ?? '-'},${planned.y ?? '-'}) ` +
+          `dispatchXY=(${x},${y}) origin=(${regionOrigin.x},${regionOrigin.y}) cropped=${regionCropped} ` +
+          `scale=${displayScale} conf=${locConfidence ?? 'n/a'}`;
+        console.log(diagLog);
+        emit({ step, phase: 'act', description: diagLog, screenshotPath });
+
         const action = OperatorService.buildAction(sessionId, 'click_at', { x, y, button: planned.button ?? 'left' });
         const r      = await OperatorService.executeAction(action);
         if (r.outcome === 'approval_pending') {
@@ -886,6 +1137,16 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
 
     } else if (planned.type === 'type') {
       const text   = planned.text ?? '';
+      // Phase 5: pre-input focus re-assert (see click branch for rationale)
+      if (targetApp) {
+        const focusedBounds = await ensureTargetFocused();
+        if (focusedBounds && !focusedBounds.isFrontmost) {
+          history.push(
+            `${step}: ⚠ pre-type focus re-assert: "${targetApp}" still not frontmost. ` +
+            `Typed text may land in the wrong app — proceeding but flagging risk.`,
+          );
+        }
+      }
       const action = OperatorService.buildAction(sessionId, 'type_text', { text });
       const r      = await OperatorService.executeAction(action);
       if (r.outcome === 'approval_pending') {
@@ -901,6 +1162,16 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
 
     } else if (planned.type === 'key') {
       const { key, modifiers } = parseKeyCombo(planned.keyCombo ?? '');
+      // Phase 5: pre-input focus re-assert (see click branch for rationale)
+      if (targetApp) {
+        const focusedBounds = await ensureTargetFocused();
+        if (focusedBounds && !focusedBounds.isFrontmost) {
+          history.push(
+            `${step}: ⚠ pre-key focus re-assert: "${targetApp}" still not frontmost. ` +
+            `Keystroke may land in the wrong app — proceeding but flagging risk.`,
+          );
+        }
+      }
       const action             = OperatorService.buildAction(sessionId, 'send_key', { key, modifiers });
       const r                  = await OperatorService.executeAction(action);
       if (r.outcome === 'approval_pending') {
@@ -927,14 +1198,56 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
     //   • Two consecutive verify failures abort the run with a clear outcome
     //     instead of silently marching the workflow into garbage state
     if (stepResult.executed && planned.type !== 'wait') {
-      const stablePath = await waitUntilScreenStable(5000);
-      const verifyShot = stablePath ?? screenshotPath;
-      const vr         = await analyzeScreen(
-        verifyShot,
-        `Did this action succeed: "${planned.description}"? Answer YES or NO then one sentence explaining what you see.`,
-      );
+      // Phase 5: Verification must look at the SAME region the planner saw
+      // when it made its decision. Otherwise, in side-by-side layouts the
+      // verifier reads pixels from a different app and reports nonsense
+      // ("the screen still shows Getting Started" — when really it shows
+      // TriForge's window over a now-correct Unreal screen).
+      //
+      // We wait for the screen to settle, then capture a fresh region crop
+      // (after re-asserting focus) and ask vision against THAT image only.
+      await waitUntilScreenStable(5000);
+
+      let verifyShot = screenshotPath;
+      let verifyOrigin = regionOrigin;
+      let verifyCropped = regionCropped;
+      let verifyBounds: AppWindowBounds | null = targetBounds;
+      if (targetApp) {
+        verifyBounds = await ensureTargetFocused();
+        const vcap = await captureForTarget(verifyBounds);
+        if (vcap) {
+          verifyShot   = vcap.path;
+          verifyOrigin = vcap.origin;
+          verifyCropped = vcap.cropped;
+        }
+      } else {
+        const ssVerify = await OperatorService.captureScreen();
+        if (ssVerify.ok && ssVerify.path) verifyShot = ssVerify.path;
+      }
+
+      // Suppress unused-variable warnings — these capture state for any
+      // future post-verification logic that wants to know what was actually
+      // looked at vs. the original step's image.
+      void verifyOrigin; void verifyCropped;
+
+      const verifyPrompt = verifyCropped
+        ? `This screenshot is the "${targetApp}" window only — every pixel is inside that app. ` +
+          `Did this action succeed: "${planned.description}"? Answer YES or NO then one sentence explaining what you see in THIS view. ` +
+          `Do NOT comment on TriForge UI or other apps — they are not in this image.`
+        : `Did this action succeed: "${planned.description}"? Answer YES or NO then one sentence explaining what you see.`;
+
+      const vr = await analyzeScreen(verifyShot, verifyPrompt);
       const passed = vr.ok && isVerificationPassed(vr.answer);
       stepResult.verifyPassed = passed;
+
+      // Phase 5: cache the confirmed target window state on success so the
+      // next iteration can include a state-continuity hint in the planner
+      // prompt. We capture both the window title (for change detection) and
+      // the verifier's natural-language summary (for context replay).
+      if (passed && targetApp && verifyBounds?.windowTitle) {
+        lastConfirmedTargetTitle = verifyBounds.windowTitle;
+        lastConfirmedScreenSummary = vr.answer.slice(0, 200);
+      }
 
       const verifyDesc = passed
         ? `Verified: ${vr.answer.slice(0, 100)}`

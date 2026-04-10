@@ -35,6 +35,19 @@ import { exec } from 'child_process';
 
 import { locateElement, analyzeScreen, isElementVisible } from './visionAnalyzer';
 import { clickAtCoords } from './clickHelper';
+import { getDisplayScaleFactor } from './operatorService';
+
+/**
+ * Scale vision-pixel coordinates to logical points for CGEvent.
+ * locateElement returns image-pixel coords; on Retina displays the
+ * screenshot is 2x (or Nx) the logical screen, so we must divide.
+ */
+async function scaleToLogical(px: number, py: number): Promise<{ x: number; y: number }> {
+  const scale = await getDisplayScaleFactor();
+  return scale > 1
+    ? { x: Math.round(px / scale), y: Math.round(py / scale) }
+    : { x: px, y: py };
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -185,14 +198,15 @@ export async function findAndClickCompile(): Promise<UnrealEditorResult> {
     };
   }
 
-  const clickResult = await clickAtCoords(loc.x, loc.y, 'left');
+  const scaled = await scaleToLogical(loc.x, loc.y);
+  const clickResult = await clickAtCoords(scaled.x, scaled.y, 'left');
   if (!clickResult.ok) {
     return {
       ok:             false,
-      detail:         `Compile button found at (${loc.x}, ${loc.y}) but click failed: ${clickResult.error ?? 'unknown'}`,
+      detail:         `Compile button found at vision(${loc.x},${loc.y}) → click(${scaled.x},${scaled.y}) but click failed: ${clickResult.error ?? 'unknown'}`,
       screenshotPath: screenshot.screenshotPath,
-      x:              loc.x,
-      y:              loc.y,
+      x:              scaled.x,
+      y:              scaled.y,
     };
   }
 
@@ -320,14 +334,15 @@ export async function triggerPlayInEditor(): Promise<UnrealEditorResult> {
     };
   }
 
-  const clickResult = await clickAtCoords(loc.x, loc.y, 'left');
+  const scaled = await scaleToLogical(loc.x, loc.y);
+  const clickResult = await clickAtCoords(scaled.x, scaled.y, 'left');
   if (!clickResult.ok) {
     return {
       ok:             false,
-      detail:         `Play button found at (${loc.x}, ${loc.y}) but click failed: ${clickResult.error ?? 'unknown'}`,
+      detail:         `Play button found at vision(${loc.x},${loc.y}) → click(${scaled.x},${scaled.y}) but click failed: ${clickResult.error ?? 'unknown'}`,
       screenshotPath: screenshot.screenshotPath,
-      x:              loc.x,
-      y:              loc.y,
+      x:              scaled.x,
+      y:              scaled.y,
     };
   }
 
@@ -449,21 +464,22 @@ export async function focusContentBrowser(): Promise<UnrealEditorResult> {
     };
   }
 
-  const clickResult = await clickAtCoords(loc.x, loc.y, 'left');
+  const scaled = await scaleToLogical(loc.x, loc.y);
+  const clickResult = await clickAtCoords(scaled.x, scaled.y, 'left');
   if (!clickResult.ok) {
     return {
       ok:             false,
-      detail:         `Content Browser found at (${loc.x}, ${loc.y}) but click failed.`,
+      detail:         `Content Browser found at vision(${loc.x},${loc.y}) → click(${scaled.x},${scaled.y}) but click failed.`,
       screenshotPath: screenshot.screenshotPath,
     };
   }
 
   return {
     ok:             true,
-    detail:         `Clicked Content Browser at (${loc.x}, ${loc.y})`,
+    detail:         `Clicked Content Browser at vision(${loc.x},${loc.y}) → click(${scaled.x},${scaled.y})`,
     screenshotPath: screenshot.screenshotPath,
-    x:              loc.x,
-    y:              loc.y,
+    x:              scaled.x,
+    y:              scaled.y,
   };
 }
 

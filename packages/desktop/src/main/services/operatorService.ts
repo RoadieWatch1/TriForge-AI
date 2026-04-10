@@ -270,6 +270,142 @@ async function execCaptureScreen(outputPath: string): Promise<{ ok: boolean; err
   }
 }
 
+// ── Window bounds + region capture (Phase 5: side-by-side support) ───────────
+//
+// When the runner is scoped to a target app (e.g. Unreal in half-screen mode),
+// we need to know exactly where that app's window sits on the desktop so we
+// can crop the screenshot to its region BEFORE asking Vision to plan or
+// verify. Otherwise the model sees the TriForge UI alongside the target and
+// gets confused about which app is "the screen".
+//
+// Bounds are returned in LOGICAL POINTS (not image pixels) — the same
+// coordinate space CGEvent uses, so they can flow straight into the click
+// pipeline without re-scaling.
+
+export interface AppWindowBounds {
+  appName:      string;
+  windowTitle?: string;
+  x:            number;
+  y:            number;
+  width:        number;
+  height:       number;
+  /** True if this window is the OS-level frontmost window. */
+  isFrontmost:  boolean;
+}
+
+/**
+ * Get the bounds of the front window of the named app, in logical points.
+ * Returns null if the app is not running, has no visible window, or bounds
+ * are not available (e.g. Accessibility permission revoked).
+ *
+ * On macOS uses System Events position/size of front window.
+ * On Windows uses GetWindowRect via PowerShell P/Invoke.
+ */
+async function getAppWindowBoundsImpl(appName: string): Promise<AppWindowBounds | null> {
+  if (IS_WINDOWS) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { windowsGetAppWindowBounds } = require('./windowsOperator') as typeof import('./windowsOperator');
+      return windowsGetAppWindowBounds(appName);
+    } catch {
+      return null;
+    }
+  }
+  if (!IS_MACOS) return null;
+
+  const safeName = escapeAppleScriptString(appName);
+  // Two AppleScript variants — first try a direct app match, then fall back
+  // to a fuzzy "name contains" search across all visible processes. Many
+  // Unreal Editor installs identify themselves as "UnrealEditor" but display
+  // as "Unreal Engine" — neither name is canonical.
+  const exactScript =
+    `tell application "System Events" ` +
+    `to tell (first process whose name is "${safeName}") ` +
+    `to (get {position, size, name} of front window)`;
+  const fuzzyScript =
+    `tell application "System Events" ` +
+    `to tell (first process whose name contains "${safeName}") ` +
+    `to (get {position, size, name} of front window)`;
+
+  let raw = '';
+  try {
+    raw = await shellExec(`osascript -e '${exactScript}'`, 4000);
+  } catch {
+    try {
+      raw = await shellExec(`osascript -e '${fuzzyScript}'`, 4000);
+    } catch {
+      return null;
+    }
+  }
+  if (!raw) return null;
+
+  // AppleScript returns: "x, y, w, h, window title"
+  // The four numerics come first; everything after the 4th comma is the title
+  // (which may itself contain commas — we re-join the tail).
+  const parts = raw.split(',').map(s => s.trim());
+  if (parts.length < 4) return null;
+  const x = Number(parts[0]);
+  const y = Number(parts[1]);
+  const w = Number(parts[2]);
+  const h = Number(parts[3]);
+  if ([x, y, w, h].some(v => !Number.isFinite(v))) return null;
+
+  // Reject obviously bogus bounds (offscreen, zero-area)
+  if (w < 50 || h < 50) return null;
+  if (w > 20000 || h > 20000) return null;
+
+  const windowTitle = parts.slice(4).join(',').trim() || undefined;
+
+  // Determine if this window is currently frontmost
+  let isFrontmost = false;
+  try {
+    const front = await getFrontmostTarget();
+    if (front?.appName) {
+      const f = front.appName.toLowerCase();
+      const a = appName.toLowerCase();
+      isFrontmost = f === a || f.includes(a) || a.includes(f);
+    }
+  } catch { /* best-effort */ }
+
+  return { appName, windowTitle, x, y, width: w, height: h, isFrontmost };
+}
+
+/**
+ * Capture a rectangular region of the screen to a PNG.
+ * Coordinates are in LOGICAL POINTS (matching window bounds).
+ *
+ * macOS: uses `screencapture -R x,y,w,h` (which expects logical points).
+ * Windows: uses Bitmap.CopyFromScreen with the region offset.
+ */
+async function execCaptureScreenRegion(
+  outputPath: string,
+  region: { x: number; y: number; width: number; height: number },
+): Promise<{ ok: boolean; error?: string }> {
+  // Sanity-clamp to non-negative dimensions
+  const x = Math.max(0, Math.round(region.x));
+  const y = Math.max(0, Math.round(region.y));
+  const w = Math.max(1, Math.round(region.width));
+  const h = Math.max(1, Math.round(region.height));
+
+  if (IS_WINDOWS) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { windowsCaptureScreenRegion } = require('./windowsOperator') as typeof import('./windowsOperator');
+      return windowsCaptureScreenRegion(outputPath, { x, y, width: w, height: h });
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
+  }
+  if (!IS_MACOS) return { ok: false, error: 'Platform not supported' };
+
+  try {
+    await shellExec(`screencapture -x -R ${x},${y},${w},${h} "${outputPath}"`, 10000);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+}
+
 async function execTypeText(text: string): Promise<{ ok: boolean; error?: string }> {
   if (IS_WINDOWS) return windowsTypeText(text);
   if (!IS_MACOS) return { ok: false, error: 'Platform not supported' };
@@ -785,6 +921,48 @@ export const OperatorService = {
       await _tesseractWorker.terminate();
       _tesseractWorker = null;
     }
+  },
+
+  /**
+   * Phase 5: Get window bounds for the named app, in logical points.
+   * Returns null if not running, has no front window, or bounds unavailable.
+   * Used by the runner to scope screenshots, vision queries, and verification
+   * to a single app's window region (critical for snapped/half-screen layouts).
+   */
+  async getAppWindowBounds(appName: string): Promise<AppWindowBounds | null> {
+    if (!appName) return null;
+    try {
+      return await getAppWindowBoundsImpl(appName);
+    } catch {
+      return null;
+    }
+  },
+
+  /**
+   * Phase 5: Capture only a rectangular region of the screen.
+   * Region coordinates are in logical points (matching getAppWindowBounds).
+   */
+  async captureScreenRegion(
+    region: { x: number; y: number; width: number; height: number },
+    outputPath?: string,
+  ): Promise<{ ok: boolean; path?: string; error?: string }> {
+    const dest = outputPath ?? path.join(os.tmpdir(), `tf-region-${Date.now()}.png`);
+    const res = await execCaptureScreenRegion(dest, region);
+    if (!res.ok) return { ok: false, error: res.error };
+    return { ok: true, path: dest };
+  },
+
+  /**
+   * Phase 5: Update an existing session's intendedTarget.
+   * The runner calls this when invoked with a targetApp option but the
+   * caller created the session without binding it. Without this binding,
+   * validateInputContext cannot enforce that input lands in the right app.
+   */
+  setSessionIntendedTarget(sessionId: string, intendedTarget: string | null): boolean {
+    const session = _sessions.get(sessionId);
+    if (!session) return false;
+    _sessions.set(sessionId, { ...session, intendedTarget });
+    return true;
   },
 
   async captureScreen(outputPath?: string): Promise<{
