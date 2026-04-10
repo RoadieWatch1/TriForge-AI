@@ -309,8 +309,12 @@ Write-Output ok
  * Special SendKeys characters ({ } + ^ % ~) are escaped automatically.
  */
 export async function windowsTypeText(text: string): Promise<{ ok: boolean; error?: string }> {
-  const escaped = text.replace(/[+^%~(){}[\]]/g, c => `{${c}}`);
-  const script = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${escaped.replace(/'/g, "''")}'); Write-Output ok`;
+  // Escape SendKeys special chars: + ^ % ~ ( ) { } [ ]
+  const sendKeysEscaped = text.replace(/[+^%~(){}[\]]/g, c => `{${c}}`);
+  // Escape for PowerShell here-string: backtick is PS escape char, single-quote
+  // ends the string — use a here-string (@'...'@) to avoid all quoting issues.
+  const psHereString = `@'\n${sendKeysEscaped}\n'@`;
+  const script = `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait(${psHereString}); Write-Output ok`;
   try {
     const out = await shellExecPs(script, 10_000);
     if (out.includes('ok')) return { ok: true };
@@ -325,31 +329,57 @@ export async function windowsTypeText(text: string): Promise<{ ok: boolean; erro
  * Modifiers: + = Shift, ^ = Ctrl, % = Alt
  */
 const WIN_KEY_MAP: Record<string, string> = {
-  return:    '{ENTER}',
-  enter:     '{ENTER}',
-  escape:    '{ESC}',
-  tab:       '{TAB}',
-  space:     ' ',
-  delete:    '{DEL}',
-  backspace: '{BS}',
-  up:        '{UP}',
-  down:      '{DOWN}',
-  left:      '{LEFT}',
-  right:     '{RIGHT}',
-  home:      '{HOME}',
-  end:       '{END}',
-  pageup:    '{PGUP}',
-  pagedown:  '{PGDN}',
+  return:      '{ENTER}',
+  enter:       '{ENTER}',
+  escape:      '{ESC}',
+  esc:         '{ESC}',
+  tab:         '{TAB}',
+  space:       ' ',
+  delete:      '{DEL}',
+  del:         '{DEL}',
+  backspace:   '{BS}',
+  // arrow keys — both bare and arrow_* forms
+  up:          '{UP}',
+  down:        '{DOWN}',
+  left:        '{LEFT}',
+  right:       '{RIGHT}',
+  arrow_up:    '{UP}',
+  arrow_down:  '{DOWN}',
+  arrow_left:  '{LEFT}',
+  arrow_right: '{RIGHT}',
+  // navigation
+  home:        '{HOME}',
+  end:         '{END}',
+  pageup:      '{PGUP}',
+  pagedown:    '{PGDN}',
+  page_up:     '{PGUP}',
+  page_down:   '{PGDN}',
+  // extra keys
+  insert:      '{INS}',
+  ins:         '{INS}',
+  printscreen: '{PRTSC}',
+  print_screen: '{PRTSC}',
+  capslock:    '{CAPSLOCK}',
+  caps_lock:   '{CAPSLOCK}',
+  numlock:     '{NUMLOCK}',
+  num_lock:    '{NUMLOCK}',
+  // function keys
   f1:  '{F1}',  f2:  '{F2}',  f3:  '{F3}',  f4:  '{F4}',
   f5:  '{F5}',  f6:  '{F6}',  f7:  '{F7}',  f8:  '{F8}',
   f9:  '{F9}',  f10: '{F10}', f11: '{F11}', f12: '{F12}',
 };
 
 const WIN_MOD_MAP: Record<string, string> = {
-  shift: '+',
-  cmd:   '^',   // Ctrl is the Windows equivalent of Cmd
-  ctrl:  '^',
-  alt:   '%',
+  shift:   '+',
+  cmd:     '^',   // Ctrl is the Windows equivalent of Cmd
+  command: '^',
+  meta:    '^',
+  super:   '^',
+  ctrl:    '^',
+  control: '^',
+  alt:     '%',
+  option:  '%',
+  opt:     '%',
 };
 
 /**

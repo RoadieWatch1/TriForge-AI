@@ -196,11 +196,35 @@ ${history ? `Recent steps:\n${history}\n\n` : ''}Respond with ONLY JSON (no mark
 
 // ── Key combo → OperatorAction key+modifiers ──────────────────────────────────
 
+// Canonical modifier aliases → the 4 types OperatorAction accepts
+const MOD_ALIASES: Record<string, 'cmd' | 'shift' | 'alt' | 'ctrl'> = {
+  cmd:     'cmd',
+  command: 'cmd',
+  meta:    'cmd',
+  super:   'cmd',
+  win:     'cmd',
+  windows: 'cmd',
+  shift:   'shift',
+  alt:     'alt',
+  option:  'alt',
+  opt:     'alt',
+  ctrl:    'ctrl',
+  control: 'ctrl',
+};
+
 function parseKeyCombo(combo: string): { key: string; modifiers: Array<'cmd' | 'shift' | 'alt' | 'ctrl'> } {
-  const parts  = combo.toLowerCase().split('+');
-  const mods   = parts.slice(0, -1) as Array<'cmd' | 'shift' | 'alt' | 'ctrl'>;
-  const key    = parts[parts.length - 1];
-  return { key, modifiers: mods };
+  if (!combo) return { key: '', modifiers: [] };
+  const parts = combo.toLowerCase().split('+').map(p => p.trim()).filter(Boolean);
+  if (parts.length === 0) return { key: '', modifiers: [] };
+  // Last part is always the key; everything before it is a modifier
+  const keyPart = parts[parts.length - 1];
+  const modifiers: Array<'cmd' | 'shift' | 'alt' | 'ctrl'> = [];
+  for (const part of parts.slice(0, -1)) {
+    const canonical = MOD_ALIASES[part];
+    if (canonical && !modifiers.includes(canonical)) modifiers.push(canonical);
+    // Unknown modifier words are silently ignored rather than crashing
+  }
+  return { key: keyPart, modifiers };
 }
 
 // ── Fix 3: Intent-aware verification ─────────────────────────────────────────

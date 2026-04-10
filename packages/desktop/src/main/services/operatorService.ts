@@ -240,26 +240,45 @@ async function execTypeText(text: string): Promise<{ ok: boolean; error?: string
 /**
  * Key name map — translates semantic key names to osascript key codes.
  * Covers the most common navigation and control keys.
+ * Includes aliases for common model outputs (arrow_up, page_down, etc.)
  */
 const KEY_CODES: Record<string, number> = {
-  return:    36,
-  enter:     36,
-  escape:    53,
-  tab:       48,
-  space:     49,
-  delete:    51,
-  backspace: 51,
-  up:        126,
-  down:      125,
-  left:      123,
-  right:     124,
-  home:      115,
-  end:       119,
-  pageup:    116,
-  pagedown:  121,
-  f1:        122, f2:  120, f3:  99,  f4:  118,
-  f5:        96,  f6:  97,  f7:  98,  f8:  100,
-  f9:        101, f10: 109, f11: 103, f12: 111,
+  return:      36,
+  enter:       36,
+  escape:      53,
+  esc:         53,
+  tab:         48,
+  space:       49,
+  delete:      51,
+  backspace:   51,
+  del:         51,
+  // arrow keys — both bare and arrow_* forms
+  up:          126,
+  down:        125,
+  left:        123,
+  right:       124,
+  arrow_up:    126,
+  arrow_down:  125,
+  arrow_left:  123,
+  arrow_right: 124,
+  // navigation
+  home:        115,
+  end:         119,
+  pageup:      116,
+  pagedown:    121,
+  page_up:     116,
+  page_down:   121,
+  // extra keys
+  insert:      114,
+  help:        114,
+  clear:       71,
+  caps_lock:   57,
+  capslock:    57,
+  fn:          63,
+  // function keys
+  f1:  122, f2:  120, f3:  99,  f4:  118,
+  f5:  96,  f6:  97,  f7:  98,  f8:  100,
+  f9:  101, f10: 109, f11: 103, f12: 111,
 };
 
 async function execSendKey(
@@ -269,11 +288,17 @@ async function execSendKey(
   if (IS_WINDOWS) return windowsSendKey(key, modifiers);
   if (!IS_MACOS) return { ok: false, error: 'Platform not supported' };
   try {
+    // Accept common aliases the AI model may output (option, meta, super, control)
     const modMap: Record<string, string> = {
-      cmd:   'command down',
-      shift: 'shift down',
-      alt:   'option down',
-      ctrl:  'control down',
+      cmd:     'command down',
+      command: 'command down',
+      meta:    'command down',
+      super:   'command down',
+      shift:   'shift down',
+      alt:     'option down',
+      option:  'option down',
+      ctrl:    'control down',
+      control: 'control down',
     };
 
     const usingList = modifiers.map(m => modMap[m]).filter(Boolean);
