@@ -444,10 +444,56 @@ export async function runOperatorTask(opts: TaskRunnerOptions): Promise<TaskRunR
   }
 }
 
+/**
+ * Extract a leading "Target app: <Name>." / "Target: <Name>." / "App: <Name>."
+ * directive from the user's goal text. This is the primary user-facing handshake
+ * for requesting scoped / side-by-side mode from the AI Task Runner textarea.
+ *
+ * Returns { targetApp, workingGoal } where:
+ *   - targetApp   is the extracted name (undefined if no directive found)
+ *   - workingGoal is the goal text with the directive stripped (so the planner
+ *                 doesn't see the redundant prefix and mis-attribute it)
+ *
+ * Matches (case-insensitive, tolerates punctuation/whitespace):
+ *   "Target app: Unreal Engine. Click the New Project button..."
+ *   "target: UnrealEditor — click New Project"
+ *   "App: Chrome\nOpen a new tab"
+ *
+ * Does NOT match structural sentences like "I want to target the new project app"
+ * — the anchor MUST be at the start of the goal.
+ */
+function extractTargetAppDirective(goal: string): { targetApp?: string; workingGoal: string } {
+  if (!goal) return { workingGoal: goal };
+  const m = goal.match(/^\s*(?:target\s*app|target|app)\s*[:=]\s*([^.\n—–;]+?)\s*(?:[.\n—–;]|$)/i);
+  if (!m) return { workingGoal: goal };
+  const name = m[1].trim();
+  if (!name) return { workingGoal: goal };
+  // Strip the matched directive and any whitespace that follows it
+  const workingGoal = goal.slice(m[0].length).replace(/^[\s.—–;]+/, '').trim();
+  return { targetApp: name, workingGoal: workingGoal || goal };
+}
+
 async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunResult> {
-  const { sessionId, goal, maxSteps = 50, onProgress, priorApprovedAction } = opts;
+  const { sessionId, maxSteps = 50, onProgress, priorApprovedAction } = opts;
   const steps: StepResult[]  = [];
   const history: string[]    = [];
+
+  // ── Extract "Target app: <Name>." directive from the goal ──────────────────
+  // When the user types `Target app: Unreal Engine. Click ...` in the textarea,
+  // we lift that prefix out into opts.targetApp (if not already set) and strip
+  // it from the goal text passed to the planner. This is the canonical entry
+  // point for scoped / side-by-side mode — without this hoist the whole scoped
+  // targeting pipeline stays dormant and runs dispatch against full-screen.
+  const rawGoal = opts.goal;
+  const directive = extractTargetAppDirective(rawGoal);
+  const goal = directive.workingGoal;
+  if (!opts.targetApp && directive.targetApp) {
+    opts = { ...opts, targetApp: directive.targetApp, goal };
+    console.log(
+      `STEP_DIAG directive=extracted rawTargetApp="${directive.targetApp}" ` +
+      `workingGoal="${goal.slice(0, 80)}"`,
+    );
+  }
 
   // ── Preflight: check permissions before burning API calls ────────────────
   // A fresh capability probe catches revoked/missing permissions up front,
@@ -719,16 +765,21 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
 
   /**
    * Record a bounds-resolution failure when the runner is in scoped mode.
-   * Returns true if the consecutive-failure threshold (2) has been reached
-   * and the run should abort. Resetting the counter happens implicitly any
-   * time a successful cropped capture is acknowledged by the caller.
+   * Returns true if the run should abort.
+   *
+   * POLICY: ANY bounds-resolution failure in scoped mode aborts the run
+   * immediately. We previously tolerated one transient failure, but that
+   * window is exactly when the runner silently dispatched full-screen
+   * clicks into the wrong app in side-by-side layouts. The acceptance bar
+   * for scoped mode is: cropped=true and nonzero origin on EVERY step, or
+   * abort with a clear error. No "degraded" success paths.
    */
   const noteBoundsFailure = (reason: string): boolean => {
     if (!boundTarget) return false;
     boundsFailureCount += 1;
     everDegraded = true;
     lastFallbackReason = reason;
-    return boundsFailureCount >= 2;
+    return true;
   };
 
   /**
@@ -774,7 +825,14 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
 
   /**
    * Attach scopedTargeting telemetry to any TaskRunResult so all return
-   * paths surface the same diagnostic shape without repetition.
+   * paths surface the same diagnostic shape without repetition, and enforce
+   * the soundness invariant that a scoped run cannot be reported as a success
+   * if it ever ran in a degraded (non-cropped / full-screen) state.
+   *
+   * This is the final gate on result honesty: even if every individual step
+   * reported success, if the run degraded out of scoped mode at any point we
+   * downgrade ok=true → ok=false and tag the outcome as 'error' with an
+   * explicit summary. No silent "success" while scoped targeting was inactive.
    */
   const scoped = <T extends TaskRunResult>(r: T): T => {
     if (requestedTargetLabel) {
@@ -785,6 +843,40 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
         boundsFailureCount,
         lastFallbackReason,
       };
+
+      // Soundness gate: refuse to declare success if scoped targeting was
+      // ever inactive during the run. This is what prevents the silent-
+      // success mode the user reported (`cropped=false origin=(0,0)` yet
+      // run reported success).
+      if (r.ok && everDegraded) {
+        const detail =
+          `Run reported success but scoped targeting was inactive at some point ` +
+          `(last fallback reason: ${lastFallbackReason ?? 'unknown'}, bounds failures: ${boundsFailureCount}). ` +
+          `Downgrading to error: a scoped / side-by-side run cannot be considered successful if any step ` +
+          `dispatched against a full-screen capture.`;
+        r.ok = false;
+        r.outcome = 'error';
+        r.error = detail;
+        r.summary = detail;
+      }
+
+      // Enrich the summary with canonical bound-target identity so the UI
+      // and any downstream narrator can cite the actual process, not the
+      // planner's element description. This is the fix for the "Bound target:
+      // 'New Project' button in Unreal Engine launcher window" bug — the
+      // binding is about a PROCESS, not a UI element.
+      if (boundTarget) {
+        const targetLine =
+          `[scoped target] requested="${requestedTargetLabel}" ` +
+          `process="${boundTarget.processName}" family=${boundTarget.family}` +
+          (boundTarget.windowTitleAtBind ? ` windowAtBind="${boundTarget.windowTitleAtBind}"` : '') +
+          ` degraded=${everDegraded}`;
+        if (r.summary && !r.summary.includes('[scoped target]')) {
+          r.summary = `${r.summary}\n${targetLine}`;
+        } else if (!r.summary) {
+          r.summary = targetLine;
+        }
+      }
     }
     return r;
   };
@@ -947,9 +1039,11 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
       });
       if (shouldAbort) {
         const err =
-          `Scoped target "${boundTarget.processName}" produced ${boundsFailureCount} consecutive ` +
-          `bounds-resolution failures (last reason: ${reason}). The target window may be minimized, ` +
-          `hidden, or off-screen. Refusing to operate against full-screen capture.`;
+          `Scoped target "${boundTarget.processName}" (requested="${requestedTargetLabel}") ` +
+          `produced a bounds-resolution failure on step ${step} (reason: ${reason}). ` +
+          `The target window may be minimized, hidden, off-screen, or on a different Space. ` +
+          `Refusing to dispatch against a full-screen capture — in scoped / side-by-side mode, ` +
+          `every step must run against a cropped region of the bound window.`;
         emit({ step, phase: 'error', description: err });
         return scoped({ ok: false, stepsExecuted: step - 1, outcome: 'error', summary: err, error: err, steps });
       }

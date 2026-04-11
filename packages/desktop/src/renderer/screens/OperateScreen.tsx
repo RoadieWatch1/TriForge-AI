@@ -288,7 +288,20 @@ export function OperateScreen({
   const [taskGoal, setTaskGoal]                       = useState('');
   const [taskRunning, setTaskRunning]                 = useState(false);
   const [taskSteps, setTaskSteps]                     = useState<TaskStep[]>([]);
-  const [taskOutcome, setTaskOutcome]                 = useState<{ ok: boolean; summary: string; outcome: string; beforeScreenshotPath?: string; afterScreenshotPath?: string } | null>(null);
+  const [taskOutcome, setTaskOutcome]                 = useState<{
+    ok: boolean;
+    summary: string;
+    outcome: string;
+    beforeScreenshotPath?: string;
+    afterScreenshotPath?:  string;
+    scopedTargeting?: {
+      requestedLabel: string;
+      bound: { processName: string; family: string; windowTitleAtBind?: string; fuzzyMatched: boolean; bindingReason: string } | null;
+      everDegraded: boolean;
+      boundsFailureCount: number;
+      lastFallbackReason?: string;
+    };
+  } | null>(null);
   const [taskPendingApprovalId, setTaskPendingApprovalId] = useState<string | null>(null);
   const [taskSessionId, setTaskSessionId]             = useState<string | null>(null);
   const unsubTaskRef                                  = useRef<(() => void) | null>(null);
@@ -646,12 +659,34 @@ export function OperateScreen({
    * gets seeded into the planner history so the planner does NOT re-issue
    * the same action and trigger another approval prompt.
    */
+  /**
+   * Extract a leading `Target app: <Name>.` directive from the user's prompt.
+   * The runner has the same extractor as a safety net, but doing it here lets
+   * us (a) pass targetApp through the preload IPC cleanly, and (b) strip the
+   * prefix from the textarea submission so it doesn't also appear inside the
+   * planner history as a distracting user-goal fragment.
+   */
+  const parseTargetAppDirective = (raw: string): { targetApp?: string; goal: string } => {
+    if (!raw) return { goal: raw };
+    const m = raw.match(/^\s*(?:target\s*app|target|app)\s*[:=]\s*([^.\n—–;]+?)\s*(?:[.\n—–;]|$)/i);
+    if (!m) return { goal: raw };
+    const name = m[1].trim();
+    if (!name) return { goal: raw };
+    const stripped = raw.slice(m[0].length).replace(/^[\s.—–;]+/, '').trim();
+    return { targetApp: name, goal: stripped || raw };
+  };
+
   const runAiTask = async (priorApprovedAction?: string) => {
     if (!tf || !taskGoal.trim() || taskRunning) return;
     setTaskRunning(true);
     if (!priorApprovedAction) setTaskSteps([]);
     setTaskOutcome(null);
     setTaskPendingApprovalId(null);
+
+    // Lift any "Target app: <Name>." prefix into an explicit targetApp
+    // argument so the runner activates scoped / side-by-side mode instead
+    // of falling back to unscoped full-screen dispatch.
+    const { targetApp, goal: workingGoal } = parseTargetAppDirective(taskGoal.trim());
 
     const op = tf['operator'] as Record<string, (...a: unknown[]) => Promise<unknown>>;
     try {
@@ -672,11 +707,21 @@ export function OperateScreen({
         (ev) => setTaskSteps(prev => [...prev, ev]),
       ) ?? null;
 
-      const result = await op?.runTask?.(sid, taskGoal.trim(), undefined, priorApprovedAction) as {
+      // Pass targetApp as the 6th arg so the runner can bind a canonical
+      // BoundRuntimeTarget before any dispatch. observeOnly (5th arg) is
+      // left undefined to preserve the existing heuristic routing.
+      const result = await op?.runTask?.(sid, workingGoal, undefined, priorApprovedAction, undefined, targetApp) as {
         ok: boolean; outcome: string; summary: string; stepsExecuted: number;
         pendingApprovalId?: string;
         beforeScreenshotPath?: string;
         afterScreenshotPath?:  string;
+        scopedTargeting?: {
+          requestedLabel: string;
+          bound: { processName: string; family: string; windowTitleAtBind?: string; fuzzyMatched: boolean; bindingReason: string } | null;
+          everDegraded: boolean;
+          boundsFailureCount: number;
+          lastFallbackReason?: string;
+        };
       } | null;
 
       if (result?.outcome === 'approval_pending' && result?.pendingApprovalId) {
@@ -689,6 +734,7 @@ export function OperateScreen({
         outcome:              result?.outcome ?? 'unknown',
         beforeScreenshotPath: result?.beforeScreenshotPath,
         afterScreenshotPath:  result?.afterScreenshotPath,
+        scopedTargeting:      result?.scopedTargeting,
       });
     } catch (e) {
       setTaskOutcome({ ok: false, summary: e instanceof Error ? e.message : 'Task failed.', outcome: 'error' });
@@ -1386,9 +1432,51 @@ export function OperateScreen({
                 : taskOutcome.ok ? 'Task complete' : 'Task stopped'}{' '}
               — {taskOutcome.outcome}
             </div>
-            <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
               {taskOutcome.summary}
             </div>
+
+            {/* Canonical scoped-targeting identity — shown whenever the run
+                was invoked with a targetApp. Surfaces the actual bound process
+                (not the planner's element description) so the user can verify
+                side-by-side mode actually engaged. */}
+            {taskOutcome.scopedTargeting && (
+              <div style={{
+                marginTop: 10,
+                padding: '8px 10px',
+                borderRadius: 6,
+                background: 'rgba(99,102,241,0.06)',
+                border: '1px solid rgba(99,102,241,0.22)',
+                fontSize: 11,
+                color: 'var(--text-secondary)',
+                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                lineHeight: 1.55,
+              }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: '#818cf8', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 4 }}>
+                  Scoped target binding
+                </div>
+                <div>requested: <b>{taskOutcome.scopedTargeting.requestedLabel}</b></div>
+                {taskOutcome.scopedTargeting.bound ? (
+                  <>
+                    <div>bound process: <b>{taskOutcome.scopedTargeting.bound.processName}</b></div>
+                    <div>family: {taskOutcome.scopedTargeting.bound.family}</div>
+                    {taskOutcome.scopedTargeting.bound.windowTitleAtBind && (
+                      <div>window at bind: "{taskOutcome.scopedTargeting.bound.windowTitleAtBind}"</div>
+                    )}
+                    <div>match: {taskOutcome.scopedTargeting.bound.bindingReason}{taskOutcome.scopedTargeting.bound.fuzzyMatched ? ' (fuzzy)' : ''}</div>
+                  </>
+                ) : (
+                  <div style={{ color: '#ef4444' }}>bound process: &lt;binding failed&gt;</div>
+                )}
+                <div style={{ color: taskOutcome.scopedTargeting.everDegraded ? '#ef4444' : '#10a37f' }}>
+                  scoped integrity: {taskOutcome.scopedTargeting.everDegraded ? 'DEGRADED (ran unscoped at some point)' : 'OK (cropped every step)'}
+                  {taskOutcome.scopedTargeting.boundsFailureCount > 0 && ` — bounds failures: ${taskOutcome.scopedTargeting.boundsFailureCount}`}
+                </div>
+                {taskOutcome.scopedTargeting.lastFallbackReason && (
+                  <div style={{ color: 'var(--text-muted)' }}>last fallback: {taskOutcome.scopedTargeting.lastFallbackReason}</div>
+                )}
+              </div>
+            )}
 
             {/* Before / After visual proof */}
             {taskOutcome.ok && taskOutcome.beforeScreenshotPath && taskOutcome.afterScreenshotPath && (
