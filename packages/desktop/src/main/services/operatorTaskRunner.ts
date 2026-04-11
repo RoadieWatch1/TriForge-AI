@@ -21,6 +21,12 @@ import { OperatorService, getDisplayScaleFactor, type AppWindowBounds } from './
 import { analyzeScreen, describeScreen, locateElement } from './visionAnalyzer';
 import { buildAppAwarenessSnapshot, formatAppAwarenessSummary } from './appAwareness';
 import { imageSize } from './imageSize';
+import {
+  resolveCanonicalTarget,
+  refreshBoundsForTarget,
+  isBoundTargetStillRunning,
+  type BoundRuntimeTarget,
+} from './targetResolver';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -132,6 +138,20 @@ export interface TaskRunResult {
   /** Before/after visual proof — paths to screenshots captured before and after the run */
   beforeScreenshotPath?: string;
   afterScreenshotPath?:  string;
+  /**
+   * Side-by-side / scoped-mode telemetry. Set when the runner was invoked
+   * with a targetApp. Surfaces:
+   *   - the resolved BoundRuntimeTarget (or null if resolution failed)
+   *   - whether the run ever entered degraded full-screen mode
+   *   - the count of bounds-resolution failures across the run
+   */
+  scopedTargeting?: {
+    requestedLabel:     string;
+    bound:              BoundRuntimeTarget | null;
+    everDegraded:       boolean;
+    boundsFailureCount: number;
+    lastFallbackReason?: string;
+  };
 }
 
 export interface StepResult {
@@ -483,28 +503,69 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
   // ── Detect display scale factor for Retina coordinate correction ──────────
   const displayScale = await getDisplayScaleFactor();
 
-  // ── Phase 5: Side-by-side / snapped window support ───────────────────────
+  // ── Side-by-side / scoped target binding ────────────────────────────────
   //
-  // When the runner is invoked with `targetApp`, every observation, planner
-  // call, and verification is scoped to that app's window region. The model
-  // sees only the target's pixels, so it can no longer confuse Unreal's
-  // half-screen state with TriForge's own UI floating beside it.
+  // Side-by-side is a PRIMARY supported mode: users keep TriForge open beside
+  // the target app so they can watch it work. The runner must enforce that
+  // every observation, click, and verification operates against the bound
+  // target window — never silently fall back to full-screen capture.
   //
-  // 1. Bind session.intendedTarget so executeApprovedInputAction's pre-input
-  //    fuzzy gate validates input lands in the right app.
-  // 2. Re-fetch window bounds at each iteration (snapped layouts can move).
-  // 3. Crop the screenshot to the bounds rectangle.
-  // 4. After locateElement on the cropped image, translate region-relative
-  //    pixel coords back to screen-absolute logical points before clicking.
-  //
-  // If the target app is not running, bounds detection fails, or we're in a
-  // platform without bounds support — we silently fall through to full-screen
-  // capture and the legacy code path. Honest degradation, never block.
-  const targetApp = opts.targetApp?.trim() || undefined;
-  if (targetApp) {
+  // BINDING MODEL:
+  //   1. Resolve the user-supplied targetApp ONCE at session start into a
+  //      BoundRuntimeTarget (canonical processName + family).
+  //   2. Every step uses bound.processName for focus, bounds, and frontmost
+  //      checks. The loose label is never re-resolved mid-session.
+  //   3. Bounds are refreshed each step (windows move/snap/resize) but the
+  //      BINDING is stable.
+  //   4. Bounds-resolution failure when bound is set → diagnostic + counted
+  //      fallback. Two consecutive failures abort the run, never silently
+  //      execute against the wrong window.
+  const requestedTargetLabel = opts.targetApp?.trim() || undefined;
+  let boundTarget: BoundRuntimeTarget | null = null;
+  let boundsFailureCount = 0;
+  let everDegraded = false;
+  let lastFallbackReason: string | undefined;
+
+  if (requestedTargetLabel) {
     try {
-      OperatorService.setSessionIntendedTarget(sessionId, targetApp);
+      const runningApps = await OperatorService.listRunningApps();
+      boundTarget = await resolveCanonicalTarget(requestedTargetLabel, { runningApps });
+    } catch { /* boundTarget stays null — handled below */ }
+
+    if (!boundTarget) {
+      const err =
+        `Target binding failed: no running process matched "${requestedTargetLabel}". ` +
+        `Cannot enter scoped mode. Either start the target app first or remove the targetApp constraint.`;
+      console.log(`STEP_DIAG bind=failed requested="${requestedTargetLabel}" reason="no_matching_process"`);
+      return {
+        ok: false,
+        stepsExecuted: 0,
+        outcome: 'blocked',
+        summary: err,
+        error: err,
+        steps,
+        scopedTargeting: {
+          requestedLabel: requestedTargetLabel,
+          bound: null,
+          everDegraded: false,
+          boundsFailureCount: 0,
+          lastFallbackReason: 'no_matching_process_at_session_start',
+        },
+      };
+    }
+
+    // Bind the session's intendedTarget to the CANONICAL process name so
+    // executeApprovedInputAction's pre-input fuzzy gate validates against
+    // the right identity, not the loose user label.
+    try {
+      OperatorService.setSessionIntendedTarget(sessionId, boundTarget.processName);
     } catch { /* best-effort */ }
+
+    console.log(
+      `STEP_DIAG bind=ok requested="${requestedTargetLabel}" ` +
+      `processName="${boundTarget.processName}" family=${boundTarget.family} ` +
+      `fuzzy=${boundTarget.fuzzyMatched} reason=${boundTarget.bindingReason}`,
+    );
   }
 
   // Snapshot of the most recently confirmed target window state. Used by the
@@ -515,14 +576,13 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
   let lastConfirmedScreenSummary: string | undefined;
 
   /**
-   * Resolve the target app's bounds for this iteration.
-   * Returns null when there is no targetApp set, or when bounds detection
-   * failed (caller falls back to full-screen capture).
+   * Resolve current bounds of the bound target. The binding (processName) is
+   * stable; only the bounds rectangle is refreshed per call.
    */
-  const resolveTargetBounds = async (): Promise<AppWindowBounds | null> => {
-    if (!targetApp) return null;
+  const refreshBounds = async (): Promise<AppWindowBounds | null> => {
+    if (!boundTarget) return null;
     try {
-      return await OperatorService.getAppWindowBounds(targetApp);
+      return await refreshBoundsForTarget(boundTarget);
     } catch {
       return null;
     }
@@ -531,15 +591,15 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
   /**
    * Capture the screen and return either:
    *   - a region crop of the target app's window (preferred when bounds known), or
-   *   - a full-screen capture (fallback)
+   *   - a full-screen capture (degraded fallback — only when boundTarget is null)
    *
-   * When `bounds` is supplied, the returned imageOrigin is the bounds (x,y)
-   * in logical points — used to translate vision-pixel coordinates back to
-   * absolute screen logical points.
+   * When boundTarget is set but bounds resolution failed, this is treated as
+   * an error path: the caller logs an explicit fallback reason and the run's
+   * everDegraded flag is set.
    */
   const captureForTarget = async (
     bounds: AppWindowBounds | null,
-  ): Promise<{ path: string; origin: { x: number; y: number }; cropped: boolean } | null> => {
+  ): Promise<{ path: string; origin: { x: number; y: number }; cropped: boolean; fallbackReason?: string } | null> => {
     if (bounds) {
       // Inflate by a small margin so window borders / title bars are included
       // — vision often anchors to chrome elements ("close button", "menu bar").
@@ -553,37 +613,180 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
       if (r.ok && r.path) {
         return { path: r.path, origin: { x: region.x, y: region.y }, cropped: true };
       }
-      // Fall through to full screen on region capture failure
+      // Region capture failed — fall through with reason
+      const reason = `region_capture_failed: ${r.error ?? 'unknown'}`;
+      const ss = await OperatorService.captureScreen();
+      if (!ss.ok || !ss.path) return null;
+      return { path: ss.path, origin: { x: 0, y: 0 }, cropped: false, fallbackReason: reason };
     }
+    // No bounds at all — full-screen capture
     const ss = await OperatorService.captureScreen();
     if (!ss.ok || !ss.path) return null;
-    return { path: ss.path, origin: { x: 0, y: 0 }, cropped: false };
+    return {
+      path: ss.path,
+      origin: { x: 0, y: 0 },
+      cropped: false,
+      fallbackReason: boundTarget ? 'bounds_resolution_returned_null' : undefined,
+    };
   };
 
   /**
-   * Re-assert focus on the target app if it isn't already frontmost.
-   * Called immediately before any input dispatch (click/type/key) when the
-   * runner is scoped to a target app. This is the single biggest reliability
-   * win for side-by-side layouts: TriForge's own approval-prompt rendering
-   * frequently steals focus from the target between observe and act.
+   * Re-assert focus on the bound target if it isn't already frontmost.
+   * Called immediately before any input dispatch (click/type/key) and before
+   * verification. This is the single biggest reliability win for side-by-side
+   * layouts: TriForge's own approval-prompt UI frequently steals focus from
+   * the target between observe and act.
    *
-   * Returns the (possibly updated) bounds for the target — null if focusing
-   * the app or reading bounds failed.
+   * IMPORTANT: uses the BOUND processName for focus, never the loose user
+   * label. This prevents identity drift between Unreal Editor and Epic Games
+   * Launcher across retries.
+   *
+   * Returns:
+   *   - bounds: current bounds (null if resolution failed)
+   *   - frontmostConfirmed: true if the OS now reports the bound target as frontmost
+   *   - frontmostApp: name of the actually-frontmost app (for logging)
    */
-  const ensureTargetFocused = async (): Promise<AppWindowBounds | null> => {
-    if (!targetApp) return null;
-    let bounds = await resolveTargetBounds();
-    if (bounds?.isFrontmost) return bounds;
+  const ensureBoundFocused = async (): Promise<{
+    bounds: AppWindowBounds | null;
+    frontmostConfirmed: boolean;
+    frontmostApp: string | null;
+  }> => {
+    if (!boundTarget) return { bounds: null, frontmostConfirmed: false, frontmostApp: null };
 
+    // Step 1: read current bounds + frontmost
+    let bounds = await refreshBounds();
+    let frontmost = await OperatorService.getFrontmostApp().catch(() => null);
+
+    // If already frontmost, we're done
+    if (bounds?.isFrontmost) {
+      return { bounds, frontmostConfirmed: true, frontmostApp: frontmost?.appName ?? boundTarget.processName };
+    }
+
+    // Step 2: focus by canonical processName
     try {
-      const action = OperatorService.buildAction(sessionId, 'focus_app', { target: targetApp });
+      const action = OperatorService.buildAction(sessionId, 'focus_app', { target: boundTarget.processName });
       await OperatorService.executeAction(action);
-      // Brief settle so the OS finishes raising the window before we read bounds
-      await new Promise(r => setTimeout(r, 200));
+      // Settle so the OS finishes raising the window before re-reading
+      await new Promise(r => setTimeout(r, 250));
     } catch { /* best-effort */ }
 
-    bounds = await resolveTargetBounds();
-    return bounds;
+    // Step 3: re-read bounds + frontmost and verify
+    bounds = await refreshBounds();
+    frontmost = await OperatorService.getFrontmostApp().catch(() => null);
+    const frontmostName = frontmost?.appName ?? null;
+    const confirmed = !!frontmostName && (
+      frontmostName === boundTarget.processName ||
+      frontmostName.toLowerCase().includes(boundTarget.processName.toLowerCase()) ||
+      boundTarget.processName.toLowerCase().includes(frontmostName.toLowerCase())
+    );
+    return { bounds, frontmostConfirmed: confirmed, frontmostApp: frontmostName };
+  };
+
+  /**
+   * Build the comprehensive STEP_DIAG log line. Called at every act/verify
+   * boundary so we have full visibility into the targeting pipeline state.
+   */
+  const stepDiag = (
+    stage: 'observe' | 'act' | 'verify',
+    step: number,
+    info: {
+      bounds?: AppWindowBounds | null;
+      origin?: { x: number; y: number };
+      cropped?: boolean;
+      frontmostConfirmed?: boolean;
+      frontmostApp?: string | null;
+      fallbackReason?: string;
+      extra?: string;
+    },
+  ): void => {
+    const parts: string[] = [
+      `STEP_DIAG stage=${stage}`,
+      `step=${step}`,
+      `requested="${requestedTargetLabel ?? 'none'}"`,
+      `bound="${boundTarget?.processName ?? 'none'}"`,
+      `family=${boundTarget?.family ?? 'none'}`,
+      `bounds=${info.bounds ? `(${info.bounds.x},${info.bounds.y},${info.bounds.width}x${info.bounds.height})` : 'null'}`,
+      `windowTitle="${info.bounds?.windowTitle ?? 'unknown'}"`,
+      `origin=(${info.origin?.x ?? 0},${info.origin?.y ?? 0})`,
+      `cropped=${info.cropped ?? false}`,
+      `frontmostConfirmed=${info.frontmostConfirmed ?? 'n/a'}`,
+      `frontmostApp="${info.frontmostApp ?? 'unknown'}"`,
+      `fallback=${info.fallbackReason ?? 'none'}`,
+    ];
+    if (info.extra) parts.push(info.extra);
+    console.log(parts.join(' '));
+  };
+
+  /**
+   * Record a bounds-resolution failure when the runner is in scoped mode.
+   * Returns true if the consecutive-failure threshold (2) has been reached
+   * and the run should abort. Resetting the counter happens implicitly any
+   * time a successful cropped capture is acknowledged by the caller.
+   */
+  const noteBoundsFailure = (reason: string): boolean => {
+    if (!boundTarget) return false;
+    boundsFailureCount += 1;
+    everDegraded = true;
+    lastFallbackReason = reason;
+    return boundsFailureCount >= 2;
+  };
+
+  /**
+   * Pre-input focus assertion. Calls ensureBoundFocused and reports whether
+   * dispatch should proceed. In scoped mode, refuses dispatch unless the
+   * bound target is verified frontmost — preventing clicks/typing/keystrokes
+   * from landing in TriForge's own UI or another app in side-by-side layouts.
+   *
+   * Returns proceed=true unconditionally when there's no bound target.
+   */
+  const assertFocusForDispatch = async (
+    actionLabel: string,
+  ): Promise<{
+    proceed:            boolean;
+    bounds:             AppWindowBounds | null;
+    frontmostConfirmed: boolean;
+    frontmostApp:       string | null;
+    abortReason?:       string;
+  }> => {
+    if (!boundTarget) {
+      return { proceed: true, bounds: null, frontmostConfirmed: true, frontmostApp: null };
+    }
+    const focused = await ensureBoundFocused();
+    if (!focused.frontmostConfirmed) {
+      const reason =
+        `pre-${actionLabel} focus assert FAILED: bound target "${boundTarget.processName}" is not frontmost ` +
+        `(actual frontmost: "${focused.frontmostApp ?? 'unknown'}"). Refusing to dispatch ${actionLabel} into the wrong app.`;
+      return {
+        proceed:            false,
+        bounds:             focused.bounds,
+        frontmostConfirmed: false,
+        frontmostApp:       focused.frontmostApp,
+        abortReason:        reason,
+      };
+    }
+    return {
+      proceed:            true,
+      bounds:             focused.bounds,
+      frontmostConfirmed: true,
+      frontmostApp:       focused.frontmostApp,
+    };
+  };
+
+  /**
+   * Attach scopedTargeting telemetry to any TaskRunResult so all return
+   * paths surface the same diagnostic shape without repetition.
+   */
+  const scoped = <T extends TaskRunResult>(r: T): T => {
+    if (requestedTargetLabel) {
+      r.scopedTargeting = {
+        requestedLabel:     requestedTargetLabel,
+        bound:              boundTarget,
+        everDegraded,
+        boundsFailureCount,
+        lastFallbackReason,
+      };
+    }
+    return r;
   };
 
   // ── B1 follow-up: Seed history with the just-approved action so the planner
@@ -683,32 +886,89 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
     // ── 1. Observe ────────────────────────────────────────────────────────────
     emit({ step, phase: 'observe', description: 'Taking screenshot…' });
 
-    // Phase 5: when scoped to a target app, re-assert focus first so the
-    // window we're about to crop is the live, frontmost window. Without this
-    // re-assertion, TriForge's own UI can steal focus between iterations and
-    // every subsequent observation captures the wrong app.
-    let targetBounds: AppWindowBounds | null = null;
-    if (targetApp) {
-      targetBounds = await ensureTargetFocused();
-      if (!targetBounds) {
-        history.push(
-          `${step}: ⚠ targetApp "${targetApp}" not found or has no visible window. ` +
-          `Either it's not running, or window bounds are unavailable. ` +
-          `Falling back to full-screen observation.`,
-        );
+    // In scoped mode, re-assert focus on the BOUND target before EVERY
+    // capture so the window we're about to crop is the live, frontmost
+    // window. The binding (processName) is stable across iterations; the
+    // bounds rectangle is recomputed each step (windows can be moved/
+    // snapped/resized between iterations). TriForge's own UI can steal
+    // focus between iterations, so re-assert is mandatory in side-by-side.
+    let observeBounds: AppWindowBounds | null = null;
+    let observeFrontmostConfirmed = true;
+    let observeFrontmostApp: string | null = null;
+    if (boundTarget) {
+      // Verify the bound process is still alive — re-resolution would cause
+      // identity drift, so if the process died we abort the run cleanly.
+      const stillRunning = await isBoundTargetStillRunning(boundTarget);
+      if (!stillRunning) {
+        const err =
+          `Bound target "${boundTarget.processName}" is no longer running. ` +
+          `Aborting scoped run rather than re-resolving to a different process.`;
+        stepDiag('observe', step, {
+          bounds: null, origin: { x: 0, y: 0 }, cropped: false,
+          frontmostConfirmed: false, frontmostApp: null,
+          fallbackReason: 'bound_target_exited',
+          extra: 'abort=bound_process_exited',
+        });
+        emit({ step, phase: 'error', description: err });
+        return scoped({ ok: false, stepsExecuted: step - 1, outcome: 'error', summary: err, error: err, steps });
       }
+      const focused = await ensureBoundFocused();
+      observeBounds = focused.bounds;
+      observeFrontmostConfirmed = focused.frontmostConfirmed;
+      observeFrontmostApp = focused.frontmostApp;
     }
 
-    const cap = await captureForTarget(targetBounds);
+    const cap = await captureForTarget(observeBounds);
     if (!cap) {
       const err = 'Screenshot failed';
+      stepDiag('observe', step, {
+        bounds: observeBounds, origin: { x: 0, y: 0 }, cropped: false,
+        frontmostConfirmed: observeFrontmostConfirmed,
+        frontmostApp: observeFrontmostApp,
+        fallbackReason: 'screenshot_failed',
+      });
       emit({ step, phase: 'error', description: err });
-      return { ok: false, stepsExecuted: step - 1, outcome: 'error', summary: err, error: err, steps };
+      return scoped({ ok: false, stepsExecuted: step - 1, outcome: 'error', summary: err, error: err, steps });
     }
+
+    // In scoped mode, treat any non-cropped capture as a bounds failure.
+    // After 2 consecutive failures we abort rather than silently operate
+    // against full-screen pixels — that's how TriForge ends up clicking
+    // into the wrong app in side-by-side layouts.
+    if (boundTarget && (!cap.cropped || cap.fallbackReason)) {
+      const reason = cap.fallbackReason ?? 'capture_not_cropped';
+      const shouldAbort = noteBoundsFailure(reason);
+      stepDiag('observe', step, {
+        bounds: observeBounds, origin: cap.origin, cropped: cap.cropped,
+        frontmostConfirmed: observeFrontmostConfirmed,
+        frontmostApp: observeFrontmostApp,
+        fallbackReason: reason,
+        extra: `boundsFailures=${boundsFailureCount}${shouldAbort ? ' abort=bounds_failure_threshold' : ''}`,
+      });
+      if (shouldAbort) {
+        const err =
+          `Scoped target "${boundTarget.processName}" produced ${boundsFailureCount} consecutive ` +
+          `bounds-resolution failures (last reason: ${reason}). The target window may be minimized, ` +
+          `hidden, or off-screen. Refusing to operate against full-screen capture.`;
+        emit({ step, phase: 'error', description: err });
+        return scoped({ ok: false, stepsExecuted: step - 1, outcome: 'error', summary: err, error: err, steps });
+      }
+    } else if (boundTarget) {
+      // Successful cropped capture — reset the consecutive-failure counter
+      boundsFailureCount = 0;
+    }
+
     let screenshotPath = cap.path;
     let regionOrigin   = cap.origin;
     let regionCropped  = cap.cropped;
     lastScreenshotPath = screenshotPath;
+
+    stepDiag('observe', step, {
+      bounds: observeBounds, origin: regionOrigin, cropped: regionCropped,
+      frontmostConfirmed: observeFrontmostConfirmed,
+      frontmostApp: observeFrontmostApp,
+      fallbackReason: cap.fallbackReason,
+    });
 
     emit({ step, phase: 'observe', description: 'Reading screen…', screenshotPath });
     const screenDesc    = await describeScreen(screenshotPath);
@@ -733,23 +993,24 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
     // observation. This stops the planner from oscillating between mutually-
     // exclusive interpretations of the same Unreal Editor screen.
     let continuityHint: string | undefined;
-    if (targetApp && lastConfirmedTargetTitle && targetBounds?.windowTitle === lastConfirmedTargetTitle) {
+    if (boundTarget && lastConfirmedTargetTitle && observeBounds?.windowTitle === lastConfirmedTargetTitle) {
       continuityHint =
-        `The "${targetApp}" window title is still "${lastConfirmedTargetTitle}" — ` +
+        `The "${boundTarget.processName}" window title is still "${lastConfirmedTargetTitle}" — ` +
         `the same screen state you previously confirmed${lastConfirmedScreenSummary ? ` ("${lastConfirmedScreenSummary.slice(0, 120)}")` : ''}. ` +
         `Treat this as continuous with that prior observation. Do NOT re-interpret it as a different page unless ` +
         `there is unambiguous visual evidence of a UI transition.`;
     }
-    const regionInfo = { cropped: regionCropped, windowTitle: targetBounds?.windowTitle };
+    const regionInfo = { cropped: regionCropped, windowTitle: observeBounds?.windowTitle };
 
+    const plannerScopeLabel = boundTarget?.processName ?? opts.targetApp;
     const planResponse = await analyzeScreen(
       screenshotPath,
-      buildPlannerPrompt(goal, screenSummary, history.slice(-8).join('\n'), appContext, opts.targetApp, regionInfo, continuityHint),
+      buildPlannerPrompt(goal, screenSummary, history.slice(-8).join('\n'), appContext, plannerScopeLabel, regionInfo, continuityHint),
     );
     if (!planResponse.ok) {
       const err = planResponse.error ?? 'Planning call failed';
       emit({ step, phase: 'error', description: err });
-      return { ok: false, stepsExecuted: step - 1, outcome: 'error', summary: err, error: err, steps };
+      return scoped({ ok: false, stepsExecuted: step - 1, outcome: 'error', summary: err, error: err, steps });
     }
 
     let planned: PlannedAction;
@@ -770,7 +1031,7 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
       const retryPlan = await analyzeScreen(
         screenshotPath,
         `Your previous response was NOT valid JSON. You MUST respond with ONLY a raw JSON object.\n\n` +
-        buildPlannerPrompt(goal, screenSummary, history.slice(-8).join('\n'), appContext, opts.targetApp, regionInfo, continuityHint),
+        buildPlannerPrompt(goal, screenSummary, history.slice(-8).join('\n'), appContext, plannerScopeLabel, regionInfo, continuityHint),
       );
       if (retryPlan.ok) {
         try {
@@ -780,12 +1041,12 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
           // Two consecutive parse failures — abort with a real error
           const err = `Planner produced invalid JSON twice. Last raw output: "${retryPlan.answer.slice(0, 120)}"`;
           emit({ step, phase: 'error', description: err, screenshotPath });
-          return { ok: false, stepsExecuted: step - 1, outcome: 'error', summary: err, error: err, steps };
+          return scoped({ ok: false, stepsExecuted: step - 1, outcome: 'error', summary: err, error: err, steps });
         }
       } else {
         const err = `Planner re-plan call failed: ${retryPlan.error ?? 'unknown'}`;
         emit({ step, phase: 'error', description: err, screenshotPath });
-        return { ok: false, stepsExecuted: step - 1, outcome: 'error', summary: err, error: err, steps };
+        return scoped({ ok: false, stepsExecuted: step - 1, outcome: 'error', summary: err, error: err, steps });
       }
     }
 
@@ -802,7 +1063,7 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
         emit({ step, phase: 'error', description: err, screenshotPath, action: planned });
         steps.push({ step, action: planned, executed: false, outcome: 'blocked', error: err });
         const afterScreenshotPath = await captureAfter();
-        return { ok: false, stepsExecuted: step, outcome: 'blocked', summary: err, error: err, steps, beforeScreenshotPath, afterScreenshotPath };
+        return scoped({ ok: false, stepsExecuted: step, outcome: 'blocked', summary: err, error: err, steps, beforeScreenshotPath, afterScreenshotPath });
       }
 
       if (consecutiveWaits >= 2) {
@@ -887,7 +1148,7 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
       emit({ step, phase: 'done', description: summary, screenshotPath });
       endStep('completed', { actionType: 'done', reason: summary }, undefined, screenshotPath);
       const afterScreenshotPath = await captureAfter();
-      return { ok: true, stepsExecuted: step, outcome: 'completed', summary, steps, beforeScreenshotPath, afterScreenshotPath };
+      return scoped({ ok: true, stepsExecuted: step, outcome: 'completed', summary, steps, beforeScreenshotPath, afterScreenshotPath });
     }
     if (planned.type === 'blocked') {
       const summary = planned.reason ?? planned.description;
@@ -895,7 +1156,7 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
       emit({ step, phase: 'blocked', description: summary, screenshotPath });
       endStep('blocked', { actionType: 'blocked', reason: summary }, summary, screenshotPath);
       const afterScreenshotPath = await captureAfter();
-      return { ok: false, stepsExecuted: step - 1, outcome: 'blocked', summary, error: summary, steps, beforeScreenshotPath, afterScreenshotPath };
+      return scoped({ ok: false, stepsExecuted: step - 1, outcome: 'blocked', summary, error: summary, steps, beforeScreenshotPath, afterScreenshotPath });
     }
 
     // ── 3. Act ────────────────────────────────────────────────────────────────
@@ -965,25 +1226,28 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
             target: string,
             origin: { x: number; y: number },
             cropped: boolean,
+            /**
+             * Logical width (in points) of the region the image represents.
+             * For region crops this is `bounds.width + 8` (margin), passed
+             * by the caller because each retry attempt may use different
+             * bounds. For full-screen captures, leave undefined and the
+             * primary display width is used as a fallback.
+             */
+            logicalRegionWidth?: number,
           ) => {
             const loc = await locateElement(imgPath, target);
             if (!loc.found || loc.x === undefined || loc.y === undefined) return loc;
 
             // ── Compute actual scale from image header vs. logical size ──
-            // For cropped region captures we don't know the logical width
-            // ahead of time — but the bounds we asked for ARE in logical
-            // points, so we can divide image width by the region's logical
-            // width to get the scale. For full-screen captures we use the
-            // primary display logical width.
+            // For cropped region captures the logical width is known by the
+            // caller (the requested region was bounds.width + 8 points). For
+            // full-screen captures we use the primary display logical width.
             let imgScale = displayScale;
             try {
               const dims = imageSize(imgPath);
               if (dims) {
-                let logicalW: number | undefined;
-                if (cropped && targetBounds) {
-                  // The region we requested was bounds.width + 8 margin
-                  logicalW = targetBounds.width + 8;
-                } else {
+                let logicalW: number | undefined = logicalRegionWidth;
+                if (!logicalW) {
                   // eslint-disable-next-line @typescript-eslint/no-require-imports
                   const { screen } = require('electron') as typeof import('electron');
                   logicalW = screen.getPrimaryDisplay().size.width;
@@ -1015,8 +1279,12 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
             return loc;
           };
 
-          // Attempt 1 — direct locate on the cropped (or full) screenshot
-          const loc1 = await locateAndScale(screenshotPath, planned.target, regionOrigin, regionCropped);
+          // Attempt 1 — direct locate on the cropped (or full) screenshot.
+          // logicalRegionWidth uses observeBounds (the bounds that produced
+          // the current step's screenshotPath) so the scale calculation
+          // matches the image actually being measured.
+          const attempt1Width = regionCropped && observeBounds ? observeBounds.width + 8 : undefined;
+          const loc1 = await locateAndScale(screenshotPath, planned.target, regionOrigin, regionCropped, attempt1Width);
           if (loc1.found && loc1.x !== undefined && loc1.y !== undefined) {
             x = loc1.x; y = loc1.y; locConfidence = loc1.confidence;
             _elementCache.set(cacheKey, { x, y, locatedAt: Date.now() });
@@ -1029,10 +1297,12 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
             await OperatorService.executeAction(scrollAction);
             await new Promise(r => setTimeout(r, 600));
             // Re-fetch bounds in case the window moved during scroll
-            const bounds2 = targetApp ? await resolveTargetBounds() : null;
-            const cap2 = await captureForTarget(bounds2 ?? targetBounds);
+            const bounds2 = boundTarget ? await refreshBounds() : null;
+            const activeBounds2 = bounds2 ?? observeBounds;
+            const cap2 = await captureForTarget(activeBounds2);
             if (cap2) {
-              const loc2 = await locateAndScale(cap2.path, planned.target, cap2.origin, cap2.cropped);
+              const attempt2Width = cap2.cropped && activeBounds2 ? activeBounds2.width + 8 : undefined;
+              const loc2 = await locateAndScale(cap2.path, planned.target, cap2.origin, cap2.cropped, attempt2Width);
               if (loc2.found && loc2.x !== undefined && loc2.y !== undefined) {
                 x = loc2.x; y = loc2.y; locConfidence = loc2.confidence;
                 _elementCache.set(cacheKey, { x, y, locatedAt: Date.now() });
@@ -1043,10 +1313,12 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
           // Attempt 3 — fresh screenshot + locate (re-fetch bounds again)
           if (x === undefined || y === undefined) {
             emit({ step, phase: 'act', description: `Still not found — re-capturing screen…`, screenshotPath });
-            const bounds3 = targetApp ? await resolveTargetBounds() : null;
-            const cap3 = await captureForTarget(bounds3 ?? targetBounds);
+            const bounds3 = boundTarget ? await refreshBounds() : null;
+            const activeBounds3 = bounds3 ?? observeBounds;
+            const cap3 = await captureForTarget(activeBounds3);
             if (cap3) {
-              const loc3 = await locateAndScale(cap3.path, planned.target, cap3.origin, cap3.cropped);
+              const attempt3Width = cap3.cropped && activeBounds3 ? activeBounds3.width + 8 : undefined;
+              const loc3 = await locateAndScale(cap3.path, planned.target, cap3.origin, cap3.cropped, attempt3Width);
               if (loc3.found && loc3.x !== undefined && loc3.y !== undefined) {
                 x = loc3.x; y = loc3.y; locConfidence = loc3.confidence;
                 _elementCache.set(cacheKey, { x, y, locatedAt: Date.now() });
@@ -1096,94 +1368,134 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
         stepResult = { step, action: planned, executed: false, outcome: 'failed', error: err };
         history.push(`${step}: click "${planned.target}" → not found after retries`);
       } else {
-        // Phase 5: Re-assert focus on the target app immediately before
-        // dispatching the click. Approval prompts and any TriForge UI
-        // interaction frequently steal focus between observe and act in
-        // side-by-side layouts; if the target isn't frontmost the click
-        // will land in the wrong app.
-        if (targetApp) {
-          const focusedBounds = await ensureTargetFocused();
-          if (focusedBounds && !focusedBounds.isFrontmost) {
-            history.push(
-              `${step}: ⚠ pre-click focus re-assert: "${targetApp}" still not frontmost after activate. ` +
-              `Click may land in another app — proceeding with dispatch but flagging risk.`,
-            );
+        // Re-assert focus on the BOUND target immediately before dispatch.
+        // In side-by-side layouts TriForge's own approval-prompt UI steals
+        // focus between observe and act — if the bound target isn't
+        // frontmost the click would land in the wrong app, so we refuse
+        // to dispatch rather than corrupt the workflow state.
+        const focusCheck = await assertFocusForDispatch('click');
+        if (!focusCheck.proceed) {
+          stepDiag('act', step, {
+            bounds: focusCheck.bounds, origin: regionOrigin, cropped: regionCropped,
+            frontmostConfirmed: focusCheck.frontmostConfirmed,
+            frontmostApp: focusCheck.frontmostApp,
+            extra: `abort=focus_assert dispatchXY=(${x},${y}) target="${planned.target ?? 'none'}"`,
+          });
+          const err = focusCheck.abortReason!;
+          stepResult = { step, action: planned, executed: false, outcome: 'failed', error: err };
+          history.push(
+            `${step}: ⚠ click "${planned.target}" → ABORTED — bound target not frontmost ` +
+            `(actual: "${focusCheck.frontmostApp ?? 'unknown'}"). Re-plan and try again.`,
+          );
+        } else {
+          // Diagnostic: log the full coordinate pipeline for every click
+          const coordSource = planned.target ? 'locateElement' : 'planner';
+          const diagLog = `CLICK_DIAG step=${step} target="${planned.target ?? 'none'}" ` +
+            `source=${coordSource} ` +
+            `plannerXY=(${planned.x ?? '-'},${planned.y ?? '-'}) ` +
+            `dispatchXY=(${x},${y}) origin=(${regionOrigin.x},${regionOrigin.y}) cropped=${regionCropped} ` +
+            `scale=${displayScale} conf=${locConfidence ?? 'n/a'}`;
+          console.log(diagLog);
+          stepDiag('act', step, {
+            bounds: focusCheck.bounds, origin: regionOrigin, cropped: regionCropped,
+            frontmostConfirmed: focusCheck.frontmostConfirmed,
+            frontmostApp: focusCheck.frontmostApp,
+            extra: `dispatch=click dispatchXY=(${x},${y}) target="${planned.target ?? 'none'}"`,
+          });
+          emit({ step, phase: 'act', description: diagLog, screenshotPath });
+
+          const action = OperatorService.buildAction(sessionId, 'click_at', { x, y, button: planned.button ?? 'left' });
+          const r      = await OperatorService.executeAction(action);
+          if (r.outcome === 'approval_pending') {
+            stepResult = { step, action: planned, executed: false, outcome: 'approval_pending', approvalId: r.approvalId };
+            steps.push(stepResult);
+            const summary = `Approval needed: click "${planned.target ?? `(${x},${y})`}"`;
+            emit({ step, phase: 'blocked', description: summary, screenshotPath, action: planned, result: stepResult });
+            endStep('waiting_approval', { actionType: 'click', x, y, target: planned.target, approvalId: r.approvalId }, summary, screenshotPath);
+            return scoped({ ok: false, stepsExecuted: step - 1, outcome: 'approval_pending', summary, pendingApprovalId: r.approvalId, steps });
           }
+          stepResult = { step, action: planned, executed: r.outcome === 'success', outcome: r.outcome, error: r.error };
+          history.push(`${step}: click (${x},${y}) [scale=${displayScale}, conf=${locConfidence ?? 'n/a'}] → ${r.outcome}`);
         }
+      }
 
-        // Diagnostic: log the full coordinate pipeline for every click
-        const coordSource = planned.target ? 'locateElement' : 'planner';
-        const diagLog = `CLICK_DIAG step=${step} target="${planned.target ?? 'none'}" ` +
-          `source=${coordSource} ` +
-          `plannerXY=(${planned.x ?? '-'},${planned.y ?? '-'}) ` +
-          `dispatchXY=(${x},${y}) origin=(${regionOrigin.x},${regionOrigin.y}) cropped=${regionCropped} ` +
-          `scale=${displayScale} conf=${locConfidence ?? 'n/a'}`;
-        console.log(diagLog);
-        emit({ step, phase: 'act', description: diagLog, screenshotPath });
-
-        const action = OperatorService.buildAction(sessionId, 'click_at', { x, y, button: planned.button ?? 'left' });
+    } else if (planned.type === 'type') {
+      const text = planned.text ?? '';
+      // Pre-input focus assertion — refuse to type when bound target is not
+      // frontmost (see click branch for rationale).
+      const focusCheck = await assertFocusForDispatch('type');
+      if (!focusCheck.proceed) {
+        stepDiag('act', step, {
+          bounds: focusCheck.bounds, origin: regionOrigin, cropped: regionCropped,
+          frontmostConfirmed: focusCheck.frontmostConfirmed,
+          frontmostApp: focusCheck.frontmostApp,
+          extra: `abort=focus_assert dispatch=type text="${text.slice(0, 40)}"`,
+        });
+        const err = focusCheck.abortReason!;
+        stepResult = { step, action: planned, executed: false, outcome: 'failed', error: err };
+        history.push(
+          `${step}: ⚠ type "${text.slice(0, 30)}" → ABORTED — bound target not frontmost ` +
+          `(actual: "${focusCheck.frontmostApp ?? 'unknown'}"). Re-plan and try again.`,
+        );
+      } else {
+        stepDiag('act', step, {
+          bounds: focusCheck.bounds, origin: regionOrigin, cropped: regionCropped,
+          frontmostConfirmed: focusCheck.frontmostConfirmed,
+          frontmostApp: focusCheck.frontmostApp,
+          extra: `dispatch=type text="${text.slice(0, 40)}"`,
+        });
+        const action = OperatorService.buildAction(sessionId, 'type_text', { text });
         const r      = await OperatorService.executeAction(action);
         if (r.outcome === 'approval_pending') {
           stepResult = { step, action: planned, executed: false, outcome: 'approval_pending', approvalId: r.approvalId };
           steps.push(stepResult);
-          const summary = `Approval needed: click "${planned.target ?? `(${x},${y})`}"`;
+          const summary = `Approval needed: type "${text.slice(0, 40)}"`;
           emit({ step, phase: 'blocked', description: summary, screenshotPath, action: planned, result: stepResult });
-          endStep('waiting_approval', { actionType: 'click', x, y, target: planned.target, approvalId: r.approvalId }, summary, screenshotPath);
-          return { ok: false, stepsExecuted: step - 1, outcome: 'approval_pending', summary, pendingApprovalId: r.approvalId, steps };
+          endStep('waiting_approval', { actionType: 'type', text: text.slice(0, 100), approvalId: r.approvalId }, summary, screenshotPath);
+          return scoped({ ok: false, stepsExecuted: step - 1, outcome: 'approval_pending', summary, pendingApprovalId: r.approvalId, steps });
         }
         stepResult = { step, action: planned, executed: r.outcome === 'success', outcome: r.outcome, error: r.error };
-        history.push(`${step}: click (${x},${y}) [scale=${displayScale}, conf=${locConfidence ?? 'n/a'}] → ${r.outcome}`);
+        history.push(`${step}: type "${text.slice(0, 30)}" → ${r.outcome}`);
       }
-
-    } else if (planned.type === 'type') {
-      const text   = planned.text ?? '';
-      // Phase 5: pre-input focus re-assert (see click branch for rationale)
-      if (targetApp) {
-        const focusedBounds = await ensureTargetFocused();
-        if (focusedBounds && !focusedBounds.isFrontmost) {
-          history.push(
-            `${step}: ⚠ pre-type focus re-assert: "${targetApp}" still not frontmost. ` +
-            `Typed text may land in the wrong app — proceeding but flagging risk.`,
-          );
-        }
-      }
-      const action = OperatorService.buildAction(sessionId, 'type_text', { text });
-      const r      = await OperatorService.executeAction(action);
-      if (r.outcome === 'approval_pending') {
-        stepResult = { step, action: planned, executed: false, outcome: 'approval_pending', approvalId: r.approvalId };
-        steps.push(stepResult);
-        const summary = `Approval needed: type "${text.slice(0, 40)}"`;
-        emit({ step, phase: 'blocked', description: summary, screenshotPath, action: planned, result: stepResult });
-        endStep('waiting_approval', { actionType: 'type', text: text.slice(0, 100), approvalId: r.approvalId }, summary, screenshotPath);
-        return { ok: false, stepsExecuted: step - 1, outcome: 'approval_pending', summary, pendingApprovalId: r.approvalId, steps };
-      }
-      stepResult = { step, action: planned, executed: r.outcome === 'success', outcome: r.outcome, error: r.error };
-      history.push(`${step}: type "${text.slice(0, 30)}" → ${r.outcome}`);
 
     } else if (planned.type === 'key') {
       const { key, modifiers } = parseKeyCombo(planned.keyCombo ?? '');
-      // Phase 5: pre-input focus re-assert (see click branch for rationale)
-      if (targetApp) {
-        const focusedBounds = await ensureTargetFocused();
-        if (focusedBounds && !focusedBounds.isFrontmost) {
-          history.push(
-            `${step}: ⚠ pre-key focus re-assert: "${targetApp}" still not frontmost. ` +
-            `Keystroke may land in the wrong app — proceeding but flagging risk.`,
-          );
+      // Pre-input focus assertion — refuse to send keys when bound target is
+      // not frontmost (see click branch for rationale).
+      const focusCheck = await assertFocusForDispatch('key');
+      if (!focusCheck.proceed) {
+        stepDiag('act', step, {
+          bounds: focusCheck.bounds, origin: regionOrigin, cropped: regionCropped,
+          frontmostConfirmed: focusCheck.frontmostConfirmed,
+          frontmostApp: focusCheck.frontmostApp,
+          extra: `abort=focus_assert dispatch=key combo="${planned.keyCombo ?? ''}"`,
+        });
+        const err = focusCheck.abortReason!;
+        stepResult = { step, action: planned, executed: false, outcome: 'failed', error: err };
+        history.push(
+          `${step}: ⚠ key "${planned.keyCombo}" → ABORTED — bound target not frontmost ` +
+          `(actual: "${focusCheck.frontmostApp ?? 'unknown'}"). Re-plan and try again.`,
+        );
+      } else {
+        stepDiag('act', step, {
+          bounds: focusCheck.bounds, origin: regionOrigin, cropped: regionCropped,
+          frontmostConfirmed: focusCheck.frontmostConfirmed,
+          frontmostApp: focusCheck.frontmostApp,
+          extra: `dispatch=key combo="${planned.keyCombo ?? ''}"`,
+        });
+        const action = OperatorService.buildAction(sessionId, 'send_key', { key, modifiers });
+        const r      = await OperatorService.executeAction(action);
+        if (r.outcome === 'approval_pending') {
+          stepResult = { step, action: planned, executed: false, outcome: 'approval_pending', approvalId: r.approvalId };
+          steps.push(stepResult);
+          const summary = `Approval needed: key "${planned.keyCombo}"`;
+          emit({ step, phase: 'blocked', description: summary, screenshotPath, action: planned, result: stepResult });
+          endStep('waiting_approval', { actionType: 'key', keyCombo: planned.keyCombo, approvalId: r.approvalId }, summary, screenshotPath);
+          return scoped({ ok: false, stepsExecuted: step - 1, outcome: 'approval_pending', summary, pendingApprovalId: r.approvalId, steps });
         }
+        stepResult = { step, action: planned, executed: r.outcome === 'success', outcome: r.outcome, error: r.error };
+        history.push(`${step}: key "${planned.keyCombo}" → ${r.outcome}`);
       }
-      const action             = OperatorService.buildAction(sessionId, 'send_key', { key, modifiers });
-      const r                  = await OperatorService.executeAction(action);
-      if (r.outcome === 'approval_pending') {
-        stepResult = { step, action: planned, executed: false, outcome: 'approval_pending', approvalId: r.approvalId };
-        steps.push(stepResult);
-        const summary = `Approval needed: key "${planned.keyCombo}"`;
-        emit({ step, phase: 'blocked', description: summary, screenshotPath, action: planned, result: stepResult });
-        endStep('waiting_approval', { actionType: 'key', keyCombo: planned.keyCombo, approvalId: r.approvalId }, summary, screenshotPath);
-        return { ok: false, stepsExecuted: step - 1, outcome: 'approval_pending', summary, pendingApprovalId: r.approvalId, steps };
-      }
-      stepResult = { step, action: planned, executed: r.outcome === 'success', outcome: r.outcome, error: r.error };
-      history.push(`${step}: key "${planned.keyCombo}" → ${r.outcome}`);
     }
 
     steps.push(stepResult);
@@ -1198,60 +1510,90 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
     //   • Two consecutive verify failures abort the run with a clear outcome
     //     instead of silently marching the workflow into garbage state
     if (stepResult.executed && planned.type !== 'wait') {
-      // Phase 5: Verification must look at the SAME region the planner saw
-      // when it made its decision. Otherwise, in side-by-side layouts the
-      // verifier reads pixels from a different app and reports nonsense
-      // ("the screen still shows Getting Started" — when really it shows
-      // TriForge's window over a now-correct Unreal screen).
+      // Verification must look at the SAME region the planner saw when it
+      // made its decision. Otherwise, in side-by-side layouts the verifier
+      // reads pixels from a different app and reports nonsense.
       //
-      // We wait for the screen to settle, then capture a fresh region crop
-      // (after re-asserting focus) and ask vision against THAT image only.
+      // CRITICAL: when bound target is set, refuse to verify against a
+      // full-screen capture. Verifying off-frame would either pass actions
+      // that landed in the wrong window or fail valid actions because the
+      // bound app's pixels aren't even in the frame.
       await waitUntilScreenStable(5000);
 
       let verifyShot = screenshotPath;
       let verifyOrigin = regionOrigin;
       let verifyCropped = regionCropped;
-      let verifyBounds: AppWindowBounds | null = targetBounds;
-      if (targetApp) {
-        verifyBounds = await ensureTargetFocused();
+      let verifyBounds: AppWindowBounds | null = observeBounds;
+      let verifyFrontmostConfirmed = true;
+      let verifyFrontmostApp: string | null = null;
+      let verifyFallbackReason: string | undefined;
+      let verifyAvailable = true;
+
+      if (boundTarget) {
+        const focused = await ensureBoundFocused();
+        verifyBounds = focused.bounds;
+        verifyFrontmostConfirmed = focused.frontmostConfirmed;
+        verifyFrontmostApp = focused.frontmostApp;
         const vcap = await captureForTarget(verifyBounds);
         if (vcap) {
-          verifyShot   = vcap.path;
-          verifyOrigin = vcap.origin;
+          verifyShot    = vcap.path;
+          verifyOrigin  = vcap.origin;
           verifyCropped = vcap.cropped;
+          verifyFallbackReason = vcap.fallbackReason;
+        } else {
+          verifyFallbackReason = 'verify_capture_failed';
+        }
+        // In scoped mode, refuse to verify against full-screen pixels
+        if (!verifyCropped) {
+          verifyAvailable = false;
         }
       } else {
         const ssVerify = await OperatorService.captureScreen();
         if (ssVerify.ok && ssVerify.path) verifyShot = ssVerify.path;
       }
 
-      // Suppress unused-variable warnings — these capture state for any
-      // future post-verification logic that wants to know what was actually
-      // looked at vs. the original step's image.
-      void verifyOrigin; void verifyCropped;
+      void verifyOrigin;
 
-      const verifyPrompt = verifyCropped
-        ? `This screenshot is the "${targetApp}" window only — every pixel is inside that app. ` +
-          `Did this action succeed: "${planned.description}"? Answer YES or NO then one sentence explaining what you see in THIS view. ` +
-          `Do NOT comment on TriForge UI or other apps — they are not in this image.`
-        : `Did this action succeed: "${planned.description}"? Answer YES or NO then one sentence explaining what you see.`;
+      let passed: boolean;
+      let vrAnswer: string;
+      if (verifyAvailable) {
+        const verifyPrompt = verifyCropped
+          ? `This screenshot is the "${boundTarget?.processName ?? 'target'}" window only — every pixel is inside that app. ` +
+            `Did this action succeed: "${planned.description}"? Answer YES or NO then one sentence explaining what you see in THIS view. ` +
+            `Do NOT comment on TriForge UI or other apps — they are not in this image.`
+          : `Did this action succeed: "${planned.description}"? Answer YES or NO then one sentence explaining what you see.`;
 
-      const vr = await analyzeScreen(verifyShot, verifyPrompt);
-      const passed = vr.ok && isVerificationPassed(vr.answer);
+        const vr = await analyzeScreen(verifyShot, verifyPrompt);
+        passed = vr.ok && isVerificationPassed(vr.answer);
+        vrAnswer = vr.ok ? vr.answer : (vr.error ?? 'verify call failed');
+      } else {
+        // Verify refused: bound mode but no cropped capture available
+        passed = false;
+        vrAnswer =
+          `verification UNAVAILABLE — bound target "${boundTarget?.processName ?? '?'}" bounds could not be ` +
+          `resolved for the verify capture (reason: ${verifyFallbackReason ?? 'no_bounds'}). ` +
+          `Refusing to verify against full-screen capture in scoped mode.`;
+      }
       stepResult.verifyPassed = passed;
 
-      // Phase 5: cache the confirmed target window state on success so the
-      // next iteration can include a state-continuity hint in the planner
-      // prompt. We capture both the window title (for change detection) and
-      // the verifier's natural-language summary (for context replay).
-      if (passed && targetApp && verifyBounds?.windowTitle) {
+      stepDiag('verify', step, {
+        bounds: verifyBounds, origin: verifyOrigin, cropped: verifyCropped,
+        frontmostConfirmed: verifyFrontmostConfirmed,
+        frontmostApp: verifyFrontmostApp,
+        fallbackReason: verifyFallbackReason,
+        extra: verifyAvailable ? `passed=${passed}` : 'verify=refused_full_screen',
+      });
+
+      // Cache the confirmed target window state on success so the next
+      // iteration can include a state-continuity hint in the planner prompt.
+      if (passed && boundTarget && verifyBounds?.windowTitle) {
         lastConfirmedTargetTitle = verifyBounds.windowTitle;
-        lastConfirmedScreenSummary = vr.answer.slice(0, 200);
+        lastConfirmedScreenSummary = vrAnswer.slice(0, 200);
       }
 
       const verifyDesc = passed
-        ? `Verified: ${vr.answer.slice(0, 100)}`
-        : `Verification FAILED: ${vr.answer.slice(0, 120)}`;
+        ? `Verified: ${vrAnswer.slice(0, 100)}`
+        : `Verification FAILED: ${vrAnswer.slice(0, 120)}`;
       emit({
         step,
         phase:          'verify',
@@ -1264,7 +1606,7 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
       if (passed) {
         consecutiveVerifyFailures = 0;
         if (_liveRunState) _liveRunState.consecutiveVerifyFailures = 0;
-        history.push(`  verify: ✓ ${vr.answer.slice(0, 80)}`);
+        history.push(`  verify: ✓ ${vrAnswer.slice(0, 80)}`);
       } else {
         consecutiveVerifyFailures += 1;
         if (_liveRunState) _liveRunState.consecutiveVerifyFailures = consecutiveVerifyFailures;
@@ -1282,7 +1624,7 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
         if (consecutiveVerifyFailures === 1) {
           history.push(
             `  ⚠ verify FAILED (1/3): "${planned.description}" did not appear to take effect. ` +
-            `Vision says: ${vr.answer.slice(0, 100)}. ` +
+            `Vision says: ${vrAnswer.slice(0, 100)}. ` +
             `Re-plan with a different approach (different element label, scroll to find, or fresh focus).`,
           );
         } else if (consecutiveVerifyFailures === 2) {
@@ -1296,7 +1638,7 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
             : 'switch to a completely different action type';
           history.push(
             `  ⚠ verify FAILED (2/3): "${planned.description}" failed twice. ` +
-            `Vision says: ${vr.answer.slice(0, 100)}. ` +
+            `Vision says: ${vrAnswer.slice(0, 100)}. ` +
             `ESCALATE: do NOT retry the same ${planned.type} action — instead, ${escalationHint}. ` +
             `If escalation also fails the run will abort.`,
           );
@@ -1314,13 +1656,13 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
       emit({ step, phase: 'error', description: err, screenshotPath, action: planned, result: stepResult });
       endStep('failed', { actionType: planned.type, outcome: 'permission_denied' }, err, screenshotPath);
       const afterScreenshotPath = await captureAfter();
-      return { ok: false, stepsExecuted: step, outcome: 'blocked', summary: err, error: err, steps, beforeScreenshotPath, afterScreenshotPath };
+      return scoped({ ok: false, stepsExecuted: step, outcome: 'blocked', summary: err, error: err, steps, beforeScreenshotPath, afterScreenshotPath });
     }
     if (stepResult.outcome === 'failed') {
       const err = stepResult.error ?? `Step ${step} failed (${stepResult.outcome})`;
       emit({ step, phase: 'error', description: err, screenshotPath, action: planned, result: stepResult });
       endStep('failed', { actionType: planned.type, outcome: stepResult.outcome }, err, screenshotPath);
-      return { ok: false, stepsExecuted: step, outcome: 'error', summary: err, error: err, steps };
+      return scoped({ ok: false, stepsExecuted: step, outcome: 'error', summary: err, error: err, steps });
     }
 
     // B1+B2: Hard-stop after 3 consecutive verification failures.
@@ -1333,7 +1675,7 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
       const err = `Three consecutive steps failed visual verification — last action "${lastMsg}" did not produce the expected screen change after re-plan and action-type escalation. Aborting to prevent silent corruption of the workflow state.`;
       emit({ step, phase: 'error', description: err, screenshotPath, action: planned, result: stepResult });
       endStep('failed', { actionType: planned.type, verifyFailures: consecutiveVerifyFailures }, err, screenshotPath);
-      return { ok: false, stepsExecuted: step, outcome: 'error', summary: err, error: err, steps, beforeScreenshotPath, afterScreenshotPath: await captureAfter() };
+      return scoped({ ok: false, stepsExecuted: step, outcome: 'error', summary: err, error: err, steps, beforeScreenshotPath, afterScreenshotPath: await captureAfter() });
     }
 
     // ── B4: Natural end of iteration ─────────────────────────────────────────
@@ -1359,5 +1701,5 @@ async function _runOperatorTaskCore(opts: TaskRunnerOptions): Promise<TaskRunRes
   };
   emit({ step: maxSteps, phase: 'continuation_prompt', description: contSummary, continuationSummary: contSummary });
   const afterScreenshotPath = await captureAfter();
-  return { ok: false, stepsExecuted: maxSteps, outcome: 'max_steps_reached', summary: contSummary, steps, resumeState, beforeScreenshotPath, afterScreenshotPath };
+  return scoped({ ok: false, stepsExecuted: maxSteps, outcome: 'max_steps_reached', summary: contSummary, steps, resumeState, beforeScreenshotPath, afterScreenshotPath });
 }
